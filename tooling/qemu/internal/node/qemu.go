@@ -42,7 +42,12 @@ type Spec struct {
 // Node is one running QEMU machine.
 type Node struct {
 	// Name is the Node's name, such as "node-1".
-	Name    string
+	Name string
+	// argv builds the QEMU command line for a console file; Reboot starts the same machine again
+	// from it.
+	argv    func(console string) []string
+	dir     string
+	boots   int
 	console string
 	cmd     *exec.Cmd
 	done    chan struct{}
@@ -75,24 +80,54 @@ func Start(spec Spec) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{Name: spec.Config.Name, console: filepath.Join(spec.Dir, "console.log"), done: make(chan struct{})}
 	name := "naru15-" + spec.Config.Name
-	args, err := qemuArgs(spec, name, cidata, dataDisk, n.console)
-	if err != nil {
+	n := &Node{Name: spec.Config.Name, dir: spec.Dir}
+	if _, err := qemuArgs(spec, name, cidata, dataDisk, ""); err != nil {
 		return nil, err
 	}
-	n.cmd = exec.Command("qemu-system-x86_64", args...) //nolint:gosec // arguments are built here
-	if out, err := os.Create(filepath.Join(spec.Dir, "qemu.log")); err == nil {
-		n.cmd.Stdout, n.cmd.Stderr = out, out
+	n.argv = func(console string) []string {
+		args, _ := qemuArgs(spec, name, cidata, dataDisk, console)
+		return args
 	}
-	if err := n.cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start qemu: %w", err)
+	if err := n.launch(); err != nil {
+		return nil, err
 	}
-	go func() {
-		n.waitErr = n.cmd.Wait()
-		close(n.done)
-	}()
 	return n, nil
+}
+
+// launch starts the QEMU process of the Node's next boot, with the serial console written to a file
+// of its own: console.log for the first boot, console-2.log for the second.
+func (n *Node) launch() error {
+	n.boots++
+	n.console = filepath.Join(n.dir, "console.log")
+	if n.boots > 1 {
+		n.console = filepath.Join(n.dir, fmt.Sprintf("console-%d.log", n.boots))
+	}
+	n.done = make(chan struct{})
+	n.once = sync.Once{}
+	n.waitErr = nil
+	cmd := exec.Command("qemu-system-x86_64", n.argv(n.console)...) //nolint:gosec // arguments are built here
+	if out, err := os.Create(filepath.Join(n.dir, "qemu.log")); err == nil {
+		cmd.Stdout, cmd.Stderr = out, out
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start qemu: %w", err)
+	}
+	n.cmd = cmd
+	done := n.done
+	go func() {
+		n.waitErr = cmd.Wait()
+		close(done)
+	}()
+	return nil
+}
+
+// Reboot kills the Node's QEMU process, as a power cut does, and starts it again on the same boot
+// disk, data disk, NoCloud drive and firmware variables. Its Console is then the new boot's. It must
+// not be called while a WaitFor is in progress.
+func (n *Node) Reboot() error {
+	n.Stop()
+	return n.launch()
 }
 
 // qemuArgs is the QEMU command line of a Node, laid out as Proxmox lays out a guest: a q35
@@ -103,13 +138,16 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		return nil, fmt.Errorf("the boot disk is missing; make disk builds it: %w", err)
 	}
 	vars := filepath.Join(spec.Dir, "OVMF_VARS.fd")
-	if err := copyInto(OVMFVars, vars); err != nil {
-		return nil, fmt.Errorf("copy the OVMF variable store: %w", err)
+	// The variable store is copied once: a Node that boots again keeps its own.
+	if _, err := os.Stat(vars); err != nil {
+		if err := copyInto(OVMFVars, vars); err != nil {
+			return nil, fmt.Errorf("copy the OVMF variable store: %w", err)
+		}
 	}
 	if _, err := os.Stat(OVMFCode); err != nil {
 		return nil, err
 	}
-	return []string{
+	args := []string{
 		"-name", name + ",process=" + name,
 		"-enable-kvm", "-cpu", "host", "-smp", "2", "-m", "3072",
 		"-machine", "q35",
@@ -124,9 +162,18 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		"-device", "ide-cd,bus=ide.1,drive=cidata",
 		"-netdev", "socket,id=net0,mcast=" + spec.Mcast + ",localaddr=127.0.0.1",
 		"-device", "virtio-net-pci,netdev=net0,mac=" + spec.Config.MAC(),
-		"-display", "none", "-monitor", "none", "-serial", "file:" + console,
-		"-no-reboot",
-	}, nil
+	}
+	// The control-plane Node of a gaon cluster has a second NIC on QEMU's user-mode network,
+	// whose forward from 127.0.0.1 is how the test host reaches the API server without
+	// privilege (ADR 0012). The network has no route off the host and the Nodes' network is
+	// untouched.
+	if spec.Config.hostNIC() {
+		args = append(args,
+			"-netdev", fmt.Sprintf("user,id=net1,restrict=on,hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.Gaon.HostPort, HostNICAddress, APIPort),
+			"-device", "virtio-net-pci,netdev=net1,mac="+spec.Config.hostMAC(),
+		)
+	}
+	return append(args, "-display", "none", "-monitor", "none", "-serial", "file:"+console, "-no-reboot"), nil
 }
 
 // Console is what the Node has written to its serial console so far.

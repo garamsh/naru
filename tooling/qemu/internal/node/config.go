@@ -42,6 +42,8 @@ type Config struct {
 	Inputs fixture.Inputs
 	// Network is the Node's addresses; the zero value is QEMUNetwork(Index, Total).
 	Network Network
+	// Gaon, when set, makes the Node run gaon instead of the test services (see NaruYAML).
+	Gaon *Gaon
 }
 
 // Network is what a Node's network-config and its configuration say of addresses. The QEMU tests
@@ -119,11 +121,28 @@ config:
           address: '%s'
           netmask: '%s'
           gateway: '%s'
-    - type: nameserver
+%s    - type: nameserver
       address:
 %s      search:
       - '%s'
-`, n.MAC, n.IP, n.Netmask, n.Gateway, ns.String(), n.Search))
+`, n.MAC, n.IP, n.Netmask, n.Gateway, c.hostNICConfig(), ns.String(), n.Search))
+}
+
+// hostNICConfig is the network-config entry of the second NIC, or nothing for a Node with none: a
+// static address on the user-mode network and no gateway, so that the default route stays on the
+// shared network.
+func (c Config) hostNICConfig() string {
+	if !c.hostNIC() {
+		return ""
+	}
+	return fmt.Sprintf(`    - type: physical
+      name: eth1
+      mac_address: '%s'
+      subnets:
+        - type: static
+          address: '%s'
+          netmask: '%s'
+`, c.hostMAC(), HostNICAddress, hostNICNetmask)
 }
 
 type service struct {
@@ -164,7 +183,9 @@ type file struct {
 // configuration as a file for init to write under /run. Its services, in this order: mvmd; the
 // registry that serves the test image; a stand-in that waits for mvmd's
 // socket and for the next Node's stand-in; a control-plane stand-in, which
-// starts only where spec.controlPlane is true; and, where asked, the probe.
+// starts only where spec.controlPlane is true; and, where asked, the probe. A Node with Gaon set
+// runs mvmd and then gaon's services (gaon.go) in place of the rest, and its files carry the
+// certificates.
 func (c Config) NaruYAML() ([]byte, error) {
 	mvmdJSON, err := c.MvmdJSON()
 	if err != nil {
@@ -180,11 +201,17 @@ func (c Config) NaruYAML() ([]byte, error) {
 	n.Spec.DataDisk.MountPoint = DataMount
 	n.Spec.Network.Forwarding = []string{"ipv4"}
 	root := fixture.GuestRoot
+	mvmd := service{
+		Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", mvmdConfig},
+		Env: map[string]string{"SSL_CERT_FILE": path.Join(root, "registry/ca.pem")},
+	}
+	if c.Gaon != nil {
+		n.Spec.Files = append(n.Spec.Files, c.Gaon.files(c)...)
+		n.Spec.Services = append([]service{mvmd}, c.Gaon.services(c)...)
+		return yaml.Marshal(n)
+	}
 	n.Spec.Services = []service{
-		{
-			Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", mvmdConfig},
-			Env: map[string]string{"SSL_CERT_FILE": path.Join(root, "registry/ca.pem")},
-		},
+		mvmd,
 		{Name: "registry", Binary: path.Join(root, "bin/naru-registry"), Args: []string{"-listen", fixture.RegistryAddr, "-dir", path.Join(root, "registry")}},
 		{
 			Name: "standin", Binary: "/bin/naru-standin",
