@@ -1,5 +1,5 @@
 // Command naru-release writes the release assets into a directory: the boot disk, the shared data
-// disk, the guest manifest, an example user-data per Node, and SHA256SUMS. `make release` runs it.
+// disk, the guest manifest, a test-only user-data per Node that runs gaon, and SHA256SUMS. `make release` runs it.
 package main
 
 import (

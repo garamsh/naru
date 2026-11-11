@@ -1,7 +1,8 @@
 // Command naru-judge reads the serial logs of two Nodes and exits 0 only when they show what the
 // QEMU tests assert; `make judge-serial NODE1=<log> NODE2=<log>` runs it. The logs are raw
 // captures, such as Proxmox's termproxy or `qm terminal` writes. node-1 is the control-plane Node
-// and runs the probe.
+// and, without -gaon, runs the probe; with -gaon the Nodes run gaon's services in place of the
+// stand-ins and the probe.
 package main
 
 import (
@@ -22,6 +23,7 @@ func run(args []string, out, errOut io.Writer) int {
 	fs.SetOutput(errOut)
 	node1 := fs.String("node1", "", "serial log of node-1, the control-plane Node that runs the probe")
 	node2 := fs.String("node2", "", "serial log of node-2")
+	gaon := fs.Bool("gaon", false, "the Nodes run gaon (the release's user-data), not the stand-ins and the probe")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -42,6 +44,9 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		log := judge.Clean(raw)
 		want := judge.Node(n.name, n.controlPlane, n.probe)
+		if *gaon {
+			want = judge.Gaon(n.name, n.controlPlane, 1)
+		}
 		bad := judge.Check(n.name, log, want)
 		fmt.Fprintf(out, "%s: %s: %d bytes, %d re-printed block(s), %d line(s) dropped by init; %d of %d expectations met\n",
 			n.name, n.path, len(raw), log.Reprints, log.Dropped, len(want)-len(bad), len(want))

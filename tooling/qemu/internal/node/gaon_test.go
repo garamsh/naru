@@ -33,15 +33,15 @@ func serviceNamed(t *testing.T, n nodeConfig, name string) service {
 	return service{}
 }
 
-func TestNaruYAML_GaonRunsTheControlPlaneOnNodeOneInTheOrderEachDialsWhatIsBefore(t *testing.T) {
+func TestNaruYAML_GaonRunsTheRegistryOnEveryNodeAndTheControlPlaneOnNodeOneInTheOrderEachDialsWhatIsBefore(t *testing.T) {
 	first, second := parse(t, gaonCfg(t, 1, 6443)), parse(t, gaonCfg(t, 2, 0))
 
-	want := []string{"mvmd", "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
+	want := []string{"mvmd", "registry", "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
 	assert.Equal(t, want, names(first))
 	assert.Equal(t, want, names(second), "init, not the file, leaves the control plane out of Node 2")
 	for _, n := range []nodeConfig{first, second} {
 		for _, s := range n.Spec.Services {
-			agentOrMvmd := s.Name == "gaon-node-agent" || s.Name == "mvmd"
+			agentOrMvmd := s.Name == "gaon-node-agent" || s.Name == "mvmd" || s.Name == "registry"
 			assert.Equal(t, agentOrMvmd, !s.ControlPlane, s.Name)
 		}
 	}

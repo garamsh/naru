@@ -2,7 +2,9 @@
 # Builds the four gaon service binaries, statically linked, from the commit image/gaon/pin.env
 # names: fetches that commit with git and nowhere else, fails unless HEAD is it, builds
 # node-agent, apiserver, scheduler and controllers with CGO_ENABLED=0 and -trimpath, and fails
-# unless each is a static executable. The Go toolchain is the one gaon's go.work names (a go
+# unless each is a static executable. It builds the gaon command line client from the same
+# checkout into <output-dir>/gaon for the QEMU tests to run on the host; the initramfs build
+# names the four services and does not take it. The Go toolchain is the one gaon's go.work names (a go
 # command that is not that version downloads it). A build whose inputs match the last one is
 # skipped.
 #
@@ -28,9 +30,10 @@ out=$(cd "$2" && pwd)
 . "$here/../build.env"
 
 binaries="gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers"
+cli=gaon
 stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../build.env" | sha256sum | cut -d' ' -f1)
 up_to_date=1
-for b in $binaries; do [ -f "$out/$b" ] || up_to_date=0; done
+for b in $binaries $cli; do [ -f "$out/$b" ] || up_to_date=0; done
 if [ "$up_to_date" = 1 ] && [ -f "$out/gaon.stamp" ] && [ "$(cat "$out/gaon.stamp")" = "$stamp" ]; then
   echo "gaon: $out is up to date with its inputs"
   exit 0
@@ -60,16 +63,16 @@ export GOTOOLCHAIN=$toolchain
 part=$build/out
 rm -rf "$part"
 mkdir -p "$part"
-for pkg in node-agent/cmd/gaon-node-agent apiserver/cmd/gaon-apiserver scheduler/cmd/gaon-scheduler controllers/cmd/gaon-controllers; do
+for pkg in node-agent/cmd/gaon-node-agent apiserver/cmd/gaon-apiserver scheduler/cmd/gaon-scheduler controllers/cmd/gaon-controllers gaon-cli/cmd/gaon; do
   (cd "$src" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$part/$(basename "$pkg")" "./$pkg")
 done
-for b in $binaries; do
+for b in $binaries $cli; do
   if ! file "$part/$b" | grep -Eq 'statically linked|static-pie linked'; then
     echo "gaon: $b is not a static executable: $(file "$part/$b")" >&2
     exit 1
   fi
 done
-for b in $binaries; do
+for b in $binaries $cli; do
   cp "$part/$b" "$out/$b"
   echo "gaon: built $out/$b, SHA-256 $(sha256sum "$out/$b" | cut -d' ' -f1)"
 done

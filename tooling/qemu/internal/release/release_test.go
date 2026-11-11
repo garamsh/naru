@@ -1,12 +1,16 @@
 package release_test
 
 import (
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,8 +19,12 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/guest"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
+	"github.com/garamsh/naru/tooling/qemu/internal/pki"
 	"github.com/garamsh/naru/tooling/qemu/internal/release"
 )
+
+// allInitramfsBinaries is an initramfs list that installs every binary the user-data names there.
+const allInitramfsBinaries = "file /bin/mvmd x\nfile /bin/etcd x\nfile /bin/gaon-apiserver x\nfile /bin/gaon-scheduler x\nfile /bin/gaon-controllers x\nfile /bin/gaon-node-agent x\n"
 
 var inputs = fixture.Inputs{
 	Dir:               "/staged",
@@ -70,7 +78,7 @@ func TestUserData_EachFileIsOneNaruInitParses(t *testing.T) {
 		out, err := exec.Command(initBin, "-validate", p).CombinedOutput() //nolint:gosec // the binary built above
 
 		require.NoError(t, err, "%s: %s", name, out)
-		assert.Contains(t, string(out), "valid; node=naru-"+strings.TrimSuffix(strings.TrimPrefix(name, "naru-"), ".yaml"))
+		assert.Contains(t, string(out), "valid; node=naru-"+strings.TrimSuffix(strings.TrimPrefix(name, "naru-"), ".test.yaml"))
 	}
 }
 
@@ -78,12 +86,39 @@ func TestUserData_ABrokenFileIsRefusedByNaruInit(t *testing.T) {
 	initBin := buildInit(t)
 	files, err := release.UserData(inputs)
 	require.NoError(t, err)
-	p := filepath.Join(t.TempDir(), "naru-node-1.yaml")
-	require.NoError(t, os.WriteFile(p, []byte(strings.Replace(string(files["naru-node-1.yaml"]), "kind: NodeConfig", "kind: Other", 1)), 0o600))
+	p := filepath.Join(t.TempDir(), "naru-node-1.test.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(strings.Replace(string(files["naru-node-1.test.yaml"]), "kind: NodeConfig", "kind: Other", 1)), 0o600))
 
 	_, err = exec.Command(initBin, "-validate", p).CombinedOutput() //nolint:gosec // the binary built above
 
 	assert.Error(t, err, "the validation rejects what init would")
+}
+
+type userData struct {
+	Spec struct {
+		ControlPlane bool `yaml:"controlPlane"`
+		Services     []struct {
+			Name string
+			Args []string
+		}
+		Files []struct{ Path, Content string }
+	}
+}
+
+func parseUserData(t *testing.T, b []byte) userData {
+	t.Helper()
+	var n userData
+	require.NoError(t, yaml.Unmarshal(b, &n))
+	return n
+}
+
+func (u userData) file(path string) string {
+	for _, f := range u.Spec.Files {
+		if f.Path == path {
+			return f.Content
+		}
+	}
+	return ""
 }
 
 func TestUserData_CarriesTheDeploymentsAddressesAndRoles(t *testing.T) {
@@ -91,33 +126,19 @@ func TestUserData_CarriesTheDeploymentsAddressesAndRoles(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, tc := range []struct {
-		file, own, peer, prefix, gateway string
-		controlPlane                     bool
+		file, prefix, gateway, api string
+		controlPlane               bool
 	}{
-		{"naru-node-1.yaml", "192.168.0.40", "192.168.0.61", "10.200.1.0/24", "10.200.1.1", true},
-		{"naru-node-2.yaml", "192.168.0.61", "192.168.0.40", "10.200.2.0/24", "10.200.2.1", false},
+		{"naru-node-1.test.yaml", "10.200.1.0/24", "10.200.1.1", "https://192.168.0.40:6443/apis/compute.gaon.garam.sh/v1alpha1", true},
+		{"naru-node-2.test.yaml", "10.200.2.0/24", "10.200.2.1", "https://192.168.0.40:6443/apis/compute.gaon.garam.sh/v1alpha1", false},
 	} {
-		var n struct {
-			Spec struct {
-				ControlPlane bool `yaml:"controlPlane"`
-				Services     []struct {
-					Name string
-					Args []string
-				}
-				Files []struct{ Path, Content string }
-			}
-		}
-		require.NoError(t, yaml.Unmarshal(files[tc.file], &n), tc.file)
+		n := parseUserData(t, files[tc.file])
 		assert.Equal(t, tc.controlPlane, n.Spec.ControlPlane, tc.file)
 		for _, s := range n.Spec.Services {
-			if s.Name != "standin" {
-				continue
+			if s.Name == "gaon-node-agent" {
+				assert.Contains(t, strings.Join(s.Args, " "), "--api-server "+tc.api, "%s: every agent dials node-1's address", tc.file)
 			}
-			args := strings.Join(s.Args, " ")
-			assert.Contains(t, args, "-listen "+tc.own+":7000", tc.file)
-			assert.Contains(t, args, "-peer "+tc.peer+":7000", tc.file)
 		}
-		require.Len(t, n.Spec.Files, 1, tc.file)
 		var mvmd struct {
 			Network struct {
 				Prefix   string   `json:"ipv4_prefix"`
@@ -125,27 +146,138 @@ func TestUserData_CarriesTheDeploymentsAddressesAndRoles(t *testing.T) {
 				Resolver []string `json:"resolvers"`
 			}
 		}
-		require.NoError(t, json.Unmarshal([]byte(n.Spec.Files[0].Content), &mvmd), tc.file)
+		require.NoError(t, json.Unmarshal([]byte(n.file("/run/mvmd/config.json")), &mvmd), tc.file)
 		assert.Equal(t, tc.prefix, mvmd.Network.Prefix, tc.file)
 		assert.Equal(t, tc.gateway, mvmd.Network.Gateway, tc.file)
 		assert.Equal(t, []string{tc.gateway}, mvmd.Network.Resolver, tc.file)
 	}
 }
 
-func TestUserData_HasTheServicesOfTheNodesTheQEMUTestsBoot(t *testing.T) {
+func TestUserData_HasTheServicesOfTheGaonNodesTheQEMUTestsBoot(t *testing.T) {
 	files, err := release.UserData(inputs)
 	require.NoError(t, err)
+	certs, err := pki.NewCluster([]string{"node-1", "node-2"}, net.ParseIP("10.78.0.1"))
+	require.NoError(t, err)
 
-	for i, name := range []string{"naru-node-1.yaml", "naru-node-2.yaml"} {
-		qemu, err := node.Config{Name: release.Config(i+1, inputs).Name, Index: i + 1, Total: 2, ControlPlane: i == 0, Probe: i == 0, Inputs: inputs}.NaruYAML()
+	for i := 1; i <= 2; i++ {
+		qemu, err := node.Config{
+			Name: release.Config(i, inputs).Name, Index: i, Total: 2, ControlPlane: i == 1, Inputs: inputs,
+			Gaon: &node.Gaon{Certs: certs, APIServerIP: "10.78.0.1"},
+		}.NaruYAML()
 		require.NoError(t, err)
 
-		got, err := release.ServiceBinaries(files[name])
+		got, err := release.ServiceBinaries(files[release.UserDataName(i)])
 		require.NoError(t, err)
 		want, err := release.ServiceBinaries(qemu)
 		require.NoError(t, err)
 
-		assert.Equal(t, want, got, "%s: the same generator, so the same services and binaries", name)
+		assert.Equal(t, want, got, "node-%d: the same generator, so the same services and binaries", i)
+		assert.NotContains(t, got, "standin", "a deployed Node runs no stand-in")
+		assert.NotContains(t, got, "control")
+		assert.NotContains(t, got, "probe")
+		assert.Contains(t, got, "registry", "the scheduler may bind a Machine to either Node")
+		assert.Contains(t, got, "gaon-node-agent")
+	}
+}
+
+func TestUserData_PublishesTheServingAndClientKeysAndNeverTheAuthoritysOrAnOperators(t *testing.T) {
+	files, err := release.UserData(inputs)
+	require.NoError(t, err)
+	first, second := parseUserData(t, files["naru-node-1.test.yaml"]), parseUserData(t, files["naru-node-2.test.yaml"])
+
+	keys := func(u userData) []string {
+		var out []string
+		for _, f := range u.Spec.Files {
+			if strings.HasPrefix(f.Path, "/run/gaon/") && strings.HasSuffix(f.Path, ".key") {
+				out = append(out, strings.TrimPrefix(f.Path, "/run/gaon/"))
+			}
+		}
+		return out
+	}
+	assert.ElementsMatch(t, []string{"agent.key", "apiserver.key", "scheduler.key", "controllers.key"}, keys(first))
+	assert.ElementsMatch(t, []string{"agent.key"}, keys(second), "node-2 holds its own agent key and no control-plane key")
+
+	ca := first.file("/run/gaon/ca.pem")
+	require.NotEmpty(t, ca)
+	assert.Equal(t, ca, second.file("/run/gaon/ca.pem"), "both Nodes trust one authority")
+	caBlock, _ := pem.Decode([]byte(ca))
+	caCert, err := x509.ParseCertificate(caBlock.Bytes)
+	require.NoError(t, err)
+	for name, content := range files {
+		assert.NotContains(t, string(content), "client.key", name)
+		for _, block := range pemBlocks(content) {
+			if block.Type != "EC PRIVATE KEY" {
+				continue
+			}
+			key, err := x509.ParseECPrivateKey(block.Bytes)
+			require.NoError(t, err)
+			assert.False(t, key.PublicKey.Equal(caCert.PublicKey), "%s holds the authority's private key", name)
+		}
+	}
+}
+
+// pemBlocks returns the PEM blocks in text, including those a YAML scalar holds.
+func pemBlocks(text []byte) []*pem.Block {
+	var out []*pem.Block
+	var n userData
+	if yaml.Unmarshal(text, &n) != nil {
+		return nil
+	}
+	for _, f := range n.Spec.Files {
+		rest := []byte(f.Content)
+		for {
+			var b *pem.Block
+			b, rest = pem.Decode(rest)
+			if b == nil {
+				break
+			}
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+func TestUserData_TheServingCertificateNamesNodeOnesAddressAndTheAgentsAreSignedByTheCA(t *testing.T) {
+	files, err := release.UserData(inputs)
+	require.NoError(t, err)
+	first := parseUserData(t, files["naru-node-1.test.yaml"])
+
+	cert := func(path string) *x509.Certificate {
+		b, _ := pem.Decode([]byte(first.file(path)))
+		require.NotNil(t, b, path)
+		c, err := x509.ParseCertificate(b.Bytes)
+		require.NoError(t, err, path)
+		return c
+	}
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM([]byte(first.file("/run/gaon/ca.pem"))))
+
+	serving := cert("/run/gaon/apiserver.pem")
+	assert.True(t, serving.IPAddresses[0].Equal(net.ParseIP("192.168.0.40")), "%v", serving.IPAddresses)
+	_, err = serving.Verify(x509.VerifyOptions{Roots: pool, DNSName: "", CurrentTime: time.Now(), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+	assert.NoError(t, err, "the CA signed the serving certificate")
+	agent := cert("/run/gaon/agent.pem")
+	assert.Equal(t, "node-1", agent.Subject.CommonName)
+	_, err = agent.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
+	assert.NoError(t, err, "the CA signed the agent certificate")
+}
+
+func TestUserData_TwoCallsDifferOnlyInTheCertificatesAndKeys(t *testing.T) {
+	one, err := release.UserData(inputs)
+	require.NoError(t, err)
+	two, err := release.UserData(inputs)
+	require.NoError(t, err)
+
+	for name := range one {
+		assert.NotEqual(t, one[name], two[name], "%s: fresh certificates and keys", name)
+		a, b := parseUserData(t, one[name]), parseUserData(t, two[name])
+		assert.Equal(t, a.Spec.Services, b.Spec.Services, name)
+		for i, f := range a.Spec.Files {
+			if strings.HasPrefix(f.Path, "/run/gaon/") {
+				continue
+			}
+			assert.Equal(t, f, b.Spec.Files[i], "%s: %s is the same file", name, f.Path)
+		}
 	}
 }
 
@@ -167,31 +299,31 @@ func TestProxmox_GivesTheNetworkConfigTheDeploymentsGatewayResolversAndMACs(t *t
 func TestMissingBinaries_NamesAServiceWhoseBinaryIsNotOnTheDataDisk(t *testing.T) {
 	files, err := release.UserData(inputs)
 	require.NoError(t, err)
-	list := "file /bin/mvmd x\nfile /bin/naru-standin x\n"
-	have := func(p string) bool { return p != fixture.GuestRoot+"/bin/naru-probe" }
+	list := allInitramfsBinaries
+	have := func(p string) bool { return p != fixture.GuestRoot+"/bin/naru-registry" }
 
-	missing, err := release.MissingBinaries(files["naru-node-1.yaml"], have, list)
+	missing, err := release.MissingBinaries(files["naru-node-1.test.yaml"], have, list)
 
 	require.NoError(t, err)
 	require.Len(t, missing, 1)
-	assert.Contains(t, missing[0], "probe: "+fixture.GuestRoot+"/bin/naru-probe is not on the data disk")
+	assert.Contains(t, missing[0], "registry: "+fixture.GuestRoot+"/bin/naru-registry is not on the data disk")
 }
 
 func TestMissingBinaries_NamesAServiceWhoseBinaryTheInitramfsDoesNotInstall(t *testing.T) {
 	files, err := release.UserData(inputs)
 	require.NoError(t, err)
 
-	missing, err := release.MissingBinaries(files["naru-node-2.yaml"], func(string) bool { return true }, "file /bin/mvmd x\n")
+	missing, err := release.MissingBinaries(files["naru-node-2.test.yaml"], func(string) bool { return true }, "file /bin/mvmd x\n")
 
 	require.NoError(t, err)
-	require.Len(t, missing, 2, "standin and control share a binary")
-	assert.Contains(t, strings.Join(missing, "\n"), "/bin/naru-standin is neither on the data disk nor in the initramfs list")
+	require.Len(t, missing, 5, "the file names etcd, the control plane and the Node Agent (init skips the control plane on node-2), and the list holds mvmd")
+	assert.Contains(t, strings.Join(missing, "\n"), "/bin/gaon-node-agent is neither on the data disk nor in the initramfs list")
 }
 
 func TestMissingBinaries_FindsNothingMissingWhenEveryBinaryIsThere(t *testing.T) {
 	files, err := release.UserData(inputs)
 	require.NoError(t, err)
-	list := "file /bin/mvmd x\nfile /bin/naru-standin x\n"
+	list := allInitramfsBinaries
 
 	for name, content := range files {
 		missing, err := release.MissingBinaries(content, func(string) bool { return true }, list)

@@ -159,3 +159,42 @@ func TestHasLine_FragmentsMustShareALineInOrder(t *testing.T) {
 	assert.False(t, judge.HasLine(console, []string{"started", "service=mvmd"}), "in order")
 	assert.False(t, judge.HasLine(console, []string{"configuration accepted", "started"}), "on one line")
 }
+
+func TestGaon_ANodeShowsTheRegistryAndTheNodeAgentAndTheControlPlaneOnlyOnNodeOne(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		controlPlane bool
+	}{{"node-1", true}, {"node-2", false}} {
+		want := judge.Gaon(tc.name, tc.controlPlane, 1)
+		assert.Empty(t, judge.Check(tc.name, judge.Clean([]byte(consoleOf(want))), want), tc.name)
+	}
+
+	second := judge.Gaon("node-2", false, 1)
+	console := consoleOf(second) + "time=x msg=started service=gaon-apiserver\n"
+	failures := judge.Check("node-2", judge.Clean([]byte(console)), second)
+	require.Len(t, failures, 1)
+	assert.Equal(t, "init never started gaon-apiserver", failures[0].Expect.What)
+
+	// The registry runs on every Node: a Node whose console lacks its start fails, on either role.
+	for _, tc := range []struct {
+		name         string
+		controlPlane bool
+	}{{"node-1", true}, {"node-2", false}} {
+		want := judge.Gaon(tc.name, tc.controlPlane, 1)
+		var without []judge.Expect
+		for _, e := range want {
+			if e.What != "init started the registry" {
+				without = append(without, e)
+			}
+		}
+		require.Len(t, without, len(want)-1, "the expectation for the registry exists on "+tc.name)
+		failures := judge.Check(tc.name, judge.Clean([]byte(consoleOf(without))), want)
+		require.Len(t, failures, 1, tc.name)
+		assert.Equal(t, "init started the registry", failures[0].Expect.What)
+	}
+
+	first := judge.Gaon("node-1", true, 1)
+	failures = judge.Check("node-1", judge.Clean([]byte(consoleOf(first[:len(first)-1]))), first)
+	require.Len(t, failures, 1)
+	assert.Equal(t, "init started gaon-controllers", failures[0].Expect.What)
+}

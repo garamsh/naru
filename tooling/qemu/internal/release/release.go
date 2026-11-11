@@ -1,7 +1,8 @@
 // Package release writes the assets a deployment of naru Nodes is made from: the boot disk, one
 // data disk that carries the test inputs and nothing of any Node, the guest manifest (the names
-// and SHA-256 of the guest kernels and initrds the boot disk carries), an example NoCloud
-// user-data per Node for Proxmox, and the SHA256SUMS of them. `make release` runs it.
+// and SHA-256 of the guest kernels and initrds the boot disk carries), a test-only NoCloud
+// user-data per Node for Proxmox that runs gaon with certificates issued for the release, and the
+// SHA256SUMS of them. `make release` runs it.
 package release
 
 import (
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -24,9 +26,10 @@ import (
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
+	"github.com/garamsh/naru/tooling/qemu/internal/pki"
 )
 
-// Nodes is the number of Nodes the example user-data is for.
+// Nodes is the number of Nodes the user-data is for.
 const Nodes = 2
 
 // Proxmox is the network of Node index (1 or 2) in the example deployment: the Nodes' addresses
@@ -47,23 +50,44 @@ func Proxmox(index int) node.Network {
 }
 
 // Config is the configuration of Node index in the example deployment. Node 1 is the
-// control-plane Node and runs the probe.
+// control-plane Node. The stand-ins and the probe are test fixtures that check init and mvmd and
+// that a Machine outlives mvmd; a deployed Node runs gaon, so UserData leaves them out.
 func Config(index int, inputs fixture.Inputs) node.Config {
 	return node.Config{
 		Name: fmt.Sprintf("node-%d", index), Index: index, Total: Nodes,
-		ControlPlane: index == 1, Probe: index == 1, Inputs: inputs, Network: Proxmox(index),
+		ControlPlane: index == 1, Inputs: inputs, Network: Proxmox(index),
 	}
 }
 
-// UserData returns the example user-data files by name: naru-node-<index>.yaml for each Node.
+// UserDataName is the name of Node index's user-data asset. ".test" marks it as one that carries
+// key material, which is for a test deployment only.
+func UserDataName(index int) string { return fmt.Sprintf("naru-node-%d.test.yaml", index) }
+
+// UserData returns the user-data files by name (UserDataName), each running gaon: mvmd, the
+// registry, etcd and gaon's control plane on node-1, and gaon's Node Agent on both. It issues
+// the certificates of the cluster, new at each call, from a CA whose private key is dropped when
+// they are issued: the files carry the CA's certificate, the API server's pair (which names
+// node-1's address), the Node Agents' pairs and the scheduler's and controllers' pairs, and no
+// file carries a client pair for an operator.
 func UserData(inputs fixture.Inputs) (map[string][]byte, error) {
+	names := make([]string, Nodes)
+	for i := range names {
+		names[i] = Config(i+1, inputs).Name
+	}
+	apiIP := Proxmox(1).IP
+	certs, err := pki.NewCluster(names, net.ParseIP(apiIP))
+	if err != nil {
+		return nil, fmt.Errorf("issue the certificates: %w", err)
+	}
 	out := map[string][]byte{}
 	for i := 1; i <= Nodes; i++ {
-		b, err := Config(i, inputs).NaruYAML()
+		cfg := Config(i, inputs)
+		cfg.Gaon = &node.Gaon{Certs: certs, APIServerIP: apiIP}
+		b, err := cfg.NaruYAML()
 		if err != nil {
 			return nil, err
 		}
-		out[fmt.Sprintf("naru-node-%d.yaml", i)] = b
+		out[UserDataName(i)] = b
 	}
 	return out, nil
 }
@@ -187,7 +211,7 @@ func Build(o Options) ([]Asset, error) {
 	}
 	sort.Strings(yamls)
 	for _, name := range yamls {
-		if err := os.WriteFile(filepath.Join(o.Out, name), files[name], 0o644); err != nil { //nolint:gosec // an example for people to read
+		if err := os.WriteFile(filepath.Join(o.Out, name), files[name], 0o600); err != nil {
 			return nil, err
 		}
 		missing, err := MissingBinaries(files[name], func(p string) bool { return onDisk(raw, p) }, string(list))
