@@ -35,7 +35,7 @@ func run(m *testing.M) int {
 		os.Stderr.WriteString("NARU_ROOT, NARU_IMAGE_DIR and NARU_GUEST_DIR are required; make test-qemu sets them\n")
 		return 1
 	}
-	dir, err := os.MkdirTemp("", "naru5-inputs-")
+	dir, err := os.MkdirTemp("", "naru15-inputs-")
 	if err != nil {
 		os.Stderr.WriteString(err.Error() + "\n")
 		return 1
@@ -65,6 +65,43 @@ func boot(t *testing.T, n, probeOn int) *node.Cluster {
 		}
 	})
 	return c
+}
+
+// bootDisk starts n Nodes on one network that boot the image's UEFI disk, naru.img, under OVMF.
+func bootDisk(t *testing.T, n int) *node.Cluster {
+	t.Helper()
+	c, err := node.StartCluster(node.ClusterSpec{
+		N: n, Disk: filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), Dir: t.TempDir(), Inputs: inputs,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		c.Stop()
+		for _, nd := range c.Nodes {
+			t.Logf("console of %s:\n%s", nd.Name, nd.Console())
+		}
+	})
+	return c
+}
+
+// TestNode_UEFIDiskBootsToInitAndStartsItsServices boots two Nodes from naru.img under OVMF, with
+// no -kernel, -initrd or -append, and checks on each console that init accepted the
+// configuration and started mvmd and the stand-in. The Nodes have no addresses until the
+// configuration carries them, so the cross-network dial is not asserted.
+func TestNode_UEFIDiskBootsToInitAndStartsItsServices(t *testing.T) {
+	c := bootDisk(t, 2)
+	ctx := context.Background()
+
+	for _, nd := range c.Nodes {
+		for _, step := range [][]string{
+			{"configuration accepted", "node=naru5-" + nd.Name},
+			{"root remounted read-only"},
+			{"data disk is mounted", "dir=/var/lib/mvmd", "fstype=ext4"},
+			{"started", "service=mvmd"},
+			{"started", "service=standin"},
+		} {
+			require.NoError(t, nd.WaitFor(ctx, bootTimeout, step...), "%s: %q", nd.Name, step)
+		}
+	}
 }
 
 // TestNode_TwoNodesRunTheirServicesAndReachEachOther boots two Nodes on one

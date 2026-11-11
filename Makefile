@@ -1,4 +1,4 @@
-.PHONY: lint format format-apply test test-cgroup test-qemu nodes guest-inputs build image image-repro ci
+.PHONY: lint format format-apply test test-cgroup test-qemu nodes guest-inputs build image disk image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -78,22 +78,30 @@ image:
 	image/kernel/build.sh $(BUILD)/kernel $(IMAGE)
 	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE)
 
-# image-repro builds the image twice from clean build directories and fails
-# unless the kernel and the initramfs of both are byte-identical. It takes
-# two full kernel builds.
+# disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
+# disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and the initramfs,
+# and naru.qcow2, the same disk for Proxmox's import_from. It needs mkfs.fat,
+# sgdisk and qemu-img, and neither root nor mtools.
+disk: image
+	image/disk/build.sh $(BUILD)/disk $(IMAGE)
+
+# image-repro builds the image and the disk twice from clean build directories
+# and fails unless the kernel, the initramfs, naru.img and naru.qcow2 of both
+# are byte-identical. It takes two full kernel builds.
 image-repro:
 	@set -e; \
 	for i in 1 2; do \
 	  rm -rf $(BUILD)/repro/$$i; \
 	  image/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
 	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
+	  image/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
 	done; \
-	for f in bzImage initramfs.cpio.gz; do \
+	for f in bzImage initramfs.cpio.gz naru.img naru.qcow2; do \
 	  a=$$(sha256sum $(BUILD)/repro/1/image/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/$$f | cut -d' ' -f1); \
 	  echo "$@: $$f build 1 $$a"; echo "$@: $$f build 2 $$b"; \
 	  if [ "$$a" != "$$b" ]; then echo "$@: $$f differs between the builds" >&2; exit 1; fi; \
 	done; \
-	echo "$@: bzImage and initramfs.cpio.gz are byte-identical across two clean builds"
+	echo "$@: bzImage, initramfs.cpio.gz, naru.img and naru.qcow2 are byte-identical across two clean builds"
 
 # guest-inputs builds the two guest initrds the Machines of the QEMU tests boot
 # from the pinned mvmd checkout that make image fetched, and verifies them

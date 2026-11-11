@@ -77,7 +77,7 @@ func Stage(src Sources, out string) (Inputs, error) {
 	if err := os.MkdirAll(filepath.Join(bin, mkfs.LibDir), 0o755); err != nil {
 		return Inputs{}, err
 	}
-	entryDir, err := os.MkdirTemp("", "naru5-entry-")
+	entryDir, err := os.MkdirTemp("", "naru15-entry-")
 	if err != nil {
 		return Inputs{}, err
 	}
