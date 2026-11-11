@@ -81,6 +81,39 @@ func TestCheck_TheNameInTheConfigurationLineIsTheNodes(t *testing.T) {
 	assert.Equal(t, "init accepted the configuration", failures[0].Expect.What)
 }
 
+func TestCheck_TheNetworkLineMustCountOneInterfaceAndAnyNumberOfNameservers(t *testing.T) {
+	want := judge.Boot("node-1")
+	line := func(msg, counts string) string {
+		var others []judge.Expect
+		for _, e := range want {
+			if e.What != "init configured the network" {
+				others = append(others, e)
+			}
+		}
+		return consoleOf(others) + "time=x level=INFO msg=\"" + msg + "\" " + counts + "\n"
+	}
+	for _, tc := range []struct {
+		name, console string
+		failed        bool
+	}{
+		{"one nameserver", line("network configured", "interfaces=1 nameservers=1"), false},
+		{"two nameservers", line("network configured", "interfaces=1 nameservers=2"), false},
+		{"no nameserver count", line("network configured", "interfaces=1"), false},
+		{"two interfaces", line("network configured", "interfaces=2 nameservers=2"), true},
+		{"no interface", line("network configured", "interfaces=0 nameservers=2"), true},
+		{"no network line", line("network ignored", "interfaces=1 nameservers=1"), true},
+	} {
+		failures := judge.Check("node-1", judge.Clean([]byte(tc.console)), want)
+
+		if tc.failed {
+			require.Len(t, failures, 1, tc.name)
+			assert.Equal(t, "init configured the network", failures[0].Expect.What, tc.name)
+		} else {
+			assert.Empty(t, failures, tc.name)
+		}
+	}
+}
+
 func TestClean_ReadsACaptureFromATerminal(t *testing.T) {
 	raw := "ial line cut by the capture\r\n" +
 		"\x1b[0;32mtime=x msg=\"network configured\"\x1b[0m interfaces=1\r\n" +

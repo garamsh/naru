@@ -28,10 +28,12 @@ var probeChecks = []string{
 
 // Boot is what a Node's console shows once init has read its configuration, configured the network
 // and started mvmd and the stand-in. name is the Node's name in its metadata, such as "node-1".
+// It requires one interface and no count of nameservers: the count is a fact of the Node's
+// network, which the QEMU tests' network-config fixes at one and a Proxmox network at two.
 func Boot(name string) []Expect {
 	return []Expect{
 		{What: "init accepted the configuration", Fragments: []string{"configuration accepted", "node=naru-" + name}},
-		{What: "init configured the network", Fragments: []string{"network configured", "interfaces=1", "nameservers=1"}},
+		{What: "init configured the network", Fragments: []string{"network configured", "interfaces=1"}},
 		{What: "init remounted the root read-only", Fragments: []string{"root remounted read-only"}},
 		{What: "the data disk is mounted", Fragments: []string{"data disk is mounted", "dir=/var/lib/mvmd", "fstype=ext4"}},
 		{What: "init started mvmd", Fragments: []string{"started", "service=mvmd"}},
