@@ -71,17 +71,19 @@ build:
 	CGO_ENABLED=0 go build -trimpath -o $(BIN)/naru-init ./init/cmd/naru-init
 	@echo "build: $(BIN)/naru-init: $$(file -b $(BIN)/naru-init | cut -d, -f1-4)"
 
-# image builds the host kernel, the guest kernels and initrds, and the initramfs
-# that carries them, from pinned sources, into $(IMAGE): bzImage,
+# image builds the host kernel, the guest kernels and initrds, the static mke2fs, and the
+# initramfs that carries them, from pinned sources, into $(IMAGE): bzImage,
 # initramfs.cpio.gz, inputs.env (the Firecracker pin the tests read) and guest/,
 # which holds what the initramfs carries of the guests, with guest.json naming
 # it. The scripts skip what their inputs say is built, and verify every download.
 GUEST := $(IMAGE)/guest
+E2FS := $(IMAGE)/e2fsprogs
 image:
 	image/kernel/build.sh $(BUILD)/kernel $(IMAGE)
+	image/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
 	image/mvmd-checkout.sh $(BUILD)/initramfs/mvmd
 	image/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
-	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST)
+	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS)
 
 # disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
 # disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and the initramfs,
@@ -92,25 +94,26 @@ disk: image
 
 # image-repro builds the image and the disk twice from clean build directories
 # and fails unless the kernel, the initramfs, the guest manifest (which names
-# the SHA-256 of every guest file), naru.img and naru.qcow2 of both are
-# byte-identical. It takes two full kernel builds, two guest kernel builds and
-# two builds of the initrds.
+# the SHA-256 of every guest file), mke2fs, naru.img and naru.qcow2 of both are
+# byte-identical. It takes two full kernel builds, two guest kernel builds, two
+# builds of the initrds and two of mke2fs.
 image-repro:
 	@set -e; \
 	for i in 1 2; do \
 	  rm -rf $(BUILD)/repro/$$i; \
 	  image/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
+	  image/e2fsprogs/build.sh $(BUILD)/repro/$$i/e2fsprogs $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
 	  image/mvmd-checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
 	  image/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
-	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest >/dev/null; \
+	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
 	  image/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
 	done; \
-	for f in bzImage initramfs.cpio.gz guest/guest.json naru.img naru.qcow2; do \
+	for f in bzImage e2fsprogs/mke2fs initramfs.cpio.gz guest/guest.json naru.img naru.qcow2; do \
 	  a=$$(sha256sum $(BUILD)/repro/1/image/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/$$f | cut -d' ' -f1); \
 	  echo "$@: $$f build 1 $$a"; echo "$@: $$f build 2 $$b"; \
 	  if [ "$$a" != "$$b" ]; then echo "$@: $$f differs between the builds" >&2; exit 1; fi; \
 	done; \
-	echo "$@: bzImage, initramfs.cpio.gz, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
+	echo "$@: bzImage, mke2fs, initramfs.cpio.gz, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
 
 # nodes boots N (default 2) Nodes of the image under QEMU on one network, as
 # the user, and keeps them up until interrupted. Their disks and consoles are
@@ -139,7 +142,7 @@ release: disk
 
 # test-qemu boots two Nodes of the image under QEMU, as the user, and reads
 # their consoles. It needs /dev/kvm with nested virtualization and the host's
-# mke2fs, and fails, never skips, when no test ran.
+# mkfs.ext4 (for the data disk), and fails, never skips, when no test ran.
 test-qemu: disk
 	@set -e; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \

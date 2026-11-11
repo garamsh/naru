@@ -16,4 +16,5 @@ file /init @OUT@/naru-init 0755 0 0
 file /bin/mvmd @OUT@/mvmd 0755 0 0
 file /bin/mvmd-supervisor @OUT@/mvmd-supervisor 0755 0 0
 file /bin/firecracker @OUT@/firecracker 0755 0 0
+file /bin/mkfs.ext4 @OUT@/mkfs.ext4 0755 0 0
 file /bin/naru-standin @OUT@/naru-standin 0755 0 0
