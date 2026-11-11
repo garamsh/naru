@@ -22,5 +22,8 @@ Current architecture of the system and the decisions behind it. This file is the
 
 - Responsibility documents
   - [structure.md](./structure.md): the shape naru is partitioned into, what may reference what, and when a new unit is earned.
+  - [boundaries.md](./boundaries.md): what naru owns, what it leaves to gaon and to mvmd, and the obligations mvmd's deployment puts on it.
 - ADRs
   - [0001](./adr/0001-the-repository-is-a-go-workspace-of-executable-units-partitioned-by-responsibility.md): the repository is a Go workspace of executable units, each its own module, partitioned by responsibility.
+  - [0002](./adr/0002-gaon-depends-on-naru-one-way-through-the-node-api-and-naru-has-no-control-plane.md): gaon depends on naru one way through the node API, and naru has no control plane.
+  - [0003](./adr/0003-naru-deploys-and-supervises-mvmd-builds-both-kernels-and-carries-mvmds-deployment-constraints.md): naru deploys and supervises mvmd, builds both kernels, and carries mvmd's deployment constraints.
