@@ -23,7 +23,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - Responsibility documents
   - [structure.md](./structure.md): the shape naru is partitioned into, what may reference what, and when a new unit is earned.
   - [boundaries.md](./boundaries.md): what naru owns, what it leaves to gaon and to mvmd, and the obligations mvmd's deployment puts on it.
-  - [image.md](./image.md): what the P0 image holds, where its inputs come from, and how a Node boots it, how a serial log is judged, and what a release holds.
+  - [image.md](./image.md): what the P0 image holds, where its inputs come from, and how a Node boots it, how a serial log is judged, what a release holds, and the workflow that publishes it.
   - [config.md](./config.md): how a Node's configuration and network reach init in P0, and the shape of the files.
   - [init.md](./init.md): what init does as PID 1: boot order, the data-disk check, a cgroup per service, restart backoff, reaping, the kept and re-printed console log, and what it requires of mvmd's placement.
 - ADRs
