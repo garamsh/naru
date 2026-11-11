@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/garamsh/naru/tooling/qemu/internal/guest"
 	"github.com/garamsh/naru/tooling/qemu/internal/mkfs"
 )
 
@@ -26,17 +27,20 @@ type Inputs struct {
 	Dir string
 	// Image is the OCI image the registry serves.
 	Image Image
-	// Digests of the files mvmd verifies, by the names of its configuration.
-	FirecrackerSHA256, KernelSHA256, GuestInitrdSHA256, ConverterInitrdSHA256 string
+	// FirecrackerSHA256 is the digest of the Firecracker binary the image carries.
+	FirecrackerSHA256 string
+	// Guest names the guest kernels and initrds the image carries, by their paths inside it and
+	// their digests, as image/guest/build.sh wrote them (ADR 0010).
+	Guest guest.Manifest
 }
 
 // Sources are the host files and directories Stage takes its inputs from.
 type Sources struct {
 	// Root is the repository root, where go.work is.
 	Root string
-	// ImageDir holds inputs.env and vmlinux, which make image writes.
+	// ImageDir holds inputs.env, which make image writes.
 	ImageDir string
-	// GuestDir holds guest-inputs.env and the two initrds, which image/guest/build.sh writes.
+	// GuestDir holds guest.json, which image/guest/build.sh writes.
 	GuestDir string
 }
 
@@ -44,8 +48,9 @@ type Sources struct {
 //
 //	bin/mkfs.ext4 bin/mke2fs bin/ld.so bin/lib/*   mvmd's mkfs, see internal/mkfs
 //	bin/naru-registry bin/naru-probe                services the tests configure
-//	guest/vmlinux guest/guest-initrd.cpio guest/converter-initrd.cpio
 //	registry/                                       see WriteRegistry
+//
+// The guest kernel and the initrds are not staged: the image carries them (ADR 0010).
 //
 // Directories are 0755 and files 0644 or 0755, since the VMMs run as users
 // of mvmd's UID range and read the guest files through them.
@@ -54,24 +59,13 @@ func Stage(src Sources, out string) (Inputs, error) {
 	if err != nil {
 		return Inputs{}, err
 	}
-	guestEnv, err := readEnv(filepath.Join(src.GuestDir, "guest-inputs.env"))
+	m, err := guest.Read(filepath.Join(src.GuestDir, "guest.json"))
 	if err != nil {
 		return Inputs{}, err
 	}
-	in := Inputs{
-		Dir:                   out,
-		FirecrackerSHA256:     env["MVMD_FIRECRACKER_SHA256"],
-		KernelSHA256:          env["MVMD_KERNEL_SHA256"],
-		GuestInitrdSHA256:     guestEnv["MVMD_INITRD_SHA256"],
-		ConverterInitrdSHA256: guestEnv["MVMD_CONVERTER_INITRD_SHA256"],
-	}
-	for name, v := range map[string]string{
-		"MVMD_FIRECRACKER_SHA256": in.FirecrackerSHA256, "MVMD_KERNEL_SHA256": in.KernelSHA256,
-		"MVMD_INITRD_SHA256": in.GuestInitrdSHA256, "MVMD_CONVERTER_INITRD_SHA256": in.ConverterInitrdSHA256,
-	} {
-		if v == "" {
-			return Inputs{}, fmt.Errorf("%s is not in inputs.env or guest-inputs.env", name)
-		}
+	in := Inputs{Dir: out, FirecrackerSHA256: env["MVMD_FIRECRACKER_SHA256"], Guest: m}
+	if in.FirecrackerSHA256 == "" {
+		return Inputs{}, fmt.Errorf("MVMD_FIRECRACKER_SHA256 is not in inputs.env")
 	}
 	bin := filepath.Join(out, "bin")
 	if err := os.MkdirAll(filepath.Join(bin, mkfs.LibDir), 0o755); err != nil {
@@ -94,19 +88,6 @@ func Stage(src Sources, out string) (Inputs, error) {
 	}
 	if err := stageMke2fs(bin); err != nil {
 		return Inputs{}, err
-	}
-	guest := filepath.Join(out, "guest")
-	if err := os.MkdirAll(guest, 0o755); err != nil {
-		return Inputs{}, err
-	}
-	for from, to := range map[string]string{
-		env["MVMD_KERNEL"]: "vmlinux",
-		filepath.Join(src.GuestDir, "guest-initrd.cpio"):     "guest-initrd.cpio",
-		filepath.Join(src.GuestDir, "converter-initrd.cpio"): "converter-initrd.cpio",
-	} {
-		if err := copyFile(from, filepath.Join(guest, to), 0o644); err != nil {
-			return Inputs{}, err
-		}
 	}
 	entry, err := os.ReadFile(filepath.Join(entryDir, "entry"))
 	if err != nil {

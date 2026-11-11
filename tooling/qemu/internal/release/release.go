@@ -1,6 +1,7 @@
 // Package release writes the assets a deployment of naru Nodes is made from: the boot disk, one
-// data disk that carries the test inputs and nothing of any Node, an example NoCloud user-data
-// per Node for Proxmox, and the SHA256SUMS of them. `make release` runs it.
+// data disk that carries the test inputs and nothing of any Node, the guest manifest (the names
+// and SHA-256 of the guest kernels and initrds the boot disk carries), an example NoCloud
+// user-data per Node for Proxmox, and the SHA256SUMS of them. `make release` runs it.
 package release
 
 import (
@@ -109,8 +110,8 @@ func MissingBinaries(naruYAML []byte, onDataDisk func(guestPath string) bool, in
 
 // Options say where Build reads and writes.
 type Options struct {
-	// Root is the repository root; ImageDir, DiskDir and GuestDir are what make image, make disk
-	// and make guest-inputs wrote. Out receives the assets.
+	// Root is the repository root; ImageDir and GuestDir (its guest/ directory) are what make
+	// image wrote, and DiskDir what make disk wrote. Out receives the assets.
 	Root, ImageDir, DiskDir, GuestDir, Out string
 	// Version names the assets: naru-<Version>.qcow2.
 	Version string
@@ -163,6 +164,14 @@ func Build(o Options) ([]Asset, error) {
 		return nil, fmt.Errorf("qemu-img convert: %w: %s", err, out)
 	}
 	names = append(names, data)
+
+	// The guest kernels and initrds are inside the boot disk's initramfs; this lists their names
+	// and hashes where a deployer can read them without unpacking it (ADR 0010).
+	manifest := "naru-guest-" + o.Version + ".json"
+	if err := copyFile(filepath.Join(o.GuestDir, "guest.json"), filepath.Join(o.Out, manifest)); err != nil {
+		return nil, fmt.Errorf("the guest manifest (make image): %w", err)
+	}
+	names = append(names, manifest)
 
 	files, err := UserData(inputs)
 	if err != nil {
