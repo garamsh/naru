@@ -68,7 +68,8 @@ func Start(spec Spec) (*Node, error) {
 		"-name", name+",process="+name,
 		"-enable-kvm", "-cpu", "host", "-smp", "2", "-m", "3072",
 		"-kernel", spec.Kernel, "-initrd", spec.Initrd,
-		"-append", "console=ttyS0 panic=-1 "+ip,
+		// loglevel=4: kernel info messages must not split init's console lines; no test asserts a kernel line.
+		"-append", "console=ttyS0 panic=-1 loglevel=4 "+ip,
 		"-drive", "file="+configDisk+",format=raw,if=virtio,readonly=on",
 		"-drive", "file="+dataDisk+",format=raw,if=virtio",
 		"-netdev", "socket,id=net0,mcast="+spec.Mcast+",localaddr=127.0.0.1",
