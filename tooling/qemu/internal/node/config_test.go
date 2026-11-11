@@ -2,6 +2,7 @@ package node
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,14 +10,25 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
+	"github.com/garamsh/naru/tooling/qemu/internal/guest"
 )
+
+func sum(c string) string { return strings.Repeat(c, 64) }
+
+// guestFiles is a manifest as image/guest/build.sh writes it, for the one kernel naru builds.
+var guestFiles = guest.Manifest{
+	Kernels:         map[string]guest.File{"naru": {Path: "/usr/lib/naru/guest/kernels/naru/vmlinux", SHA256: sum("k")}},
+	DefaultKernel:   "naru",
+	GuestInitrd:     guest.File{Path: "/usr/lib/naru/guest/guest-initrd.cpio", SHA256: sum("g")},
+	ConverterInitrd: guest.File{Path: "/usr/lib/naru/guest/converter-initrd.cpio", SHA256: sum("c")},
+}
 
 func cfg(index, total int, control, probe bool) Config {
 	return Config{
 		Name: "node-" + string(rune('0'+index)), Index: index, Total: total, ControlPlane: control, Probe: probe,
 		Inputs: fixture.Inputs{
 			Image:             fixture.Image{Repository: "127.0.0.1:5000/test/entry", Digest: "sha256:img"},
-			FirecrackerSHA256: "fc", KernelSHA256: "k", GuestInitrdSHA256: "g", ConverterInitrdSHA256: "c",
+			FirecrackerSHA256: "fc", Guest: guestFiles,
 		},
 	}
 }
@@ -103,7 +115,37 @@ func TestMvmdJSON_UsesTheFirecrackerDriverAndKeepsSupervisionOffTmpfs(t *testing
 	assert.Equal(t, "/var/lib/mvmd/state", m["state_dir"])
 	fc := m["firecracker"].(map[string]any)
 	assert.Equal(t, "fc", fc["binary_sha256"])
-	assert.Equal(t, "g", fc["initrd_sha256"])
+}
+
+func TestMvmdJSON_NamesTheImagesGuestFilesByTheirPathsAndDigestsInGuestJSON(t *testing.T) {
+	m := mvmd(t, cfg(1, 2, true, false))
+
+	fc := m["firecracker"].(map[string]any)
+	assert.Equal(t, "/usr/lib/naru/guest/kernels/naru/vmlinux", fc["kernel"])
+	assert.Equal(t, sum("k"), fc["kernel_sha256"])
+	assert.Equal(t, "/usr/lib/naru/guest/guest-initrd.cpio", fc["initrd"])
+	assert.Equal(t, sum("g"), fc["initrd_sha256"])
+	conv := m["conversion"].(map[string]any)
+	assert.Equal(t, fc["kernel"], conv["kernel"])
+	assert.Equal(t, fc["kernel_sha256"], conv["kernel_sha256"])
+	assert.Equal(t, "/usr/lib/naru/guest/converter-initrd.cpio", conv["initrd"])
+	assert.Equal(t, sum("c"), conv["initrd_sha256"])
+}
+
+func TestMvmdJSON_TakesTheKernelFromTheDefaultOfTheDeclaredKernels(t *testing.T) {
+	c := cfg(1, 2, true, false)
+	c.Inputs.Guest = guest.Manifest{
+		Kernels: map[string]guest.File{
+			"naru":  {Path: "/a", SHA256: sum("a")},
+			"other": {Path: "/b", SHA256: sum("b")},
+		},
+		DefaultKernel: "other", GuestInitrd: guestFiles.GuestInitrd, ConverterInitrd: guestFiles.ConverterInitrd,
+	}
+
+	fc := mvmd(t, c)["firecracker"].(map[string]any)
+
+	assert.Equal(t, "/b", fc["kernel"])
+	assert.Equal(t, sum("b"), fc["kernel_sha256"])
 }
 
 func TestMvmdJSON_GivesEachNodeItsOwnMachineNetwork(t *testing.T) {

@@ -28,7 +28,7 @@ func run() error {
 	n := flag.Int("n", 2, "number of Nodes")
 	root := flag.String("root", ".", "repository root")
 	image := flag.String("image", "", "directory make image writes")
-	guest := flag.String("guest", "", "directory make guest-inputs writes")
+	guest := flag.String("guest", "", "the guest directory of make image (guest.json)")
 	dir := flag.String("dir", "", "directory for the Nodes' disks and logs")
 	probe := flag.Bool("probe", false, "run the mvmd-restart probe on node-1")
 	timeout := flag.Duration("timeout", 3*time.Minute, "how long the Nodes have to reach each other")

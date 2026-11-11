@@ -140,14 +140,14 @@ jobs:
           sha256sum --check SHA256SUMS
           n=$(ls | wc -l)
           echo "release: $n file(s), SHA256SUMS lists $(wc -l <SHA256SUMS)"
-          [ "$n" -eq 5 ] || { echo "release: expected 5 files" >&2; exit 1; }
+          [ "$n" -eq 6 ] || { echo "release: expected 6 files" >&2; exit 1; }
 
       - name: Write the release notes
         run: |
           cat >notes.md <<'NOTES'
           naru @TAG@, built from commit @COMMIT@ by the release workflow on a GitHub-hosted ubuntu-24.04 runner.
 
-          Assets: `naru-@TAG@.qcow2` (the boot disk), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-node-1.yaml` and `naru-node-2.yaml` (example user-data for Proxmox) and `SHA256SUMS` of the first four.
+          Assets: `naru-@TAG@.qcow2` (the boot disk), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-node-1.yaml` and `naru-node-2.yaml` (example user-data for Proxmox) and `SHA256SUMS` of the first five.
 
           - **The data disk carries a test-only TLS authority, private key included.** `inputs/registry/key.pem` is the private key of the CA that `inputs/registry/ca.pem` and `cert.pem` belong to. It is generated for each build, is trusted only by the mvmd on the Node that holds the disk, and the registry that uses it listens on 127.0.0.1. Anyone can read the key from this public asset; do not trust the CA anywhere else.
           - **The data disk is not byte-reproducible.** The registry's TLS authority, certificate and key are generated anew for every build, and they are the only files that differ between two builds of one tree. Pin the digest of the asset published here, not the digest of a rebuild.

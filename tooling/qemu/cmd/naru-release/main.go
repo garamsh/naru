@@ -1,5 +1,5 @@
 // Command naru-release writes the release assets into a directory: the boot disk, the shared data
-// disk, an example user-data per Node, and SHA256SUMS. `make release` runs it.
+// disk, the guest manifest, an example user-data per Node, and SHA256SUMS. `make release` runs it.
 package main
 
 import (
@@ -23,7 +23,7 @@ func run() error {
 	flag.StringVar(&o.Root, "root", ".", "repository root")
 	flag.StringVar(&o.ImageDir, "image", "", "directory make image writes")
 	flag.StringVar(&o.DiskDir, "disk", "", "directory make disk writes")
-	flag.StringVar(&o.GuestDir, "guest", "", "directory make guest-inputs writes")
+	flag.StringVar(&o.GuestDir, "guest", "", "the guest directory of make image (guest.json)")
 	flag.StringVar(&o.Out, "out", "", "directory that receives the assets")
 	flag.StringVar(&o.Version, "version", "", "version in the asset names")
 	flag.Parse()

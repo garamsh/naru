@@ -1,7 +1,7 @@
 //go:build qemu_real
 
 // Package tests boots naru's UEFI disk image under QEMU. It needs the image built
-// (make image), the disk (make disk), the guest inputs (make guest-inputs), /dev/kvm with nested
+// (make image, which includes the guest files), the disk (make disk), /dev/kvm with nested
 // virtualization, and the host's mke2fs; `make test-qemu` runs it.
 package tests_test
 

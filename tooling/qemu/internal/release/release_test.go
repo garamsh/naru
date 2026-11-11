@@ -13,17 +13,21 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
+	"github.com/garamsh/naru/tooling/qemu/internal/guest"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 	"github.com/garamsh/naru/tooling/qemu/internal/release"
 )
 
 var inputs = fixture.Inputs{
-	Dir:                   "/staged",
-	Image:                 fixture.Image{Repository: fixture.RegistryAddr + "/test/entry", Digest: "sha256:" + strings.Repeat("a", 64)},
-	FirecrackerSHA256:     strings.Repeat("1", 64),
-	KernelSHA256:          strings.Repeat("2", 64),
-	GuestInitrdSHA256:     strings.Repeat("3", 64),
-	ConverterInitrdSHA256: strings.Repeat("4", 64),
+	Dir:               "/staged",
+	Image:             fixture.Image{Repository: fixture.RegistryAddr + "/test/entry", Digest: "sha256:" + strings.Repeat("a", 64)},
+	FirecrackerSHA256: strings.Repeat("1", 64),
+	Guest: guest.Manifest{
+		Kernels:         map[string]guest.File{"naru": {Path: "/usr/lib/naru/guest/kernels/naru/vmlinux", SHA256: strings.Repeat("2", 64)}},
+		DefaultKernel:   "naru",
+		GuestInitrd:     guest.File{Path: "/usr/lib/naru/guest/guest-initrd.cpio", SHA256: strings.Repeat("3", 64)},
+		ConverterInitrd: guest.File{Path: "/usr/lib/naru/guest/converter-initrd.cpio", SHA256: strings.Repeat("4", 64)},
+	},
 }
 
 // repoRoot is the directory holding go.work, above the test's working directory.

@@ -203,12 +203,14 @@ func (c Config) NaruYAML() ([]byte, error) {
 }
 
 // MvmdJSON is mvmd's configuration for the Node: the Firecracker driver on
-// the staged guest files, the registry's authority reached through the
+// the guest files of the image, the registry's authority reached through the
 // service's SSL_CERT_FILE, supervisors outside mvmd's cgroup, and a Machine
 // network of its own per Node.
 func (c Config) MvmdJSON() ([]byte, error) {
 	root := fixture.GuestRoot
-	kernel := path.Join(root, "guest/vmlinux")
+	g := c.Inputs.Guest
+	// The kernel and the initrds are the image's own; their paths and digests are guest.json's.
+	kernel := g.Default()
 	prefix := c.net().MachinePrefix
 	first := prefix.Masked().Addr().Next().String()
 	return json.MarshalIndent(map[string]any{
@@ -218,12 +220,12 @@ func (c Config) MvmdJSON() ([]byte, error) {
 		"disk":      map[string]any{"mkfs": path.Join(root, "bin/mkfs.ext4")},
 		"firecracker": map[string]any{
 			"binary": "/bin/firecracker", "binary_sha256": c.Inputs.FirecrackerSHA256,
-			"kernel": kernel, "kernel_sha256": c.Inputs.KernelSHA256,
-			"initrd": path.Join(root, "guest/guest-initrd.cpio"), "initrd_sha256": c.Inputs.GuestInitrdSHA256,
+			"kernel": kernel.Path, "kernel_sha256": kernel.SHA256,
+			"initrd": g.GuestInitrd.Path, "initrd_sha256": g.GuestInitrd.SHA256,
 		},
 		"conversion": map[string]any{
-			"kernel": kernel, "kernel_sha256": c.Inputs.KernelSHA256,
-			"initrd": path.Join(root, "guest/converter-initrd.cpio"), "initrd_sha256": c.Inputs.ConverterInitrdSHA256,
+			"kernel": kernel.Path, "kernel_sha256": kernel.SHA256,
+			"initrd": g.ConverterInitrd.Path, "initrd_sha256": g.ConverterInitrd.SHA256,
 			"converter": "naru-converter",
 			"vcpus":     2, "memory_bytes": 512 << 20,
 			"output_bytes": 256 << 20, "name_set_bytes": 1 << 20,

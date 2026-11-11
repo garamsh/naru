@@ -3,6 +3,7 @@ package fixture
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,12 +42,24 @@ func TestCopyFile_FollowsLinksAndSetsTheMode(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
 }
 
-func TestStage_FailsNamingADigestThatIsMissing(t *testing.T) {
+func TestStage_FailsNamingTheFirecrackerDigestThatIsMissing(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "inputs.env"), []byte("MVMD_KERNEL_SHA256=a\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "guest-inputs.env"), []byte(""), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "inputs.env"), []byte("MVMD_FIRECRACKER=/x\n"), 0o644))
+	d := strings.Repeat("a", 64)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "guest.json"), []byte(`{"kernels":{"naru":{"path":"/k","sha256":"`+d+`"}},"default_kernel":"naru",
+"guest_initrd":{"path":"/g","sha256":"`+d+`"},"converter_initrd":{"path":"/c","sha256":"`+d+`"}}`), 0o644))
 
 	_, err := Stage(Sources{ImageDir: dir, GuestDir: dir}, t.TempDir())
 
-	assert.ErrorContains(t, err, "is not in inputs.env")
+	assert.ErrorContains(t, err, "MVMD_FIRECRACKER_SHA256 is not in inputs.env")
+}
+
+func TestStage_FailsOnAGuestManifestThatNamesNoKernel(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "inputs.env"), []byte("MVMD_FIRECRACKER_SHA256=a\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "guest.json"), []byte(`{"kernels":{},"default_kernel":"naru"}`), 0o644))
+
+	_, err := Stage(Sources{ImageDir: dir, GuestDir: dir}, t.TempDir())
+
+	assert.ErrorContains(t, err, "no kernel is declared")
 }
