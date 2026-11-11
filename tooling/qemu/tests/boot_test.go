@@ -75,6 +75,7 @@ func TestNode_UEFIDiskBootsToInitAndStartsItsServices(t *testing.T) {
 
 	for _, nd := range c.Nodes {
 		expectAll(t, nd, judge.Boot(nd.Name))
+		expectQEMUNameservers(t, nd)
 	}
 }
 
@@ -107,6 +108,7 @@ func TestNode_TwoNodesRunTheirServicesAndReachEachOther(t *testing.T) {
 
 	for _, nd := range c.Nodes {
 		expectAll(t, nd, judge.Services(nd.Name))
+		expectQEMUNameservers(t, nd)
 	}
 }
 
@@ -174,4 +176,11 @@ func expectAll(t *testing.T, nd *node.Node, want []judge.Expect) {
 			assert.True(t, e.Met(nd.Console()), "%s: %s: %q", nd.Name, e.What, e.Fragments)
 		}
 	}
+}
+
+// expectQEMUNameservers waits for init to have configured exactly one nameserver: the count of the
+// QEMU network-config, which is a fact of this network and not of every Node the judge reads.
+func expectQEMUNameservers(t *testing.T, nd *node.Node) {
+	t.Helper()
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "network configured", "interfaces=1", "nameservers=1"), "%s: init configured one nameserver", nd.Name)
 }
