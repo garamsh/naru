@@ -1,6 +1,6 @@
 module github.com/garamsh/naru/init
 
-go 1.24.4
+go 1.26.0
 
 require (
 	github.com/stretchr/testify v1.12.1
@@ -11,4 +11,5 @@ require (
 require (
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 )
