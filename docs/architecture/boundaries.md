@@ -14,7 +14,7 @@ In this repository `Machine` names the microVM and `Node` the physical machine. 
 - **naru has no control plane of its own:** no API server, no store, no authorization system beyond what the node API needs to accept a caller.
 - **naru starts and supervises the services its configuration names:** mvmd, gaon's Node Agent and gaon's control plane. The control plane runs as host services and not inside Machines. The image carries gaon's four service binaries (`gaon-node-agent`, `gaon-apiserver`, `gaon-scheduler`, `gaon-controllers`) and etcd, built from the commits [image.md](./image.md) names, and a Node's configuration starts them with argv and files, as gaon's `deployment.md` asks ([ADR 0012](./adr/0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md)).
 - **naru carries gaon's certificates and issues none.** gaon's first milestone has an operator or tooling issue the CA, the API server's pair and one client pair per caller, and naru deliver them as files in the Node's configuration (gaon `deployment.md` §Certificates). naru writes them from `spec.files` under `/run/gaon` and holds no CA; the QEMU tests issue theirs in test tooling.
-- **etcd's data is on the data disk,** which is the persistence gaon's `deployment.md` requires of it.
+- **etcd's data is on the data disk,** which is the persistence gaon's `deployment.md` requires of it. The disk is mounted at `/var/lib/naru` with a directory per tenant: `mvmd` (mvmd's `state_dir`), `etcd` and `inputs` ([ADR 0012](./adr/0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md) item 4).
 - **No orchestrator logic runs in init.**
 
 ### With mvmd

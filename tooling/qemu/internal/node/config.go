@@ -243,7 +243,7 @@ func (c Config) MvmdJSON() ([]byte, error) {
 	first := prefix.Masked().Addr().Next().String()
 	return json.MarshalIndent(map[string]any{
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
-		"state_dir": DataMount + "/state",
+		"state_dir": DataMount + "/mvmd",
 		"driver":    "firecracker",
 		"disk":      map[string]any{"mkfs": MkfsPath},
 		"firecracker": map[string]any{

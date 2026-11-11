@@ -13,9 +13,9 @@ import (
 )
 
 // Where the staged tree appears inside a Node: the data disk is mounted at
-// /var/lib/mvmd, and the tree is the disk's inputs directory.
+// /var/lib/naru, and the tree is the disk's inputs directory.
 const (
-	DataMount = "/var/lib/mvmd"
+	DataMount = "/var/lib/naru"
 	GuestRoot = DataMount + "/inputs"
 )
 
