@@ -14,10 +14,11 @@ Claims about garamsh/gaon hold at commit `d643b1cb6a6cc01ea587dd7c967bdfd07280fe
   |---|---|
   | `services` | a list; each has a name, a binary path, args, env, and `controlPlane: bool`, which marks a service started only on the node that runs the control plane |
   | `controlPlane` | `bool`; whether this node runs the control plane |
-  | `dataDisk` | the device or label, and the mount point |
-  | `network` | the families for which forwarding is turned on |
+  | `dataDisk` | `device` or `label` (exactly one), and `mountPoint` |
+  | `network` | `forwarding`: the families, `ipv4` and `ipv6`, for which forwarding is turned on |
 
-- **Init validates before it acts.** An unknown `apiVersion` or `kind`, or a file that does not parse, stops init before any service starts.
+- **Init validates before it acts.** An unknown `apiVersion` or `kind`, a field the shape does not name, a value that fails validation, or a file that does not parse, stops init before any service starts; the error names the field. What init does next is in [init.md](./init.md).
+- **Restart backoff is fixed in P0.** A service that exits is restarted after 1 s, doubling to a cap of 30 s, reset after a run of 60 s. The file has no field for it.
 - **Forwarding.** Init turns on `net.ipv4.ip_forward` and `net.ipv6.conf.all.forwarding` for the families `network` names, before it starts mvmd, since mvmd never sets it and refuses to start when a served family has it off (garamsh/mvmd#311).
 - **naru knows no service's internals.** Name, binary and arguments come from this file.
 
