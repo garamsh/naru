@@ -23,5 +23,15 @@ __pycache__/
 .venv/
 target/
 
+# Go build outputs, test binaries, coverage and in-tree caches
+/bin/
+vendor/
+*.exe
+*.test
+*.out
+coverage.*
+.gocache/
+.gomodcache/
+
 # Agent worktrees
 .claude/worktrees/
