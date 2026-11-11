@@ -11,6 +11,10 @@
 # vmlinux and kernel.config, the final configuration.
 set -euo pipefail
 
+# A VERSION=<name> given to the outer make (make release) reaches this make through MAKEFLAGS and
+# breaks the kernel's own VERSION; the builds below take no variable from the caller.
+unset MAKEFLAGS MFLAGS
+
 if [ "$#" -ne 4 ]; then
   echo "usage: $0 <name> <kernel-build-dir> <build-dir> <output-dir>" >&2
   exit 2

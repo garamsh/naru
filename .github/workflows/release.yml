@@ -91,11 +91,12 @@ jobs:
           done
           mke2fs -V 2>&1 | head -n 1
 
-      # make image fetches the mvmd checkout whose rust-toolchain.toml names the toolchain. rustup is
+      # Only the fetch of the mvmd checkout, whose rust-toolchain.toml names the toolchain: make image
+      # builds mvmd's guest initrds with it, so the toolchain is installed before any build. rustup is
       # on the runner; it installs the channel, components and targets the file names, in the
       # directory of each Rust workspace the guest inputs build.
       - name: Fetch the pinned sources
-        run: make image
+        run: image/mvmd-checkout.sh build/initramfs/mvmd
 
       - name: Install the Rust toolchain mvmd names
         run: |
@@ -103,6 +104,7 @@ jobs:
             (cd "build/initramfs/mvmd/$dir" && rustup toolchain install --no-self-update --profile minimal && rustc --version)
           done
 
+      # make release builds the image (the kernels, the guest initrds, the initramfs) and the disks.
       - name: Build the release assets
         run: make release VERSION="$TAG"
 
