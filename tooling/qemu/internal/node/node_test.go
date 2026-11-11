@@ -82,3 +82,56 @@ func TestHasLine(t *testing.T) {
 	assert.False(t, hasLine(console, []string{"started", "service=mvmd"}), "fragments must come in order")
 	assert.False(t, hasLine(console, []string{"configuration accepted", "started"}), "fragments must share a line")
 }
+
+func argsOf(t *testing.T, spec Spec) string {
+	t.Helper()
+	spec.Dir = t.TempDir()
+	if spec.Disk != "" {
+		spec.Disk = filepath.Join(t.TempDir(), "naru.img")
+		require.NoError(t, os.WriteFile(spec.Disk, []byte("disk"), 0o644))
+	}
+	spec.Mcast = "230.78.0.1:5000"
+	spec.Config = Config{Name: "node-1", Index: 1, Total: 2}
+	args, err := qemuArgs(spec, "naru15-node-1", "cfg.img", "data.img", "console.log")
+	require.NoError(t, err)
+	return strings.Join(args, " ")
+}
+
+func TestQemuArgs_ADiskBootsUnderOVMFWithNoKernelInitrdOrAppend(t *testing.T) {
+	line := argsOf(t, Spec{Disk: "naru.img"})
+
+	for _, flag := range []string{" -kernel", " -initrd", " -append"} {
+		assert.NotContains(t, line, flag)
+	}
+	assert.Contains(t, line, "unit=0,readonly=on,file="+OVMFCode, "the firmware code is read-only")
+	assert.Contains(t, line, "naru.img", "the disk is attached")
+	assert.Contains(t, line, "bootindex=0")
+	assert.Contains(t, line, "file=cfg.img", "the configuration disk is attached")
+	assert.Contains(t, line, "file=data.img", "the data disk is attached")
+}
+
+func TestQemuArgs_ANodeGetsItsOwnCopyOfTheOVMFVariables(t *testing.T) {
+	line := argsOf(t, Spec{Disk: "naru.img"})
+
+	assert.Contains(t, line, "unit=1,file=")
+	assert.NotContains(t, line, "unit=1,file="+OVMFVars, "the shared variable store is never opened for writing")
+}
+
+func TestQemuArgs_AKernelBootsDirectlyAndCarriesTheAddress(t *testing.T) {
+	line := argsOf(t, Spec{Kernel: "bzImage", Initrd: "initramfs.cpio.gz"})
+
+	assert.Contains(t, line, "-kernel bzImage -initrd initramfs.cpio.gz")
+	assert.Contains(t, line, "ip=10.78.0.1:::255.255.255.0:node-1:eth0:off")
+	assert.Contains(t, line, "loglevel=4")
+	assert.NotContains(t, line, "pflash", "no firmware on the direct-boot path")
+}
+
+func TestQemuArgs_AMissingDiskFailsNamingItBeforeQEMUStarts(t *testing.T) {
+	spec := Spec{Disk: filepath.Join(t.TempDir(), "naru.img"), Dir: t.TempDir(), Mcast: "230.78.0.1:5000", Config: Config{Name: "node-1", Index: 1, Total: 2}}
+
+	_, err := qemuArgs(spec, "naru15-node-1", "cfg.img", "data.img", "console.log")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "naru.img")
+	assert.Contains(t, err.Error(), "make disk")
+}
