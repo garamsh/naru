@@ -3,6 +3,8 @@
 > Status: accepted
 > Date: 2026-11-11
 
+Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
+
 Drafted for garamsh/naru#1. The direction is the project owner's, stated in the naru PM session of 2026-11-11 and recorded on that issue. The precedent is garamsh/garam at `6e80e2a4f775a5ddc252884492e4540e048242d1` (its `docs/architecture/structure.md` §Services, ADR-0125 and ADR-0132) and garamsh/gaon#1, which took the same decision.
 
 ## Context
