@@ -1,0 +1,64 @@
+// Command naru-init is PID 1 of a naru Node. It mounts the pseudo file
+// systems, reads the configuration, starts and supervises the services, reaps
+// every orphan, and powers the machine off or reboots it on a signal.
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/garamsh/naru/init/internal/boot"
+	"github.com/garamsh/naru/init/internal/linux"
+	"github.com/garamsh/naru/init/internal/service"
+)
+
+const (
+	cgroupRoot = "/sys/fs/cgroup"
+	// diskWait is how long init waits for a disk the kernel has not yet probed.
+	diskWait = 10 * time.Second
+)
+
+func main() {
+	if os.Getpid() != 1 {
+		fmt.Fprintln(os.Stderr, "naru-init must run as PID 1")
+		os.Exit(2)
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Subscribe before anything is started, so a signal sent during boot is held.
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+
+	if err := linux.MountPseudoFilesystems(); err != nil {
+		log.Error("mount pseudo file systems", "err", err)
+	}
+
+	reaper := linux.NewReaper()
+	go reaper.Run(context.Background())
+
+	host := linux.NewHost(diskWait)
+	services := service.NewManager(linux.NewCgroupTree(cgroupRoot), linux.NewLauncher(reaper), service.SystemClock{}, log)
+
+	if err := boot.Run(host, services, log); err != nil {
+		// Stay up so the reason stays on the console, and start nothing more.
+		log.Error("boot refused; no further service will start", "err", err)
+	}
+
+	sig := <-sigs
+	log.Info("stopping services", "signal", sig.String())
+	services.StopAll()
+	switch sig {
+	case syscall.SIGINT:
+		err := host.Reboot()
+		log.Error("reboot", "err", err)
+	default:
+		err := host.PowerOff()
+		log.Error("power off", "err", err)
+	}
+	select {}
+}
