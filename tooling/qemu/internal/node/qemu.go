@@ -7,9 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/garamsh/naru/tooling/qemu/internal/judge"
 )
 
 // The OVMF firmware of the Debian ovmf package: the code is read-only and shared, the variable
@@ -165,21 +166,4 @@ func (n *Node) Stop() {
 }
 
 // hasLine reports whether one line of console contains every fragment in order.
-func hasLine(console string, fragments []string) bool {
-	for _, line := range strings.Split(console, "\n") {
-		rest := line
-		ok := true
-		for _, f := range fragments {
-			i := strings.Index(rest, f)
-			if i < 0 {
-				ok = false
-				break
-			}
-			rest = rest[i+len(f):]
-		}
-		if ok {
-			return true
-		}
-	}
-	return false
-}
+func hasLine(console string, fragments []string) bool { return judge.HasLine(console, fragments) }

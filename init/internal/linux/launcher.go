@@ -2,6 +2,7 @@ package linux
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -14,14 +15,16 @@ import (
 // Launcher starts services as children of the process, inside their cgroup,
 // with the console as output. Their exits are reported by the Reaper.
 type Launcher struct {
-	reaper *Reaper
+	reaper  *Reaper
+	console io.Writer
 }
 
 var _ service.Launcher = (*Launcher)(nil)
 
-// NewLauncher returns a Launcher whose children reaper collects.
-func NewLauncher(reaper *Reaper) *Launcher {
-	return &Launcher{reaper: reaper}
+// NewLauncher returns a Launcher whose children reaper collects and whose
+// children's output goes to console.
+func NewLauncher(reaper *Reaper, console io.Writer) *Launcher {
+	return &Launcher{reaper: reaper, console: console}
 }
 
 // Launch starts svc with exactly the environment its configuration names.
@@ -34,9 +37,15 @@ func (l *Launcher) Launch(svc config.Service, cgroup string) (service.Process, e
 	}
 	defer dir.Close()
 
+	// The service writes to a pipe that init copies to the console, which keeps the lines.
+	out, in, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer in.Close()
 	cmd := exec.Command(svc.Binary, svc.Args...)
 	cmd.Env = environ(svc.Env)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.Stdout, cmd.Stderr = in, in
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, UseCgroupFD: true, CgroupFD: int(dir.Fd())}
 
 	exited, err := l.reaper.Spawn(func() (int, error) {
@@ -46,8 +55,13 @@ func (l *Launcher) Launch(svc config.Service, cgroup string) (service.Process, e
 		return cmd.Process.Pid, nil
 	})
 	if err != nil {
+		out.Close()
 		return nil, err
 	}
+	go func() {
+		defer out.Close()
+		_, _ = io.Copy(l.console, out)
+	}()
 	return &process{proc: cmd.Process, exited: exited}, nil
 }
 
