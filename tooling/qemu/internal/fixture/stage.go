@@ -3,7 +3,6 @@ package fixture
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/guest"
-	"github.com/garamsh/naru/tooling/qemu/internal/mkfs"
 )
 
 // Where the staged tree appears inside a Node: the data disk is mounted at
@@ -46,11 +44,11 @@ type Sources struct {
 
 // Stage builds the test programs and assembles the inputs tree in out.
 //
-//	bin/mkfs.ext4 bin/mke2fs bin/ld.so bin/lib/*   mvmd's mkfs, see internal/mkfs
-//	bin/naru-registry bin/naru-probe                services the tests configure
-//	registry/                                       see WriteRegistry
+//	bin/naru-registry bin/naru-probe   services the tests configure
+//	registry/                          see WriteRegistry
 //
-// The guest kernel and the initrds are not staged: the image carries them (ADR 0010).
+// The guest kernel, the initrds and mkfs.ext4 are not staged: the image carries them (ADR 0010,
+// ADR 0011).
 //
 // Directories are 0755 and files 0644 or 0755, since the VMMs run as users
 // of mvmd's UID range and read the guest files through them.
@@ -68,7 +66,7 @@ func Stage(src Sources, out string) (Inputs, error) {
 		return Inputs{}, fmt.Errorf("MVMD_FIRECRACKER_SHA256 is not in inputs.env")
 	}
 	bin := filepath.Join(out, "bin")
-	if err := os.MkdirAll(filepath.Join(bin, mkfs.LibDir), 0o755); err != nil {
+	if err := os.MkdirAll(bin, 0o755); err != nil {
 		return Inputs{}, err
 	}
 	entryDir, err := os.MkdirTemp("", "naru15-entry-")
@@ -78,16 +76,12 @@ func Stage(src Sources, out string) (Inputs, error) {
 	defer func() { _ = os.RemoveAll(entryDir) }()
 	for _, b := range []struct{ module, pkg, out string }{
 		{"tooling/qemu", "./cmd/naru-registry", filepath.Join(bin, "naru-registry")},
-		{"tooling/qemu", "./cmd/naru-mkfs", filepath.Join(bin, "mkfs.ext4")},
 		{"tooling/qemu", "./cmd/naru-entry", filepath.Join(entryDir, "entry")},
 		{"tooling/probe", "./cmd/naru-probe", filepath.Join(bin, "naru-probe")},
 	} {
 		if err := goBuild(filepath.Join(src.Root, b.module), b.pkg, b.out); err != nil {
 			return Inputs{}, err
 		}
-	}
-	if err := stageMke2fs(bin); err != nil {
-		return Inputs{}, err
 	}
 	entry, err := os.ReadFile(filepath.Join(entryDir, "entry"))
 	if err != nil {
@@ -106,47 +100,6 @@ func goBuild(moduleDir, pkg, out string) error {
 		return fmt.Errorf("go build %s in %s: %w\n%s", pkg, moduleDir, err, b)
 	}
 	return nil
-}
-
-// stageMke2fs puts the host's mke2fs, its loader and libraries into bin.
-func stageMke2fs(bin string) error {
-	exe, loader, libs, err := mkfs.HostMke2fs()
-	if err != nil {
-		return err
-	}
-	if err := copyFile(exe, filepath.Join(bin, mkfs.Mke2fs), 0o755); err != nil {
-		return err
-	}
-	if err := copyFile(loader, filepath.Join(bin, mkfs.Loader), 0o755); err != nil {
-		return err
-	}
-	for _, l := range libs {
-		if err := copyFile(l, filepath.Join(bin, mkfs.LibDir, filepath.Base(l)), 0o755); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// copyFile copies from to to with mode, following symbolic links.
-func copyFile(from, to string, mode os.FileMode) error {
-	in, err := os.Open(from)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(to, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	return os.Chmod(to, mode)
 }
 
 // readEnv reads KEY=VALUE lines.

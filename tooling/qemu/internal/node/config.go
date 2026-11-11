@@ -24,6 +24,8 @@ const (
 	mvmdConfig = "/run/mvmd/config.json"
 	// DataMount is where init mounts the data disk.
 	DataMount = fixture.DataMount
+	// MkfsPath is the mkfs.ext4 the image carries (ADR 0011), which mvmd's disk.mkfs names.
+	MkfsPath = "/bin/mkfs.ext4"
 )
 
 // Config says what one Node of a test cluster is configured with.
@@ -207,7 +209,6 @@ func (c Config) NaruYAML() ([]byte, error) {
 // service's SSL_CERT_FILE, supervisors outside mvmd's cgroup, and a Machine
 // network of its own per Node.
 func (c Config) MvmdJSON() ([]byte, error) {
-	root := fixture.GuestRoot
 	g := c.Inputs.Guest
 	// The kernel and the initrds are the image's own; their paths and digests are guest.json's.
 	kernel := g.Default()
@@ -217,7 +218,7 @@ func (c Config) MvmdJSON() ([]byte, error) {
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
 		"state_dir": DataMount + "/state",
 		"driver":    "firecracker",
-		"disk":      map[string]any{"mkfs": path.Join(root, "bin/mkfs.ext4")},
+		"disk":      map[string]any{"mkfs": MkfsPath},
 		"firecracker": map[string]any{
 			"binary": "/bin/firecracker", "binary_sha256": c.Inputs.FirecrackerSHA256,
 			"kernel": kernel.Path, "kernel_sha256": kernel.SHA256,

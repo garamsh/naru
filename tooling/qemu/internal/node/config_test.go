@@ -2,6 +2,8 @@ package node
 
 import (
 	"encoding/json"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -130,6 +132,17 @@ func TestMvmdJSON_NamesTheImagesGuestFilesByTheirPathsAndDigestsInGuestJSON(t *t
 	assert.Equal(t, fc["kernel_sha256"], conv["kernel_sha256"])
 	assert.Equal(t, "/usr/lib/naru/guest/converter-initrd.cpio", conv["initrd"])
 	assert.Equal(t, sum("c"), conv["initrd_sha256"])
+}
+
+func TestMvmdJSON_NamesTheMkfsExt4TheInitramfsInstallsAndNotOneOnTheDataDisk(t *testing.T) {
+	m := mvmd(t, cfg(1, 2, true, false))
+
+	mkfs := m["disk"].(map[string]any)["mkfs"].(string)
+	assert.Equal(t, "/bin/mkfs.ext4", mkfs)
+	assert.False(t, strings.HasPrefix(mkfs, DataMount), "the data disk carries no mkfs")
+	list, err := os.ReadFile("../../../../image/initramfs/initramfs.list")
+	require.NoError(t, err)
+	assert.Regexp(t, `(?m)^file `+regexp.QuoteMeta(mkfs)+` @OUT@/mkfs\.ext4 0755 `, string(list))
 }
 
 func TestMvmdJSON_TakesTheKernelFromTheDefaultOfTheDeclaredKernels(t *testing.T) {

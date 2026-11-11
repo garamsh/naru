@@ -29,19 +29,6 @@ func TestReadEnv_RejectsALineWithoutAnEquals(t *testing.T) {
 	assert.ErrorContains(t, err, "is not KEY=VALUE")
 }
 
-func TestCopyFile_FollowsLinksAndSetsTheMode(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "real"), []byte("x"), 0o600))
-	require.NoError(t, os.Symlink("real", filepath.Join(dir, "link")))
-
-	require.NoError(t, copyFile(filepath.Join(dir, "link"), filepath.Join(dir, "out"), 0o755))
-
-	info, err := os.Lstat(filepath.Join(dir, "out"))
-	require.NoError(t, err)
-	assert.True(t, info.Mode().IsRegular())
-	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
-}
-
 func TestStage_FailsNamingTheFirecrackerDigestThatIsMissing(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "inputs.env"), []byte("MVMD_FIRECRACKER=/x\n"), 0o644))
