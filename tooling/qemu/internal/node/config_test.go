@@ -93,7 +93,7 @@ func TestNaruYAML_ProbeRunsOnlyWhereAsked(t *testing.T) {
 func TestNaruYAML_MvmdTrustsTheRegistryAuthorityAndForwardsIPv4(t *testing.T) {
 	n := parse(t, cfg(1, 2, true, false))
 
-	assert.Equal(t, "/var/lib/mvmd/inputs/registry/ca.pem", n.Spec.Services[0].Env["SSL_CERT_FILE"])
+	assert.Equal(t, "/var/lib/naru/inputs/registry/ca.pem", n.Spec.Services[0].Env["SSL_CERT_FILE"])
 	assert.Equal(t, []string{"ipv4"}, n.Spec.Network.Forwarding)
 	assert.Equal(t, DataLabel, n.Spec.DataDisk.Label)
 }
@@ -114,7 +114,7 @@ func TestMvmdJSON_UsesTheFirecrackerDriverAndKeepsSupervisionOffTmpfs(t *testing
 	sup := m["supervision"].(map[string]any)
 	assert.NotContains(t, sup, "dir", "the default is under state_dir, on the data disk")
 	assert.Equal(t, "/sys/fs/cgroup/naru/detached", sup["cgroup"])
-	assert.Equal(t, "/var/lib/mvmd/state", m["state_dir"])
+	assert.Equal(t, "/var/lib/naru/mvmd", m["state_dir"])
 	fc := m["firecracker"].(map[string]any)
 	assert.Equal(t, "fc", fc["binary_sha256"])
 }

@@ -71,19 +71,23 @@ build:
 	CGO_ENABLED=0 go build -trimpath -o $(BIN)/naru-init ./init/cmd/naru-init
 	@echo "build: $(BIN)/naru-init: $$(file -b $(BIN)/naru-init | cut -d, -f1-4)"
 
-# image builds the host kernel, the guest kernels and initrds, the static mke2fs, and the
-# initramfs that carries them, from pinned sources, into $(IMAGE): bzImage,
+# image builds the host kernel, the guest kernels and initrds, the static mke2fs, gaon's four
+# services, etcd, and the initramfs that carries them, from pinned sources, into $(IMAGE): bzImage,
 # initramfs.cpio.gz, inputs.env (the Firecracker pin the tests read) and guest/,
 # which holds what the initramfs carries of the guests, with guest.json naming
 # it. The scripts skip what their inputs say is built, and verify every download.
 GUEST := $(IMAGE)/guest
 E2FS := $(IMAGE)/e2fsprogs
+GAON := $(IMAGE)/gaon
+ETCD := $(IMAGE)/etcd
 image:
 	image/kernel/build.sh $(BUILD)/kernel $(IMAGE)
 	image/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
+	image/gaon/build.sh $(BUILD)/gaon $(GAON)
+	image/etcd/build.sh $(BUILD)/etcd $(ETCD)
 	image/mvmd-checkout.sh $(BUILD)/initramfs/mvmd
 	image/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
-	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS)
+	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD)
 
 # disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
 # disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and the initramfs,
@@ -103,17 +107,19 @@ image-repro:
 	  rm -rf $(BUILD)/repro/$$i; \
 	  image/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
 	  image/e2fsprogs/build.sh $(BUILD)/repro/$$i/e2fsprogs $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
+	  image/gaon/build.sh $(BUILD)/repro/$$i/gaon $(BUILD)/repro/$$i/image/gaon >/dev/null; \
+	  image/etcd/build.sh $(BUILD)/repro/$$i/etcd $(BUILD)/repro/$$i/image/etcd >/dev/null; \
 	  image/mvmd-checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
 	  image/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
-	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
+	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd >/dev/null; \
 	  image/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
 	done; \
-	for f in bzImage e2fsprogs/mke2fs initramfs.cpio.gz guest/guest.json naru.img naru.qcow2; do \
+	for f in bzImage e2fsprogs/mke2fs etcd/etcd gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz guest/guest.json naru.img naru.qcow2; do \
 	  a=$$(sha256sum $(BUILD)/repro/1/image/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/$$f | cut -d' ' -f1); \
 	  echo "$@: $$f build 1 $$a"; echo "$@: $$f build 2 $$b"; \
 	  if [ "$$a" != "$$b" ]; then echo "$@: $$f differs between the builds" >&2; exit 1; fi; \
 	done; \
-	echo "$@: bzImage, mke2fs, initramfs.cpio.gz, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
+	echo "$@: bzImage, mke2fs, etcd, the four gaon binaries, initramfs.cpio.gz, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
 
 # nodes boots N (default 2) Nodes of the image under QEMU on one network, as
 # the user, and keeps them up until interrupted. Their disks and consoles are
@@ -146,7 +152,7 @@ release: disk
 test-qemu: disk
 	@set -e; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
-	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) go test -tags qemu_real -count=1 -v -timeout 20m -run '^TestNode_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestNode_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
 	n=$$(grep -c '^--- PASS: TestNode_' "$$log" || true); \
 	echo "$@: $$n test(s) passed, selected by -run '^TestNode_' with -tags qemu_real"; \

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Builds the initramfs: naru-init as /init, mvmd and mvmd-supervisor from the pinned mvmd commit,
-# the Firecracker binary mvmd's fetch.sh verifies, mke2fs as mkfs.ext4 (ADR 0011), the stand-in
+# the Firecracker binary mvmd's fetch.sh verifies, mke2fs as mkfs.ext4 (ADR 0011), the gaon
+# services and etcd (ADR 0012), the stand-in
 # service the tests configure, and the guest kernels, the two initrds and guest.json that image/guest/build.sh wrote, which a Machine
 # boots on (ADR 0010).
 # Every program is static (CGO_ENABLED=0). The archive is a newc cpio written by the kernel's own
@@ -8,16 +9,17 @@
 # stamps every mtime with SOURCE_DATE_EPOCH; it is compressed with gzip -9n, which stores no name
 # or time. The same inputs therefore give the same bytes (image/build.env fixes the environment).
 #
-# Usage: build.sh <build-dir> <kernel-build-dir> <output-dir> <guest-dir> <e2fsprogs-dir>
+# Usage: build.sh <build-dir> <kernel-build-dir> <output-dir> <guest-dir> <e2fsprogs-dir> <gaon-dir> <etcd-dir>
 # <build-dir> receives the mvmd checkout and the built programs, <kernel-build-dir> is the one
 # image/kernel/build.sh was given, whose dl/ holds the verified kernel tarball (gen_init_cpio.c is
 # taken from it), <guest-dir> is the one image/guest/build.sh wrote, <e2fsprogs-dir> is the one
-# image/e2fsprogs/build.sh wrote, and <output-dir> receives
+# image/e2fsprogs/build.sh wrote, <gaon-dir> and <etcd-dir> are the ones image/gaon/build.sh and
+# image/etcd/build.sh wrote, and <output-dir> receives
 # initramfs.cpio.gz and inputs.env, which names the Firecracker binary mvmd's fetch.sh yields.
 set -euo pipefail
 
-if [ "$#" -ne 5 ]; then
-  echo "usage: $0 <build-dir> <kernel-build-dir> <output-dir> <guest-dir> <e2fsprogs-dir>" >&2
+if [ "$#" -ne 7 ]; then
+  echo "usage: $0 <build-dir> <kernel-build-dir> <output-dir> <guest-dir> <e2fsprogs-dir> <gaon-dir> <etcd-dir>" >&2
   exit 2
 fi
 here=$(cd "$(dirname "$0")" && pwd)
@@ -27,6 +29,8 @@ build=$(cd "$1" && pwd)
 out=$(cd "$3" && pwd)
 guest=$(cd "$4" && pwd)
 e2fsprogs=$(cd "$5" && pwd)
+gaon=$(cd "$6" && pwd)
+etcd=$(cd "$7" && pwd)
 # shellcheck source=pin.env
 . "$here/pin.env"
 # shellcheck source=../build.env
@@ -65,9 +69,13 @@ src=$build/mvmd
 "$src/tooling/firecracker/fetch.sh" "$build/inputs" >/dev/null
 cp "$build/inputs/firecracker" "$bin/firecracker"
 cp "$e2fsprogs/mke2fs" "$bin/mkfs.ext4"
+for f in gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers; do
+  cp "$gaon/$f" "$bin/$f"
+done
+cp "$etcd/etcd" "$bin/etcd"
 grep '^MVMD_FIRECRACKER' "$build/inputs/inputs.env" | sed "s#=$build/inputs/#=$out/#" >"$out/inputs.env"
 
-for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 naru-standin; do
+for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 naru-standin gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd; do
   if ! file "$bin/$f" | grep -Eq 'statically linked|static-pie linked'; then
     echo "initramfs: $f is not a static executable: $(file "$bin/$f")" >&2
     exit 1

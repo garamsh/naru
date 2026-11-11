@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
+	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
@@ -54,9 +55,14 @@ func run(m *testing.M) int {
 // with its own NoCloud drive; probeOn is the one that runs the probe, or 0.
 func boot(t *testing.T, n, probeOn int) *node.Cluster {
 	t.Helper()
-	c, err := node.StartCluster(node.ClusterSpec{
-		N: n, Disk: filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), Dir: t.TempDir(), Inputs: inputs, ProbeOn: probeOn,
-	})
+	return start(t, node.ClusterSpec{N: n, ProbeOn: probeOn})
+}
+
+// start boots the cluster spec describes, on the image's disk, and stops it when the test ends.
+func start(t *testing.T, spec node.ClusterSpec) *node.Cluster {
+	t.Helper()
+	spec.Disk, spec.Dir, spec.Inputs = filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), t.TempDir(), inputs
+	c, err := node.StartCluster(spec)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		c.Stop()
@@ -158,6 +164,68 @@ func TestNode_AConsoleReaderThatAttachesLateSeesTheWholeLog(t *testing.T) {
 	block := strings.Join(lines[begin:end], "\n")
 	assert.True(t, judge.HasLine(block, []string{"configuration accepted", "node=naru-node-1"}), "the block holds init's first lines")
 	assert.True(t, judge.HasLine(block, []string{"started", "service=mvmd"}), "and the lines that came after")
+}
+
+// TestNode_GaonRegistersEachNodeKeepsItsLeaseAndSurvivesTheControlPlaneNodeRebooting boots two Nodes
+// that run gaon and talks to the API server from the host, through the host forward, with the test
+// host's client certificate: both Nodes register and are Ready, each Node's Lease is renewed, and a
+// resource written before node-1 loses power is served after it boots again, from etcd's data on
+// the data disk.
+func TestNode_GaonRegistersEachNodeKeepsItsLeaseAndSurvivesTheControlPlaneNodeRebooting(t *testing.T) {
+	c := start(t, node.ClusterSpec{N: 2, Gaon: true})
+	api, err := hostapi.New(c.HostAddr, c.Certs)
+	require.NoError(t, err)
+	ctx := context.Background()
+	first, second := c.Nodes[0], c.Nodes[1]
+
+	// The control-plane Node has the second NIC, so it configures two interfaces; the other, one.
+	require.NoError(t, first.WaitFor(ctx, bootTimeout, "network configured", "interfaces=2"))
+	require.NoError(t, second.WaitFor(ctx, bootTimeout, "network configured", "interfaces=1"))
+	for _, nd := range c.Nodes {
+		require.NoError(t, nd.WaitFor(ctx, bootTimeout, "started", "service=gaon-node-agent"), nd.Name)
+	}
+
+	for _, nd := range c.Nodes {
+		eventually(t, nd.Name+" is registered and Ready", func() bool {
+			n, err := api.Node(ctx, nd.Name)
+			return err == nil && n.Ready()
+		})
+	}
+
+	for _, nd := range c.Nodes {
+		var before time.Time
+		eventually(t, nd.Name+" has a Lease", func() bool {
+			l, err := api.Lease(ctx, nd.Name)
+			before = l.Spec.RenewTime
+			return err == nil && !before.IsZero()
+		})
+		eventually(t, nd.Name+"'s Lease is renewed", func() bool {
+			l, err := api.Lease(ctx, nd.Name)
+			return err == nil && l.Spec.RenewTime.After(before)
+		})
+	}
+
+	require.NoError(t, api.CreateNode(ctx, "marker"))
+	_, err = api.Node(ctx, "marker")
+	require.NoError(t, err, "the marker is served before the reboot")
+
+	require.NoError(t, first.Reboot())
+	require.NoError(t, first.WaitFor(ctx, bootTimeout, "started", "service=etcd"), "node-1 booted again")
+	eventually(t, "the marker is served after node-1 rebooted", func() bool {
+		_, err := api.Node(ctx, "marker")
+		return err == nil
+	})
+	eventually(t, "node-1 is Ready again", func() bool {
+		n, err := api.Node(ctx, "node-1")
+		return err == nil && n.Ready()
+	})
+}
+
+// eventually polls cond until it holds, failing the test when bootTimeout passes first. Each poll
+// is a read, so the wait is on the condition and not on a fixed delay.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	require.Eventually(t, cond, bootTimeout, time.Second, what)
 }
 
 // expectAll waits for the Node's console to meet each expectation: to show the line, or, for an

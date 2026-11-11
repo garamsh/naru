@@ -2,17 +2,19 @@
 
 What naru owns, what it leaves to gaon and to mvmd, and the obligations mvmd's deployment puts on it.
 
-In this repository `Machine` names the microVM and `Node` the physical machine. Claims about garamsh/mvmd hold at commit `cfe57fb9f9bfbd7ec8e24b54915656030f1e2b64`, and claims about garamsh/gaon at `bf4ed9e716440b33d9b0a701354b05f451727cec`; they promise nothing about later versions.
+In this repository `Machine` names the microVM and `Node` the physical machine. Claims about garamsh/mvmd hold at commit `3b37892f303a4d4dbd8e5360906d0f9c036b562e`, and claims about garamsh/gaon at `cd05f7ed59b62c43279e13d0cb3b3821c93abcc2`; they promise nothing about later versions. Each claim below was read again at those commits when they replaced `cfe57fb9f9bfbd7ec8e24b54915656030f1e2b64` and `bf4ed9e716440b33d9b0a701354b05f451727cec`: the mvmd documents the table names, and gaon's `structure.md`, `deployment.md` and ADR 0002.
 
 ## Current decisions
 
 ### With gaon
 
 - **naru owns the Node:** the node API (apply config, upgrade, reset, status), init as PID 1, the OS image, the installer, and the host and guest kernels.
-- **gaon owns** management of Nodes and clusters, multi-cluster, its control plane and its Node Agent, as resources and controllers.
-- **The dependency is one-way, gaon to naru.** naru's node API is the only contract between them. naru does not know gaon's resource API, and gaon requires naru's node API client as an external module (`structure.md` §Units).
+- **gaon owns** management of machines and clusters, its control plane and its Node Agent, as resources and controllers (gaon ADR 0002, Decision item 1). gaon's documents at the commit above do not mention several clusters, which this line named before.
+- **The dependency is one-way, gaon to naru.** naru's node API is the only contract between them. naru does not know gaon's resource API (only the QEMU test tooling reads it, in `tooling/qemu/internal/hostapi`, to check what gaon serves; nothing in the image does), and gaon requires naru's node API client as an external module (`structure.md` §Units).
 - **naru has no control plane of its own:** no API server, no store, no authorization system beyond what the node API needs to accept a caller.
-- **naru starts and supervises the services its configuration names:** mvmd, gaon's Node Agent and gaon's control plane. The control plane runs as host services and not inside Machines.
+- **naru starts and supervises the services its configuration names:** mvmd, gaon's Node Agent and gaon's control plane. The control plane runs as host services and not inside Machines. The image carries gaon's four service binaries (`gaon-node-agent`, `gaon-apiserver`, `gaon-scheduler`, `gaon-controllers`) and etcd, built from the commits [image.md](./image.md) names, and a Node's configuration starts them with argv and files, as gaon's `deployment.md` asks ([ADR 0012](./adr/0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md)).
+- **naru carries gaon's certificates and issues none.** gaon's first milestone has an operator or tooling issue the CA, the API server's pair and one client pair per caller, and naru deliver them as files in the Node's configuration (gaon `deployment.md` §Certificates). naru writes them from `spec.files` under `/run/gaon` and holds no CA; the QEMU tests issue theirs in test tooling.
+- **etcd's data is on the data disk,** which is the persistence gaon's `deployment.md` requires of it. The disk is mounted at `/var/lib/naru` with a directory per tenant: `mvmd` (mvmd's `state_dir`), `etcd` and `inputs` ([ADR 0012](./adr/0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md) item 4).
 - **No orchestrator logic runs in init.**
 
 ### With mvmd
@@ -36,6 +38,7 @@ In this repository `Machine` names the microVM and `Node` the physical machine. 
 
 - [ADR 0002](./adr/0002-gaon-depends-on-naru-one-way-through-the-node-api-and-naru-has-no-control-plane.md): why the boundary with gaon sits at the node API, why naru has no control plane, and why init holds no orchestrator logic. It records the consequences and the signs it was wrong.
 - [ADR 0003](./adr/0003-naru-deploys-and-supervises-mvmd-builds-both-kernels-and-carries-mvmds-deployment-constraints.md): why naru owns the guest kernel as well as the host kernel, and the full text of each obligation with the mvmd passage it was read from.
+- [ADR 0012](./adr/0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md): how the gaon services and etcd are carried and started, why certificates are carried and not issued, and where etcd's data lives.
 
 ## Open questions
 

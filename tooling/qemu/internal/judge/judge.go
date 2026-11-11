@@ -35,7 +35,7 @@ func Boot(name string) []Expect {
 		{What: "init accepted the configuration", Fragments: []string{"configuration accepted", "node=naru-" + name}},
 		{What: "init configured the network", Fragments: []string{"network configured", "interfaces=1"}},
 		{What: "init remounted the root read-only", Fragments: []string{"root remounted read-only"}},
-		{What: "the data disk is mounted", Fragments: []string{"data disk is mounted", "dir=/var/lib/mvmd", "fstype=ext4"}},
+		{What: "the data disk is mounted", Fragments: []string{"data disk is mounted", "dir=/var/lib/naru", "fstype=ext4"}},
 		{What: "init started mvmd", Fragments: []string{"started", "service=mvmd"}},
 		{What: "init started the stand-in", Fragments: []string{"started", "service=standin"}},
 	}

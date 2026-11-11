@@ -2,12 +2,12 @@
 
 How a Node's configuration and network reach init in P0, and the shape of the files.
 
-Claims about garamsh/gaon hold at commit `d643b1cb6a6cc01ea587dd7c967bdfd07280fe0b`, and about garamsh/mvmd at `cfe57fb9f9bfbd7ec8e24b54915656030f1e2b64`; they promise nothing about later versions.
+Claims about garamsh/gaon hold at commit `cd05f7ed59b62c43279e13d0cb3b3821c93abcc2`, and about garamsh/mvmd at `3b37892f303a4d4dbd8e5360906d0f9c036b562e`; they promise nothing about later versions. They were read again at those commits when they replaced `d643b1cb6a6cc01ea587dd7c967bdfd07280fe0b` and `cfe57fb9f9bfbd7ec8e24b54915656030f1e2b64`: gaon's `resource-api.md` §Common rules and mvmd's `runtime.md` §Network.
 
 ## Current decisions
 
 - **Delivery.** A cloud-init NoCloud drive: a block device with an ISO 9660 volume labelled `cidata` (either case), the form Proxmox's cloud-init drive takes. Init mounts it read-only and reads two files: `user-data`, which is `naru.yaml`, and `network-config`. `meta-data` is not read. It is not `fw_cfg`, and no ext4 `NARUCFG` disk is read.
-- **Shape.** `apiVersion: naru.garam.sh/v1alpha1`, `kind: NodeConfig`, `metadata.name` the node name, and `spec`. There is no `status`. The shape follows gaon's resource rule, "every resource has `apiVersion`, `kind`, `metadata`, `spec` and `status`" (gaon `docs/architecture/resource-api.md` §Common rules), minus `status`, which a file has no observer for.
+- **Shape.** `apiVersion: naru.garam.sh/v1alpha1`, `kind: NodeConfig`, `metadata.name` the node name, and `spec`. There is no `status`. The shape follows gaon's resource rule, "Every resource has `apiVersion`, `kind`, `metadata`, `spec` and `status`" (gaon `docs/architecture/resource-api.md` §Common rules), minus `status`, which a file has no observer for.
 - **`spec` holds:**
 
   | Field | Meaning |
@@ -23,6 +23,7 @@ Claims about garamsh/gaon hold at commit `d643b1cb6a6cc01ea587dd7c967bdfd07280fe
 - **Restart backoff is fixed in P0.** A service that exits is restarted after 1 s, doubling to a cap of 30 s, reset after a run of 60 s. The file has no field for it.
 - **Forwarding.** Init turns on `net.ipv4.ip_forward` and `net.ipv6.conf.all.forwarding` for the families `network` names, before it starts mvmd, since mvmd never sets it and refuses to start when a served family has it off (garamsh/mvmd#311).
 - **naru knows no service's internals.** Name, binary and arguments come from this file.
+- **gaon's certificates are `files`.** The shape did not change for gaon: a Node's CA, its agent's pair and, on the control-plane Node, the API server's, the scheduler's and the controllers' pairs are entries of `spec.files` under `/run/gaon/`, which the gaon services name with their `--tls-*` flags, as gaon's `deployment.md` §Certificates and §Config shape ask. The files' content is the tooling's input; init writes it and knows nothing of it ([ADR 0012](./adr/0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md)).
 
 ## Rationale
 
