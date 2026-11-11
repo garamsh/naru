@@ -18,7 +18,8 @@ const (
 	StandinPort = "7000"
 
 	supervisorCgroup = "/sys/fs/cgroup/naru/detached"
-	mvmdConfig       = DataMount + "/config/mvmd.json"
+	// mvmdConfig is where init writes mvmd's configuration, from the Node's naru.yaml.
+	mvmdConfig = "/run/mvmd/config.json"
 	// DataMount is where init mounts the data disk.
 	DataMount = fixture.DataMount
 )
@@ -37,16 +38,41 @@ type Config struct {
 	Inputs fixture.Inputs
 }
 
-// IP is the Node's address on the shared network, which the kernel's ip=
-// parameter gives it.
+// IP is the Node's address on the shared network, which its network-config gives it.
 func (c Config) IP() string { return fmt.Sprintf("10.78.0.%d", c.Index) }
+
+// Gateway is the default gateway and the resolver its network-config names. No machine has this
+// address; the Nodes only check that init installs the route and writes the resolver.
+const Gateway = "10.78.0.254"
 
 // PeerIP is the address of the Node this Node's stand-in dials: the next one,
 // and the first after the last.
 func (c Config) PeerIP() string { return fmt.Sprintf("10.78.0.%d", c.Index%c.Total+1) }
 
-// MAC is the Node's network card address; no two Nodes of a cluster share one.
-func (c Config) MAC() string { return fmt.Sprintf("52:54:00:78:00:%02x", c.Index) }
+// MAC is the Node's network card address, in the form Proxmox gives its guests' cards: locally
+// administered, and no two Nodes of a cluster share one. The Node's network-config names it.
+func (c Config) MAC() string { return fmt.Sprintf("02:00:00:00:%02x:%02x", c.Index>>8, c.Index&0xff) }
+
+// NetworkConfig is the Node's network-config, in the version 1 form qemu-server's nocloud_network
+// writes for a static address, a gateway, a nameserver and a search domain.
+func (c Config) NetworkConfig() []byte {
+	return []byte(fmt.Sprintf(`version: 1
+config:
+    - type: physical
+      name: eth0
+      mac_address: '%s'
+      subnets:
+        - type: static
+          address: '%s'
+          netmask: '255.255.255.0'
+          gateway: '%s'
+    - type: nameserver
+      address:
+      - '%s'
+      search:
+      - 'naru.test'
+`, c.MAC(), c.IP(), Gateway, Gateway))
+}
 
 type service struct {
 	Name         string            `yaml:"name"`
@@ -72,15 +98,28 @@ type nodeConfig struct {
 			Forwarding []string `yaml:"forwarding"`
 		} `yaml:"network"`
 		Services []service `yaml:"services"`
+		Files    []file    `yaml:"files"`
 	} `yaml:"spec"`
 }
 
-// NaruYAML is the Node's naru.yaml. Its services, in this order: mvmd; the
+type file struct {
+	Path    string `yaml:"path"`
+	Mode    string `yaml:"mode,omitempty"`
+	Content string `yaml:"content"`
+}
+
+// NaruYAML is the Node's naru.yaml, which is its NoCloud user-data. It carries mvmd's
+// configuration as a file for init to write under /run. Its services, in this order: mvmd; the
 // registry that serves the test image; a stand-in that waits for mvmd's
 // socket and for the next Node's stand-in; a control-plane stand-in, which
 // starts only where spec.controlPlane is true; and, where asked, the probe.
 func (c Config) NaruYAML() ([]byte, error) {
+	mvmdJSON, err := c.MvmdJSON()
+	if err != nil {
+		return nil, err
+	}
 	var n nodeConfig
+	n.Spec.Files = []file{{Path: mvmdConfig, Mode: "0600", Content: string(mvmdJSON) + "\n"}}
 	n.APIVersion = "naru.garam.sh/v1alpha1"
 	n.Kind = "NodeConfig"
 	n.Metadata.Name = "naru5-" + c.Name

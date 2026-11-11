@@ -3,17 +3,22 @@ package linux
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/garamsh/naru/init/internal/config"
 	"github.com/garamsh/naru/init/internal/ext4"
+	"github.com/garamsh/naru/init/internal/iso9660"
+	"github.com/garamsh/naru/init/internal/netcfg"
 )
 
 const (
-	configMountPoint = "/run/naru/config"
+	seedMountPoint   = "/run/naru/cidata"
+	seedLabel        = "cidata"
 	diskPollInterval = 100 * time.Millisecond
 )
 
@@ -31,11 +36,16 @@ type Host struct {
 	diskWait      time.Duration
 	mount         mountFunc
 
+	seedMountPoint string
+	resolvConf     string
+	links          links
+
 	dataMountPoint string
 }
 
-// NewHost returns the Host of the running machine. A disk that has not
-// appeared when it is first looked for is waited for up to diskWait.
+// NewHost returns the Host of the running machine. A disk or a network
+// interface that has not appeared when it is first looked for is waited for up
+// to diskWait.
 func NewHost(diskWait time.Duration) *Host {
 	return &Host{
 		sysClassBlock: "/sys/class/block",
@@ -43,22 +53,33 @@ func NewHost(diskWait time.Duration) *Host {
 		procSys:       "/proc/sys",
 		diskWait:      diskWait,
 		mount:         syscall.Mount,
+
+		seedMountPoint: seedMountPoint,
+		resolvConf:     resolvConf,
+		links:          netlinkLinks{},
 	}
 }
 
-// ReadConfig mounts the disk labelled NARUCFG read-only and returns naru.yaml.
-func (h *Host) ReadConfig() ([]byte, error) {
-	dev, err := h.findByLabel(config.Label)
+// ReadSeed mounts the NoCloud drive read-only and returns its user-data, the
+// Node's naru.yaml, and its network-config.
+func (h *Host) ReadSeed() (userData, networkConfig []byte, err error) {
+	dev, err := h.find(isoLabel, isSeedLabel)
 	if err != nil {
-		return nil, fmt.Errorf("configuration disk %s: %w", config.Label, err)
+		return nil, nil, fmt.Errorf("NoCloud drive %q: %w", seedLabel, err)
 	}
-	if err := os.MkdirAll(configMountPoint, 0o755); err != nil {
-		return nil, err
+	if err := os.MkdirAll(h.seedMountPoint, 0o755); err != nil {
+		return nil, nil, err
 	}
-	if err := h.mount(dev, configMountPoint, "ext4", syscall.MS_RDONLY|syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
-		return nil, fmt.Errorf("mount %s: %w", dev, err)
+	if err := h.mount(dev, h.seedMountPoint, "iso9660", syscall.MS_RDONLY|hardened, ""); err != nil {
+		return nil, nil, fmt.Errorf("mount %s: %w", dev, err)
 	}
-	return os.ReadFile(filepath.Join(configMountPoint, config.FileName))
+	if userData, err = os.ReadFile(filepath.Join(h.seedMountPoint, "user-data")); err != nil {
+		return nil, nil, err
+	}
+	if networkConfig, err = os.ReadFile(filepath.Join(h.seedMountPoint, netcfg.FileName)); err != nil {
+		return nil, nil, err
+	}
+	return userData, networkConfig, nil
 }
 
 // MountDataDisk finds the data disk, checks that it is ext4 with the verity
@@ -67,7 +88,7 @@ func (h *Host) MountDataDisk(d config.DataDisk) error {
 	dev := d.Device
 	if dev == "" {
 		var err error
-		if dev, err = h.findByLabel(d.Label); err != nil {
+		if dev, err = h.find(ext4Label, func(got string) bool { return got == d.Label }); err != nil {
 			return fmt.Errorf("data disk %q: %w", d.Label, err)
 		}
 	}
@@ -111,11 +132,25 @@ func (h *Host) EnableForwarding(families []config.Family) error {
 	return nil
 }
 
-// findByLabel returns the block device whose ext4 label is label, waiting up to diskWait for it to appear.
-func (h *Host) findByLabel(label string) (string, error) {
+// labelReader returns the label of the file system on a device, or an error if it holds none of its kind.
+type labelReader func(io.ReaderAt) (string, error)
+
+func ext4Label(r io.ReaderAt) (string, error) {
+	sb, err := ext4.ReadSuperblock(r)
+	return sb.Label, err
+}
+
+func isoLabel(r io.ReaderAt) (string, error) { return iso9660.ReadLabel(r) }
+
+// isSeedLabel matches the NoCloud label in either case, as cloud-init does.
+func isSeedLabel(got string) bool { return strings.EqualFold(got, seedLabel) }
+
+// find returns the block device whose label, read by read, satisfies match,
+// waiting up to diskWait for it to appear.
+func (h *Host) find(read labelReader, match func(string) bool) (string, error) {
 	deadline := time.Now().Add(h.diskWait)
 	for {
-		dev, err := h.scan(label)
+		dev, err := h.scan(read, match)
 		if err == nil || !errors.Is(err, errNoDisk) || time.Now().After(deadline) {
 			return dev, err
 		}
@@ -123,8 +158,8 @@ func (h *Host) findByLabel(label string) (string, error) {
 	}
 }
 
-// scan reads the superblock of each device in /sys/class/block.
-func (h *Host) scan(label string) (string, error) {
+// scan reads the label of each device in /sys/class/block.
+func (h *Host) scan(read labelReader, match func(string) bool) (string, error) {
 	entries, err := os.ReadDir(h.sysClassBlock)
 	if err != nil {
 		return "", err
@@ -135,9 +170,9 @@ func (h *Host) scan(label string) (string, error) {
 		if err != nil {
 			continue
 		}
-		sb, err := ext4.ReadSuperblock(f)
+		label, err := read(f)
 		f.Close()
-		if err == nil && sb.Label == label {
+		if err == nil && match(label) {
 			return dev, nil
 		}
 	}

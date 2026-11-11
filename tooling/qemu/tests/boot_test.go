@@ -1,7 +1,7 @@
 //go:build qemu_real
 
-// Package tests boots naru's image under QEMU. It needs the image built
-// (make image), the guest inputs (make guest-inputs), /dev/kvm with nested
+// Package tests boots naru's UEFI disk image under QEMU. It needs the image built
+// (make image), the disk (make disk), the guest inputs (make guest-inputs), /dev/kvm with nested
 // virtualization, and the host's mke2fs; `make test-qemu` runs it.
 package tests_test
 
@@ -49,29 +49,12 @@ func run(m *testing.M) int {
 	return m.Run()
 }
 
-// boot starts n Nodes on one network; probeOn is the one that runs the probe, or 0.
+// boot starts n Nodes on one network that boot the image's UEFI disk, naru.img, under OVMF, each
+// with its own NoCloud drive; probeOn is the one that runs the probe, or 0.
 func boot(t *testing.T, n, probeOn int) *node.Cluster {
 	t.Helper()
-	image := os.Getenv("NARU_IMAGE_DIR")
 	c, err := node.StartCluster(node.ClusterSpec{
-		N: n, Kernel: filepath.Join(image, "bzImage"), Initrd: filepath.Join(image, "initramfs.cpio.gz"),
-		Dir: t.TempDir(), Inputs: inputs, ProbeOn: probeOn,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		c.Stop()
-		for _, nd := range c.Nodes {
-			t.Logf("console of %s:\n%s", nd.Name, nd.Console())
-		}
-	})
-	return c
-}
-
-// bootDisk starts n Nodes on one network that boot the image's UEFI disk, naru.img, under OVMF.
-func bootDisk(t *testing.T, n int) *node.Cluster {
-	t.Helper()
-	c, err := node.StartCluster(node.ClusterSpec{
-		N: n, Disk: filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), Dir: t.TempDir(), Inputs: inputs,
+		N: n, Disk: filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), Dir: t.TempDir(), Inputs: inputs, ProbeOn: probeOn,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -84,16 +67,16 @@ func bootDisk(t *testing.T, n int) *node.Cluster {
 }
 
 // TestNode_UEFIDiskBootsToInitAndStartsItsServices boots two Nodes from naru.img under OVMF, with
-// no -kernel, -initrd or -append, and checks on each console that init accepted the
-// configuration and started mvmd and the stand-in. The Nodes have no addresses until the
-// configuration carries them, so the cross-network dial is not asserted.
+// no -kernel, -initrd or -append, and checks on each console that init read its NoCloud drive,
+// configured the network and started mvmd and the stand-in.
 func TestNode_UEFIDiskBootsToInitAndStartsItsServices(t *testing.T) {
-	c := bootDisk(t, 2)
+	c := boot(t, 2, 0)
 	ctx := context.Background()
 
 	for _, nd := range c.Nodes {
 		for _, step := range [][]string{
 			{"configuration accepted", "node=naru5-" + nd.Name},
+			{"network configured", "interfaces=1", "nameservers=1"},
 			{"root remounted read-only"},
 			{"data disk is mounted", "dir=/var/lib/mvmd", "fstype=ext4"},
 			{"started", "service=mvmd"},
@@ -102,6 +85,26 @@ func TestNode_UEFIDiskBootsToInitAndStartsItsServices(t *testing.T) {
 			require.NoError(t, nd.WaitFor(ctx, bootTimeout, step...), "%s: %q", nd.Name, step)
 		}
 	}
+}
+
+// TestNode_ABrokenNetworkConfigRefusesTheBoot gives a Node a network-config whose address is not
+// one, and checks that init refuses the boot before it starts any service.
+func TestNode_ABrokenNetworkConfigRefusesTheBoot(t *testing.T) {
+	cfg := node.Config{Name: "node-1", Index: 1, Total: 2, ControlPlane: true, Inputs: inputs}
+	broken := strings.Replace(string(cfg.NetworkConfig()), "address: '10.78.0.1'", "address: 'not-an-address'", 1)
+	require.NotEqual(t, string(cfg.NetworkConfig()), broken, "the network-config was changed")
+	n, err := node.Start(node.Spec{
+		Config: cfg, Disk: filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), Dir: t.TempDir(),
+		Mcast: "230.78.0.1:25000", NetworkConfig: []byte(broken),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		n.Stop()
+		t.Logf("console of %s:\n%s", n.Name, n.Console())
+	})
+
+	require.NoError(t, n.WaitFor(context.Background(), bootTimeout, "boot refused; no further service will start"))
+	assert.Error(t, n.WaitFor(context.Background(), time.Millisecond, "started", "service="), "no service started")
 }
 
 // TestNode_TwoNodesRunTheirServicesAndReachEachOther boots two Nodes on one
@@ -115,6 +118,7 @@ func TestNode_TwoNodesRunTheirServicesAndReachEachOther(t *testing.T) {
 	for _, nd := range c.Nodes {
 		for _, step := range [][]string{
 			{"configuration accepted", "node=naru5-" + nd.Name},
+			{"network configured"},
 			{"root remounted read-only"},
 			{"started", "service=mvmd"},
 			{"started", "service=registry"},

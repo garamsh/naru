@@ -10,15 +10,19 @@ Claims about garamsh/mvmd hold at commit `1b08e5e04273b8839f66d9e154bf96086fbc3d
 - **Boot order.** Init does these in order, and stops at the first that fails:
   1. leaves the initramfs's rootfs: copies the initramfs to a tmpfs, moves that tmpfs over `/` and chroots into it (the kernel refuses `pivot_root` from the rootfs, which mvmd's supervisor does for each VMM);
   2. mounts `/proc`, `/sys`, `/dev` (devtmpfs), `/dev/pts`, `/run` (tmpfs), `/tmp` (tmpfs) and `/sys/fs/cgroup` (cgroup2), and makes Ctrl-Alt-Del deliver SIGINT to init;
-  3. finds the disk labelled `NARUCFG`, mounts it read-only and parses `naru.yaml` ([config.md](./config.md));
-  4. finds, checks and mounts the data disk;
-  5. turns on forwarding for the families `spec.network.forwarding` names;
-  6. prepares the cgroup tree;
-  7. remounts `/` read-only (`MS_REMOUNT|MS_RDONLY`), by which time every mount point exists, and logs `root remounted read-only`;
-  8. starts each service in file order, leaving out one marked `controlPlane` on a Node whose `spec.controlPlane` is false.
+  3. finds the block device whose ISO 9660 label is `cidata`, mounts it read-only, and parses `user-data` as `naru.yaml` and `network-config` ([config.md](./config.md));
+  4. applies the network: sets `lo` up, then sets each link of the configuration up, adds its address and the default route through netlink, writes `/run/naru/resolv.conf`, and logs `network configured`;
+  5. finds, checks and mounts the data disk;
+  6. turns on forwarding for the families `spec.network.forwarding` names;
+  7. writes the files `spec.files` lists;
+  8. prepares the cgroup tree;
+  9. remounts `/` read-only (`MS_REMOUNT|MS_RDONLY`), by which time every mount point exists, and logs `root remounted read-only`;
+  10. starts each service in file order, leaving out one marked `controlPlane` on a Node whose `spec.controlPlane` is false.
 - **The root is read-only when the first service starts.** The system is never written after init's seal; a service writes only to the mounts above (`/run`, `/tmp`, the data disk). A refusal to remount stops every service like any other refusal.
-- **A refusal stops every service.** A configuration that does not parse or fails validation, a data disk that is refused, a forwarding setting that cannot be written and a cgroup tree that cannot be built and a root that cannot be remounted read-only each stop the sequence before the first service starts. Init logs the reason, with the field named for a configuration error, to the console and stays up, so the reason stays readable and the Node can still be powered off by signal. It starts no service afterwards.
-- **Disks are found by ext4 label.** Init reads the superblock of each device in `/sys/class/block` itself (magic `0xEF53` at offset 1080, label at 1144) and does not use `blkid`. A disk that has not appeared when it is first looked for is waited for, up to 10 s.
+- **A refusal stops every service.** A configuration or network-config that does not parse or fails validation, a network that cannot be applied, a file that cannot be written, a data disk that is refused, a forwarding setting that cannot be written and a cgroup tree that cannot be built and a root that cannot be remounted read-only each stop the sequence before the first service starts. Init logs the reason, with the field named for a configuration error, to the console and stays up, so the reason stays readable and the Node can still be powered off by signal. It starts no service afterwards.
+- **Disks are found by label.** Init reads each device in `/sys/class/block` itself and does not use `blkid`: the data disk by its ext4 superblock (magic `0xEF53` at offset 1080, label at 1144), the NoCloud drive by the volume label of its ISO 9660 primary descriptor (32 bytes at byte 40 of sector 16, `cidata` in either case). A disk that has not appeared when it is first looked for is waited for, up to 10 s.
+- **The network is applied before any service.** A link is found by MAC address, else by name, and waited for up to 10 s. Init does not rename links and starts no DHCP client. The resolvers are in `/run/naru/resolv.conf` and `/etc/resolv.conf` is a link to it, so the read-only root holds what services read. `/run/naru` is init's: a `spec.files` path may not be under it.
+- **`spec.files` are written before any service starts**, under `/run`, with the mode the file gives, creating parent directories and refusing an existing file.
 - **The data disk is a precondition of every service.** Init mounts it with `nosuid,nodev` only if its superblock is ext4 and has the `verity` feature (`ro_compat` bit `0x8000`). Otherwise it refuses, says which check failed, and starts no service. The check is made on every boot, before the mount, so mvmd is never started on a disk without `verity`, which mvmd would refuse to start on (mvmd ADR 0008, as [ADR 0003](./adr/0003-naru-deploys-and-supervises-mvmd-builds-both-kernels-and-carries-mvmds-deployment-constraints.md) records it).
 - **Every service runs in a cgroup of its own.** The hierarchy under the cgroup v2 root is:
 
@@ -47,19 +51,20 @@ mvmd places its supervisors outside its own cgroup, so that stopping mvmd does n
 What init provides, and what the Node's configuration must carry:
 
 - Init creates `/sys/fs/cgroup/naru/detached` and enables the three controllers at the root and in `naru/`. mvmd's default VMM parent then works, and `detached` is outside mvmd's leaf `/sys/fs/cgroup/naru/mvmd`.
-- The mvmd service's configuration must set `supervision.cgroup` to `/sys/fs/cgroup/naru/detached`. Init does not write mvmd's configuration (naru knows no service's internals, [config.md](./config.md)), so the Node's `naru.yaml` passes it in the service's `args` or `env`.
+- The mvmd service's configuration must set `supervision.cgroup` to `/sys/fs/cgroup/naru/detached`. Init does not write mvmd's configuration (naru knows no service's internals, [config.md](./config.md)), so the Node's `naru.yaml` passes it in the service's `args` or `env`, or in a file of `spec.files` the service's `-config` names.
 - mvmd's VMM cgroups go under `supervision.vmm_cgroup`, whose default is `/sys/fs/cgroup/mvmd-vmm` (`DefaultVMMCgroup` in `daemon/internal/supervision/supervision.go`, at the commit above). That is under the root, whose controllers init enables, so the Node's configuration leaves `supervision.vmm_cgroup` at its default.
 - A host kernel built with `CONFIG_RT_GROUP_SCHED` needs the supervisors in the root cgroup (mvmd ADR 0015). Init does not provide that: it runs every service in `naru/`. Whether the P0 kernel is built with the option is [image.md](./image.md)'s to decide.
 
 ## Pinned dependencies
 
-`init/go.mod` pins `go.yaml.in/yaml/v4` and `github.com/stretchr/testify`; `go.sum` and the Go checksum database fix what each version means. The PM moves them: the PM reviews the pins when an advisory is published for one of them and at each Go minor release, and bumps the module in a pull request. No dependency bot is configured (`.github/` holds no `dependabot.yml`).
+`init/go.mod` pins `go.yaml.in/yaml/v4`, `github.com/vishvananda/netlink` (the netlink client, with `github.com/vishvananda/netns` and `golang.org/x/sys` beneath it) and `github.com/stretchr/testify`; `go.sum` and the Go checksum database fix what each version means. The PM moves them: the PM reviews the pins when an advisory is published for one of them and at each Go minor release, and bumps the module in a pull request. No dependency bot is configured (`.github/` holds no `dependabot.yml`).
 
 ## Rationale
 
 - [ADR 0004](./adr/0004-p0-boots-a-host-kernel-and-a-read-only-initramfs-in-qemu-and-naru-init-supervises-the-configured-services.md): why init is PID 1 of a read-only initramfs and supervises the configured services.
 - [ADR 0003](./adr/0003-naru-deploys-and-supervises-mvmd-builds-both-kernels-and-carries-mvmds-deployment-constraints.md): the data disk's `verity` requirement, the forwarding obligation, and mvmd's supervisor placement.
-- [ADR 0005](./adr/0005-configuration-is-a-yaml-file-on-a-labelled-ext4-disk-in-the-shape-of-gaons-resources.md): the file init reads and validates.
+- [ADR 0008](./adr/0008-a-node-reads-its-configuration-and-network-from-a-cloud-init-nocloud-drive.md): where init reads the configuration and network from, and why netlink.
+- [ADR 0005](./adr/0005-configuration-is-a-yaml-file-on-a-labelled-ext4-disk-in-the-shape-of-gaons-resources.md): the shape of the file init validates.
 - [ADR 0001](./adr/0001-the-repository-is-a-go-workspace-of-executable-units-partitioned-by-responsibility.md): why init is a module of its own.
 
 ## Open questions

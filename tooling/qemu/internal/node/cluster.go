@@ -13,9 +13,7 @@ import (
 type ClusterSpec struct {
 	// N is the number of Nodes; their names are node-1 to node-N.
 	N int
-	// Kernel and Initrd are the image's bzImage and initramfs.cpio.gz.
-	Kernel, Initrd string
-	// Disk is the image's naru.img; when set, the Nodes boot it under OVMF and Kernel and Initrd are empty.
+	// Disk is the image's naru.img, which the Nodes boot under OVMF.
 	Disk string
 	// Dir receives one directory per Node.
 	Dir string
@@ -47,7 +45,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 			Config: Config{
 				Name: name, Index: i, Total: spec.N, ControlPlane: i == 1, Probe: i == spec.ProbeOn, Inputs: spec.Inputs,
 			},
-			Kernel: spec.Kernel, Initrd: spec.Initrd, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast,
+			Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast,
 		})
 		if err != nil {
 			c.Stop()

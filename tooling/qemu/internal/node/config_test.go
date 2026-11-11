@@ -123,3 +123,54 @@ func TestConfig_AddressesAndMACsDifferPerNode(t *testing.T) {
 	assert.Equal(t, b.IP(), a.PeerIP())
 	assert.Equal(t, a.IP(), b.PeerIP())
 }
+
+func TestNaruYAML_CarriesMvmdsConfigurationAsAFileUnderRun(t *testing.T) {
+	c := cfg(2, 2, false, false)
+	n := parse(t, c)
+
+	require.Len(t, n.Spec.Files, 1)
+	f := n.Spec.Files[0]
+	assert.Equal(t, "/run/mvmd/config.json", f.Path)
+	assert.Equal(t, "0600", f.Mode)
+	want, err := c.MvmdJSON()
+	require.NoError(t, err)
+	assert.JSONEq(t, string(want), f.Content)
+	assert.Equal(t, []string{"-config", f.Path}, n.Spec.Services[0].Args)
+}
+
+func TestNetworkConfig_IsTheProxmoxFormForTheNodesAddress(t *testing.T) {
+	var got struct {
+		Version int `yaml:"version"`
+		Config  []struct {
+			Type    string   `yaml:"type"`
+			Name    string   `yaml:"name"`
+			MAC     string   `yaml:"mac_address"`
+			Address []string `yaml:"address"`
+			Search  []string `yaml:"search"`
+			Subnets []struct {
+				Type, Address, Netmask, Gateway string
+			} `yaml:"subnets"`
+		} `yaml:"config"`
+	}
+	c := cfg(2, 3, false, false)
+
+	require.NoError(t, yaml.Unmarshal(c.NetworkConfig(), &got))
+
+	assert.Equal(t, 1, got.Version)
+	require.Len(t, got.Config, 2)
+	nic := got.Config[0]
+	assert.Equal(t, "physical", nic.Type)
+	assert.Equal(t, c.MAC(), nic.MAC)
+	require.Len(t, nic.Subnets, 1)
+	assert.Equal(t, "static", nic.Subnets[0].Type)
+	assert.Equal(t, "10.78.0.2", nic.Subnets[0].Address)
+	assert.Equal(t, "255.255.255.0", nic.Subnets[0].Netmask)
+	assert.Equal(t, Gateway, nic.Subnets[0].Gateway)
+	assert.Equal(t, "nameserver", got.Config[1].Type)
+	assert.Equal(t, []string{Gateway}, got.Config[1].Address)
+}
+
+func TestConfig_TheMACIsLocallyAdministeredAndLowerCase(t *testing.T) {
+	assert.Equal(t, "02:00:00:00:00:01", cfg(1, 2, true, false).MAC())
+	assert.Equal(t, "02:00:00:00:01:00", Config{Index: 256}.MAC())
+}

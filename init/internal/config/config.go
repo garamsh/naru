@@ -2,17 +2,23 @@
 // at boot (docs/architecture/config.md).
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"strconv"
+)
 
 const (
 	// APIVersion is the only apiVersion init accepts.
 	APIVersion = "naru.garam.sh/v1alpha1"
 	// Kind is the only kind init accepts.
 	Kind = "NodeConfig"
-	// FileName is the file on the configuration disk.
+	// FileName names the document in errors: it is the Node's user-data.
 	FileName = "naru.yaml"
-	// Label is the file system label of the configuration disk.
-	Label = "NARUCFG"
+	// FilesRoot is the directory the files of spec.files are written under.
+	FilesRoot = "/run"
+	// ReservedDir is init's own directory under FilesRoot, which spec.files may not write to.
+	ReservedDir = "/run/naru"
 )
 
 // Family is an IP family for which forwarding is turned on.
@@ -42,6 +48,25 @@ type Spec struct {
 	ControlPlane bool      `yaml:"controlPlane"`
 	DataDisk     DataDisk  `yaml:"dataDisk"`
 	Network      Network   `yaml:"network"`
+	Files        []File    `yaml:"files"`
+}
+
+// File is a file init writes under FilesRoot before it starts any service.
+type File struct {
+	Path string `yaml:"path"`
+	// Mode is the permission bits in octal, such as "0600". It is "0644" when empty.
+	Mode    string `yaml:"mode"`
+	Content string `yaml:"content"`
+}
+
+// Perm returns the permission bits of the file. It is only meaningful once
+// Parse has accepted the file.
+func (f File) Perm() os.FileMode {
+	if f.Mode == "" {
+		return 0o644
+	}
+	m, _ := strconv.ParseUint(f.Mode, 8, 32)
+	return os.FileMode(m)
 }
 
 // Service is an opaque binary init starts and supervises.
