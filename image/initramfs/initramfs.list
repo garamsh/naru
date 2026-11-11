@@ -1,0 +1,18 @@
+# The initramfs, in the list format of the kernel's usr/gen_init_cpio: one entry per line, in the
+# order they are archived. build.sh replaces @OUT@ with the directory holding the built programs.
+# Every entry is owned by 0:0; the archive's mtimes are fixed by gen_init_cpio's -t.
+dir /bin 0755 0 0
+dir /dev 0755 0 0
+dir /etc 0755 0 0
+dir /proc 0755 0 0
+dir /run 0755 0 0
+dir /sys 0755 0 0
+dir /tmp 1777 0 0
+dir /var 0755 0 0
+dir /var/lib 0755 0 0
+dir /var/lib/mvmd 0755 0 0
+file /init @OUT@/naru-init 0755 0 0
+file /bin/mvmd @OUT@/mvmd 0755 0 0
+file /bin/mvmd-supervisor @OUT@/mvmd-supervisor 0755 0 0
+file /bin/firecracker @OUT@/firecracker 0755 0 0
+file /bin/naru-standin @OUT@/naru-standin 0755 0 0

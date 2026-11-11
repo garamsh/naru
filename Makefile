@@ -1,4 +1,4 @@
-.PHONY: lint format format-apply test test-cgroup build ci
+.PHONY: lint format format-apply test test-cgroup test-qemu build image image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -6,6 +6,10 @@ MODULES := $(shell go list -m -f '{{.Dir}}')
 
 # Where build puts the binaries.
 BIN := $(CURDIR)/bin
+
+# Where image keeps its downloads, sources and outputs; git ignores it.
+BUILD := $(CURDIR)/build
+IMAGE := $(BUILD)/image
 
 define each_module
 @set -e; \
@@ -22,9 +26,10 @@ echo "$@: $$dir: ./... selects $$p package(s)"; \
 if [ "$$p" -eq 0 ]; then echo "$@: $$dir: no packages" >&2; exit 1; fi
 endef
 
-# No linter is configured yet, so lint is go vet.
+# No linter is configured yet, so lint is go vet. The second pass vets the
+# files only the QEMU test builds.
 lint:
-	$(call each_module, $(count_packages); (cd "$$dir" && go vet ./...))
+	$(call each_module, $(count_packages); (cd "$$dir" && go vet ./... && go vet -tags qemu_real ./...))
 
 format:
 	$(call each_module, \
@@ -65,5 +70,41 @@ build:
 	$(call each_module, $(count_packages); (cd "$$dir" && go build ./...))
 	CGO_ENABLED=0 go build -trimpath -o $(BIN)/naru-init ./init/cmd/naru-init
 	@echo "build: $(BIN)/naru-init: $$(file -b $(BIN)/naru-init | cut -d, -f1-4)"
+
+# image builds the host kernel and the initramfs from pinned sources into
+# $(IMAGE): bzImage, initramfs.cpio.gz, and for part B vmlinux and inputs.env.
+# Both scripts skip what their inputs say is built, and verify every download.
+image:
+	image/kernel/build.sh $(BUILD)/kernel $(IMAGE)
+	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE)
+
+# image-repro builds the image twice from clean build directories and fails
+# unless the kernel and the initramfs of both are byte-identical. It takes
+# two full kernel builds.
+image-repro:
+	@set -e; \
+	for i in 1 2; do \
+	  rm -rf $(BUILD)/repro/$$i; \
+	  image/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
+	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
+	done; \
+	for f in bzImage initramfs.cpio.gz; do \
+	  a=$$(sha256sum $(BUILD)/repro/1/image/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/$$f | cut -d' ' -f1); \
+	  echo "$@: $$f build 1 $$a"; echo "$@: $$f build 2 $$b"; \
+	  if [ "$$a" != "$$b" ]; then echo "$@: $$f differs between the builds" >&2; exit 1; fi; \
+	done; \
+	echo "$@: bzImage and initramfs.cpio.gz are byte-identical across two clean builds"
+
+# test-qemu boots one Node of the image under QEMU, as the user, and reads its
+# console. It needs /dev/kvm and /sbin/mkfs.ext4, and fails, never skips, when
+# no test ran.
+test-qemu: image
+	@set -e; \
+	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
+	if ! (cd tooling/qemu && NARU_IMAGE_DIR=$(IMAGE) go test -tags qemu_real -count=1 -v -timeout 10m -run '^TestNode_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	cat "$$log"; \
+	n=$$(grep -c '^--- PASS: TestNode_' "$$log" || true); \
+	echo "$@: $$n test(s) passed, selected by -run '^TestNode_' with -tags qemu_real"; \
+	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
 ci: lint format test build
