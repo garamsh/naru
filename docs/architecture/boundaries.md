@@ -34,7 +34,7 @@ In this repository `Machine` names the microVM and `Node` the physical machine. 
 
 ## Rationale
 
-- [ADR 0002](./adr/0002-gaon-depends-on-naru-one-way-through-the-node-api-and-naru-has-no-control-plane.md): why the boundary with gaon sits at the node API, why naru has no control plane, and why init holds no orchestrator logic. It records the candidates and the signs it was wrong.
+- [ADR 0002](./adr/0002-gaon-depends-on-naru-one-way-through-the-node-api-and-naru-has-no-control-plane.md): why the boundary with gaon sits at the node API, why naru has no control plane, and why init holds no orchestrator logic. It records the consequences and the signs it was wrong.
 - [ADR 0003](./adr/0003-naru-deploys-and-supervises-mvmd-builds-both-kernels-and-carries-mvmds-deployment-constraints.md): why naru owns the guest kernel as well as the host kernel, and the full text of each obligation with the mvmd passage it was read from.
 
 ## Open questions
