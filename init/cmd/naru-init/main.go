@@ -34,6 +34,10 @@ func main() {
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 
+	// The first thing, before anything is mounted: pivot_root, which the VMM supervisor does, fails on the rootfs.
+	if err := linux.LeaveRootfs(); err != nil {
+		log.Error("leave the rootfs", "err", err)
+	}
 	if err := linux.MountPseudoFilesystems(); err != nil {
 		log.Error("mount pseudo file systems", "err", err)
 	}

@@ -1,4 +1,4 @@
-.PHONY: lint format format-apply test test-cgroup test-qemu build image image-repro ci
+.PHONY: lint format format-apply test test-cgroup test-qemu nodes guest-inputs build image image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -95,13 +95,28 @@ image-repro:
 	done; \
 	echo "$@: bzImage and initramfs.cpio.gz are byte-identical across two clean builds"
 
-# test-qemu boots one Node of the image under QEMU, as the user, and reads its
-# console. It needs /dev/kvm and /sbin/mkfs.ext4, and fails, never skips, when
-# no test ran.
-test-qemu: image
+# guest-inputs builds the two guest initrds the Machines of the QEMU tests boot
+# from the pinned mvmd checkout that make image fetched, and verifies them
+# against image/guest/pin.env. They are test inputs, not part of the image.
+GUEST := $(BUILD)/guest
+guest-inputs: image
+	image/guest/build.sh $(BUILD)/initramfs/mvmd $(GUEST)
+
+# nodes boots N (default 2) Nodes of the image under QEMU on one network, as
+# the user, and keeps them up until interrupted. Their disks and consoles are
+# under $(BUILD)/nodes.
+N ?= 2
+nodes: guest-inputs
+	rm -rf $(BUILD)/nodes
+	cd tooling/qemu && go run ./cmd/naru-nodes -n $(N) -root $(CURDIR) -image $(IMAGE) -guest $(GUEST) -dir $(BUILD)/nodes
+
+# test-qemu boots two Nodes of the image under QEMU, as the user, and reads
+# their consoles. It needs /dev/kvm with nested virtualization and the host's
+# mke2fs, and fails, never skips, when no test ran.
+test-qemu: guest-inputs
 	@set -e; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
-	if ! (cd tooling/qemu && NARU_IMAGE_DIR=$(IMAGE) go test -tags qemu_real -count=1 -v -timeout 10m -run '^TestNode_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) go test -tags qemu_real -count=1 -v -timeout 20m -run '^TestNode_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
 	n=$$(grep -c '^--- PASS: TestNode_' "$$log" || true); \
 	echo "$@: $$n test(s) passed, selected by -run '^TestNode_' with -tags qemu_real"; \

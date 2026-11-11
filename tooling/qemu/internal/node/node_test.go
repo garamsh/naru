@@ -2,6 +2,7 @@ package node
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,7 +34,7 @@ func label(sb []byte) string {
 }
 
 func TestBuildDisks_ConfigDiskIsExt4LabelledNARUCFG(t *testing.T) {
-	config, _, err := BuildDisks(t.TempDir(), NaruYAML(), MvmdJSON())
+	config, _, err := BuildDisks(t.TempDir(), []byte("x"), []byte("{}"), "")
 
 	require.NoError(t, err)
 	sb := readSuperblock(t, config)
@@ -42,7 +43,7 @@ func TestBuildDisks_ConfigDiskIsExt4LabelledNARUCFG(t *testing.T) {
 }
 
 func TestBuildDisks_DataDiskIsExt4WithVerityLabelledNARUDATA(t *testing.T) {
-	_, data, err := BuildDisks(t.TempDir(), NaruYAML(), MvmdJSON())
+	_, data, err := BuildDisks(t.TempDir(), []byte("x"), []byte("{}"), "")
 
 	require.NoError(t, err)
 	sb := readSuperblock(t, data)
@@ -52,12 +53,25 @@ func TestBuildDisks_DataDiskIsExt4WithVerityLabelledNARUDATA(t *testing.T) {
 }
 
 func TestBuildDisks_ConfigDiskHoldsTheGivenNaruYAML(t *testing.T) {
-	config, _, err := BuildDisks(t.TempDir(), []byte("apiVersion: marker-xyz\n"), MvmdJSON())
+	config, _, err := BuildDisks(t.TempDir(), []byte("apiVersion: marker-xyz\n"), []byte("{}"), "")
 
 	require.NoError(t, err)
 	b, err := os.ReadFile(config)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "apiVersion: marker-xyz")
+}
+
+func TestBuildDisks_DataDiskCarriesTheInputsTree(t *testing.T) {
+	inputs := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(inputs, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(inputs, "bin", "tool"), []byte("marker-inputs-9f3a"), 0o755))
+
+	_, data, err := BuildDisks(t.TempDir(), []byte("x"), []byte("{}"), inputs)
+
+	require.NoError(t, err)
+	b, err := os.ReadFile(data)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "marker-inputs-9f3a")
 }
 
 func TestHasLine(t *testing.T) {
@@ -67,8 +81,4 @@ func TestHasLine(t *testing.T) {
 	assert.True(t, hasLine(console, []string{"service=mvmd", "started"}))
 	assert.False(t, hasLine(console, []string{"started", "service=mvmd"}), "fragments must come in order")
 	assert.False(t, hasLine(console, []string{"configuration accepted", "started"}), "fragments must share a line")
-}
-
-func TestNaruYAML_NamesTheDataDiskByTheLabelBuildDisksWrites(t *testing.T) {
-	assert.Contains(t, string(NaruYAML()), "label: "+DataLabel)
 }

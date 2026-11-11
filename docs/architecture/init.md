@@ -8,13 +8,16 @@ Claims about garamsh/mvmd hold at commit `1b08e5e04273b8839f66d9e154bf96086fbc3d
 
 - **Unit.** Init is the Go module `init/`, built from `init/cmd/naru-init` as a static binary (`CGO_ENABLED=0`), since the image has no libc (ADR 0004). It refuses to run unless it is PID 1.
 - **Boot order.** Init does these in order, and stops at the first that fails:
-  1. mounts `/proc`, `/sys`, `/dev` (devtmpfs), `/dev/pts`, `/run` (tmpfs), `/tmp` (tmpfs) and `/sys/fs/cgroup` (cgroup2), and makes Ctrl-Alt-Del deliver SIGINT to init;
-  2. finds the disk labelled `NARUCFG`, mounts it read-only and parses `naru.yaml` ([config.md](./config.md));
-  3. finds, checks and mounts the data disk;
-  4. turns on forwarding for the families `spec.network.forwarding` names;
-  5. prepares the cgroup tree;
-  6. starts each service in file order, leaving out one marked `controlPlane` on a Node whose `spec.controlPlane` is false.
-- **A refusal stops every service.** A configuration that does not parse or fails validation, a data disk that is refused, a forwarding setting that cannot be written and a cgroup tree that cannot be built each stop the sequence before the first service starts. Init logs the reason, with the field named for a configuration error, to the console and stays up, so the reason stays readable and the Node can still be powered off by signal. It starts no service afterwards.
+  1. leaves the initramfs's rootfs: copies the initramfs to a tmpfs, moves that tmpfs over `/` and chroots into it (the kernel refuses `pivot_root` from the rootfs, which mvmd's supervisor does for each VMM);
+  2. mounts `/proc`, `/sys`, `/dev` (devtmpfs), `/dev/pts`, `/run` (tmpfs), `/tmp` (tmpfs) and `/sys/fs/cgroup` (cgroup2), and makes Ctrl-Alt-Del deliver SIGINT to init;
+  3. finds the disk labelled `NARUCFG`, mounts it read-only and parses `naru.yaml` ([config.md](./config.md));
+  4. finds, checks and mounts the data disk;
+  5. turns on forwarding for the families `spec.network.forwarding` names;
+  6. prepares the cgroup tree;
+  7. remounts `/` read-only (`MS_REMOUNT|MS_RDONLY`), by which time every mount point exists, and logs `root remounted read-only`;
+  8. starts each service in file order, leaving out one marked `controlPlane` on a Node whose `spec.controlPlane` is false.
+- **The root is read-only when the first service starts.** The system is never written after init's seal; a service writes only to the mounts above (`/run`, `/tmp`, the data disk). A refusal to remount stops every service like any other refusal.
+- **A refusal stops every service.** A configuration that does not parse or fails validation, a data disk that is refused, a forwarding setting that cannot be written and a cgroup tree that cannot be built and a root that cannot be remounted read-only each stop the sequence before the first service starts. Init logs the reason, with the field named for a configuration error, to the console and stays up, so the reason stays readable and the Node can still be powered off by signal. It starts no service afterwards.
 - **Disks are found by ext4 label.** Init reads the superblock of each device in `/sys/class/block` itself (magic `0xEF53` at offset 1080, label at 1144) and does not use `blkid`. A disk that has not appeared when it is first looked for is waited for, up to 10 s.
 - **The data disk is a precondition of every service.** Init mounts it with `nosuid,nodev` only if its superblock is ext4 and has the `verity` feature (`ro_compat` bit `0x8000`). Otherwise it refuses, says which check failed, and starts no service. The check is made on every boot, before the mount, so mvmd is never started on a disk without `verity`, which mvmd would refuse to start on (mvmd ADR 0008, as [ADR 0003](./adr/0003-naru-deploys-and-supervises-mvmd-builds-both-kernels-and-carries-mvmds-deployment-constraints.md) records it).
 - **Every service runs in a cgroup of its own.** The hierarchy under the cgroup v2 root is:

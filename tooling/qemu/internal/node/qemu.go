@@ -14,18 +14,24 @@ import (
 
 // Spec says what a Node boots.
 type Spec struct {
-	// Name names the QEMU process, which is prefixed "naru5-" so a stray one can be found.
-	Name string
+	// Config is the Node's configuration. Its Name names the QEMU process, which
+	// is prefixed "naru5-" so a stray one can be found.
+	Config Config
 	// Kernel and Initrd are the image's bzImage and initramfs.cpio.gz.
 	Kernel, Initrd string
 	// Dir receives the disks and the console log.
 	Dir string
-	// NaruYAML and MvmdJSON replace the defaults when not empty.
-	NaruYAML, MvmdJSON []byte
+	// Mcast is the multicast address and port, "230.78.0.1:5000", of the network the
+	// Nodes of a cluster share. QEMU's socket backend carries it over the loopback, with no privilege.
+	Mcast string
+	// NaruYAML replaces the configuration the Config renders, when not empty.
+	NaruYAML []byte
 }
 
 // Node is one running QEMU machine.
 type Node struct {
+	// Name is the Node's name, such as "node-1".
+	Name    string
 	console string
 	cmd     *exec.Cmd
 	done    chan struct{}
@@ -36,29 +42,38 @@ type Node struct {
 // Start builds the Node's disks and boots it with its serial console written
 // to Dir/console.log. The caller must Stop it.
 func Start(spec Spec) (*Node, error) {
-	naruYAML, mvmdJSON := spec.NaruYAML, spec.MvmdJSON
+	naruYAML := spec.NaruYAML
 	if len(naruYAML) == 0 {
-		naruYAML = NaruYAML()
+		var err error
+		if naruYAML, err = spec.Config.NaruYAML(); err != nil {
+			return nil, err
+		}
 	}
-	if len(mvmdJSON) == 0 {
-		mvmdJSON = MvmdJSON()
+	mvmdJSON, err := spec.Config.MvmdJSON()
+	if err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
 		return nil, err
 	}
-	configDisk, dataDisk, err := BuildDisks(spec.Dir, naruYAML, mvmdJSON)
+	configDisk, dataDisk, err := BuildDisks(spec.Dir, naruYAML, mvmdJSON, spec.Config.Inputs.Dir)
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{console: filepath.Join(spec.Dir, "console.log"), done: make(chan struct{})}
-	name := "naru5-" + spec.Name
+	n := &Node{Name: spec.Config.Name, console: filepath.Join(spec.Dir, "console.log"), done: make(chan struct{})}
+	name := "naru5-" + spec.Config.Name
+	// ip= is client:server:gateway:netmask:hostname:device:autoconf (the kernel's nfsroot.rst).
+	ip := fmt.Sprintf("ip=%s:::255.255.255.0:%s:eth0:off", spec.Config.IP(), spec.Config.Name)
 	n.cmd = exec.Command("qemu-system-x86_64", //nolint:gosec // arguments are built here
 		"-name", name+",process="+name,
-		"-enable-kvm", "-cpu", "host", "-smp", "2", "-m", "2048",
+		"-enable-kvm", "-cpu", "host", "-smp", "2", "-m", "3072",
 		"-kernel", spec.Kernel, "-initrd", spec.Initrd,
-		"-append", "console=ttyS0 panic=-1",
+		// loglevel=4: kernel info messages must not split init's console lines; no test asserts a kernel line.
+		"-append", "console=ttyS0 panic=-1 loglevel=4 "+ip,
 		"-drive", "file="+configDisk+",format=raw,if=virtio,readonly=on",
 		"-drive", "file="+dataDisk+",format=raw,if=virtio",
+		"-netdev", "socket,id=net0,mcast="+spec.Mcast+",localaddr=127.0.0.1",
+		"-device", "virtio-net-pci,netdev=net0,mac="+spec.Config.MAC(),
 		"-display", "none", "-monitor", "none", "-serial", "file:"+n.console,
 		"-no-reboot",
 	)
