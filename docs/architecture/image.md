@@ -32,4 +32,4 @@ Claims about garamsh/mvmd hold at commit `cfe57fb9f9bfbd7ec8e24b54915656030f1e2b
 - **Signing.** How an image, a kernel and a configuration are signed and verified is not decided.
 - **Disk layout.** Partitions of an installed Node, and where the system lives other than as an initramfs, are not decided.
 - **The guest artifacts.** Which guest kernel and which guest-agent and converter initrds a Node carries, and who builds the Rust initrds, is not decided; P0 omits them.
-- **How the other mvmd obligations are met.** The cgroup placement of supervisors, the capabilities' grant and the nftables ownership are not decided; they wait under [boundaries.md](./boundaries.md) §Open questions.
+- **How the other mvmd obligations are met.** The capabilities' grant and the nftables ownership are not decided; they wait under [boundaries.md](./boundaries.md) §Open questions. The cgroup placement of supervisors is decided: [init.md](./init.md) §What init requires of mvmd's placement.

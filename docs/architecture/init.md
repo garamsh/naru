@@ -45,7 +45,12 @@ What init provides, and what the Node's configuration must carry:
 
 - Init creates `/sys/fs/cgroup/naru/detached` and enables the three controllers at the root and in `naru/`. mvmd's default VMM parent then works, and `detached` is outside mvmd's leaf `/sys/fs/cgroup/naru/mvmd`.
 - The mvmd service's configuration must set `supervision.cgroup` to `/sys/fs/cgroup/naru/detached`. Init does not write mvmd's configuration (naru knows no service's internals, [config.md](./config.md)), so the Node's `naru.yaml` passes it in the service's `args` or `env`.
+- mvmd's VMM cgroups go under `supervision.vmm_cgroup`, whose default is `/sys/fs/cgroup/mvmd-vmm` (`DefaultVMMCgroup` in `daemon/internal/supervision/supervision.go`, at the commit above). That is under the root, whose controllers init enables, so the Node's configuration leaves `supervision.vmm_cgroup` at its default.
 - A host kernel built with `CONFIG_RT_GROUP_SCHED` needs the supervisors in the root cgroup (mvmd ADR 0015). Init does not provide that: it runs every service in `naru/`. Whether the P0 kernel is built with the option is [image.md](./image.md)'s to decide.
+
+## Pinned dependencies
+
+`init/go.mod` pins `go.yaml.in/yaml/v4` and `github.com/stretchr/testify`; `go.sum` and the Go checksum database fix what each version means. The PM moves them: the PM reviews the pins when an advisory is published for one of them and at each Go minor release, and bumps the module in a pull request. No dependency bot is configured (`.github/` holds no `dependabot.yml`).
 
 ## Rationale
 
@@ -56,7 +61,6 @@ What init provides, and what the Node's configuration must carry:
 
 ## Open questions
 
-- **Where the placement is recorded as met.** [image.md](./image.md) and [boundaries.md](./boundaries.md) §Open questions still list the cgroup placement of supervisors as not decided; this document decides what init provides, and those two are not updated by the change that introduced it.
 - **Verifying the P0 kernel's options.** Whether the image's kernel has `CONFIG_RT_GROUP_SCHED` off and cgroup v2 with the three controllers on is checked by the QEMU test of the image, not by init.
 - **Boot and PID 1 behaviour.** Init's behaviour as PID 1 (mounts, console, power-off, reboot) is covered by the QEMU test of the image, not by `make test`.
 - **A failed service.** A service that keeps failing is restarted at 30 s forever; whether init gives up, and how a Node reports it, waits for a node API.
