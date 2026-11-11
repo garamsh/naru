@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
+	"github.com/garamsh/naru/tooling/qemu/internal/judge"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
@@ -71,19 +72,9 @@ func boot(t *testing.T, n, probeOn int) *node.Cluster {
 // configured the network and started mvmd and the stand-in.
 func TestNode_UEFIDiskBootsToInitAndStartsItsServices(t *testing.T) {
 	c := boot(t, 2, 0)
-	ctx := context.Background()
 
 	for _, nd := range c.Nodes {
-		for _, step := range [][]string{
-			{"configuration accepted", "node=naru5-" + nd.Name},
-			{"network configured", "interfaces=1", "nameservers=1"},
-			{"root remounted read-only"},
-			{"data disk is mounted", "dir=/var/lib/mvmd", "fstype=ext4"},
-			{"started", "service=mvmd"},
-			{"started", "service=standin"},
-		} {
-			require.NoError(t, nd.WaitFor(ctx, bootTimeout, step...), "%s: %q", nd.Name, step)
-		}
+		expectAll(t, nd, judge.Boot(nd.Name))
 	}
 }
 
@@ -113,22 +104,9 @@ func TestNode_ABrokenNetworkConfigRefusesTheBoot(t *testing.T) {
 // stand-in of the other Node across the network.
 func TestNode_TwoNodesRunTheirServicesAndReachEachOther(t *testing.T) {
 	c := boot(t, 2, 0)
-	ctx := context.Background()
 
 	for _, nd := range c.Nodes {
-		for _, step := range [][]string{
-			{"configuration accepted", "node=naru5-" + nd.Name},
-			{"network configured"},
-			{"root remounted read-only"},
-			{"started", "service=mvmd"},
-			{"started", "service=registry"},
-			{"started", "service=standin"},
-			{"data disk is mounted", "dir=/var/lib/mvmd", "fstype=ext4"},
-			{"socket accepts connections", "path=/run/mvmd.sock"},
-			{"peer accepts connections"},
-		} {
-			require.NoError(t, nd.WaitFor(ctx, bootTimeout, step...), "%s: %q", nd.Name, step)
-		}
+		expectAll(t, nd, judge.Services(nd.Name))
 	}
 }
 
@@ -140,11 +118,9 @@ func TestNode_ControlPlaneServicesStartOnlyOnTheControlPlaneNode(t *testing.T) {
 	ctx := context.Background()
 	first, second := c.Nodes[0], c.Nodes[1]
 
-	require.NoError(t, first.WaitFor(ctx, bootTimeout, "started", "service=control"), "the control-plane Node starts the service")
-	require.NoError(t, second.WaitFor(ctx, bootTimeout, "skipping a control-plane service", "service=control"), "the other Node skips it")
+	expectAll(t, first, judge.ControlPlane(true))
+	expectAll(t, second, judge.ControlPlane(false))
 	require.NoError(t, second.WaitFor(ctx, bootTimeout, "started", "service=standin"))
-	assert.Error(t, second.WaitFor(ctx, time.Millisecond, "started", "service=control"), "the control service never started there")
-	assert.Error(t, first.WaitFor(ctx, time.Millisecond, "skipping a control-plane service"), "the control-plane Node skips nothing")
 }
 
 // TestNode_MachineSurvivesMvmdRestart has the probe start a Machine, kill mvmd
@@ -153,18 +129,49 @@ func TestNode_ControlPlaneServicesStartOnlyOnTheControlPlaneNode(t *testing.T) {
 // host reads the probe's PROBE lines from the console.
 func TestNode_MachineSurvivesMvmdRestart(t *testing.T) {
 	c := boot(t, 2, 1)
-	nd := c.Nodes[0]
-	ctx := context.Background()
 
-	for _, check := range []string{
-		"mvmd-ready", "fencing-armed", "image-pulled", "machine-started", "machine-running", "supervisor-found", "mvmd-found",
-		"mvmd-killed", "mvmd-restarted", "supervisor-alive", "supervisor-same-pid", "machine-still-running",
-	} {
-		require.NoError(t, nd.WaitFor(ctx, bootTimeout, "PROBE "+check+" ok"), "the probe reports %s", check)
+	expectAll(t, c.Nodes[0], judge.Probe())
+}
+
+// TestNode_AConsoleReaderThatAttachesLateSeesTheWholeLog boots a Node and waits for init's first
+// re-print: a block, between its numbered markers, that holds the lines init printed at boot, so
+// a reader that attached after them still has them.
+func TestNode_AConsoleReaderThatAttachesLateSeesTheWholeLog(t *testing.T) {
+	c := boot(t, 2, 0)
+	nd := c.Nodes[0]
+
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "NARU-LOG-END seq=1"), "init re-prints its log")
+
+	lines := strings.Split(nd.Console(), "\n")
+	begin, end := -1, -1
+	for i, l := range lines {
+		if strings.HasPrefix(l, "NARU-LOG-BEGIN seq=1 ") && begin < 0 {
+			begin = i
+		}
+		if strings.HasPrefix(l, "NARU-LOG-END seq=1") && end < 0 {
+			end = i
+		}
 	}
-	require.NoError(t, nd.WaitFor(ctx, bootTimeout, "PROBE finished"))
-	for _, line := range strings.Split(nd.Console(), "\n") {
-		assert.False(t, strings.HasPrefix(line, "PROBE ") && strings.Contains(line, " fail "), line)
+	require.True(t, begin >= 0 && end > begin, "the first block has both its markers")
+	block := strings.Join(lines[begin:end], "\n")
+	assert.True(t, judge.HasLine(block, []string{"configuration accepted", "node=naru-node-1"}), "the block holds init's first lines")
+	assert.True(t, judge.HasLine(block, []string{"started", "service=mvmd"}), "and the lines that came after")
+}
+
+// expectAll waits for the Node's console to meet each expectation: to show the line, or, for an
+// absent one, to show no such line once the rest has been seen. These are the expectations
+// `make judge-serial` checks on the serial logs of a real deployment.
+func expectAll(t *testing.T, nd *node.Node, want []judge.Expect) {
+	t.Helper()
+	for _, e := range want {
+		if e.Absent {
+			continue
+		}
+		require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, e.Fragments...), "%s: %s: %q", nd.Name, e.What, e.Fragments)
 	}
-	require.NoError(t, nd.WaitFor(ctx, time.Second, "restarting", "service=mvmd"), "init restarted mvmd")
+	for _, e := range want {
+		if e.Absent {
+			assert.True(t, e.Met(nd.Console()), "%s: %s: %q", nd.Name, e.What, e.Fragments)
+		}
+	}
 }

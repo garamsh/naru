@@ -6,7 +6,7 @@ Claims about garamsh/mvmd hold at commit `1b08e5e04273b8839f66d9e154bf96086fbc3d
 
 ## Current decisions
 
-- **Unit.** Init is the Go module `init/`, built from `init/cmd/naru-init` as a static binary (`CGO_ENABLED=0`), since the image has no libc (ADR 0004). It refuses to run unless it is PID 1.
+- **Unit.** Init is the Go module `init/`, built from `init/cmd/naru-init` as a static binary (`CGO_ENABLED=0`), since the image has no libc (ADR 0004). It refuses to run unless it is PID 1, except as `naru-init -validate <file>`, which parses the file as `naru.yaml` with the parser init uses at boot, prints the Node's name and service count, and exits 0, or names the refusal and exits 1; the release's tests use it (it is the one way another module reaches init's parser, since `internal/` is closed to them).
 - **Boot order.** Init does these in order, and stops at the first that fails:
   1. leaves the initramfs's rootfs: copies the initramfs to a tmpfs, moves that tmpfs over `/` and chroots into it (the kernel refuses `pivot_root` from the rootfs, which mvmd's supervisor does for each VMM);
   2. mounts `/proc`, `/sys`, `/dev` (devtmpfs), `/dev/pts`, `/run` (tmpfs), `/tmp` (tmpfs) and `/sys/fs/cgroup` (cgroup2), and makes Ctrl-Alt-Del deliver SIGINT to init;
@@ -38,7 +38,8 @@ Claims about garamsh/mvmd hold at commit `1b08e5e04273b8839f66d9e154bf96086fbc3d
 - **Restart backoff.** A service that exits, or that cannot be started, is started again after 1 s, doubling per consecutive exit up to 30 s. A run of 60 s or longer resets the delay to 1 s. A stop ends the wait.
 - **Forwarding.** Init writes `1` to `/proc/sys/net/ipv4/ip_forward` and `/proc/sys/net/ipv6/conf/all/forwarding` for the families named, before any service starts ([config.md](./config.md)).
 - **Reaping.** One reaper owns `wait4(-1)` on SIGCHLD and reports the exit of each service it started, so a service's exit is never lost to an orphan's reaping. Every other child, orphans reparented to init included, is collected.
-- **A service's environment is what the file gives it.** Init passes no variable of its own, runs the service in a new session, and gives it the console as standard output and error.
+- **A service's environment is what the file gives it.** Init passes no variable of its own, runs the service in a new session, and gives it a pipe as standard output and error, which init copies to the console (see the next item).
+- **The console log is kept and re-printed.** From before its first mount, init keeps every line it logs and every line its services write, and every 30 s writes all of them again in one block: `NARU-LOG-BEGIN seq=<n> lines=<k> dropped=<d>`, the lines, then `NARU-LOG-END seq=<n>`, with `seq` rising from 1. A reader that attaches late therefore has the whole log within 30 s. The kept lines are bounded at 1 MiB, and a line over 4096 bytes is kept as several; past the bound the oldest lines are dropped and counted in `dropped`, which is the number of lines dropped since boot. Kernel messages are not kept. A reader of the log treats each line as possibly repeated ([ADR 0009](./adr/0009-init-re-prints-the-console-log-at-a-fixed-interval-between-numbered-markers.md)).
 - **Signals.** SIGTERM stops every service, syncs, unmounts the data disk and powers off. SIGINT does the same and reboots.
 
 ## What init requires of mvmd's placement
@@ -64,6 +65,7 @@ What init provides, and what the Node's configuration must carry:
 - [ADR 0004](./adr/0004-p0-boots-a-host-kernel-and-a-read-only-initramfs-in-qemu-and-naru-init-supervises-the-configured-services.md): why init is PID 1 of a read-only initramfs and supervises the configured services.
 - [ADR 0003](./adr/0003-naru-deploys-and-supervises-mvmd-builds-both-kernels-and-carries-mvmds-deployment-constraints.md): the data disk's `verity` requirement, the forwarding obligation, and mvmd's supervisor placement.
 - [ADR 0008](./adr/0008-a-node-reads-its-configuration-and-network-from-a-cloud-init-nocloud-drive.md): where init reads the configuration and network from, and why netlink.
+- [ADR 0009](./adr/0009-init-re-prints-the-console-log-at-a-fixed-interval-between-numbered-markers.md): why init keeps the console log and re-prints it, and the marker format.
 - [ADR 0005](./adr/0005-configuration-is-a-yaml-file-on-a-labelled-ext4-disk-in-the-shape-of-gaons-resources.md): the shape of the file init validates.
 - [ADR 0001](./adr/0001-the-repository-is-a-go-workspace-of-executable-units-partitioned-by-responsibility.md): why init is a module of its own.
 

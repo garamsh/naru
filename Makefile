@@ -1,4 +1,4 @@
-.PHONY: lint format format-apply test test-cgroup test-qemu nodes guest-inputs build image disk image-repro ci
+.PHONY: lint format format-apply test test-cgroup test-qemu nodes judge-serial release guest-inputs build image disk image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -117,6 +117,23 @@ N ?= 2
 nodes: guest-inputs disk
 	rm -rf $(BUILD)/nodes
 	cd tooling/qemu && go run ./cmd/naru-nodes -n $(N) -root $(CURDIR) -image $(IMAGE) -guest $(GUEST) -dir $(BUILD)/nodes
+
+# judge-serial reads the serial logs of two Nodes, node-1 first, and exits 0 only when they show
+# what the QEMU tests assert (tooling/qemu/internal/judge). The logs are raw captures: Proxmox's
+# termproxy or `qm terminal`, or the console.log of a `make nodes` run started with -probe.
+judge-serial:
+	@test -n "$(NODE1)" -a -n "$(NODE2)" || { echo "judge-serial: usage: make judge-serial NODE1=<log> NODE2=<log>" >&2; exit 2; }
+	cd tooling/qemu && go run ./cmd/naru-judge -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
+
+# release writes the assets of a deployment into $(RELEASE): naru-<version>.qcow2 (the boot disk),
+# naru-data-<version>.qcow2 (the one data disk both Nodes attach), naru-node-1.yaml and
+# naru-node-2.yaml (example user-data for Proxmox) and SHA256SUMS. The version is
+# `git describe --tags --always`, or VERSION=.
+VERSION ?= $(shell git describe --tags --always)
+RELEASE := $(BUILD)/release
+release: guest-inputs disk
+	rm -rf $(RELEASE)
+	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -out $(RELEASE) -version $(VERSION)
 
 # test-qemu boots two Nodes of the image under QEMU, as the user, and reads
 # their consoles. It needs /dev/kvm with nested virtualization and the host's

@@ -3,7 +3,9 @@ package node
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"path"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 
@@ -36,26 +38,75 @@ type Config struct {
 	Probe bool
 	// Inputs is what the data disk carries.
 	Inputs fixture.Inputs
+	// Network is the Node's addresses; the zero value is QEMUNetwork(Index, Total).
+	Network Network
+}
+
+// Network is what a Node's network-config and its configuration say of addresses. The QEMU tests
+// use QEMUNetwork; the release's example user-data gives the Proxmox values.
+type Network struct {
+	// IP is the Node's address, Peer the address its stand-in dials, and MAC its card's.
+	IP, Peer, MAC string
+	// Netmask, Gateway, Nameservers and Search are what the network-config names.
+	Netmask, Gateway string
+	Nameservers      []string
+	Search           string
+	// MachinePrefix is the IPv4 prefix mvmd gives its Machines; the first host address of it is
+	// the Machines' gateway and resolver.
+	MachinePrefix netip.Prefix
+}
+
+// QEMUNetwork is the network of Node index of total on the QEMU tests' shared network: the Nodes
+// are 10.78.0.<index>, each dials the next, and each has the Machine prefix 10.77.<index>.0/24.
+// The MAC is in the form Proxmox gives its guests' cards: locally administered, and no two Nodes
+// of a cluster share one.
+func QEMUNetwork(index, total int) Network {
+	peer := index
+	if total > 0 {
+		peer = index%total + 1
+	}
+	return Network{
+		IP:            fmt.Sprintf("10.78.0.%d", index),
+		Peer:          fmt.Sprintf("10.78.0.%d", peer),
+		MAC:           fmt.Sprintf("02:00:00:00:%02x:%02x", index>>8, index&0xff),
+		Netmask:       "255.255.255.0",
+		Gateway:       Gateway,
+		Nameservers:   []string{Gateway},
+		Search:        "naru.test",
+		MachinePrefix: netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 77, byte(index), 0}), 24),
+	}
+}
+
+// net is the Node's Network: the one the Config carries, or QEMUNetwork's when it carries none.
+func (c Config) net() Network {
+	if c.Network.IP != "" {
+		return c.Network
+	}
+	return QEMUNetwork(c.Index, c.Total)
 }
 
 // IP is the Node's address on the shared network, which its network-config gives it.
-func (c Config) IP() string { return fmt.Sprintf("10.78.0.%d", c.Index) }
+func (c Config) IP() string { return c.net().IP }
 
-// Gateway is the default gateway and the resolver its network-config names. No machine has this
-// address; the Nodes only check that init installs the route and writes the resolver.
+// Gateway is the default gateway and the resolver the QEMU Nodes' network-config names. No machine
+// has this address; the Nodes only check that init installs the route and writes the resolver.
 const Gateway = "10.78.0.254"
 
 // PeerIP is the address of the Node this Node's stand-in dials: the next one,
 // and the first after the last.
-func (c Config) PeerIP() string { return fmt.Sprintf("10.78.0.%d", c.Index%c.Total+1) }
+func (c Config) PeerIP() string { return c.net().Peer }
 
-// MAC is the Node's network card address, in the form Proxmox gives its guests' cards: locally
-// administered, and no two Nodes of a cluster share one. The Node's network-config names it.
-func (c Config) MAC() string { return fmt.Sprintf("02:00:00:00:%02x:%02x", c.Index>>8, c.Index&0xff) }
+// MAC is the Node's network card address; its network-config names it.
+func (c Config) MAC() string { return c.net().MAC }
 
 // NetworkConfig is the Node's network-config, in the version 1 form qemu-server's nocloud_network
-// writes for a static address, a gateway, a nameserver and a search domain.
+// writes for a static address, a gateway, nameservers and a search domain.
 func (c Config) NetworkConfig() []byte {
+	n := c.net()
+	var ns strings.Builder
+	for _, a := range n.Nameservers {
+		fmt.Fprintf(&ns, "      - '%s'\n", a)
+	}
 	return []byte(fmt.Sprintf(`version: 1
 config:
     - type: physical
@@ -64,14 +115,13 @@ config:
       subnets:
         - type: static
           address: '%s'
-          netmask: '255.255.255.0'
+          netmask: '%s'
           gateway: '%s'
     - type: nameserver
       address:
+%s      search:
       - '%s'
-      search:
-      - 'naru.test'
-`, c.MAC(), c.IP(), Gateway, Gateway))
+`, n.MAC, n.IP, n.Netmask, n.Gateway, ns.String(), n.Search))
 }
 
 type service struct {
@@ -122,7 +172,7 @@ func (c Config) NaruYAML() ([]byte, error) {
 	n.Spec.Files = []file{{Path: mvmdConfig, Mode: "0600", Content: string(mvmdJSON) + "\n"}}
 	n.APIVersion = "naru.garam.sh/v1alpha1"
 	n.Kind = "NodeConfig"
-	n.Metadata.Name = "naru5-" + c.Name
+	n.Metadata.Name = "naru-" + c.Name
 	n.Spec.ControlPlane = c.ControlPlane
 	n.Spec.DataDisk.Label = DataLabel
 	n.Spec.DataDisk.MountPoint = DataMount
@@ -159,6 +209,8 @@ func (c Config) NaruYAML() ([]byte, error) {
 func (c Config) MvmdJSON() ([]byte, error) {
 	root := fixture.GuestRoot
 	kernel := path.Join(root, "guest/vmlinux")
+	prefix := c.net().MachinePrefix
+	first := prefix.Masked().Addr().Next().String()
 	return json.MarshalIndent(map[string]any{
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
 		"state_dir": DataMount + "/state",
@@ -182,9 +234,9 @@ func (c Config) MvmdJSON() ([]byte, error) {
 		"supervision":   map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": supervisorCgroup},
 		"vmm_uid_range": map[string]any{"first": 100000, "count": 1000},
 		"network": map[string]any{
-			"ipv4_prefix":  fmt.Sprintf("10.77.%d.0/24", c.Index),
-			"ipv4_gateway": fmt.Sprintf("10.77.%d.1", c.Index),
-			"resolvers":    []string{fmt.Sprintf("10.77.%d.1", c.Index)},
+			"ipv4_prefix":  prefix.String(),
+			"ipv4_gateway": first,
+			"resolvers":    []string{first},
 		},
 		"pull_timeout": "4m",
 		"boot_timeout": "2m",

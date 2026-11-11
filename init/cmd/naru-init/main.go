@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/init/internal/boot"
+	"github.com/garamsh/naru/init/internal/console"
 	"github.com/garamsh/naru/init/internal/linux"
 	"github.com/garamsh/naru/init/internal/service"
 )
@@ -24,11 +25,20 @@ const (
 )
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "-validate" {
+		os.Exit(validate(os.Args[2], os.Stdout, os.Stderr))
+	}
 	if os.Getpid() != 1 {
 		fmt.Fprintln(os.Stderr, "naru-init must run as PID 1")
 		os.Exit(2)
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	// Everything init and the services write to the console is kept, and re-printed at
+	// intervals, for a reader that attaches after boot.
+	con := console.New(os.Stderr, console.KeptBytes)
+	ticker := time.NewTicker(console.Interval)
+	defer ticker.Stop()
+	go con.Run(context.Background(), ticker.C)
+	log := slog.New(slog.NewTextHandler(con, nil))
 
 	// Subscribe before anything is started, so a signal sent during boot is held.
 	sigs := make(chan os.Signal, 2)
@@ -46,7 +56,7 @@ func main() {
 	go reaper.Run(context.Background())
 
 	host := linux.NewHost(diskWait)
-	services := service.NewManager(linux.NewCgroupTree(cgroupRoot), linux.NewLauncher(reaper), service.SystemClock{}, log)
+	services := service.NewManager(linux.NewCgroupTree(cgroupRoot), linux.NewLauncher(reaper, con), service.SystemClock{}, log)
 
 	if err := boot.Run(host, services, log); err != nil {
 		// Stay up so the reason stays on the console, and start nothing more.

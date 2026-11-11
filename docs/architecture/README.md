@@ -23,9 +23,9 @@ Current architecture of the system and the decisions behind it. This file is the
 - Responsibility documents
   - [structure.md](./structure.md): the shape naru is partitioned into, what may reference what, and when a new unit is earned.
   - [boundaries.md](./boundaries.md): what naru owns, what it leaves to gaon and to mvmd, and the obligations mvmd's deployment puts on it.
-  - [image.md](./image.md): what the P0 image holds, where its inputs come from, and how a Node boots it.
+  - [image.md](./image.md): what the P0 image holds, where its inputs come from, and how a Node boots it, how a serial log is judged, and what a release holds.
   - [config.md](./config.md): how a Node's configuration and network reach init in P0, and the shape of the files.
-  - [init.md](./init.md): what init does as PID 1: boot order, the data-disk check, a cgroup per service, restart backoff, reaping, and what it requires of mvmd's placement.
+  - [init.md](./init.md): what init does as PID 1: boot order, the data-disk check, a cgroup per service, restart backoff, reaping, the kept and re-printed console log, and what it requires of mvmd's placement.
 - ADRs
   - [0001](./adr/0001-the-repository-is-a-go-workspace-of-executable-units-partitioned-by-responsibility.md): the repository is a Go workspace of executable units, each its own module, partitioned by responsibility.
   - [0002](./adr/0002-gaon-depends-on-naru-one-way-through-the-node-api-and-naru-has-no-control-plane.md): gaon depends on naru one way through the node API, and naru has no control plane.
@@ -35,3 +35,4 @@ Current architecture of the system and the decisions behind it. This file is the
   - [0006](./adr/0006-the-host-kernel-is-built-from-the-pinned-longterm-6-18-tarball-and-the-image-inputs-live-in-image.md): the host kernel is built from a pinned longterm 6.18 tarball, and the image's non-Go inputs live in `image/`.
   - [0007](./adr/0007-the-proxmox-boot-form-is-a-uefi-disk-image-whose-efi-stub-kernel-loads-the-initramfs-from-the-esp.md): the Proxmox boot form is a UEFI disk image whose EFI-stub kernel loads the initramfs from the ESP.
   - [0008](./adr/0008-a-node-reads-its-configuration-and-network-from-a-cloud-init-nocloud-drive.md): a Node reads its configuration and network from a cloud-init NoCloud drive; supersedes 0005's delivery.
+  - [0009](./adr/0009-init-re-prints-the-console-log-at-a-fixed-interval-between-numbered-markers.md): init keeps the console log and re-prints it every 30 s between numbered markers, so a reader that attaches late has the whole log.
