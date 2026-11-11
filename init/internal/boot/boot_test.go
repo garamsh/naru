@@ -40,6 +40,7 @@ type recorder struct {
 	diskErr    error
 	forwardErr error
 	prepareErr error
+	sealErr    error
 	startErr   error
 
 	calls     []string
@@ -62,6 +63,11 @@ func (r *recorder) EnableForwarding(f []config.Family) error {
 	return r.forwardErr
 }
 
+func (r *recorder) SealRoot() error {
+	r.calls = append(r.calls, "seal")
+	return r.sealErr
+}
+
 func (r *recorder) Prepare() error {
 	r.calls = append(r.calls, "prepare")
 	return r.prepareErr
@@ -81,7 +87,7 @@ func TestRun_StartsServicesAfterTheMachineIsReady(t *testing.T) {
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "mount", "forward", "prepare", "start mvmd"}, r.calls)
+	assert.Equal(t, []string{"read", "mount", "forward", "prepare", "seal", "start mvmd"}, r.calls)
 	assert.Equal(t, []config.Family{config.IPv4}, r.forwarded)
 }
 
@@ -90,7 +96,7 @@ func TestRun_StartsAControlPlaneServiceOnlyOnAControlPlaneNode(t *testing.T) {
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "mount", "forward", "prepare", "start mvmd", "start gaon"}, r.calls)
+	assert.Equal(t, []string{"read", "mount", "forward", "prepare", "seal", "start mvmd", "start gaon"}, r.calls)
 }
 
 func TestRun_RefusesAnInvalidConfigurationAndStartsNothing(t *testing.T) {
@@ -114,6 +120,7 @@ func TestRun_StartsNothingWhenAStepBeforeTheServicesFails(t *testing.T) {
 		"data disk is refused":         {&recorder{raw: validConfig, diskErr: boom}, []string{"read", "mount"}},
 		"forwarding cannot be set":     {&recorder{raw: validConfig, forwardErr: boom}, []string{"read", "mount", "forward"}},
 		"cgroups cannot be prepared":   {&recorder{raw: validConfig, prepareErr: boom}, []string{"read", "mount", "forward", "prepare"}},
+		"root cannot be sealed":        {&recorder{raw: validConfig, sealErr: boom}, []string{"read", "mount", "forward", "prepare", "seal"}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -78,6 +78,7 @@ func TestNode_TwoNodesRunTheirServicesAndReachEachOther(t *testing.T) {
 	for _, nd := range c.Nodes {
 		for _, step := range [][]string{
 			{"configuration accepted", "node=naru5-" + nd.Name},
+			{"root remounted read-only"},
 			{"started", "service=mvmd"},
 			{"started", "service=registry"},
 			{"started", "service=standin"},

@@ -17,6 +17,9 @@ type Host interface {
 	MountDataDisk(config.DataDisk) error
 	// EnableForwarding turns forwarding on for the families.
 	EnableForwarding([]config.Family) error
+	// SealRoot remounts the root file system read-only. Every mount point
+	// the machine needs exists by then.
+	SealRoot() error
 }
 
 // Services runs the services.
@@ -49,6 +52,10 @@ func Run(host Host, services Services, log *slog.Logger) error {
 	if err := services.Prepare(); err != nil {
 		return fmt.Errorf("prepare cgroups: %w", err)
 	}
+	if err := host.SealRoot(); err != nil {
+		return fmt.Errorf("seal the root: %w", err)
+	}
+	log.Info("root remounted read-only")
 	for _, svc := range cfg.Spec.Services {
 		if svc.ControlPlane && !cfg.Spec.ControlPlane {
 			log.Info("skipping a control-plane service on a Node that is not one", "service", svc.Name)

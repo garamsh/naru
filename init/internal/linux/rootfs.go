@@ -134,3 +134,12 @@ func copyFileMode(from, to string, perm fs.FileMode) error {
 	}
 	return os.Chmod(to, perm)
 }
+
+// SealRoot remounts / read-only, so that nothing writes to the system the
+// image delivered. It must run after every mount point exists.
+func (h *Host) SealRoot() error {
+	if err := syscall.Mount("", "/", "", syscall.MS_REMOUNT|syscall.MS_RDONLY, ""); err != nil {
+		return fmt.Errorf("remount / read-only: %w", err)
+	}
+	return nil
+}
