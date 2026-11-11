@@ -93,6 +93,31 @@ type Lease struct {
 	} `json:"spec"`
 }
 
+// Machine is the part of a Machine the tests read: the Node the scheduler bound it to, the epoch of
+// the binding, and the phase and epoch the Node Agent reports.
+type Machine struct {
+	Spec struct {
+		NodeName     string `json:"nodeName"`
+		BindingEpoch int64  `json:"bindingEpoch"`
+	} `json:"spec"`
+	Status struct {
+		Phase        string `json:"phase"`
+		BindingEpoch int64  `json:"bindingEpoch"`
+	} `json:"status"`
+}
+
+// Running reports whether the Machine is bound and its status says Running for the epoch of the
+// binding. A status written for an earlier epoch reads Pending in gaon (EffectivePhase).
+func (m Machine) Running() bool {
+	return m.Spec.NodeName != "" && m.Status.Phase == "Running" && m.Status.BindingEpoch == m.Spec.BindingEpoch
+}
+
+// Machine reads the Machine of that name.
+func (c *Client) Machine(ctx context.Context, name string) (Machine, error) {
+	var m Machine
+	return m, c.do(ctx, http.MethodGet, "/machines/"+name, nil, &m)
+}
+
 // Node reads the Node of that name.
 func (c *Client) Node(ctx context.Context, name string) (Node, error) {
 	var n Node

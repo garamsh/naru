@@ -7,8 +7,10 @@ package tests_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
+	"github.com/garamsh/naru/tooling/qemu/internal/gaoncli"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
@@ -219,6 +222,172 @@ func TestNode_GaonRegistersEachNodeKeepsItsLeaseAndSurvivesTheControlPlaneNodeRe
 		n, err := api.Node(ctx, "node-1")
 		return err == nil && n.Ready()
 	})
+}
+
+// rootMounted is the line of the guest's console that says it mounted its root disk, vdb, as ext4.
+const rootMounted = "EXT4-fs (vdb): mounted filesystem"
+
+// machineManifest is a Machine as a user writes it for gaon's CLI: the registry image by digest,
+// the Always run strategy, a 256 MiB root disk (mvmd refuses a Machine with none) and the requests
+// the scheduler weighs.
+const machineManifest = `apiVersion: compute.gaon.garam.sh/v1alpha1
+kind: Machine
+metadata:
+  name: hello
+spec:
+  image: %s@%s
+  runStrategy: Always
+  rootDiskSize: 256Mi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+`
+
+// TestNode_AMachineAppliedWithTheGaonCLIIsBoundRunsOnTheGuestKernelFromTheTestRegistryOnAMkfsRootDisk
+// boots two Nodes that run gaon, admits both with gaon's CLI from the host, applies a Machine through
+// node-1's API server with the same CLI, and waits for the scheduler to bind it and for it to be
+// Running. On the Node it is bound to, the Node's registry served the image's manifest, the Machine's
+// console (the vmm.log mvmd keeps for it) shows the guest kernel's banner and the guest mounting its
+// root disk as ext4, and that root disk is the ext4 file system, with that UUID, that mvmd made with
+// /bin/mkfs.ext4 (its disk.mkfs).
+func TestNode_AMachineAppliedWithTheGaonCLIIsBoundRunsOnTheGuestKernelFromTheTestRegistryOnAMkfsRootDisk(t *testing.T) {
+	cliBin := filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "gaon", "gaon")
+	require.FileExists(t, cliBin, "make image builds gaon's CLI from the pin")
+	c := start(t, node.ClusterSpec{N: 2, Gaon: true})
+	api, err := hostapi.New(c.HostAddr, c.Certs)
+	require.NoError(t, err)
+	cli, err := gaoncli.New(cliBin, c.HostAddr, c.Certs, t.TempDir())
+	require.NoError(t, err)
+	ctx := context.Background()
+	work := t.TempDir()
+
+	for _, nd := range c.Nodes {
+		require.NoError(t, nd.WaitFor(ctx, bootTimeout, "started", "service=registry"), nd.Name)
+		require.NoError(t, nd.WaitFor(ctx, bootTimeout, "started", "service=gaon-node-agent"), nd.Name)
+	}
+	for _, nd := range c.Nodes {
+		eventually(t, nd.Name+" is registered and Ready", func() bool {
+			n, err := api.Node(ctx, nd.Name)
+			return err == nil && n.Ready()
+		})
+		out, err := cli.Apply(ctx, work, fmt.Sprintf("apiVersion: compute.gaon.garam.sh/v1alpha1\nkind: Node\nmetadata:\n  name: %s\nspec:\n  admitted: true\n", nd.Name))
+		require.NoError(t, err)
+		t.Logf("gaon apply Node %s: %s", nd.Name, strings.TrimSpace(out))
+		eventually(t, nd.Name+" is Admitted", func() bool {
+			n, err := api.Node(ctx, nd.Name)
+			return err == nil && n.Status.State == "Admitted"
+		})
+	}
+
+	out, err := cli.Apply(ctx, work, fmt.Sprintf(machineManifest, inputs.Image.Repository, inputs.Image.Digest))
+	require.NoError(t, err)
+	t.Logf("gaon apply Machine: %s", strings.TrimSpace(out))
+
+	// snapshot copies the bound Node's data disk as it is now; the copy is replaced at each call.
+	snapshot := func(bound *node.Node) (*node.DataSnapshot, error) {
+		img := filepath.Join(work, "data-"+bound.Name+".img")
+		_ = os.Remove(img)
+		return bound.SnapshotData(img)
+	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		got, _ := cli.Run(ctx, "get", "machine", "hello")
+		t.Logf("gaon get machine hello:\n%s", got)
+		for _, nd := range c.Nodes {
+			sn, err := snapshot(nd)
+			if err != nil {
+				t.Logf("%s: snapshot: %v", nd.Name, err)
+				continue
+			}
+			var walk func(dir string, depth int)
+			walk = func(dir string, depth int) {
+				names, err := sn.List(dir)
+				t.Logf("%s %s: %v %v", nd.Name, dir, names, err)
+				if depth == 0 {
+					return
+				}
+				for _, n := range names {
+					if !strings.Contains(n, ".") {
+						walk(dir+"/"+n, depth-1)
+					}
+				}
+			}
+			walk(node.DataMount+"/mvmd", 4)
+			for _, f := range []string{"machines/hello-e1/run/vmm.log"} {
+				b, err := sn.Read(node.DataMount + "/mvmd/" + f)
+				t.Logf("%s %s (%v):\n%s", nd.Name, f, err, b)
+			}
+		}
+	})
+
+	var m hostapi.Machine
+	eventually(t, "the Machine is bound and Running", func() bool {
+		m, err = api.Machine(ctx, "hello")
+		return err == nil && m.Running()
+	})
+	var bound *node.Node
+	for _, nd := range c.Nodes {
+		if nd.Name == m.Spec.NodeName {
+			bound = nd
+		}
+	}
+	require.NotNil(t, bound, "the Machine is bound to one of the two Nodes: %q", m.Spec.NodeName)
+	t.Logf("the scheduler bound the Machine to %s at epoch %d", bound.Name, m.Spec.BindingEpoch)
+
+	// The image comes from the test registry of the bound Node: its console shows the manifest served.
+	require.NoError(t, bound.WaitFor(ctx, bootTimeout, "served", inputs.Image.Digest), "the registry served the manifest")
+
+	// The Machine's console: mvmd writes the guest's serial output to the Machine's vmm.log, which
+	// the host reads from a copy of the Node's data disk.
+	var vmm string
+	var snap *node.DataSnapshot
+	eventually(t, "the Machine's console shows the guest mounting its root disk", func() bool {
+		snap, err = snapshot(bound)
+		if err != nil {
+			return false
+		}
+		ids, err := snap.List(node.DataMount + "/mvmd/machines")
+		if err != nil {
+			return false
+		}
+		for _, id := range ids {
+			b, err := snap.Read(node.DataMount + "/mvmd/machines/" + id + "/run/vmm.log")
+			if err == nil && strings.Contains(string(b), rootMounted) {
+				vmm = string(b)
+				return true
+			}
+		}
+		return false
+	})
+	t.Logf("the Machine's console (vmm.log):\n%s", vmm)
+	mounted := regexp.MustCompile(`EXT4-fs \(vdb\): mounted filesystem ([0-9a-f-]{36})`).FindStringSubmatch(vmm)
+	require.NotNil(t, mounted, "the guest mounted its root disk, vdb, as ext4")
+	vmlinux, err := os.ReadFile(filepath.Join(os.Getenv("NARU_GUEST_DIR"), "kernels", "naru", "vmlinux"))
+	require.NoError(t, err)
+	banner := regexp.MustCompile(`Linux version [^\n\x00]+`).Find(vmlinux)
+	require.NotEmpty(t, banner, "the guest kernel carries its banner")
+	assert.Contains(t, vmm, string(banner), "the Machine booted the image's guest kernel")
+
+	// The root disk is ext4, made by the mkfs mvmd runs.
+	disks, err := snap.List(node.DataMount + "/mvmd/disks")
+	require.NoError(t, err)
+	var disk string
+	for _, n := range disks {
+		if strings.HasSuffix(n, "-root") {
+			disk = n
+		}
+	}
+	require.NotEmpty(t, disk, "mvmd made the Machine's root disk: %v", disks)
+	img := filepath.Join(work, "root.img")
+	require.NoError(t, snap.Extract(node.DataMount+"/mvmd/disks/"+disk, img))
+	sb, err := node.Superblock(img)
+	require.NoError(t, err)
+	assert.Contains(t, sb, "Filesystem magic number:  0xEF53", "the root disk is an ext4 file system")
+	assert.Contains(t, sb, "Filesystem UUID:          "+mounted[1], "it is the file system the guest mounted, which mvmd made with -U")
+	t.Logf("root disk %s:\n%s", disk, sb)
 }
 
 // eventually polls cond until it holds, failing the test when bootTimeout passes first. Each poll

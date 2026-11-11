@@ -17,6 +17,7 @@ func main() {
 	dir := flag.String("dir", "", "directory holding index.json, the blobs, cert.pem and key.pem")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil)).With("service", "naru-registry")
+	slog.SetDefault(log)
 	log.Info("serving", "addr", *addr, "dir", *dir)
 	if err := registry.Serve(*addr, *dir, filepath.Join(*dir, "cert.pem"), filepath.Join(*dir, "key.pem")); err != nil {
 		log.Error("registry failed", "err", err)

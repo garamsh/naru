@@ -54,3 +54,17 @@ func TestRun_AMissingLogExitsTwo(t *testing.T) {
 	assert.Equal(t, 2, run([]string{"-node1", "/nonexistent", "-node2", "/nonexistent"}, &out, &errOut))
 	assert.Equal(t, 2, run(nil, &out, &errOut))
 }
+
+func TestRun_WithGaonTwoLogsThatShowGaonsServicesExitZeroAndOneWithoutTheRegistryExitsOne(t *testing.T) {
+	var out, errOut bytes.Buffer
+	n1 := logOf(t, judge.Gaon("node-1", true, 1), "")
+	n2 := logOf(t, judge.Gaon("node-2", false, 1), "")
+
+	assert.Equal(t, 0, run([]string{"-gaon", "-node1", n1, "-node2", n2}, &out, &errOut), errOut.String())
+	assert.Equal(t, 1, run([]string{"-node1", n1, "-node2", n2}, &out, &errOut), "without -gaon the stand-in is expected")
+
+	errOut.Reset()
+	n2 = logOf(t, judge.Gaon("node-2", false, 1), "init started the registry")
+	assert.Equal(t, 1, run([]string{"-gaon", "-node1", n1, "-node2", n2}, &out, &errOut))
+	assert.Contains(t, errOut.String(), "FAIL node-2: init started the registry")
+}

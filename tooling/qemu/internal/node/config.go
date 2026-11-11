@@ -184,8 +184,9 @@ type file struct {
 // registry that serves the test image; a stand-in that waits for mvmd's
 // socket and for the next Node's stand-in; a control-plane stand-in, which
 // starts only where spec.controlPlane is true; and, where asked, the probe. A Node with Gaon set
-// runs mvmd and then gaon's services (gaon.go) in place of the rest, and its files carry the
-// certificates.
+// runs mvmd, the registry (the scheduler may bind a Machine to any Node, and mvmd pulls from the
+// registry on its own Node) and then gaon's services (gaon.go) in place of the rest, and its files
+// carry the certificates.
 func (c Config) NaruYAML() ([]byte, error) {
 	mvmdJSON, err := c.MvmdJSON()
 	if err != nil {
@@ -205,14 +206,15 @@ func (c Config) NaruYAML() ([]byte, error) {
 		Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", mvmdConfig},
 		Env: map[string]string{"SSL_CERT_FILE": path.Join(root, "registry/ca.pem")},
 	}
+	registry := service{Name: "registry", Binary: path.Join(root, "bin/naru-registry"), Args: []string{"-listen", fixture.RegistryAddr, "-dir", path.Join(root, "registry")}}
 	if c.Gaon != nil {
 		n.Spec.Files = append(n.Spec.Files, c.Gaon.files(c)...)
-		n.Spec.Services = append([]service{mvmd}, c.Gaon.services(c)...)
+		n.Spec.Services = append([]service{mvmd, registry}, c.Gaon.services(c)...)
 		return yaml.Marshal(n)
 	}
 	n.Spec.Services = []service{
 		mvmd,
-		{Name: "registry", Binary: path.Join(root, "bin/naru-registry"), Args: []string{"-listen", fixture.RegistryAddr, "-dir", path.Join(root, "registry")}},
+		registry,
 		{
 			Name: "standin", Binary: "/bin/naru-standin",
 			Args: []string{"-socket", MvmdSocket, "-mount", DataMount, "-listen", c.IP() + ":" + StandinPort, "-peer", c.PeerIP() + ":" + StandinPort},

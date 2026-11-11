@@ -31,13 +31,18 @@ var probeChecks = []string{
 // It requires one interface and no count of nameservers: the count is a fact of the Node's
 // network, which the QEMU tests' network-config fixes at one and a Proxmox network at two.
 func Boot(name string) []Expect {
+	return append(boot(name, 1), Expect{What: "init started the stand-in", Fragments: []string{"started", "service=standin"}})
+}
+
+// boot is what every Node shows, whatever services its configuration names: init's own lines and
+// mvmd's start. interfaces is the number of interfaces the Node's network-config gives it.
+func boot(name string, interfaces int) []Expect {
 	return []Expect{
 		{What: "init accepted the configuration", Fragments: []string{"configuration accepted", "node=naru-" + name}},
-		{What: "init configured the network", Fragments: []string{"network configured", "interfaces=1"}},
+		{What: "init configured the network", Fragments: []string{"network configured", fmt.Sprintf("interfaces=%d", interfaces)}},
 		{What: "init remounted the root read-only", Fragments: []string{"root remounted read-only"}},
 		{What: "the data disk is mounted", Fragments: []string{"data disk is mounted", "dir=/var/lib/naru", "fstype=ext4"}},
 		{What: "init started mvmd", Fragments: []string{"started", "service=mvmd"}},
-		{What: "init started the stand-in", Fragments: []string{"started", "service=standin"}},
 	}
 }
 
@@ -64,6 +69,34 @@ func ControlPlane(controlPlane bool) []Expect {
 		{What: "init skipped the control service", Fragments: []string{"skipping a control-plane service", "service=control"}},
 		{What: "init never started the control service", Fragments: []string{"started", "service=control"}, Absent: true},
 	}
+}
+
+// controlPlaneServices are the gaon services that start only where spec.controlPlane is true, in
+// the order init starts them.
+var controlPlaneServices = []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers"}
+
+// Gaon is what the console of a Node that runs gaon shows, in place of what the stand-in and the
+// probe make a Node show: init's boot lines, the start of mvmd, the registry and gaon's Node Agent,
+// and, by spec.controlPlane, the start of etcd and gaon's control plane or init's skipping of them.
+// The registry runs on every Node because the scheduler may bind a Machine to any of them.
+// interfaces is the number of interfaces the Node's network-config gives it: one on a Proxmox
+// Node, two on the QEMU tests' control-plane Node, which has a second NIC for the host forward.
+func Gaon(name string, controlPlane bool, interfaces int) []Expect {
+	out := append(boot(name, interfaces),
+		Expect{What: "init started the registry", Fragments: []string{"started", "service=registry"}},
+		Expect{What: "init started gaon's Node Agent", Fragments: []string{"started", "service=gaon-node-agent"}},
+	)
+	for _, s := range controlPlaneServices {
+		if controlPlane {
+			out = append(out, Expect{What: "init started " + s, Fragments: []string{"started", "service=" + s}})
+			continue
+		}
+		out = append(out,
+			Expect{What: "init skipped " + s, Fragments: []string{"skipping a control-plane service", "service=" + s}},
+			Expect{What: "init never started " + s, Fragments: []string{"started", "service=" + s}, Absent: true},
+		)
+	}
+	return out
 }
 
 // Probe is what the console of the Node that runs the probe shows: every check ok, no check

@@ -6,6 +6,7 @@ package registry
 import (
 	"crypto/tls"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -69,6 +70,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		return
 	}
+	slog.Info("served", "method", req.Method, "path", req.URL.Path)
 	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.Header().Set("Docker-Content-Digest", digest)
