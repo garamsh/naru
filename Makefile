@@ -121,7 +121,7 @@ nodes: guest-inputs
 # test-qemu boots two Nodes of the image under QEMU, as the user, and reads
 # their consoles. It needs /dev/kvm with nested virtualization and the host's
 # mke2fs, and fails, never skips, when no test ran.
-test-qemu: guest-inputs
+test-qemu: guest-inputs disk
 	@set -e; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
 	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) go test -tags qemu_real -count=1 -v -timeout 20m -run '^TestNode_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \

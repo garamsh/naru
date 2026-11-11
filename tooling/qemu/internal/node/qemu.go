@@ -105,6 +105,9 @@ func qemuArgs(spec Spec, name, configDisk, dataDisk, console string) ([]string, 
 			// loglevel=4: kernel info messages must not split init's console lines; no test asserts a kernel line.
 			"-append", "console=ttyS0 panic=-1 loglevel=4 "+ip)
 	} else {
+		if _, err := os.Stat(spec.Disk); err != nil {
+			return nil, fmt.Errorf("the boot disk is missing; make disk builds it: %w", err)
+		}
 		vars := filepath.Join(spec.Dir, "OVMF_VARS.fd")
 		if err := copyInto(OVMFVars, vars); err != nil {
 			return nil, fmt.Errorf("copy the OVMF variable store: %w", err)
