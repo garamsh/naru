@@ -41,8 +41,8 @@ In this repository `Machine` names the microVM and `Node` the physical machine. 
 
 - **The node API's shape.** Its services, calls and versioning are not decided. Until a decision is, this binds nothing.
 - **The node API's PKI.** How a caller is authenticated and authorized, and how a first Node with no configuration accepts one, is not decided.
-- **The configuration format.** What a Node's configuration looks like, and how the services it names are described, is not decided.
-- **The image layout.** Partitions, the read-only parts and where mvmd's state directory sits against the fs-verity obligation are not decided.
+- **The configuration beyond P0.** The fields P0 leaves out (mvmd's prefix, gateway and resolvers, host network settings) and the file's integrity are not decided; they are listed in [config.md](./config.md) §Open questions.
+- **The installed Node's partitions.** The partitions of an installed Node and where its system lives are not decided; [image.md](./image.md) §Open questions lists them.
 - **The upgrade scheme.** How a Node upgrades and rolls back is not decided.
-- **How each mvmd obligation is met.** The service manager behind the cgroup obligation, the capabilities' grant, the kernel configuration and the forwarding setting are not decided.
+- **How each mvmd obligation is met.** The service manager behind the cgroup obligation, and the capabilities' grant are not decided.
 - **Host network settings for node-to-node connectivity that gaon will need naru's configuration to carry.** The network driver interface takes CSI's shape with gaon as the caller ([discussioncomment-19533869](https://github.com/garamsh/discussions/discussions/2#discussioncomment-19533869), project owner, 2026-11-11), and connectivity between Nodes is host configuration that reaches naru's Node configuration. How Nodes connect (direct routing, WireGuard, overlay) is not decided, so which settings naru has to carry is not decided either.

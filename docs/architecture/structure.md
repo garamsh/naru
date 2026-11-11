@@ -16,7 +16,7 @@ The repository holds these responsibilities (garamsh/discussions Discussion #3 d
 - **A node API server**, a binary: apply config, upgrade, reset, status.
 - **An installer**, a binary.
 - **A node API client**, a library module under `lib/`, which gaon requires as an external module (Discussion #3 decision 5).
-- **Non-Go build inputs**: kernel configuration for the host and guest kernels, and the image definition. Where they live is an open question below.
+- **Non-Go build inputs**: kernel configuration for the host and guest kernels, and the image definition. They live in `image/`, below.
 
 The rules for units:
 
@@ -26,6 +26,7 @@ The rules for units:
 - **A library linked by more than one unit, or required by another project, is a module of its own under `lib/`**, its package at the module root as `docs/convention/stack-go.md` §1 lays out a module that ships no binary. `lib/` holds no binary. There is no `shared/`, `utils/` or `common/`, and a package that one unit alone imports belongs to that unit.
 - **The node API client gaon requires is a module under `lib/`**, as garamsh/mvmd's `lib/runtimeapi` is for gaon. gaon requires it as an external module and never copies it in.
 - **A unit's folder is created by its first pull request**, and not before.
+- **Non-Go build inputs live in one top-level folder, `image/`**: `image/kernel/` holds the kernel configuration and pin, `image/initramfs/` the initramfs definition. It holds no Go module, so it stays outside the units above and outside `go.work`.
 - **Dependencies between projects are one-way**: gaon calls naru's node API, and naru does not know gaon's resource API.
 
 ## Boundaries and dependency direction
@@ -48,8 +49,8 @@ Each executable unit has its own site: its `cmd/<binary>/main.go`, or the packag
 ## Decisions this rests on
 
 - [ADR 0001](./adr/0001-the-repository-is-a-go-workspace-of-executable-units-partitioned-by-responsibility.md): the repository is a Go workspace of executable units, each its own module, partitioned by responsibility. It records the structure taken, the candidates read, and the signs that it was wrong.
+- [ADR 0006](./adr/0006-the-host-kernel-is-built-from-the-pinned-longterm-6-18-tarball-and-the-image-inputs-live-in-image.md): the host kernel's source and pin, and `image/` as the folder of the non-Go build inputs.
 
 ## Open questions
 
-- **Where the non-Go build inputs live.** The kernel configuration and the image definition are not Go modules, and no rule here gives them a folder. Until a decision does, this binds nothing.
 - **How a unit is divided inside.** `docs/convention/stack-go.md` §1 lays out a service module, and no decision here adds to it. Until one does, this binds nothing.
