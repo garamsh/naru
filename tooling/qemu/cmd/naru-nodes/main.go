@@ -51,8 +51,7 @@ func run() error {
 		probeOn = 1
 	}
 	c, err := node.StartCluster(node.ClusterSpec{
-		N: *n, Kernel: filepath.Join(*image, "bzImage"), Initrd: filepath.Join(*image, "initramfs.cpio.gz"),
-		Dir: *dir, Inputs: staged, ProbeOn: probeOn,
+		N: *n, Disk: filepath.Join(*image, "naru.img"), Dir: *dir, Inputs: staged, ProbeOn: probeOn,
 	})
 	if err != nil {
 		return err

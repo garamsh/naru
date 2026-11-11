@@ -14,56 +14,43 @@ import (
 	"strconv"
 )
 
-// Labels and sizes of the two disks of a Node (docs/architecture/config.md).
+// Label and size of the data disk of a Node (docs/architecture/config.md).
 const (
-	ConfigLabel = "NARUCFG"
-	DataLabel   = "NARUDATA"
+	DataLabel = "NARUDATA"
 
-	configDiskBytes = 4 << 20
 	// The data disk is sparse. It holds the staged inputs, the Machines' root disks and mvmd's state.
 	dataDiskBytes = 2 << 30
 	mkfs          = "/sbin/mkfs.ext4"
 )
 
-// BuildDisks writes the config disk and the data disk into dir and returns
-// their paths. The config disk is ext4 labelled ConfigLabel holding
-// naru.yaml; the data disk is ext4 with the verity feature, labelled
-// DataLabel, holding config/mvmd.json and, at inputs, the tree of the
+// BuildDataDisk writes the data disk into dir and returns its path: ext4 with
+// the verity feature, labelled DataLabel, holding at inputs the tree of the
 // directory inputsDir (hard-linked into the build, so it costs no copy when
-// both are on one file system).
-func BuildDisks(dir string, naruYAML, mvmdJSON []byte, inputsDir string) (config, data string, err error) {
-	config = filepath.Join(dir, "config.img")
-	if err := makeDisk(config, ConfigLabel, configDiskBytes, nil, map[string][]byte{"naru.yaml": naruYAML}, nil); err != nil {
-		return "", "", err
-	}
-	data = filepath.Join(dir, "data.img")
+// both are on one file system). It has nothing of the Node in it: what differs
+// between Nodes is on the NoCloud drive.
+func BuildDataDisk(dir, inputsDir string) (string, error) {
+	data := filepath.Join(dir, "data.img")
 	trees := map[string]string{}
 	if inputsDir != "" {
 		trees["inputs"] = inputsDir
 	}
-	if err := makeDisk(data, DataLabel, dataDiskBytes, []string{"-O", "verity"}, map[string][]byte{"config/mvmd.json": mvmdJSON}, trees); err != nil {
-		return "", "", err
+	if err := makeDisk(data, DataLabel, dataDiskBytes, []string{"-O", "verity"}, trees); err != nil {
+		return "", err
 	}
-	return config, data, nil
+	return data, nil
 }
 
-// makeDisk creates an ext4 image of size bytes holding files and the trees
-// (destination to host directory), owned by root, with extra mke2fs options.
-// The block size is 4096 so that verity, which needs the file system block to
-// equal the page size, can be enabled.
-func makeDisk(image, label string, size int64, extra []string, content map[string][]byte, trees map[string]string) error {
+// makeDisk creates an ext4 image of size bytes holding the trees (destination
+// to host directory), owned by root, with extra mke2fs options. The block size
+// is 4096 so that verity, which needs the file system block to equal the page
+// size, can be enabled.
+func makeDisk(image, label string, size int64, extra []string, trees map[string]string) error {
 	src := image + ".src"
 	if err := os.RemoveAll(src); err != nil {
 		return err
 	}
-	for name, b := range content {
-		p := filepath.Join(src, name)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(p, b, 0o644); err != nil {
-			return err
-		}
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		return err
 	}
 	for dest, from := range trees {
 		if err := linkTree(from, filepath.Join(src, dest)); err != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"go.yaml.in/yaml/v4"
@@ -103,6 +104,7 @@ func validate(cfg NodeConfig) error {
 	v.services(cfg.Spec.Services)
 	v.dataDisk(cfg.Spec.DataDisk)
 	v.network(cfg.Spec.Network)
+	v.files(cfg.Spec.Files)
 	return errors.Join(v.errs...)
 }
 
@@ -163,6 +165,28 @@ func (v *validation) network(n Network) {
 			v.fail(field, "%q is listed twice", f)
 		}
 		seen[f] = true
+	}
+}
+
+func (v *validation) files(files []File) {
+	for i, f := range files {
+		field := fmt.Sprintf("spec.files[%d]", i)
+		switch {
+		case !isCleanAbs(f.Path) || !strings.HasPrefix(f.Path, FilesRoot+"/"):
+			v.fail(field+".path", "must be a clean absolute path under %s, got %q", FilesRoot, f.Path)
+		case f.Path == ReservedDir || strings.HasPrefix(f.Path, ReservedDir+"/"):
+			v.fail(field+".path", "%s is init's own directory, got %q", ReservedDir, f.Path)
+		}
+		if f.Mode != "" {
+			if m, err := strconv.ParseUint(f.Mode, 8, 32); err != nil || m > 0o777 {
+				v.fail(field+".mode", "must be octal permission bits up to 0777, got %q", f.Mode)
+			}
+		}
+		for j, earlier := range files[:i] {
+			if f.Path == earlier.Path || strings.HasPrefix(f.Path, earlier.Path+"/") || strings.HasPrefix(earlier.Path, f.Path+"/") {
+				v.fail(field+".path", "%q conflicts with spec.files[%d], %q", f.Path, j, earlier.Path)
+			}
+		}
 	}
 }
 

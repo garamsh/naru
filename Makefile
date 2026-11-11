@@ -114,7 +114,7 @@ guest-inputs: image
 # the user, and keeps them up until interrupted. Their disks and consoles are
 # under $(BUILD)/nodes.
 N ?= 2
-nodes: guest-inputs
+nodes: guest-inputs disk
 	rm -rf $(BUILD)/nodes
 	cd tooling/qemu && go run ./cmd/naru-nodes -n $(N) -root $(CURDIR) -image $(IMAGE) -guest $(GUEST) -dir $(BUILD)/nodes
 

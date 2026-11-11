@@ -4,7 +4,11 @@ go 1.24.4
 
 require (
 	github.com/stretchr/testify v1.12.1
+	github.com/vishvananda/netlink v1.3.1
 	go.yaml.in/yaml/v4 v4.0.0
 )
 
-require go.yaml.in/yaml/v3 v3.0.5 // indirect
+require (
+	github.com/vishvananda/netns v0.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
+)

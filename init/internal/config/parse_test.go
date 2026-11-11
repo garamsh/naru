@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -31,6 +32,13 @@ spec:
     mountPoint: /var/lib/mvmd
   network:
     forwarding: [ipv4, ipv6]
+  files:
+    - path: /run/mvmd/config.json
+      mode: "0600"
+      content: |
+        {"listen": ":8080"}
+    - path: /run/mvmd/token
+      content: secret
 `
 
 // fields returns the Field of every *FieldError joined in err.
@@ -64,6 +72,11 @@ func TestParse_Valid(t *testing.T) {
 	assert.True(t, cfg.Spec.Services[1].ControlPlane)
 	assert.Equal(t, "NARUDATA", cfg.Spec.DataDisk.Label)
 	assert.Equal(t, []config.Family{config.IPv4, config.IPv6}, cfg.Spec.Network.Forwarding)
+	require.Len(t, cfg.Spec.Files, 2)
+	assert.Equal(t, "/run/mvmd/config.json", cfg.Spec.Files[0].Path)
+	assert.Equal(t, "{\"listen\": \":8080\"}\n", cfg.Spec.Files[0].Content)
+	assert.Equal(t, os.FileMode(0o600), cfg.Spec.Files[0].Perm())
+	assert.Equal(t, os.FileMode(0o644), cfg.Spec.Files[1].Perm(), "a file without a mode is 0644")
 }
 
 func TestParse_RefusesAndNamesTheField(t *testing.T) {
@@ -89,6 +102,14 @@ func TestParse_RefusesAndNamesTheField(t *testing.T) {
 		{"relative mount point", "mountPoint: /var/lib/mvmd", "mountPoint: var/lib", "spec.dataDisk.mountPoint"},
 		{"unknown family", "[ipv4, ipv6]", "[ipv4, ipx]", "spec.network.forwarding[1]"},
 		{"repeated family", "[ipv4, ipv6]", "[ipv4, ipv4]", "spec.network.forwarding[1]"},
+		{"file outside /run", "path: /run/mvmd/token", "path: /etc/token", "spec.files[1].path"},
+		{"file path not clean", "path: /run/mvmd/token", "path: /run/mvmd/../token", "spec.files[1].path"},
+		{"file in init's directory", "path: /run/mvmd/token", "path: /run/naru/resolv.conf", "spec.files[1].path"},
+		{"file that is init's directory", "path: /run/mvmd/token", "path: /run/naru", "spec.files[1].path"},
+		{"file mode not octal", `mode: "0600"`, `mode: "rw"`, "spec.files[0].mode"},
+		{"file mode with a setuid bit", `mode: "0600"`, `mode: "4755"`, "spec.files[0].mode"},
+		{"file path used twice", "path: /run/mvmd/token", "path: /run/mvmd/config.json", "spec.files[1].path"},
+		{"file path inside another file", "path: /run/mvmd/token", "path: /run/mvmd/config.json/x", "spec.files[1].path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

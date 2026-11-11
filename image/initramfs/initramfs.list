@@ -11,6 +11,7 @@ dir /tmp 1777 0 0
 dir /var 0755 0 0
 dir /var/lib 0755 0 0
 dir /var/lib/mvmd 0755 0 0
+slink /etc/resolv.conf /run/naru/resolv.conf 0777 0 0
 file /init @OUT@/naru-init 0755 0 0
 file /bin/mvmd @OUT@/mvmd 0755 0 0
 file /bin/mvmd-supervisor @OUT@/mvmd-supervisor 0755 0 0
