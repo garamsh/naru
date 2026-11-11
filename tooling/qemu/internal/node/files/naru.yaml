@@ -1,0 +1,18 @@
+apiVersion: naru.garam.sh/v1alpha1
+kind: NodeConfig
+metadata:
+  name: naru5-node-1
+spec:
+  controlPlane: false
+  dataDisk:
+    label: NARUDATA
+    mountPoint: /var/lib/mvmd
+  network:
+    forwarding: [ipv4, ipv6]
+  services:
+    - name: mvmd
+      binary: /bin/mvmd
+      args: ["-config", "/var/lib/mvmd/config/mvmd.json"]
+    - name: standin
+      binary: /bin/naru-standin
+      args: ["-socket", "/run/mvmd.sock", "-mount", "/var/lib/mvmd"]

@@ -1,0 +1,8 @@
+{
+  "socket": {"path": "/run/mvmd.sock", "mode": "0660"},
+  "state_dir": "/var/lib/mvmd/state",
+  "driver": "memory",
+  "vmm_uid_range": {"first": 100000, "count": 1000},
+  "supervision": {"binary": "/bin/mvmd-supervisor", "dir": "/run/mvmd-supervisor", "cgroup": "/sys/fs/cgroup/naru/detached"},
+  "network": {"ipv4_prefix": "10.77.0.0/24", "ipv4_gateway": "10.77.0.1", "ipv6_prefix": "fd77::/64", "resolvers": ["10.77.0.1"]}
+}
