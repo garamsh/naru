@@ -1,4 +1,4 @@
-.PHONY: lint format format-apply test test-cgroup test-qemu nodes judge-serial release build image disk image-repro ci
+.PHONY: lint format format-apply test test-cgroup test-qemu test-harness nodes judge-serial release build image disk image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -142,7 +142,8 @@ judge-serial:
 	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_GAON),-gaon) $(if $(JUDGE_PKI),-pki) $(if $(JUDGE_NODE1_INTERFACES),-node1-interfaces $(JUDGE_NODE1_INTERFACES)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
 
 # release writes the assets of a deployment into $(RELEASE): naru-<version>.qcow2 (the boot disk),
-# naru-data-<version>.qcow2 (the one data disk both Nodes attach), naru-node-1.test.yaml and
+# naru-data-<version>.qcow2 (the one data disk both Nodes attach), naru-guest-<version>.json,
+# naru-inputs-<version>.json (what naru-cluster reads besides the disks), naru-node-1.test.yaml and
 # naru-node-2.test.yaml (test-only user-data for Proxmox: they carry gaon's keys, so they are
 # for a throwaway deployment) and SHA256SUMS. The version is `git describe --tags --always`, or
 # VERSION=.
@@ -162,6 +163,19 @@ test-qemu: disk
 	cat "$$log"; \
 	n=$$(grep -c '^--- PASS: TestNode_' "$$log" || true); \
 	echo "$@: $$n test(s) passed, selected by -run '^TestNode_' with -tags qemu_real"; \
+	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
+
+# test-harness drives naru-cluster as an external harness does (docs/architecture/harness.md): from
+# a directory outside the checkout, against the output of `make release`, with the gaon binaries
+# of the pin as -gaon-bin. It is a target of its own so that test-qemu stays the length it is. It
+# needs what test-qemu needs, and fails, never skips, when no test ran.
+test-harness: release
+	@set -e; \
+	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
+	if ! (cd tooling/qemu && NARU_RELEASE_DIR=$(RELEASE) NARU_GAON_DIR=$(GAON) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestCluster_' ./tests/harness) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	cat "$$log"; \
+	n=$$(grep -c '^--- PASS: TestCluster_' "$$log" || true); \
+	echo "$@: $$n test(s) passed, selected by -run '^TestCluster_' with -tags qemu_real"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
 ci: lint format test build

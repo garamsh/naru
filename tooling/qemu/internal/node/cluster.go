@@ -30,6 +30,10 @@ type ClusterSpec struct {
 	// BootPKI, with Gaon, has Node 1 issue its certificates from the CA its spec.pki carries; the
 	// other Nodes carry their agent's pair as files (ADR 0013).
 	BootPKI bool
+	// Disable names services left out of every Node's configuration (ServiceNames).
+	Disable []string
+	// GaonBinaries names the gaon services whose binary the Inputs tree carries under gaon/.
+	GaonBinaries []string
 }
 
 // Cluster is the Nodes of one network. Node 1 is the one whose configuration
@@ -68,13 +72,13 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 			return nil, fmt.Errorf("issue the certificates: %w", err)
 		}
 		c.HostAddr = "127.0.0.1:" + strconv.Itoa(port)
-		gaon = &Gaon{Certs: c.Certs, APIServerIP: apiIP, BootPKI: spec.BootPKI}
+		gaon = &Gaon{Certs: c.Certs, APIServerIP: apiIP, BootPKI: spec.BootPKI, Overrides: spec.GaonBinaries}
 		gaon.HostPort = port
 	}
 	for i := 1; i <= spec.N; i++ {
 		name := fmt.Sprintf("node-%d", i)
 		cfg := Config{
-			Name: name, Index: i, Total: spec.N, ControlPlane: i == 1, Probe: i == spec.ProbeOn, Inputs: spec.Inputs,
+			Name: name, Index: i, Total: spec.N, ControlPlane: i == 1, Probe: i == spec.ProbeOn, Inputs: spec.Inputs, Disabled: spec.Disable,
 		}
 		if gaon != nil {
 			g := *gaon

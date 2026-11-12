@@ -3,7 +3,9 @@ package node
 import (
 	"fmt"
 	"path"
+	"slices"
 
+	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/pki"
 )
 
@@ -43,6 +45,20 @@ type Gaon struct {
 	// controllers' and the Node's own agent's pairs at boot. The other Nodes keep carrying their
 	// agent's pair as files.
 	BootPKI bool
+	// Overrides names the gaon services whose binary is the one the data disk carries under
+	// OverrideDir, in place of the image's: the harness supplied it.
+	Overrides []string
+}
+
+// OverrideDir is where the data disk carries the gaon binaries a harness supplies, as a Node sees it.
+const OverrideDir = fixture.GuestRoot + "/gaon"
+
+// binary is the path of the service's executable: the harness's, when it supplied one, else the image's.
+func (g *Gaon) binary(name string) string {
+	if slices.Contains(g.Overrides, name) {
+		return path.Join(OverrideDir, name)
+	}
+	return "/bin/" + name
 }
 
 // hostMAC is the address of the second NIC: the form of the first, in the next block of the
@@ -141,22 +157,22 @@ func (g *Gaon) services(c Config) []service {
 			},
 		},
 		{
-			Name: "gaon-apiserver", Binary: "/bin/gaon-apiserver", ControlPlane: true,
+			Name: "gaon-apiserver", Binary: g.binary("gaon-apiserver"), ControlPlane: true,
 			Args: []string{
 				"--listen", "0.0.0.0:" + APIPort, "--etcd-endpoints", EtcdClientURL,
 				"--tls-client-ca", gaonPath("ca.pem"), "--tls-cert", gaonPath("apiserver.pem"), "--tls-key", gaonPath("apiserver.key"),
 			},
 		},
 		{
-			Name: "gaon-scheduler", Binary: "/bin/gaon-scheduler", ControlPlane: true,
+			Name: "gaon-scheduler", Binary: g.binary("gaon-scheduler"), ControlPlane: true,
 			Args: append([]string{"--api", g.APIRoot()}, client("scheduler")...),
 		},
 		{
-			Name: "gaon-controllers", Binary: "/bin/gaon-controllers", ControlPlane: true,
+			Name: "gaon-controllers", Binary: g.binary("gaon-controllers"), ControlPlane: true,
 			Args: append([]string{"--api", g.APIRoot()}, client("controllers")...),
 		},
 		{
-			Name: "gaon-node-agent", Binary: "/bin/gaon-node-agent",
+			Name: "gaon-node-agent", Binary: g.binary("gaon-node-agent"),
 			Args: append([]string{"--api-server", g.APIRoot(), "--node-name", c.Name, "--mvmd-socket", MvmdSocket}, client("agent")...),
 		},
 	}

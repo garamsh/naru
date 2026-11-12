@@ -204,6 +204,15 @@ func (n *Node) WaitFor(ctx context.Context, timeout time.Duration, want ...strin
 	}
 }
 
+// Pid is the process ID of the Node's QEMU process, the one a power-off is a kill of.
+func (n *Node) Pid() int { return n.cmd.Process.Pid }
+
+// ConsolePath is the file the Node's serial console is written to, for the boot now running.
+func (n *Node) ConsolePath() string { return n.console }
+
+// Done is closed once the Node's QEMU process has exited, whoever ended it.
+func (n *Node) Done() <-chan struct{} { return n.done }
+
 // Stop ends the QEMU process and waits for it.
 func (n *Node) Stop() {
 	n.once.Do(func() {

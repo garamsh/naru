@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -44,6 +45,27 @@ type Config struct {
 	Network Network
 	// Gaon, when set, makes the Node run gaon instead of the test services (see NaruYAML).
 	Gaon *Gaon
+	// Disabled names services left out of the Node's configuration (see ServiceNames).
+	Disabled []string
+}
+
+// ServiceNames are the services a Node's configuration can leave out: everything it names but mvmd,
+// which a Node cannot do without. The stand-ins and the probe are the tests' own and not among them.
+var ServiceNames = []string{"registry", "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
+
+// withoutDisabled drops the Disabled services from the Node's list, and from the restart lists of
+// spec.pki, which init refuses to resolve for a service the Node does not run.
+func (c Config) withoutDisabled(n *nodeConfig) {
+	if len(c.Disabled) == 0 {
+		return
+	}
+	n.Spec.Services = slices.DeleteFunc(n.Spec.Services, func(s service) bool { return slices.Contains(c.Disabled, s.Name) })
+	if n.Spec.PKI != nil {
+		for i := range n.Spec.PKI.Certificates {
+			r := &n.Spec.PKI.Certificates[i].Restart
+			*r = slices.DeleteFunc(*r, func(s string) bool { return slices.Contains(c.Disabled, s) })
+		}
+	}
 }
 
 // Network is what a Node's network-config and its configuration say of addresses. The QEMU tests
@@ -238,6 +260,7 @@ func (c Config) NaruYAML() ([]byte, error) {
 			n.Spec.PKI = c.Gaon.pki(c)
 		}
 		n.Spec.Services = append([]service{mvmd, registry}, c.Gaon.services(c)...)
+		c.withoutDisabled(&n)
 		return yaml.Marshal(n)
 	}
 	n.Spec.Services = []service{
@@ -258,6 +281,7 @@ func (c Config) NaruYAML() ([]byte, error) {
 			},
 		})
 	}
+	c.withoutDisabled(&n)
 	return yaml.Marshal(n)
 }
 

@@ -1,12 +1,14 @@
 // Package release writes the assets a deployment of naru Nodes is made from: the boot disk, one
 // data disk that carries the test inputs and nothing of any Node, the guest manifest (the names
-// and SHA-256 of the guest kernels and initrds the boot disk carries), a test-only NoCloud
+// and SHA-256 of the guest kernels and initrds the boot disk carries), the inputs file (the Firecracker
+// digest and the test image's reference), a test-only NoCloud
 // user-data per Node for Proxmox that runs gaon with certificates issued for the release, and the
 // SHA256SUMS of them. `make release` runs it.
 package release
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -196,6 +198,20 @@ func Build(o Options) ([]Asset, error) {
 		return nil, fmt.Errorf("the guest manifest (make image): %w", err)
 	}
 	names = append(names, manifest)
+
+	// The data disk's tree is not enough to configure a Node: mvmd's configuration names the
+	// Firecracker digest, and a harness needs the image's reference (naru-cluster reads both).
+	ri, err := json.MarshalIndent(fixture.ReleaseInputs{
+		FirecrackerSHA256: inputs.FirecrackerSHA256, ImageRepository: inputs.Image.Repository, ImageDigest: inputs.Image.Digest,
+	}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	inputsAsset := fixture.ReleaseInputsName(o.Version)
+	if err := os.WriteFile(filepath.Join(o.Out, inputsAsset), append(ri, '\n'), 0o644); err != nil { //nolint:gosec // published with the assets
+		return nil, err
+	}
+	names = append(names, inputsAsset)
 
 	files, err := UserData(inputs)
 	if err != nil {
