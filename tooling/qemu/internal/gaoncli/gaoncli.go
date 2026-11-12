@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
-	"github.com/garamsh/naru/tooling/qemu/internal/pki"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
 
 // Client is gaon's CLI with the flags that reach one cluster.
@@ -21,21 +21,14 @@ type Client struct {
 }
 
 // New returns a Client that runs bin against the API server at addr, "127.0.0.1:port", with the
-// cluster's CA and the client pair certs holds for the test host. It writes those files into dir,
-// the keys 0600.
-func New(bin, addr string, certs *pki.Cluster, dir string) (*Client, error) {
-	files := map[string][]byte{"ca.pem": certs.CA, "client.pem": certs.Client.CertPEM, "client.key": certs.Client.KeyPEM}
-	for name, b := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
-			return nil, err
-		}
-	}
+// CA and the client pair naructl wrote.
+func New(bin, addr string, client naructl.Client) *Client {
 	return &Client{bin: bin, flag: []string{
 		"--server", "https://" + addr + hostapi.Root,
-		"--tls-ca", filepath.Join(dir, "ca.pem"),
-		"--tls-cert", filepath.Join(dir, "client.pem"),
-		"--tls-key", filepath.Join(dir, "client.key"),
-	}}, nil
+		"--tls-ca", client.CA,
+		"--tls-cert", client.Cert,
+		"--tls-key", client.Key,
+	}}
 }
 
 // Run runs the CLI with args after its global flags and returns its combined output. A non-zero

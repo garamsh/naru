@@ -13,8 +13,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path"
@@ -27,69 +25,66 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
-	"github.com/garamsh/naru/tooling/qemu/internal/pki"
 )
 
 // Nodes is the number of Nodes the user-data is for.
 const Nodes = 2
 
-// Proxmox is the network of Node index (1 or 2) in the example deployment: the Nodes' addresses
-// on the LAN, a MAC for each card, the gateway and resolvers Proxmox's network-config gives, and a
-// Machine prefix of 10.200.<index>.0/24. Each Node's stand-in dials the other Node's address.
-func Proxmox(index int) node.Network {
-	addrs := [Nodes]string{"192.168.0.40", "192.168.0.61"}
-	macs := [Nodes]string{"02:00:00:00:03:E9", "02:00:00:00:03:F4"}
-	return node.Network{
-		IP:            addrs[index-1],
-		Peer:          addrs[index%Nodes],
-		MAC:           macs[index-1],
-		Netmask:       "255.255.255.0",
-		Gateway:       "192.168.0.1",
-		Nameservers:   []string{"1.1.1.1", "8.8.8.8"},
-		MachinePrefix: netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 200, byte(index), 0}), 24),
+// Proxmox is where Node index (1 or 2) is in the example deployment: its address on the LAN and
+// the IPv4 prefix mvmd gives its Machines, 10.200.<index>.0/24. Node 1 is the control-plane Node,
+// and every agent dials its address.
+type Proxmox struct {
+	Name, Address, MachinePrefix string
+}
+
+// Deployment is the example deployment's Node index.
+func Deployment(index int) Proxmox {
+	addrs := [Nodes]string{"192.168.0.40/24", "192.168.0.61/24"}
+	return Proxmox{
+		Name: fmt.Sprintf("node-%d", index), Address: addrs[index-1],
+		MachinePrefix: fmt.Sprintf("10.200.%d.0/24", index),
 	}
 }
 
-// Config is the configuration of Node index in the example deployment. Node 1 is the
-// control-plane Node. The stand-ins and the probe are test fixtures that check init and mvmd and
-// that a Machine outlives mvmd; a deployed Node runs gaon, so UserData leaves them out.
-func Config(index int, inputs fixture.Inputs) node.Config {
-	return node.Config{
-		Name: fmt.Sprintf("node-%d", index), Index: index, Total: Nodes,
-		ControlPlane: index == 1, Inputs: inputs, Network: Proxmox(index),
-	}
-}
+// APIServer is the address every Node dials: node-1's.
+const APIServer = "192.168.0.40"
 
 // UserDataName is the name of Node index's user-data asset. ".test" marks it as one that carries
 // key material, which is for a test deployment only.
 func UserDataName(index int) string { return fmt.Sprintf("naru-node-%d.test.yaml", index) }
 
-// UserData returns the user-data files by name (UserDataName), each running gaon: mvmd, the
-// registry, etcd and gaon's control plane on node-1, and gaon's Node Agent on both. It issues
-// the certificates of the cluster, new at each call, from a CA whose private key is dropped when
-// they are issued: the files carry the CA's certificate, the API server's pair (which names
-// node-1's address), the Node Agents' pairs and the scheduler's and controllers' pairs, and no
-// file carries a client pair for an operator.
-func UserData(inputs fixture.Inputs) (map[string][]byte, error) {
-	names := make([]string, Nodes)
-	for i := range names {
-		names[i] = Config(i+1, inputs).Name
-	}
-	apiIP := Proxmox(1).IP
-	certs, err := pki.NewCluster(names, net.ParseIP(apiIP))
+// UserData has the naructl binary write the user-data files by name (UserDataName), each running
+// gaon: mvmd, the registry, etcd and gaon's control plane on node-1, and gaon's Node Agent on both.
+// The certificates of the cluster are new at each call, from a CA that lives in a directory removed
+// before UserData returns, so its private key is dropped: every pair is a file of spec.files
+// (--pairs-as-files), since a spec.pki would carry the CA's key into a public asset, and no file
+// carries a client pair for an operator.
+// guest is the guest manifest's path, and firecracker the digest of the Firecracker binary.
+func UserData(tool naructl.Tool, guest, firecracker string) (map[string][]byte, error) {
+	work, err := os.MkdirTemp("", "naru15-userdata-")
 	if err != nil {
-		return nil, fmt.Errorf("issue the certificates: %w", err)
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(work) }()
+	ca := filepath.Join(work, "ca")
+	if err := tool.GenCA(ca); err != nil {
+		return nil, fmt.Errorf("make the CA: %w", err)
 	}
 	out := map[string][]byte{}
 	for i := 1; i <= Nodes; i++ {
-		cfg := Config(i, inputs)
-		cfg.Gaon = &node.Gaon{Certs: certs, APIServerIP: apiIP}
-		b, err := cfg.NaruYAML()
-		if err != nil {
+		d := Deployment(i)
+		p := filepath.Join(work, UserDataName(i))
+		if err := tool.GenNode(naructl.Node{
+			CA: ca, Name: d.Name, ControlPlane: i == 1, Address: d.Address, APIServer: APIServer, MachinePrefix: d.MachinePrefix,
+			Guest: guest, Firecracker: firecracker, PairsAsFiles: true, Out: p,
+		}); err != nil {
 			return nil, err
 		}
-		out[UserDataName(i)] = b
+		if out[UserDataName(i)], err = os.ReadFile(p); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -141,6 +136,9 @@ type Options struct {
 	Root, ImageDir, DiskDir, GuestDir, Out string
 	// Version names the assets: naru-<Version>.qcow2.
 	Version string
+	// Naructl is the naructl binary, built static for linux/amd64: it is an asset, and it writes the
+	// user-data.
+	Naructl string
 }
 
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
@@ -213,7 +211,18 @@ func Build(o Options) ([]Asset, error) {
 	}
 	names = append(names, inputsAsset)
 
-	files, err := UserData(inputs)
+	// naructl is the operator's tool and the one owner of the Node layout: the release ships the
+	// binary and writes the test user-data with it.
+	tool := "naructl-" + o.Version + "-linux-amd64"
+	if err := copyFile(o.Naructl, filepath.Join(o.Out, tool)); err != nil {
+		return nil, fmt.Errorf("the naructl binary: %w", err)
+	}
+	if err := os.Chmod(filepath.Join(o.Out, tool), 0o755); err != nil { //nolint:gosec // an executable asset
+		return nil, err
+	}
+	names = append(names, tool)
+
+	files, err := UserData(naructl.Tool{Bin: o.Naructl}, filepath.Join(o.GuestDir, "guest.json"), inputs.FirecrackerSHA256)
 	if err != nil {
 		return nil, err
 	}

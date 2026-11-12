@@ -10,11 +10,12 @@ Nothing here states what goes inside a unit, or how the units are deployed. A un
 
 ## Units
 
-The repository holds these responsibilities (garamsh/discussions Discussion #3 decisions 3, 4 and 6). No unit's folder exists yet and none has its name decided here; each is created by the pull request of the issue that owns it.
+The repository holds these responsibilities (garamsh/discussions Discussion #3 decisions 3, 4 and 6). `init/` and `naructl/` exist, as `tooling/` holds the QEMU tests' and the probe's modules; no other unit's folder exists yet or has its name decided here, and each is created by the pull request of the issue that owns it.
 
 - **An init that runs as PID 1**, a binary.
 - **A node API server**, a binary: apply config, upgrade, reset, status.
 - **An installer**, a binary.
+- **`naructl`**, a binary in `naructl/`: the operator's tool, which generates a cluster CA, each Node's user-data and the operator's client certificates, and is the single owner of the gaon Node layout. Its packages are internal; `tooling/qemu` runs the binary and imports none of them ([ADR 0015](./adr/0015-naructl-is-the-single-owner-of-the-gaon-node-layout-and-tooling-qemu-runs-it-as-a-binary.md)).
 - **A node API client**, a library module under `lib/`, which gaon requires as an external module (Discussion #3 decision 5).
 - **Non-Go build inputs**: kernel configuration for the host and guest kernels, and the image definition. They live in `image/`, below.
 
@@ -49,6 +50,7 @@ Each executable unit has its own site: its `cmd/<binary>/main.go`, or the packag
 ## Decisions this rests on
 
 - [ADR 0001](./adr/0001-the-repository-is-a-go-workspace-of-executable-units-partitioned-by-responsibility.md): the repository is a Go workspace of executable units, each its own module, partitioned by responsibility. It records the structure taken, the candidates read, and the signs that it was wrong.
+- [ADR 0015](./adr/0015-naructl-is-the-single-owner-of-the-gaon-node-layout-and-tooling-qemu-runs-it-as-a-binary.md): `naructl/` is a unit, and `tooling/qemu` reaches it only as a binary.
 - [ADR 0006](./adr/0006-the-host-kernel-is-built-from-the-pinned-longterm-6-18-tarball-and-the-image-inputs-live-in-image.md): the host kernel's source and pin, and `image/` as the folder of the non-Go build inputs.
 
 ## Open questions

@@ -65,11 +65,14 @@ test-cgroup:
 	echo "$@: $$n test(s) passed, selected by -test.run '^TestCgroups_' in a delegated cgroup"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
-# naru-init is static: it runs in an initramfs with no libc.
+# naru-init is static: it runs in an initramfs with no libc. naructl is static too: it is a release
+# asset an operator runs on any Linux amd64 host.
 build:
 	$(call each_module, $(count_packages); (cd "$$dir" && go build ./...))
 	CGO_ENABLED=0 go build -trimpath -o $(BIN)/naru-init ./init/cmd/naru-init
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o $(BIN)/naructl ./naructl/cmd/naructl
 	@echo "build: $(BIN)/naru-init: $$(file -b $(BIN)/naru-init | cut -d, -f1-4)"
+	@echo "build: $(BIN)/naructl: $$(file -b $(BIN)/naructl | cut -d, -f1-4)"
 
 # image builds the host kernel, the guest kernels and initrds, the static mke2fs, gaon's four
 # services, etcd, and the initramfs that carries them, from pinned sources, into $(IMAGE): bzImage,
@@ -143,15 +146,18 @@ judge-serial:
 
 # release writes the assets of a deployment into $(RELEASE): naru-<version>.qcow2 (the boot disk),
 # naru-data-<version>.qcow2 (the one data disk both Nodes attach), naru-guest-<version>.json,
-# naru-inputs-<version>.json (what naru-cluster reads besides the disks), naru-node-1.test.yaml and
-# naru-node-2.test.yaml (test-only user-data for Proxmox: they carry gaon's keys, so they are
-# for a throwaway deployment) and SHA256SUMS. The version is `git describe --tags --always`, or
+# naru-inputs-<version>.json (what naru-cluster reads besides the disks), naructl-<version>-linux-amd64
+# (the operator's tool, which also writes the test user-data below from a CA that lives only for the
+# run), naru-node-1.test.yaml and naru-node-2.test.yaml (test-only user-data for Proxmox: they carry
+# gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. The version is `git describe --tags --always`, or
 # VERSION=.
 VERSION ?= $(shell git describe --tags --always)
 RELEASE := $(BUILD)/release
 release: disk
 	rm -rf $(RELEASE)
-	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -out $(RELEASE) -version $(VERSION)
+	mkdir -p $(BUILD)/naructl
+	cd naructl && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o $(BUILD)/naructl/naructl ./cmd/naructl
+	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -out $(RELEASE) -version $(VERSION)
 
 # test-qemu boots two Nodes of the image under QEMU, as the user, and reads
 # their consoles. It needs /dev/kvm with nested virtualization and the host's

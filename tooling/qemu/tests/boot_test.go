@@ -22,6 +22,7 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/gaoncli"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
@@ -29,6 +30,9 @@ const bootTimeout = 3 * time.Minute
 
 // inputs is the staged tree every Node of every test carries.
 var inputs fixture.Inputs
+
+// tool is naructl built from the checkout, which writes the user-data of every gaon Node.
+var tool naructl.Tool
 
 func TestMain(m *testing.M) {
 	os.Exit(run(m))
@@ -46,6 +50,17 @@ func run(m *testing.M) int {
 		return 1
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
+	bin, err := os.MkdirTemp("", "naru36-naructl-")
+	if err != nil {
+		os.Stderr.WriteString(err.Error() + "\n")
+		return 1
+	}
+	defer func() { _ = os.RemoveAll(bin) }()
+	tool = naructl.Tool{Bin: filepath.Join(bin, "naructl")}
+	if err := naructl.Build(root, tool.Bin); err != nil {
+		os.Stderr.WriteString("build naructl: " + err.Error() + "\n")
+		return 1
+	}
 	inputs, err = fixture.Stage(fixture.Sources{Root: root, ImageDir: image, GuestDir: guest}, dir)
 	if err != nil {
 		os.Stderr.WriteString("stage the inputs: " + err.Error() + "\n")
@@ -64,7 +79,7 @@ func boot(t *testing.T, n, probeOn int) *node.Cluster {
 // start boots the cluster spec describes, on the image's disk, and stops it when the test ends.
 func start(t *testing.T, spec node.ClusterSpec) *node.Cluster {
 	t.Helper()
-	spec.Disk, spec.Dir, spec.Inputs = filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), t.TempDir(), inputs
+	spec.Disk, spec.Dir, spec.Inputs, spec.Naructl = filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), t.TempDir(), inputs, tool
 	c, err := node.StartCluster(spec)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -177,7 +192,7 @@ func TestNode_AConsoleReaderThatAttachesLateSeesTheWholeLog(t *testing.T) {
 // spec.files, as in v0.2.0: this is the test of that path, with no spec.pki.
 func TestNode_GaonRegistersEachNodeKeepsItsLeaseAndSurvivesTheControlPlaneNodeRebooting(t *testing.T) {
 	c := start(t, node.ClusterSpec{N: 2, Gaon: true})
-	api, err := hostapi.New(c.HostAddr, c.Certs)
+	api, err := hostapi.New(c.HostAddr, c.Client)
 	require.NoError(t, err)
 	ctx := context.Background()
 	first, second := c.Nodes[0], c.Nodes[1]
@@ -234,7 +249,7 @@ func TestNode_GaonRegistersEachNodeKeepsItsLeaseAndSurvivesTheControlPlaneNodeRe
 // issuing each pair before the first service starts, and no key.
 func TestNode_GaonRunsFromSpecPKIOnTheControlPlaneNodeWhichIssuesItsOwnCertificates(t *testing.T) {
 	c := start(t, node.ClusterSpec{N: 2, Gaon: true, BootPKI: true})
-	api, err := hostapi.New(c.HostAddr, c.Certs)
+	api, err := hostapi.New(c.HostAddr, c.Client)
 	require.NoError(t, err)
 	ctx := context.Background()
 	first, second := c.Nodes[0], c.Nodes[1]
@@ -286,10 +301,9 @@ func TestNode_AMachineAppliedWithTheGaonCLIIsBoundRunsOnTheGuestKernelFromTheTes
 	cliBin := filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "gaon", "gaon")
 	require.FileExists(t, cliBin, "make image builds gaon's CLI from the pin")
 	c := start(t, node.ClusterSpec{N: 2, Gaon: true})
-	api, err := hostapi.New(c.HostAddr, c.Certs)
+	api, err := hostapi.New(c.HostAddr, c.Client)
 	require.NoError(t, err)
-	cli, err := gaoncli.New(cliBin, c.HostAddr, c.Certs, t.TempDir())
-	require.NoError(t, err)
+	cli := gaoncli.New(cliBin, c.HostAddr, c.Client)
 	ctx := context.Background()
 	work := t.TempDir()
 

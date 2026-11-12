@@ -14,8 +14,8 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
-// fakeRelease writes the four assets ReadRelease reads: a boot disk, a data disk holding a small
-// inputs tree, the guest manifest and the inputs file.
+// fakeRelease writes the five assets ReadRelease reads: a boot disk, a data disk holding a small
+// inputs tree, the guest manifest, the inputs file and the naructl binary.
 func fakeRelease(t *testing.T) string {
 	t.Helper()
 	dir, work, tree := t.TempDir(), t.TempDir(), t.TempDir()
@@ -36,6 +36,7 @@ func fakeRelease(t *testing.T) string {
 "guest_initrd":{"path":"/g","sha256":"`+d+`"},"converter_initrd":{"path":"/c","sha256":"`+d+`"}}`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, fixture.ReleaseInputsName("v1")),
 		[]byte(`{"firecrackerSha256":"f1","imageRepository":"127.0.0.1:5000/test/entry","imageDigest":"sha256:`+d+`"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "naructl-v1-linux-amd64"), []byte("#!/bin/sh\n"), 0o644))
 	return dir
 }
 
@@ -52,6 +53,9 @@ func TestReadRelease_ReadsTheInputsTreeFromTheDataDiskAndTheFirecrackerDigestAnd
 	assert.Equal(t, "f1", r.Inputs.FirecrackerSHA256)
 	assert.Equal(t, fixture.Image{Repository: "127.0.0.1:5000/test/entry", Digest: "sha256:" + strings.Repeat("a", 64)}, r.Inputs.Image)
 	assert.Equal(t, "naru", r.Inputs.Guest.DefaultKernel)
+	info, err = os.Stat(r.Naructl)
+	require.NoError(t, err, "the release's naructl asset")
+	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm(), "a downloaded asset is made executable")
 }
 
 func TestReadRelease_NamesTheAssetAReleaseLacks(t *testing.T) {
@@ -61,4 +65,13 @@ func TestReadRelease_NamesTheAssetAReleaseLacks(t *testing.T) {
 	_, err := fixture.ReadRelease(dir, t.TempDir())
 
 	assert.ErrorContains(t, err, "naru-inputs-v1.json")
+}
+
+func TestReadRelease_NamesTheNaructlAssetAReleaseLacks(t *testing.T) {
+	dir := fakeRelease(t)
+	require.NoError(t, os.Remove(filepath.Join(dir, "naructl-v1-linux-amd64")))
+
+	_, err := fixture.ReadRelease(dir, t.TempDir())
+
+	assert.ErrorContains(t, err, "naructl-v1-linux-amd64")
 }

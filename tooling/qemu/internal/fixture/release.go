@@ -31,6 +31,9 @@ type Release struct {
 	BootDisk string
 	// Inputs is the tree extracted from the data disk, in the form Stage returns.
 	Inputs Inputs
+	// Naructl is the release's naructl-<v>-linux-amd64 asset, copied into the work directory as an
+	// executable: it writes the Nodes' user-data.
+	Naructl string
 }
 
 // ReadRelease reads the assets `make release` writes into dir (naru-<v>.qcow2, naru-data-<v>.qcow2,
@@ -77,7 +80,20 @@ func ReadRelease(dir, work string) (Release, error) {
 		Dir: filepath.Join(work, "inputs"), FirecrackerSHA256: ri.FirecrackerSHA256, Guest: m,
 		Image: Image{Repository: ri.ImageRepository, Digest: ri.ImageDigest},
 	}
+	r.Naructl = filepath.Join(work, "naructl")
+	if err := copyExecutable(filepath.Join(dir, "naructl-"+r.Version+"-linux-amd64"), r.Naructl); err != nil {
+		return Release{}, fmt.Errorf("the release's naructl asset: %w", err)
+	}
 	return r, nil
+}
+
+// copyExecutable copies the file from to to, mode 0755: a downloaded asset need not be executable.
+func copyExecutable(from, to string) error {
+	b, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(to, b, 0o755) //nolint:gosec // an executable asset
 }
 
 // qemuImgRaw converts the qcow2 file from to a raw file at to, which stays sparse.

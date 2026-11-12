@@ -15,9 +15,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
-	"github.com/garamsh/naru/tooling/qemu/internal/pki"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
 
 // Root is the group and version root of the resource API, appended to the server's address.
@@ -32,15 +33,19 @@ type Client struct {
 	http *http.Client
 }
 
-// New returns a client of the API server at addr, "127.0.0.1:port", that trusts the cluster's CA
-// and presents the test host's client certificate. The serving certificate must name addr's host.
-func New(addr string, certs *pki.Cluster) (*Client, error) {
-	pair, err := tls.X509KeyPair(certs.Client.CertPEM, certs.Client.KeyPEM)
+// New returns a client of the API server at addr, "127.0.0.1:port", that trusts the CA of client and
+// presents its client certificate: the files naructl wrote. The serving certificate must name addr's host.
+func New(addr string, client naructl.Client) (*Client, error) {
+	pair, err := tls.LoadX509KeyPair(client.Cert, client.Key)
 	if err != nil {
 		return nil, fmt.Errorf("the test host's client certificate: %w", err)
 	}
+	ca, err := os.ReadFile(client.CA)
+	if err != nil {
+		return nil, err
+	}
 	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(certs.CA) {
+	if !roots.AppendCertsFromPEM(ca) {
 		return nil, errors.New("the CA holds no certificate")
 	}
 	return &Client{

@@ -27,8 +27,8 @@ import (
 
 	"github.com/garamsh/naru/tooling/qemu/internal/clusterfile"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
-	"github.com/garamsh/naru/tooling/qemu/internal/pki"
 )
 
 const upTimeout = 6 * time.Minute
@@ -168,13 +168,7 @@ func qemuUnder(dir string) []int {
 // file names, and the gaon CLI's argument list for the same server.
 func client(t *testing.T, f clusterfile.File) (*hostapi.Client, []string) {
 	t.Helper()
-	ca, err := os.ReadFile(f.PKI.CA)
-	require.NoError(t, err)
-	cert, err := os.ReadFile(f.PKI.ClientCert)
-	require.NoError(t, err)
-	key, err := os.ReadFile(f.PKI.ClientKey)
-	require.NoError(t, err)
-	api, err := hostapi.New(f.APIServer.Address, &pki.Cluster{CA: ca, Client: pki.Pair{CertPEM: cert, KeyPEM: key}})
+	api, err := hostapi.New(f.APIServer.Address, naructl.Client{CA: f.PKI.CA, Cert: f.PKI.ClientCert, Key: f.PKI.ClientKey})
 	require.NoError(t, err)
 	return api, []string{"--server", "https://" + f.APIServer.Address + hostapi.Root, "--tls-ca", f.PKI.CA, "--tls-cert", f.PKI.ClientCert, "--tls-key", f.PKI.ClientKey}
 }
