@@ -19,10 +19,12 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/time", s.time)
 	mux.HandleFunc("GET /v1/config", s.getConfig)
 	mux.HandleFunc("POST /v1/config", s.postConfig)
+	mux.HandleFunc("POST /v1/reboot", s.postReboot)
 	return s.recovering(s.logged(s.authorised(mux)))
 }
 
-// authorised answers 403 to a client whose role does not cover the method.
+// authorised answers 403 to a client whose role does not cover the method, and 503 to a request
+// that changes the Node once a reboot is accepted.
 func (s *Server) authorised(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		need := Reader
@@ -31,6 +33,10 @@ func (s *Server) authorised(next http.Handler) http.Handler {
 		}
 		if roleOf(clientCertificate(r)) < need {
 			writeJSON(w, http.StatusForbidden, errorBody{Error: "the client certificate's role does not allow this request"})
+			return
+		}
+		if need == Admin && s.rebooting.Load() {
+			writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "the Node is rebooting"})
 			return
 		}
 		next.ServeHTTP(w, r)

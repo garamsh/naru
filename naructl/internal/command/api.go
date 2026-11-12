@@ -148,6 +148,28 @@ func version(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+func reboot(args []string, stdout, stderr io.Writer) error {
+	c := newCall("reboot", stderr)
+	if _, err := c.parse(args, 0); err != nil {
+		return err
+	}
+	cl, err := c.dial()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := withTimeout()
+	defer cancel()
+	actions, err := cl.Reboot(ctx)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(stdout, "the Node accepted the reboot:")
+	for _, a := range actions {
+		_, _ = fmt.Fprintf(stdout, "  %s %s\n", a.Action, a.Target)
+	}
+	return nil
+}
+
 func services(args []string, stdout, stderr io.Writer) error {
 	c := newCall("services", stderr)
 	if _, err := c.parse(args, 0); err != nil {
@@ -217,7 +239,7 @@ func getConfig(args []string, stdout, stderr io.Writer) error {
 func apply(args []string, stdout, stderr io.Writer) error {
 	c := newCall("apply", stderr)
 	file := c.fs.String("f", "", "the patch, a YAML or JSON mapping merged into the Node's configuration")
-	mode := c.fs.String("mode", client.NoReboot, "no-reboot (live) or staged (stored for the next boot)")
+	mode := c.fs.String("mode", client.NoReboot, "no-reboot (live), staged (stored for the next boot) or reboot (stored, then the Node reboots)")
 	dryRun := c.fs.Bool("dry-run", false, "list what the apply would do and do none of it")
 	if _, err := c.parse(args, 0); err != nil {
 		return err

@@ -312,6 +312,10 @@ func newFakeNodeTLS(t *testing.T, dep deployment, maxTLS uint16) *fakeNode {
 		writeJSON(w, 200, map[string]any{"revision": rev, "mode": body.Mode, "dryRun": body.DryRun,
 			"actions": []map[string]any{{"action": "store", "target": "config"}, {"action": "restart", "target": "etcd"}}})
 	})
+	mux.HandleFunc("POST /v1/reboot", func(w http.ResponseWriter, r *http.Request) {
+		f.note(r)
+		writeJSON(w, 202, map[string]any{"actions": []map[string]any{{"action": "reboot", "target": "node"}}})
+	})
 	// The handshake and the role come first, as they do in init: 403 for a certificate with no role
 	// that allows the method.
 	f.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -485,6 +489,42 @@ func TestApply_TakesTheModeAndDryRunAndAJSONPatch(t *testing.T) {
 	assert.Contains(t, out, "dry run at revision 4, mode staged: nothing was done")
 }
 
+func TestApply_TheRebootModeIsSentAndItsActionsPrinted(t *testing.T) {
+	dep := newDeployment(t)
+	apiAuthority(t, dep)
+	node := newFakeNode(t, dep)
+	cfg := node.clientFile(t, dep, "admin")
+
+	out, err := run(t, "apply", "-f", writeFile(t, `{"spec": {"network": {"forwarding": ["ipv4"]}}}`), "--config", cfg, "--mode", "reboot")
+
+	require.NoError(t, err, out)
+	assert.Equal(t, "reboot", node.postMode)
+	assert.Contains(t, out, "applied revision 5, mode reboot")
+}
+
+func TestReboot_AsksTheNodeAndPrintsTheActionItAccepted(t *testing.T) {
+	dep := newDeployment(t)
+	apiAuthority(t, dep)
+	node := newFakeNode(t, dep)
+
+	out, err := run(t, "reboot", "--config", node.clientFile(t, dep, "admin"))
+
+	require.NoError(t, err, out)
+	assert.Equal(t, []string{"POST /v1/reboot"}, node.requests)
+	assert.Equal(t, "the Node accepted the reboot:\n  reboot node\n", out)
+}
+
+func TestReboot_AReaderIsRefusedWithTheNodesReason(t *testing.T) {
+	dep := newDeployment(t)
+	apiAuthority(t, dep)
+	node := newFakeNode(t, dep)
+
+	out, err := run(t, "reboot", "--config", node.clientFile(t, dep, "reader"))
+
+	require.Error(t, err)
+	assert.Equal(t, "403 Forbidden: the client certificate's role does not allow this request", out)
+}
+
 func TestApply_ARefusalIsOneLineWithTheNodesReasonAndExitCode1(t *testing.T) {
 	dep := newDeployment(t)
 	apiAuthority(t, dep)
@@ -531,7 +571,7 @@ func TestApply_RefusesWhatItCannotSendBeforeAnyRequest(t *testing.T) {
 	patch := writeFile(t, "ok: true")
 
 	for name, args := range map[string][]string{
-		"an unknown mode":           {"apply", "-f", patch, "--config", cfg, "--mode", "reboot"},
+		"an unknown mode":           {"apply", "-f", patch, "--config", cfg, "--mode", "sometimes"},
 		"no patch":                  {"apply", "--config", cfg},
 		"a patch file that is none": {"apply", "-f", filepath.Join(t.TempDir(), "missing"), "--config", cfg},
 		"a patch that is a list":    {"apply", "-f", writeFile(t, "- a\n- b\n"), "--config", cfg},

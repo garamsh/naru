@@ -16,7 +16,7 @@ import (
 )
 
 const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client> [flags]
-       naructl <version|services|logs|get config|apply> --config <client file> [--node <ip[:port]>] [flags]
+       naructl <version|services|logs|get config|apply|reboot> --config <client file> [--node <ip[:port]>] [flags]
        naructl topology                              print the services a Node runs, and which signs, as JSON
 
   gen api-ca  --ca-dir <dir>                    write the Node API authority, <dir>/api/ca.pem and ca.key
@@ -24,8 +24,9 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client> [flag
               write a client file for the Node API
   version | services | get config               read a Node
   logs <service> [-f]                           print a service's kept log, and with -f each new line
-  apply -f <patch> [--mode no-reboot|staged] [--dry-run]
+  apply -f <patch> [--mode no-reboot|staged|reboot] [--dry-run]
               merge a patch into the Node's configuration
+  reboot      stop the Node's services and reboot it
   gen ca      --out <dir>                       write ca.pem and ca.key
   gen client  --ca <dir> --cn <name> --out <dir> write an operator's client.pem and client.key
   gen token   --ca <dir> --name <name>              write the Node's bootstrap token to <dir>/tokens/<name>, if none is there
@@ -54,6 +55,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			return logs(args[1:], stdout, stderr)
 		case "apply":
 			return apply(args[1:], stdout, stderr)
+		case "reboot":
+			return reboot(args[1:], stdout, stderr)
 		case "get":
 			if len(args) > 1 && args[1] == "config" {
 				return getConfig(args[2:], stdout, stderr)

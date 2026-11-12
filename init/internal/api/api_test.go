@@ -93,6 +93,9 @@ type rig struct {
 	clientCA pkitest.CA
 	serverCA pkitest.CA
 	services fakeServices
+	// rebooted receives one value for each call of Deps.Reboot, after onReboot returns.
+	rebooted chan struct{}
+	onReboot func()
 }
 
 var startedAt = time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -104,6 +107,7 @@ func newRig(t *testing.T) *rig {
 		logs:     &lockedBuffer{},
 		clientCA: pkitest.NewCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)),
 		serverCA: pkitest.NewCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)),
+		rebooted: make(chan struct{}, 8),
 		services: fakeServices{status: []service.Status{
 			{Name: "mvmd", State: service.StateRunning, PID: 42, Restarts: 2, StartedAt: startedAt},
 		}},
@@ -129,7 +133,13 @@ func newRig(t *testing.T) *rig {
 		Version:  "v1.2.3",
 		BootID:   func() (string, error) { return "boot-1", nil },
 		Uptime:   func() time.Duration { return 90 * time.Second },
-		Log:      slog.New(slog.NewTextHandler(r.logs, nil)),
+		Reboot: func() {
+			if r.onReboot != nil {
+				r.onReboot()
+			}
+			r.rebooted <- struct{}{}
+		},
+		Log: slog.New(slog.NewTextHandler(r.logs, nil)),
 	})
 	t.Cleanup(func() { _ = r.server.Close() })
 	return r
