@@ -104,7 +104,8 @@ func validate(cfg NodeConfig) error {
 	v.services(cfg.Spec.Services)
 	v.dataDisk(cfg.Spec.DataDisk)
 	v.network(cfg.Spec.Network)
-	v.files(cfg.Spec.Files)
+	v.files(cfg.Spec.Files, cfg.Spec.Services)
+	v.api(cfg.Spec.API)
 	v.pki(cfg.Spec.PKI, cfg.Spec.Files, cfg.Spec.Services)
 	return errors.Join(v.errs...)
 }
@@ -169,7 +170,11 @@ func (v *validation) network(n Network) {
 	}
 }
 
-func (v *validation) files(files []File) {
+func (v *validation) files(files []File, services []Service) {
+	running := map[string]bool{}
+	for _, s := range services {
+		running[s.Name] = true
+	}
 	for i, f := range files {
 		field := fmt.Sprintf("spec.files[%d]", i)
 		switch {
@@ -181,6 +186,11 @@ func (v *validation) files(files []File) {
 		if f.Mode != "" {
 			if m, err := strconv.ParseUint(f.Mode, 8, 32); err != nil || m > 0o777 {
 				v.fail(field+".mode", "must be octal permission bits up to 0777, got %q", f.Mode)
+			}
+		}
+		for j, name := range f.Restart {
+			if !running[name] {
+				v.fail(fmt.Sprintf("%s.restart[%d]", field, j), "names no service in spec.services, got %q", name)
 			}
 		}
 		for j, earlier := range files[:i] {

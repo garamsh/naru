@@ -1,0 +1,221 @@
+apiVersion: naru.garam.sh/v1alpha1
+kind: NodeConfig
+metadata:
+    name: naru-node-1
+spec:
+    controlPlane: true
+    dataDisk:
+        label: NARUDATA
+        mountPoint: /var/lib/naru
+    network:
+        forwarding:
+            - ipv4
+    services:
+        - name: mvmd
+          binary: /bin/mvmd
+          args:
+            - -config
+            - /run/mvmd/config.json
+          env:
+            SSL_CERT_FILE: /var/lib/naru/inputs/registry/ca.pem
+        - name: registry
+          binary: /var/lib/naru/inputs/bin/naru-registry
+          args:
+            - -listen
+            - 127.0.0.1:5000
+            - -dir
+            - /var/lib/naru/inputs/registry
+        - name: etcd
+          binary: /bin/etcd
+          args:
+            - --name
+            - node-1
+            - --data-dir
+            - /var/lib/naru/etcd
+            - --listen-client-urls
+            - http://127.0.0.1:2379
+            - --advertise-client-urls
+            - http://127.0.0.1:2379
+            - --listen-peer-urls
+            - http://127.0.0.1:2380
+            - --initial-advertise-peer-urls
+            - http://127.0.0.1:2380
+            - --initial-cluster
+            - node-1=http://127.0.0.1:2380
+          controlPlane: true
+        - name: gaon-apiserver
+          binary: /bin/gaon-apiserver
+          args:
+            - --listen
+            - 0.0.0.0:6443
+            - --etcd-endpoints
+            - http://127.0.0.1:2379
+            - --tls-client-ca
+            - /run/gaon/ca.pem
+            - --tls-cert
+            - /run/gaon/apiserver.pem
+            - --tls-key
+            - /run/gaon/apiserver.key
+            - --bootstrap-token-file
+            - /run/gaon/bootstrap-tokens
+          controlPlane: true
+        - name: gaon-scheduler
+          binary: /bin/gaon-scheduler
+          args:
+            - --api
+            - https://192.168.0.40:6443/apis/compute.gaon.garam.sh/v1alpha1
+            - --tls-ca
+            - /run/gaon/ca.pem
+            - --tls-cert
+            - /run/gaon/scheduler.pem
+            - --tls-key
+            - /run/gaon/scheduler.key
+          controlPlane: true
+        - name: gaon-controllers
+          binary: /bin/gaon-controllers
+          args:
+            - --api
+            - https://192.168.0.40:6443/apis/compute.gaon.garam.sh/v1alpha1
+            - --tls-ca
+            - /run/gaon/ca.pem
+            - --tls-cert
+            - /run/gaon/controllers.pem
+            - --tls-key
+            - /run/gaon/controllers.key
+            - --signing-cert
+            - /run/gaon/ca.pem
+            - --signing-key
+            - /run/gaon/ca.key
+          controlPlane: true
+        - name: gaon-node-agent
+          binary: /bin/gaon-node-agent
+          args:
+            - --api-server
+            - https://192.168.0.40:6443/apis/compute.gaon.garam.sh/v1alpha1
+            - --node-name
+            - node-1
+            - --mvmd-socket
+            - /run/mvmd.sock
+            - --tls-ca
+            - /run/gaon/ca.pem
+            - --bootstrap-token-file
+            - /run/gaon/bootstrap-token
+            - --cert-dir
+            - /var/lib/naru/gaon-node-agent
+    files:
+        - path: /run/mvmd/config.json
+          mode: "0600"
+          content: |
+            {
+              "boot_timeout": "2m",
+              "call_timeout": "5m",
+              "conversion": {
+                "converter": "naru-converter",
+                "initrd": "/usr/lib/naru/guest/converter-initrd.cpio",
+                "initrd_sha256": "06b6a7a93071245c88972492396af0de87a5575a379c150163bb3e74382923e2",
+                "kernel": "/usr/lib/naru/guest/kernels/naru/vmlinux",
+                "kernel_sha256": "1fec63e6cf8cc7247044be89f8349ee3af14d0f0fa5936ebc79751c25db1cdac",
+                "limit": "5m",
+                "memory_bytes": 536870912,
+                "name_set_bytes": 1048576,
+                "output_bytes": 268435456,
+                "vcpus": 2
+              },
+              "disk": {
+                "mkfs": "/bin/mkfs.ext4"
+              },
+              "driver": "firecracker",
+              "firecracker": {
+                "binary": "/bin/firecracker",
+                "binary_sha256": "99ad0f5cd0514a88aad0e9ae8cfdb3cc3b4ab9d190e1194602406c786b5de7a5",
+                "default_kernel": "naru",
+                "initrd": "/usr/lib/naru/guest/guest-initrd.cpio",
+                "initrd_sha256": "0090eb72736d5ed5a2f6b55807c85b3def9ec4f753ff1ce1fb63637a87ab6ed0",
+                "kernels": {
+                  "naru": {
+                    "path": "/usr/lib/naru/guest/kernels/naru/vmlinux",
+                    "sha256": "1fec63e6cf8cc7247044be89f8349ee3af14d0f0fa5936ebc79751c25db1cdac"
+                  }
+                }
+              },
+              "network": {
+                "ipv4_gateway": "10.200.1.1",
+                "ipv4_prefix": "10.200.1.0/24",
+                "resolvers": [
+                  "10.200.1.1"
+                ]
+              },
+              "pull_timeout": "4m",
+              "socket": {
+                "mode": "0660",
+                "path": "/run/mvmd.sock"
+              },
+              "state_dir": "/var/lib/naru/mvmd",
+              "supervision": {
+                "binary": "/bin/mvmd-supervisor",
+                "cgroup": "/sys/fs/cgroup/naru/detached"
+              },
+              "vmm_uid_range": {
+                "count": 1000,
+                "first": 100000
+              }
+            }
+        - path: /run/gaon/bootstrap-token
+          mode: "0600"
+          content: |
+            0tp186.irtamwq4alnjarsn
+        - path: /run/gaon/bootstrap-tokens
+          mode: "0600"
+          content: |
+            0tp186.irtamwq4alnjarsn
+            mlf3b8.je9hiflma7x3h9rk
+    pki:
+        authorities:
+            - name: gaon
+              certificate: |
+                -----BEGIN CERTIFICATE-----
+                MIIBZDCCAQqgAwIBAgIQJp1apPMMBpdR16hJhuqGRjAKBggqhkjOPQQDAjASMRAw
+                DgYDVQQDEwduYXJ1LWNhMB4XDTI2MTExMjA5MjcxMVoXDTM2MTEwOTEwMjcxMVow
+                EjEQMA4GA1UEAxMHbmFydS1jYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABPqk
+                cghhKc5OAufeXe79m2cDii0bEnUfiWivalaV5RjsKfYuiderRbhRK4s1pyaM4eaD
+                /JCryiw28wrqMIlSrOujQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNVHRMBAf8EBTAD
+                AQH/MB0GA1UdDgQWBBS4rMe4rGTXiBdrc9z74yYoI3ulazAKBggqhkjOPQQDAgNI
+                ADBFAiB8DTWdFM2LW+XS32A79vd/QiKio5JdcyFfly5cmQDfyAIhAJTmXbYHAGVw
+                wVClvPdItRVBMs736ZZoWvKKYZUbamaU
+                -----END CERTIFICATE-----
+              key: |
+                -----BEGIN EC PRIVATE KEY-----
+                MHcCAQEEIO/20WYcX4h5zIQ0Ot0cckVbxZ1XxxaVB3REKXM2nBE5oAoGCCqGSM49
+                AwEHoUQDQgAE+qRyCGEpzk4C595d7v2bZwOKLRsSdR+JaK9qVpXlGOwp9i6J16tF
+                uFErizWnJozh5oP8kKvKLDbzCuowiVKs6w==
+                -----END EC PRIVATE KEY-----
+              certificatePath: /run/gaon/ca.pem
+              keyPath: /run/gaon/ca.key
+        certificates:
+            - name: apiserver
+              authority: gaon
+              certificatePath: /run/gaon/apiserver.pem
+              keyPath: /run/gaon/apiserver.key
+              commonName: gaon-apiserver
+              usage: server
+              ipAddresses:
+                - 192.168.0.40
+              nodeAddresses: true
+              restart:
+                - gaon-apiserver
+            - name: scheduler
+              authority: gaon
+              certificatePath: /run/gaon/scheduler.pem
+              keyPath: /run/gaon/scheduler.key
+              commonName: gaon-scheduler
+              usage: client
+              restart:
+                - gaon-scheduler
+            - name: controllers
+              authority: gaon
+              certificatePath: /run/gaon/controllers.pem
+              keyPath: /run/gaon/controllers.key
+              commonName: gaon-controllers
+              usage: client
+              restart:
+                - gaon-controllers
