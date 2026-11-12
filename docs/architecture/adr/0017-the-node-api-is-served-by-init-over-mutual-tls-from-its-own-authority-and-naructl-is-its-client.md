@@ -5,7 +5,7 @@
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
 
-Drafted for garamsh/naru#46, part of goal garamsh/naru#44. The direction is decisions D1 to D4 and D6 of the PM's design comment, https://github.com/garamsh/naru/issues/44#issuecomment-6824452883, taken under the grant of that goal. Details the comment leaves open are marked "PM to confirm in review" below. Talos is cited by concept only (a machine daemon, an API proxy, a client configuration file). This ADR supersedes nothing: ADRs 0012 to 0016 stand, and ADR 0002 and ADR 0008 are filled in and not contradicted (§Consequences).
+Drafted for garamsh/naru#46, part of goal garamsh/naru#44. The direction is decisions D1 to D4 and D6 of the PM's design comment, https://github.com/garamsh/naru/issues/44#issuecomment-6824452883, taken under the grant of that goal. Details the comment left open were decided in the PM's review of garamsh/naru#50 and are recorded as written. Talos is cited by concept only (a machine daemon, an API proxy, a client configuration file). This ADR supersedes nothing: ADRs 0012 to 0016 stand, and ADR 0002 and ADR 0008 are filled in and not contradicted (§Consequences).
 
 ## Context
 
@@ -23,7 +23,7 @@ Drafted for garamsh/naru#46, part of goal garamsh/naru#44. The direction is deci
 2. **Listener.** TCP, default `0.0.0.0:50000`, HTTPS, TLS 1.3 only, a client certificate required and verified against `spec.api.clientCA`. A client without a certificate that `clientCA` issued fails the handshake and sees no HTTP status.
 3. **`spec.api` is new and optional.** It holds `listen`, `clientCA` (PEM), `certificate` (PEM) and `key` (PEM). Without it init serves no API, logs that the Node API is off, and boots as v0.3.0 does, so v0.3.0 user-data boots unchanged. The release's user-data has no `spec.api` ([ADR 0016](./0016-a-nodes-agent-gets-its-pair-from-a-signing-request-with-a-bootstrap-token-and-the-release-publishes-a-test-ca-key.md) §Decision item 5 and its "no new keys" stand).
 4. **The authority is separate from gaon's CA and stays off the Node.** `naructl gen api-ca --ca-dir D` makes `D/api/ca.pem` and `D/api/ca.key`, independently of gaon's CA. `naructl gen node` adds `spec.api` when `D/api/` exists: the serving pair is issued from that authority and names the Node's addresses and `127.0.0.1`, and `clientCA` is the authority's certificate. No Node carries the authority's key.
-5. **Authorisation is by the client certificate's Organization.** `naru:admin` may read and apply, `naru:reader` may only read, and any other certificate that passed the handshake gets 403. A certificate with several Organizations has the highest role among them (PM to confirm in review).
+5. **Authorisation is by the client certificate's Organization.** `naru:admin` may read and apply, `naru:reader` may only read, and any other certificate that passed the handshake gets 403. A certificate with several Organizations has the highest role among them
 6. **v1 endpoints** (reboot, reset and upgrade endpoints belong to the follow-ups):
 
    | Endpoint | Role | Returns or does |
@@ -34,8 +34,8 @@ Drafted for garamsh/naru#46, part of goal garamsh/naru#44. The direction is deci
    | `GET /v1/config` | reader | the stored configuration with its `revision`, private material redacted |
    | `POST /v1/config` | admin | apply a configuration change ([ADR 0018](./0018-a-nodes-configuration-is-a-base-and-numbered-revisions-stored-on-the-data-disk-and-changed-by-merge-patch.md)) |
 
-7. **Redaction in `GET /v1/config`.** `spec.api.key`, every `spec.pki.authorities[].key`, and the `content` of every `spec.files` entry whose mode gives no read to group or other are replaced by the string `REDACTED`. A request that carries `REDACTED` in such a place is refused with 422 (PM to confirm in review: D4 names what is redacted and not the marker or what an apply does with it).
-8. **Wire shapes the design leaves open** (PM to confirm in review; the least that serves #47 to #49). JSON, field names in lower camel case, as follows:
+7. **Redaction in `GET /v1/config`.** `spec.api.key`, every `spec.pki.authorities[].key`, and the `content` of every `spec.files` entry whose mode gives no read to group or other are replaced by the string `REDACTED`. A request that carries `REDACTED` in such a place is refused with 422.
+8. **Wire shapes the design leaves open** (the least that serves #47 to #49). JSON, field names in lower camel case, as follows:
    - `GET /v1/version`: `{"version": string, "bootId": string, "uptimeSeconds": number}`.
    - `GET /v1/services`: `{"services": [{"name", "state", "pid", "restarts", "startedAt"}]}`; `state` is `running`, `backoff` (waiting to restart) or `stopped`; `pid` is 0 unless running; `startedAt` is RFC 3339.
    - `GET /v1/services/{name}/logs`: `text/plain`, one line per line, the service's lines in the order kept; with `follow=true` the response stays open and each new line is flushed until the client closes. An unknown name is 404.
