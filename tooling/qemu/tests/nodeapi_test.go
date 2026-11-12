@@ -43,7 +43,12 @@ func nodeAPI(t *testing.T) *node.Cluster {
 // ctl runs the naructl of the checkout as the client file names, as an operator does: its first
 // argument is the command, and the rest follow --config.
 func ctl(file string, args ...string) (r result) {
-	cmd := append([]string{args[0], "--config", file}, args[1:]...)
+	// `get config` is two words, and the flags follow both.
+	n := 1
+	if args[0] == "get" {
+		n = 2
+	}
+	cmd := append(append(append([]string{}, args[:n]...), "--config", file), args[n:]...)
 	res := tool.Run(cmd...)
 	return result{Stdout: res.Stdout, Stderr: res.Stderr, Err: res.Err}
 }
