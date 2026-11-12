@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/garamsh/naru/init/internal/boot"
 	"github.com/garamsh/naru/init/internal/console"
 	"github.com/garamsh/naru/init/internal/linux"
+	"github.com/garamsh/naru/init/internal/pki"
 	"github.com/garamsh/naru/init/internal/service"
 )
 
@@ -58,12 +58,12 @@ func main() {
 	host := linux.NewHost(diskWait)
 	services := service.NewManager(linux.NewCgroupTree(cgroupRoot), linux.NewLauncher(reaper, con), service.SystemClock{}, log)
 
-	if err := boot.Run(host, services, log); err != nil {
-		// Stay up so the reason stays on the console, and start nothing more.
-		log.Error("boot refused; no further service will start", "err", err)
-	}
+	issuer := pki.New("", service.SystemClock{}, services, log)
+	stopRenewing := bootAndRenew(host, issuer, services, log)
 
 	sig := <-sigs
+	// A renewal in flight must not restart a service after it is stopped.
+	stopRenewing()
 	log.Info("stopping services", "signal", sig.String())
 	services.StopAll()
 	switch sig {

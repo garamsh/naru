@@ -49,6 +49,7 @@ type Spec struct {
 	DataDisk     DataDisk  `yaml:"dataDisk"`
 	Network      Network   `yaml:"network"`
 	Files        []File    `yaml:"files"`
+	PKI          PKI       `yaml:"pki"`
 }
 
 // File is a file init writes under FilesRoot before it starts any service.

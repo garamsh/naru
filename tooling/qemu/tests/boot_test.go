@@ -173,7 +173,8 @@ func TestNode_AConsoleReaderThatAttachesLateSeesTheWholeLog(t *testing.T) {
 // that run gaon and talks to the API server from the host, through the host forward, with the test
 // host's client certificate: both Nodes register and are Ready, each Node's Lease is renewed, and a
 // resource written before node-1 loses power is served after it boots again, from etcd's data on
-// the data disk.
+// the data disk. Every pair of every Node, node-1's included, is an operator-supplied file of
+// spec.files, as in v0.2.0: this is the test of that path, with no spec.pki.
 func TestNode_GaonRegistersEachNodeKeepsItsLeaseAndSurvivesTheControlPlaneNodeRebooting(t *testing.T) {
 	c := start(t, node.ClusterSpec{N: 2, Gaon: true})
 	api, err := hostapi.New(c.HostAddr, c.Certs)
@@ -222,6 +223,36 @@ func TestNode_GaonRegistersEachNodeKeepsItsLeaseAndSurvivesTheControlPlaneNodeRe
 		n, err := api.Node(ctx, "node-1")
 		return err == nil && n.Ready()
 	})
+}
+
+// TestNode_GaonRunsFromSpecPKIOnTheControlPlaneNodeWhichIssuesItsOwnCertificates boots two Nodes that
+// run gaon where node-1's configuration carries the CA and its key in spec.pki and no pair as a file,
+// and node-2 carries an operator agent pair in spec.files (ADR 0013). The host reaches node-1's API
+// server through the host forward, verifying the certificate init issued against the CA and its
+// names (127.0.0.1 is the host forward's), and both Nodes register and are Ready: node-1's agent
+// with the pair init issued, node-2's with the pair it was given. The console of node-1 shows init
+// issuing each pair before the first service starts, and no key.
+func TestNode_GaonRunsFromSpecPKIOnTheControlPlaneNodeWhichIssuesItsOwnCertificates(t *testing.T) {
+	c := start(t, node.ClusterSpec{N: 2, Gaon: true, BootPKI: true})
+	api, err := hostapi.New(c.HostAddr, c.Certs)
+	require.NoError(t, err)
+	ctx := context.Background()
+	first, second := c.Nodes[0], c.Nodes[1]
+
+	for _, nd := range c.Nodes {
+		require.NoError(t, nd.WaitFor(ctx, bootTimeout, "started", "service=gaon-node-agent"), nd.Name)
+	}
+	for _, nd := range c.Nodes {
+		eventually(t, nd.Name+" is registered and Ready", func() bool {
+			n, err := api.Node(ctx, nd.Name)
+			return err == nil && n.Ready()
+		})
+	}
+
+	console := judge.Log{Text: first.Console()}
+	assert.Empty(t, judge.Check(first.Name, console, judge.Issuance(judge.GaonIssued...)), "init issued every pair before it started a service")
+	assert.False(t, judge.HasLine(console.Text, []string{"PRIVATE KEY"}), "no key is logged")
+	assert.False(t, judge.HasLine(second.Console(), []string{"authority written"}), "node-2 holds no CA and issues nothing")
 }
 
 // rootMounted is the line of the guest's console that says it mounted its root disk, vdb, as ext4.

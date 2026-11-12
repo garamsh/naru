@@ -11,12 +11,14 @@ import (
 )
 
 // Expect is one thing a console must show: one line holding every fragment, in order. With Absent
-// set, the console must show no such line.
+// set, the console must show no such line. With Before set, the first such line must come before
+// the first line that holds the Before fragments, which the console must show too.
 type Expect struct {
 	// What names the expectation in a failure.
 	What      string
 	Fragments []string
 	Absent    bool
+	Before    []string
 }
 
 // probeChecks are the checks, in the order the probe reports them, that a Machine outlives an
@@ -31,7 +33,7 @@ var probeChecks = []string{
 // It requires one interface and no count of nameservers: the count is a fact of the Node's
 // network, which the QEMU tests' network-config fixes at one and a Proxmox network at two.
 func Boot(name string) []Expect {
-	return append(boot(name, 1), Expect{What: "init started the stand-in", Fragments: []string{"started", "service=standin"}})
+	return append(boot(name, 1), dataDiskMounted, Expect{What: "init started the stand-in", Fragments: []string{"started", "service=standin"}})
 }
 
 // boot is what every Node shows, whatever services its configuration names: init's own lines and
@@ -41,10 +43,13 @@ func boot(name string, interfaces int) []Expect {
 		{What: "init accepted the configuration", Fragments: []string{"configuration accepted", "node=naru-" + name}},
 		{What: "init configured the network", Fragments: []string{"network configured", fmt.Sprintf("interfaces=%d", interfaces)}},
 		{What: "init remounted the root read-only", Fragments: []string{"root remounted read-only"}},
-		{What: "the data disk is mounted", Fragments: []string{"data disk is mounted", "dir=/var/lib/naru", "fstype=ext4"}},
 		{What: "init started mvmd", Fragments: []string{"started", "service=mvmd"}},
 	}
 }
+
+// dataDiskMounted is the stand-in's line about the data disk: init logs nothing of its mount, so
+// only a Node that runs the stand-in shows it. A Node that runs gaon shows no such line.
+var dataDiskMounted = Expect{What: "the data disk is mounted", Fragments: []string{"data disk is mounted", "dir=/var/lib/naru", "fstype=ext4"}}
 
 // Services is what a Node's console shows once every service runs, mvmd answers and the stand-in
 // reached the stand-in of the other Node.
@@ -99,6 +104,24 @@ func Gaon(name string, controlPlane bool, interfaces int) []Expect {
 	return out
 }
 
+// Issuance is what the console of a Node whose spec.pki carries a CA shows of init's issuing
+// (ADR 0013): the authority written and each named certificate issued, all before init starts
+// the first service, and no renewal that failed.
+func Issuance(certificates ...string) []Expect {
+	firstStart := []string{"started", "service="}
+	out := []Expect{{What: "init wrote the authority", Fragments: []string{"authority written"}, Before: firstStart}}
+	for _, name := range certificates {
+		out = append(out, Expect{
+			What: "init issued " + name, Fragments: []string{"certificate issued", "name=" + name}, Before: firstStart,
+		})
+	}
+	return append(out, Expect{What: "no renewal failed", Fragments: []string{"certificate renewal failed"}, Absent: true})
+}
+
+// GaonIssued are the certificates the control-plane Node of the QEMU tests' spec.pki test has init
+// issue: the API server's, the scheduler's, the controllers' and its own agent's.
+var GaonIssued = []string{"apiserver", "scheduler", "controllers", "agent"}
+
 // Probe is what the console of the Node that runs the probe shows: every check ok, no check
 // failed, the probe finished, and init restarted mvmd.
 func Probe() []Expect {
@@ -145,8 +168,25 @@ func lineHas(line string, fragments []string) bool {
 	return true
 }
 
+// LineIndex is the index of the first line of console that holds every fragment in order, or -1.
+func LineIndex(console string, fragments []string) int {
+	for i, line := range strings.Split(console, "\n") {
+		if lineHas(line, fragments) {
+			return i
+		}
+	}
+	return -1
+}
+
 // Met reports whether console satisfies e.
-func (e Expect) Met(console string) bool { return HasLine(console, e.Fragments) != e.Absent }
+func (e Expect) Met(console string) bool {
+	at := LineIndex(console, e.Fragments)
+	if e.Before == nil || e.Absent {
+		return (at >= 0) != e.Absent
+	}
+	next := LineIndex(console, e.Before)
+	return at >= 0 && next >= 0 && at < next
+}
 
 // The escape sequences a terminal capture holds: CSI, OSC and the two-byte escapes.
 var ansi = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]`)
@@ -212,6 +252,9 @@ type Failure struct {
 func (f Failure) String() string {
 	if f.Expect.Absent {
 		return fmt.Sprintf("%s: %s: a line with %q is there", f.Node, f.Expect.What, f.Expect.Fragments)
+	}
+	if f.Expect.Before != nil {
+		return fmt.Sprintf("%s: %s: no line with %q before the first line with %q", f.Node, f.Expect.What, f.Expect.Fragments, f.Expect.Before)
 	}
 	return fmt.Sprintf("%s: %s: no line with %q", f.Node, f.Expect.What, f.Expect.Fragments)
 }

@@ -24,6 +24,10 @@ type Manager interface {
 	// Stop ends the named service and kills every process left in its cgroup.
 	// It does nothing for a name that is not running.
 	Stop(name string)
+	// Restart stops the named service and starts it again with the
+	// configuration it was started with. It does nothing for a name that is
+	// not running.
+	Restart(name string)
 	// StopAll stops every service concurrently.
 	StopAll()
 }
@@ -47,6 +51,7 @@ type manager struct {
 type supervised struct {
 	stop     chan struct{}
 	stopOnce sync.Once
+	svc      config.Service
 	done     chan struct{}
 }
 
@@ -64,7 +69,7 @@ func (m *manager) Start(svc config.Service) error {
 	if err != nil {
 		return fmt.Errorf("cgroup of service %q: %w", svc.Name, err)
 	}
-	s := &supervised{stop: make(chan struct{}), done: make(chan struct{})}
+	s := &supervised{svc: svc, stop: make(chan struct{}), done: make(chan struct{})}
 	m.running[svc.Name] = s
 	go m.supervise(s, svc, leaf)
 	return nil
@@ -80,6 +85,19 @@ func (m *manager) Stop(name string) {
 	}
 	s.stopOnce.Do(func() { close(s.stop) })
 	<-s.done
+}
+
+func (m *manager) Restart(name string) {
+	m.mu.Lock()
+	s, ok := m.running[name]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+	m.Stop(name)
+	if err := m.Start(s.svc); err != nil {
+		m.log.Error("restart", "service", name, "err", err)
+	}
 }
 
 func (m *manager) StopAll() {

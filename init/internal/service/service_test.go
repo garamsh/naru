@@ -153,6 +153,30 @@ func TestManager_RefusesToStartAServiceTwice(t *testing.T) {
 	assert.Error(t, r.manager.Start(mvmd))
 }
 
+func TestManager_RestartStopsTheServiceAndStartsItAgainWithTheSameConfiguration(t *testing.T) {
+	r := newRig()
+	t.Cleanup(r.manager.StopAll)
+	svc := config.Service{Name: "mvmd", Binary: "/usr/bin/mvmd", Args: []string{"--x"}}
+	require.NoError(t, r.manager.Start(svc))
+	first := recv(t, r.launcher.launched)
+
+	r.manager.Restart("mvmd")
+
+	assert.Equal(t, []syscall.Signal{syscall.SIGTERM}, first.proc.received())
+	second := recv(t, r.launcher.launched)
+	assert.Equal(t, svc, second.svc)
+	assert.NotSame(t, first.proc, second.proc)
+}
+
+func TestManager_RestartDoesNotStartAServiceThatIsNotRunning(t *testing.T) {
+	// The control is the test above: a running service is started again.
+	r := newRig()
+
+	r.manager.Restart("mvmd")
+
+	assert.Empty(t, r.launcher.launched)
+}
+
 func TestManager_StopAllStopsEveryService(t *testing.T) {
 	r := newRig()
 	require.NoError(t, r.manager.Start(mvmd))

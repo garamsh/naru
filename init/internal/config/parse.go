@@ -105,6 +105,7 @@ func validate(cfg NodeConfig) error {
 	v.dataDisk(cfg.Spec.DataDisk)
 	v.network(cfg.Spec.Network)
 	v.files(cfg.Spec.Files)
+	v.pki(cfg.Spec.PKI, cfg.Spec.Files, cfg.Spec.Services)
 	return errors.Join(v.errs...)
 }
 
