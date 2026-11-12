@@ -97,9 +97,16 @@ func main() {
 	select {}
 }
 
-// version returns the version init reports on the Node API: the module version init was built
-// at, else the commit it was built from, else "devel".
+// buildVersion is the release version the image build gives init with -ldflags -X; it is empty in
+// any other build.
+var buildVersion string
+
+// version returns the version init reports on the Node API: buildVersion, else the module version
+// init was built at, else the commit it was built from, else "devel".
 func version() string {
+	if buildVersion != "" {
+		return buildVersion
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "devel"

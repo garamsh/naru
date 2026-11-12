@@ -83,6 +83,10 @@ GUEST := $(IMAGE)/guest
 E2FS := $(IMAGE)/e2fsprogs
 GAON := $(IMAGE)/gaon
 ETCD := $(IMAGE)/etcd
+# VERSION is the version naru-init reports on the Node API and the release assets carry: `git describe
+# --tags --always`, or VERSION=.
+VERSION ?= $(shell git describe --tags --always)
+export NARU_VERSION := $(VERSION)
 image:
 	image/kernel/build.sh $(BUILD)/kernel $(IMAGE)
 	image/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
@@ -151,9 +155,7 @@ judge-serial:
 # naru-inputs-<version>.json (what naru-cluster reads besides the disks), naructl-<version>-linux-amd64
 # (the operator's tool, which also writes the test user-data below from a CA that lives only for the
 # run), naru-node-1.test.yaml and naru-node-2.test.yaml (test-only user-data for Proxmox: they carry
-# gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. The version is `git describe --tags --always`, or
-# VERSION=.
-VERSION ?= $(shell git describe --tags --always)
+# gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. VERSION is defined above image.
 RELEASE := $(BUILD)/release
 release: disk
 	rm -rf $(RELEASE)
