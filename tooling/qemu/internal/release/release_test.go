@@ -341,11 +341,12 @@ func TestMissingBinaries_FindsNothingMissingWhenEveryBinaryIsThere(t *testing.T)
 }
 
 // fakeBuildInputs writes what make image and make disk would leave, as small files: the inputs file
-// with a Firecracker digest, the guest manifest, and a boot disk.
+// with a Firecracker digest, the kernel, the guest manifest, and a boot disk.
 func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
 	t.Helper()
 	imageDir, diskDir, guestDir := t.TempDir(), t.TempDir(), t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(imageDir, "inputs.env"), []byte("MVMD_FIRECRACKER_SHA256="+firecracker+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(imageDir, "bzImage"), []byte("kernel"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(diskDir, "naru.qcow2"), []byte("boot"), 0o600))
 	d := strings.Repeat("a", 64)
 	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "guest.json"), []byte(`{"kernels":{"naru":{"path":"/k","sha256":"`+d+`"}},"default_kernel":"naru",
@@ -400,4 +401,19 @@ func TestBuild_ShipsNaructlAsAnExecutableAssetListedInSHA256SUMS(t *testing.T) {
 	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
 	require.NoError(t, err)
 	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums))
+}
+
+func TestBuild_ShipsTheUpgradeBundleListedInSHA256SUMS(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+
+	_, err := release.Build(o)
+
+	require.NoError(t, err)
+	name := release.BundleName("v9")
+	st, err := os.Stat(filepath.Join(o.Out, name))
+	require.NoError(t, err, "the release holds the upgrade bundle")
+	assert.Positive(t, st.Size())
+	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
+	require.NoError(t, err)
+	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists it")
 }

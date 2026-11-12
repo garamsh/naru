@@ -75,7 +75,8 @@ build:
 	@echo "build: $(BIN)/naructl: $$(file -b $(BIN)/naructl | cut -d, -f1-4)"
 
 # image builds the host kernel, the guest kernels and initrds, the static mke2fs, gaon's four
-# services, etcd, and the initramfs that carries them, from pinned sources, into $(IMAGE): bzImage,
+# services, etcd, and the initramfs that carries them, from pinned sources, into $(IMAGE): bzImage
+# (the kernel with the initramfs inside it, ADR 0020; bzImage.bare is the kernel before that),
 # initramfs.cpio.gz, inputs.env (the Firecracker pin the tests read) and guest/,
 # which holds what the initramfs carries of the guests, with guest.json naming
 # it. The scripts skip what their inputs say is built, and verify every download.
@@ -95,10 +96,11 @@ image:
 	image/mvmd-checkout.sh $(BUILD)/initramfs/mvmd
 	image/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
 	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD)
+	image/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
 
 # disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
-# disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and the initramfs,
-# and naru.qcow2, the same disk for Proxmox's import_from. It needs mkfs.fat,
+# disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and has room for a second one, and
+# naru.qcow2, the same disk for Proxmox's import_from. It needs mkfs.fat,
 # sgdisk and qemu-img, and neither root nor mtools.
 disk: image
 	image/disk/build.sh $(BUILD)/disk $(IMAGE)
@@ -119,6 +121,7 @@ image-repro:
 	  image/mvmd-checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
 	  image/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
 	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd >/dev/null; \
+	  image/kernel/embed.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/initramfs.cpio.gz >/dev/null; \
 	  image/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
 	done; \
 	for f in bzImage e2fsprogs/mke2fs etcd/etcd gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz guest/guest.json naru.img naru.qcow2; do \
@@ -153,6 +156,7 @@ judge-serial:
 	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_GAON),-gaon) $(if $(JUDGE_NARUCTL),-naructl "$(abspath $(JUDGE_NARUCTL))") $(if $(JUDGE_PKI),-pki) $(if $(JUDGE_NODE_API),-node-api $(JUDGE_NODE_API)) $(if $(JUDGE_NODE1_INTERFACES),-node1-interfaces $(JUDGE_NODE1_INTERFACES)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
 
 # release writes the assets of a deployment into $(RELEASE): naru-<version>.qcow2 (the boot disk),
+# naru-upgrade-<version>.tar (the upgrade bundle: the kernel and a manifest of its digest),
 # naru-data-<version>.qcow2 (the one data disk both Nodes attach), naru-guest-<version>.json,
 # naru-inputs-<version>.json (what naru-cluster reads besides the disks), naructl-<version>-linux-amd64
 # (the operator's tool, which also writes the test user-data below from a CA that lives only for the

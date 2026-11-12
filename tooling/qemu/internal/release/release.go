@@ -1,4 +1,5 @@
-// Package release writes the assets a deployment of naru Nodes is made from: the boot disk, one
+// Package release writes the assets a deployment of naru Nodes is made from: the boot disk, the
+// upgrade bundle (the kernel with its initramfs, for A/B boot), one
 // data disk that carries the test inputs and nothing of any Node, the guest manifest (the names
 // and SHA-256 of the guest kernels and initrds the boot disk carries), the inputs file (the Firecracker
 // digest and the test image's reference), a test-only NoCloud
@@ -188,6 +189,14 @@ func Build(o Options) ([]Asset, error) {
 		return nil, fmt.Errorf("the boot disk (make disk): %w", err)
 	}
 	names = append(names, boot)
+
+	// The upgrade bundle is the kernel, initramfs inside, that the boot disk's default slot holds:
+	// what an A/B upgrade writes to the trial slot (ADR 0020).
+	bundle := BundleName(o.Version)
+	if err := WriteBundle(filepath.Join(o.Out, bundle), o.Version, filepath.Join(o.ImageDir, "bzImage")); err != nil {
+		return nil, fmt.Errorf("the upgrade bundle (make image): %w", err)
+	}
+	names = append(names, bundle)
 
 	data := "naru-data-" + o.Version + ".qcow2"
 	if out, err := exec.Command("qemu-img", "convert", "-f", "raw", "-O", "qcow2", raw, filepath.Join(o.Out, data)).CombinedOutput(); err != nil { //nolint:gosec // paths built here

@@ -144,14 +144,14 @@ jobs:
           sha256sum --check SHA256SUMS
           n=$(ls | wc -l)
           echo "release: $n file(s), SHA256SUMS lists $(wc -l <SHA256SUMS)"
-          [ "$n" -eq 8 ] || { echo "release: expected 8 files" >&2; exit 1; }
+          [ "$n" -eq 9 ] || { echo "release: expected 9 files" >&2; exit 1; }
 
       - name: Write the release notes
         run: |
           cat >notes.md <<'NOTES'
           naru @TAG@, built from commit @COMMIT@ by the release workflow on a GitHub-hosted ubuntu-24.04 runner.
 
-          Assets: `naru-@TAG@.qcow2` (the boot disk), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-inputs-@TAG@.json` (the Firecracker digest and the test image reference that `naru-cluster` reads), `naructl-@TAG@-linux-amd64` (the operator's tool: it generates a cluster CA, each Node's user-data and client certificates, and it is the Node API's client; a static binary), `naru-node-1.test.yaml` and `naru-node-2.test.yaml` (test-only user-data for Proxmox that runs gaon) and `SHA256SUMS` of the first seven.
+          Assets: `naru-@TAG@.qcow2` (the boot disk), `naru-upgrade-@TAG@.tar` (the upgrade bundle: the kernel with its initramfs inside, and a manifest that names its version and SHA-256, which an A/B upgrade writes to the boot disk's trial slot), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-inputs-@TAG@.json` (the Firecracker digest and the test image reference that `naru-cluster` reads), `naructl-@TAG@-linux-amd64` (the operator's tool: it generates a cluster CA, each Node's user-data and client certificates, and it is the Node API's client; a static binary), `naru-node-1.test.yaml` and `naru-node-2.test.yaml` (test-only user-data for Proxmox that runs gaon) and `SHA256SUMS` of the first eight.
 
           - **What this release carries beyond v0.3.0.** init serves the Node API (version, services, service logs, the stored configuration, and applying a change live or staged for the next boot) over mutual TLS on `spec.api.listen`, `0.0.0.0:50000` by default, and `naructl` is its client: `version`, `services`, `logs`, `get config` and `apply`. `naru-init` reports the release's tag as its version. A Node whose user-data has no `spec.api` serves no API and logs that the Node API is off, and user-data written for v0.3.0 boots unchanged.
           - **The test user-data has no `spec.api`.** `naru-node-1.test.yaml` and `naru-node-2.test.yaml` leave the Node API off. To enable it, make the API's authority and write the user-data from the same directory: `naructl gen api-ca --ca-dir <ca-dir>` (the cluster's CA directory, which `gen ca` wrote), then `naructl gen node --ca <ca-dir> ...`, which adds `spec.api` when `<ca-dir>/api/` exists, then `naructl gen api-client --ca-dir <ca-dir> --role admin --endpoint <node-ip> --out client.yaml`, and `naructl version --config client.yaml`. A `reader` role reads and cannot apply.

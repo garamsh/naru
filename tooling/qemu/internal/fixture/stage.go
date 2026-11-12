@@ -45,6 +45,7 @@ type Sources struct {
 // Stage builds the test programs and assembles the inputs tree in out.
 //
 //	bin/naru-registry bin/naru-probe   services the tests configure
+//	bin/naru-bootnext                  (ADR 0020)
 //	registry/                          see WriteRegistry
 //
 // The guest kernel, the initrds and mkfs.ext4 are not staged: the image carries them (ADR 0010,
@@ -76,6 +77,7 @@ func Stage(src Sources, out string) (Inputs, error) {
 	defer func() { _ = os.RemoveAll(entryDir) }()
 	for _, b := range []struct{ module, pkg, out string }{
 		{"tooling/qemu", "./cmd/naru-registry", filepath.Join(bin, "naru-registry")},
+		{"tooling/qemu", "./cmd/naru-bootnext", filepath.Join(bin, "naru-bootnext")},
 		{"tooling/qemu", "./cmd/naru-entry", filepath.Join(entryDir, "entry")},
 		{"tooling/probe", "./cmd/naru-probe", filepath.Join(bin, "naru-probe")},
 	} {

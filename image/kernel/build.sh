@@ -4,10 +4,12 @@
 # .config, and builds bzImage. The source is unpacked and the object directory emptied before each
 # build, so the same inputs give the same bzImage (image/build.env fixes what the kernel stamps
 # into it). A build whose inputs match the last one is skipped.
+# The result is bzImage.bare, a kernel with no initramfs; embed.sh puts the initramfs into it and
+# writes bzImage (ADR 0020).
 #
 # Usage: build.sh <build-dir> <output-dir>
 # <build-dir> keeps the download in dl/ and receives the source and the object directory;
-# <output-dir> receives bzImage and kernel.config, the final configuration.
+# <output-dir> receives bzImage.bare and kernel.config, the final configuration.
 set -euo pipefail
 
 # A VERSION=<name> given to the outer make (make release) reaches this make through MAKEFLAGS and
@@ -28,8 +30,8 @@ out=$(cd "$2" && pwd)
 . "$here/../build.env"
 
 stamp=$(cat "$here/pin.env" "$here/naru.config" "$here/required.txt" "$here/build.sh" "$here/../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/bzImage" ] && [ -f "$out/kernel.stamp" ] && [ "$(cat "$out/kernel.stamp")" = "$stamp" ]; then
-  echo "kernel: $out/bzImage is up to date with its inputs"
+if [ -f "$out/bzImage.bare" ] && [ -f "$build/obj/.config" ] && [ -f "$out/kernel.stamp" ] && [ "$(cat "$out/kernel.stamp")" = "$stamp" ]; then
+  echo "kernel: $out/bzImage.bare is up to date with its inputs"
   exit 0
 fi
 
@@ -79,7 +81,7 @@ make -C "$src" O="$obj" ARCH=x86_64 -j"$(nproc)" bzImage >"$build/build.log" 2>&
   echo "kernel: the build failed; the full log is $build/build.log" >&2
   exit 1
 }
-install -m 0644 "$obj/arch/x86/boot/bzImage" "$out/bzImage"
+install -m 0644 "$obj/arch/x86/boot/bzImage" "$out/bzImage.bare"
 install -m 0644 "$obj/.config" "$out/kernel.config"
 echo "$stamp" >"$out/kernel.stamp"
-echo "kernel: built $out/bzImage, SHA-256 $(sha256sum "$out/bzImage" | cut -d' ' -f1)"
+echo "kernel: built $out/bzImage.bare, SHA-256 $(sha256sum "$out/bzImage.bare" | cut -d' ' -f1)"

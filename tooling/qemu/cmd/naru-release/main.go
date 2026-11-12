@@ -1,4 +1,4 @@
-// Command naru-release writes the release assets into a directory: the boot disk, the shared data
+// Command naru-release writes the release assets into a directory: the boot disk, the upgrade bundle, the shared data
 // disk, the guest manifest, a test-only user-data per Node that runs gaon, naru-inputs-<version>.json
 // (the Firecracker digest and the test image's reference), the naructl binary, and SHA256SUMS. `make release` runs it.
 package main

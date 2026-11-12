@@ -1,6 +1,8 @@
 // Package disk builds naru's UEFI disk image: a raw GPT disk with one EFI system partition that
-// holds the kernel as \EFI\BOOT\BOOTX64.EFI and the initramfs as \INITRD.GZ. The same inputs give
-// the same bytes: every GUID, the volume id and every timestamp are arguments.
+// holds the kernel, with its initramfs inside it, as \EFI\BOOT\BOOTX64.EFI, the default boot slot,
+// and room for a second kernel of that size, the trial slot \EFI\BOOT\TRIAL.EFI that an upgrade
+// writes (ADR 0020). The same inputs give the same bytes: every GUID, the volume id and every
+// timestamp are arguments.
 package disk
 
 import (
@@ -16,10 +18,20 @@ import (
 	"github.com/garamsh/naru/tooling/disk/internal/fat"
 )
 
-// Paths inside the ESP. The kernel's built-in command line names Initrd (image/kernel/naru.config).
+// Paths inside the ESP. Loader is the default slot, the one firmware boots when nothing says
+// otherwise. Trial is where an upgrade writes the new kernel; the disk is built without it.
+// Both are 8.3 names in one directory, so promoting the trial is one rename within it.
 const (
 	Loader = "EFI/BOOT/BOOTX64.EFI"
-	Initrd = "INITRD.GZ"
+	Trial  = "EFI/BOOT/TRIAL.EFI"
+)
+
+// StartSector is the first sector of the ESP, and Slots the number of kernels it has room for.
+// The device path of a file in the ESP is therefore known without the disk: HD(1,GPT,<ESP GUID>,
+// StartSector,<partition sectors>)/File(\EFI\BOOT\TRIAL.EFI).
+const (
+	StartSector = mib / sectorBytes
+	Slots       = 2
 )
 
 // The host tools. They are named by absolute path because /sbin is not on an ordinary user's PATH.
@@ -40,36 +52,27 @@ const (
 
 // Spec says what to build.
 type Spec struct {
-	// Kernel is the bzImage, Initrd the initramfs, Out the disk image to write.
-	Kernel, Initrd, Out string
+	// Kernel is the bzImage with the initramfs embedded, Out the disk image to write.
+	Kernel, Out string
 	// Stamp is the time of every directory entry and the source of the FAT volume id.
 	Stamp time.Time
 	// DiskGUID and ESPGUID are the GUIDs of the disk and of its one partition.
 	DiskGUID, ESPGUID string
 }
 
-// Build writes the disk image Out and reads its two files back from it.
+// Build writes the disk image Out and reads the kernel back from it.
 func Build(s Spec) error {
 	kernel, err := os.Open(s.Kernel)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = kernel.Close() }()
-	initrd, err := os.Open(s.Initrd)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = initrd.Close() }()
 	kernelSize, err := size(kernel)
 	if err != nil {
 		return err
 	}
-	initrdSize, err := size(initrd)
-	if err != nil {
-		return err
-	}
 
-	espBytes := max(minESPBytes, roundUp(kernelSize+initrdSize+espSlackByte, mib))
+	espBytes := max(minESPBytes, roundUp(Slots*kernelSize+espSlackByte, mib))
 	tmp, err := os.MkdirTemp(filepath.Dir(s.Out), "naru-disk-")
 	if err != nil {
 		return err
@@ -77,16 +80,16 @@ func Build(s Spec) error {
 	defer func() { _ = os.RemoveAll(tmp) }()
 
 	esp := filepath.Join(tmp, "esp.img")
-	if err := makeESP(esp, espBytes, s.Stamp, kernel, kernelSize, initrd, initrdSize); err != nil {
+	if err := makeESP(esp, espBytes, s.Stamp, kernel, kernelSize); err != nil {
 		return err
 	}
 	if err := assemble(s, esp, espBytes); err != nil {
 		return err
 	}
-	return verify(s, kernel, initrd)
+	return verify(s, kernel)
 }
 
-func makeESP(esp string, length int64, stamp time.Time, kernel io.Reader, kernelSize int64, initrd io.Reader, initrdSize int64) error {
+func makeESP(esp string, length int64, stamp time.Time, kernel io.Reader, kernelSize int64) error {
 	if err := os.WriteFile(esp, nil, 0o644); err != nil {
 		return err
 	}
@@ -102,10 +105,6 @@ func makeESP(esp string, length int64, stamp time.Time, kernel io.Reader, kernel
 		return err
 	}
 	if err := v.Add(Loader, kernel, kernelSize); err != nil {
-		_ = v.Close()
-		return err
-	}
-	if err := v.Add(Initrd, initrd, initrdSize); err != nil {
 		_ = v.Close()
 		return err
 	}
@@ -133,7 +132,7 @@ func assemble(s Spec, esp string, espBytes int64) error {
 	if err != nil {
 		return err
 	}
-	first := int64(mib / sectorBytes)
+	first := int64(StartSector)
 	last := first + espBytes/sectorBytes - 1
 	return run(sgdisk,
 		"--clear",
@@ -146,9 +145,8 @@ func assemble(s Spec, esp string, espBytes int64) error {
 	)
 }
 
-// verify reads the kernel and the initramfs back out of the disk image and fails unless both are
-// the bytes that went in.
-func verify(s Spec, kernel, initrd *os.File) error {
+// verify reads the kernel back out of the disk image and fails unless it is the bytes that went in.
+func verify(s Spec, kernel *os.File) error {
 	info, err := os.Stat(s.Out)
 	if err != nil {
 		return err
@@ -175,7 +173,7 @@ func verify(s Spec, kernel, initrd *os.File) error {
 		return err
 	}
 	defer func() { _ = v.Close() }()
-	for path, src := range map[string]*os.File{Loader: kernel, Initrd: initrd} {
+	for path, src := range map[string]*os.File{Loader: kernel} {
 		got, err := v.ReadFile(path)
 		if err != nil {
 			return err
