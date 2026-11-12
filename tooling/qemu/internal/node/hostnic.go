@@ -14,6 +14,9 @@ const (
 	// APIPort is the TCP port the forward reaches: the one gaon-apiserver serves on, which naructl's
 	// layout fixes. The harness test of a cluster fails when the two differ.
 	APIPort = "6443"
+	// NodeAPIPort is the port init's Node API listens on by default (ADR 0017), which the second
+	// forward of a cluster that has spec.api reaches.
+	NodeAPIPort = "50000"
 )
 
 // HostMAC is the address of the second NIC: the form of the first, in the next block of the

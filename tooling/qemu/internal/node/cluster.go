@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"go.yaml.in/yaml/v3"
+
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
@@ -45,6 +47,9 @@ type ClusterSpec struct {
 	Disable []string
 	// GaonBinaries names the gaon services whose binary the Inputs tree carries under gaon/.
 	GaonBinaries []string
+	// NodeAPI, with Gaon, has `naructl gen api-ca` write the Node API's authority, so that every Node's
+	// user-data carries spec.api, and node-1's API is reachable from the host through a forward.
+	NodeAPI bool
 }
 
 // Cluster is the Nodes of one network. Node 1 is the one whose configuration
@@ -55,6 +60,19 @@ type Cluster struct {
 	// CA that signed it, and the address on the test host, "127.0.0.1:port", that reaches the API server.
 	Client   naructl.Client
 	HostAddr string
+	// API is set when the cluster has NodeAPI.
+	API *NodeAPI
+}
+
+// NodeAPI is how the test host reaches node-1's Node API: the address of the forward and naructl
+// client files, each naructl's own format (ADR 0017).
+type NodeAPI struct {
+	// Addr is "127.0.0.1:port", the host side of the forward to node-1's Node API.
+	Addr string
+	// Admin and Reader are client files with the certificate of that role from the cluster's Node API
+	// authority. Foreign is Admin's file with the certificate and key of an admin of another
+	// authority: the server's certificate is still trusted, and the client's is not.
+	Admin, Reader, Foreign string
 }
 
 // StartCluster boots N Nodes that share a network and returns them as soon as
@@ -62,6 +80,9 @@ type Cluster struct {
 func StartCluster(spec ClusterSpec) (*Cluster, error) {
 	if spec.N < 1 {
 		return nil, errors.New("a cluster needs at least one Node")
+	}
+	if spec.NodeAPI && !spec.Gaon {
+		return nil, errors.New("NodeAPI needs Gaon: the user-data with spec.api is naructl's")
 	}
 	// The Nodes of one cluster meet on a multicast group and port of their own, so that
 	// clusters running side by side on one host do not share a network.
@@ -73,7 +94,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		if gen, err = newGaonFiles(spec); err != nil {
 			return nil, err
 		}
-		c.Client, c.HostAddr = gen.client, "127.0.0.1:"+strconv.Itoa(gen.port)
+		c.Client, c.HostAddr, c.API = gen.client, "127.0.0.1:"+strconv.Itoa(gen.port), gen.api
 		// The CA's key stays on disk only while naructl needs it, whichever way StartCluster returns.
 		defer func() { _ = gen.dropCA() }()
 	}
@@ -86,6 +107,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		if gen != nil {
 			if i == 1 {
 				start.Config.HostPort = gen.port // only Node 1 has the second NIC
+				start.Config.APIHostPort = gen.apiPort
 			}
 			var err error
 			if start.NaruYAML, start.NetworkConfig, err = gen.node(start.Config, spec); err != nil {
@@ -126,6 +148,9 @@ type gaonFiles struct {
 	caDir, guest string
 	client       naructl.Client
 	port         int
+	// api and apiPort are set when the cluster has a Node API.
+	api     *NodeAPI
+	apiPort int
 }
 
 func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
@@ -157,6 +182,11 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 			if err := spec.Naructl.GenToken(g.caDir, fmt.Sprintf("node-%d", i)); err != nil {
 				return nil, err
 			}
+		}
+	}
+	if spec.NodeAPI {
+		if err := g.nodeAPIFiles(spec); err != nil {
+			return nil, err
 		}
 	}
 	// The CA's directory is removed once the last Node's user-data is written, key and all, so the
@@ -210,4 +240,73 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	}
 	networkConfig, err = os.ReadFile(a.NetworkConfig)
 	return userData, networkConfig, err
+}
+
+// nodeAPIFiles has naructl write the Node API's authority into the CA directory, so that the Nodes'
+// user-data carries spec.api, and the client files of the host: an admin's, a reader's, and an
+// admin's whose certificate is from another authority. The other authority lives only in its own
+// directory, removed here.
+func (g *gaonFiles) nodeAPIFiles(spec ClusterSpec) error {
+	port, err := freePort()
+	if err != nil {
+		return fmt.Errorf("pick a host port for the Node API: %w", err)
+	}
+	g.apiPort = port
+	addr := "127.0.0.1:" + strconv.Itoa(port)
+	dir := filepath.Join(spec.Dir, "api-client")
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
+		return err
+	}
+	api := &NodeAPI{Addr: addr, Admin: filepath.Join(dir, "admin.yaml"), Reader: filepath.Join(dir, "reader.yaml"), Foreign: filepath.Join(dir, "foreign.yaml")}
+	if err := spec.Naructl.GenAPICA(g.caDir); err != nil {
+		return err
+	}
+	for role, out := range map[string]string{"admin": api.Admin, "reader": api.Reader} {
+		if err := spec.Naructl.GenAPIClient(g.caDir, role, addr, out); err != nil {
+			return err
+		}
+	}
+	other := filepath.Join(spec.Dir, "ca-foreign")
+	defer func() { _ = os.RemoveAll(other) }()
+	foreign := filepath.Join(dir, "foreign-own.yaml")
+	if err := spec.Naructl.GenAPICA(other); err != nil {
+		return err
+	}
+	if err := spec.Naructl.GenAPIClient(other, "admin", addr, foreign); err != nil {
+		return err
+	}
+	if err := swapPair(api.Admin, foreign, api.Foreign); err != nil {
+		return err
+	}
+	if err := os.Remove(foreign); err != nil {
+		return err
+	}
+	g.api = api
+	return nil
+}
+
+// swapPair writes to out the client file base with the certificate and key of the file from.
+func swapPair(base, from, out string) error {
+	read := func(p string) (map[string]any, error) {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		var m map[string]any
+		return m, yaml.Unmarshal(b, &m)
+	}
+	f, err := read(base)
+	if err != nil {
+		return err
+	}
+	other, err := read(from)
+	if err != nil {
+		return err
+	}
+	f["certificate"], f["key"] = other["certificate"], other["key"]
+	b, err := yaml.Marshal(f)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(out, b, 0o600)
 }

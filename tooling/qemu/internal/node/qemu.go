@@ -193,8 +193,12 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 	// privilege (ADR 0012). The network has no route off the host and the Nodes' network is
 	// untouched.
 	if spec.Config.hostNIC() {
+		netdev := fmt.Sprintf("user,id=net1,restrict=on,hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.HostPort, HostNICAddress, APIPort)
+		if spec.Config.APIHostPort != 0 {
+			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.APIHostPort, HostNICAddress, NodeAPIPort)
+		}
 		args = append(args,
-			"-netdev", fmt.Sprintf("user,id=net1,restrict=on,hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.HostPort, HostNICAddress, APIPort),
+			"-netdev", netdev,
 			"-device", "virtio-net-pci,netdev=net1,mac="+spec.Config.HostMAC(),
 		)
 	}
