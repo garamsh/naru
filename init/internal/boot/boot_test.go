@@ -4,8 +4,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,6 +15,7 @@ import (
 	"github.com/garamsh/naru/init/internal/boot"
 	"github.com/garamsh/naru/init/internal/config"
 	"github.com/garamsh/naru/init/internal/netcfg"
+	"github.com/garamsh/naru/init/internal/pkitest"
 )
 
 const validNetwork = `version: 1
@@ -59,12 +62,15 @@ type recorder struct {
 	forwardErr error
 	prepareErr error
 	sealErr    error
+	issueErr   error
 	startErr   error
 
 	calls     []string
 	forwarded []config.Family
 	applied   netcfg.Config
 	written   []config.File
+	issuedPKI config.PKI
+	issuedTo  []netip.Addr
 }
 
 func (r *recorder) ReadSeed() ([]byte, []byte, error) {
@@ -100,6 +106,13 @@ func (r *recorder) SealRoot() error {
 	return r.sealErr
 }
 
+func (r *recorder) Issue(spec config.PKI, addrs []netip.Addr) error {
+	r.calls = append(r.calls, "issue")
+	r.issuedPKI = spec
+	r.issuedTo = addrs
+	return r.issueErr
+}
+
 func (r *recorder) Prepare() error {
 	r.calls = append(r.calls, "prepare")
 	return r.prepareErr
@@ -114,7 +127,7 @@ func run(r *recorder) error {
 	if r.network == "" {
 		r.network = validNetwork
 	}
-	return boot.Run(r, r, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return boot.Run(r, r, r, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestRun_StartsServicesAfterTheMachineIsReady(t *testing.T) {
@@ -136,6 +149,49 @@ func TestRun_StartsAControlPlaneServiceOnlyOnAControlPlaneNode(t *testing.T) {
 	require.NoError(t, run(r))
 
 	assert.Equal(t, []string{"read", "network", "mount", "forward", "files", "prepare", "seal", "start mvmd", "start gaon"}, r.calls)
+}
+
+// withPKI adds a spec.pki that asks for one certificate to validConfig.
+func withPKI(t *testing.T) string {
+	t.Helper()
+	ca := pkitest.NewCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	return replace(t, validConfig, "  services:\n", `  pki:
+    authorities:
+      - name: ca
+        certificate: |
+`+pkitest.Indent(ca.Cert, 10)+`        key: |
+`+pkitest.Indent(ca.Key, 10)+`        certificatePath: /run/pki/ca.pem
+    certificates:
+      - name: server
+        authority: ca
+        certificatePath: /run/pki/server.pem
+        keyPath: /run/pki/server.key
+        commonName: server
+        usage: server
+        nodeAddresses: true
+  services:
+`)
+}
+
+func TestRun_IssuesCertificatesAfterTheNetworkAndBeforeAnyServiceStarts(t *testing.T) {
+	r := &recorder{raw: withPKI(t)}
+
+	require.NoError(t, run(r))
+
+	assert.Equal(t, []string{"read", "network", "mount", "forward", "files", "issue", "prepare", "seal", "start mvmd"}, r.calls)
+	require.Len(t, r.issuedPKI.Certificates, 1)
+	assert.Equal(t, "server", r.issuedPKI.Certificates[0].Name)
+	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.78.0.1")}, r.issuedTo, "the Node's addresses come from the network-config")
+}
+
+func TestRun_StartsNothingWhenACertificateCannotBeIssued(t *testing.T) {
+	// The control is the test above: with the same configuration, a service starts.
+	r := &recorder{raw: withPKI(t), issueErr: errors.New("boom")}
+
+	err := run(r)
+
+	assert.ErrorIs(t, err, r.issueErr)
+	assert.Equal(t, []string{"read", "network", "mount", "forward", "files", "issue"}, r.calls)
 }
 
 func TestRun_RefusesAnInvalidConfigurationAndStartsNothing(t *testing.T) {

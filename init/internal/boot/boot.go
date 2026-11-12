@@ -6,6 +6,7 @@ package boot
 import (
 	"fmt"
 	"log/slog"
+	"net/netip"
 
 	"github.com/garamsh/naru/init/internal/config"
 	"github.com/garamsh/naru/init/internal/netcfg"
@@ -29,6 +30,13 @@ type Host interface {
 	SealRoot() error
 }
 
+// Issuer issues the certificates of spec.pki.
+type Issuer interface {
+	// Issue writes the authorities' certificates and issues the certificates,
+	// with addrs as the Node's addresses.
+	Issue(spec config.PKI, addrs []netip.Addr) error
+}
+
 // Services runs the services.
 type Services interface {
 	Prepare() error
@@ -37,10 +45,10 @@ type Services interface {
 
 // Run starts the services of the configuration the host holds. It starts
 // none, and returns the reason, when the configuration or the network-config
-// is invalid, the network cannot be brought up, the data disk is refused or the
-// kernel cannot be set up: a refusal is the same whichever service it would
+// is invalid, the network cannot be brought up, the data disk is refused, the
+// kernel cannot be set up or a certificate cannot be issued: a refusal is the same whichever service it would
 // have kept from starting.
-func Run(host Host, services Services, log *slog.Logger) error {
+func Run(host Host, issuer Issuer, services Services, log *slog.Logger) error {
 	userData, networkConfig, err := host.ReadSeed()
 	if err != nil {
 		return fmt.Errorf("read the NoCloud drive: %w", err)
@@ -68,6 +76,17 @@ func Run(host Host, services Services, log *slog.Logger) error {
 	}
 	if err := host.WriteFiles(cfg.Spec.Files); err != nil {
 		return err
+	}
+	if pki := cfg.Spec.PKI; len(pki.Authorities) > 0 || len(pki.Certificates) > 0 {
+		var addrs []netip.Addr
+		for _, iface := range network.Interfaces {
+			for _, p := range iface.Addresses {
+				addrs = append(addrs, p.Addr())
+			}
+		}
+		if err := issuer.Issue(pki, addrs); err != nil {
+			return fmt.Errorf("issue certificates: %w", err)
+		}
 	}
 	if err := services.Prepare(); err != nil {
 		return fmt.Errorf("prepare cgroups: %w", err)
