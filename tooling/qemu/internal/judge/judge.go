@@ -266,3 +266,14 @@ func Check(node string, l Log, want []Expect) []Failure {
 	}
 	return out
 }
+
+// NodeAPI is what the console of a Node shows of init's Node API (ADR 0017): with listening, that it
+// serves, and never that it is off; without, that it is off, as it is for user-data with no spec.api
+// (every release's test user-data, and the user-data of v0.3.0), and never that it serves.
+func NodeAPI(listening bool) []Expect {
+	on, off := []string{"the Node API is listening"}, []string{"the Node API is off"}
+	if listening {
+		return []Expect{{What: "init serves the Node API", Fragments: on}, {What: "init does not say the Node API is off", Fragments: off, Absent: true}}
+	}
+	return []Expect{{What: "init says the Node API is off", Fragments: off}, {What: "init does not serve the Node API", Fragments: on, Absent: true}}
+}

@@ -46,3 +46,13 @@ func TestBoot_TheStandinsDataDiskLineIsExpectedOfNodesThatRunTheStandin(t *testi
 	}
 	assert.Contains(t, whats, "the data disk is mounted")
 }
+
+func TestNodeAPI_AConsoleMeetsTheExpectationsOfTheStateItShows(t *testing.T) {
+	off := judge.Log{Text: "level=INFO msg=\"the Node API is off: the configuration has no spec.api\"\n"}
+	on := judge.Log{Text: "level=INFO msg=\"the Node API is listening\" addr=[::]:50000\n"}
+
+	assert.Empty(t, judge.Check("node-1", off, judge.NodeAPI(false)))
+	assert.Empty(t, judge.Check("node-1", on, judge.NodeAPI(true)))
+	assert.Len(t, judge.Check("node-1", on, judge.NodeAPI(false)), 2, "a serving Node is not one with the API off")
+	assert.Len(t, judge.Check("node-1", off, judge.NodeAPI(true)), 2)
+}

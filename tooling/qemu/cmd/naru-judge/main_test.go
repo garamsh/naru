@@ -120,3 +120,17 @@ func TestRun_WithGaonTwoLogsThatShowGaonsServicesExitZeroAndOneWithoutTheRegistr
 	assert.Equal(t, 1, run([]string{"-gaon", "-naructl", naructlStub(t), "-node1", n1, "-node2", n2}, &out, &errOut))
 	assert.Contains(t, errOut.String(), "FAIL node-2: init started registry")
 }
+
+func TestRun_NodeAPIJudgesTheLineOfTheStateTheFlagNames(t *testing.T) {
+	var out, errOut bytes.Buffer
+	off := logOf(t, append(judge.Node("node-1", true, true), judge.NodeAPI(false)...), "")
+	off2 := logOf(t, append(judge.Node("node-2", false, false), judge.NodeAPI(false)...), "")
+	plain1 := logOf(t, judge.Node("node-1", true, true), "")
+	plain2 := logOf(t, judge.Node("node-2", false, false), "")
+
+	assert.Equal(t, 0, run([]string{"-node-api", "off", "-node1", off, "-node2", off2}, &out, &errOut), errOut.String())
+	assert.Equal(t, 1, run([]string{"-node-api", "listening", "-node1", off, "-node2", off2}, &out, &errOut), "a Node that says the API is off does not serve it")
+	assert.Equal(t, 1, run([]string{"-node-api", "off", "-node1", plain1, "-node2", plain2}, &out, &errOut), "no line is not the API off")
+	assert.Equal(t, 0, run([]string{"-node1", plain1, "-node2", plain2}, &out, &errOut), "left out, the lines are not judged")
+	assert.Equal(t, 2, run([]string{"-node-api", "on", "-node1", plain1, "-node2", plain2}, &out, &errOut))
+}
