@@ -46,8 +46,8 @@ type Services interface {
 // Run starts the services of the configuration the host holds. It starts
 // none, and returns the reason, when the configuration or the network-config
 // is invalid, the network cannot be brought up, the data disk is refused, the
-// kernel cannot be set up or a certificate cannot be issued: a refusal is the same whichever service it would
-// have kept from starting.
+// kernel cannot be set up or a certificate cannot be issued: a refusal is the
+// same whichever service it would have kept from starting.
 func Run(host Host, issuer Issuer, services Services, log *slog.Logger) error {
 	userData, networkConfig, err := host.ReadSeed()
 	if err != nil {

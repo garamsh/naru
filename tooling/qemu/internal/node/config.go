@@ -170,6 +170,7 @@ type nodeConfig struct {
 		} `yaml:"network"`
 		Services []service `yaml:"services"`
 		Files    []file    `yaml:"files"`
+		PKI      *pkiSpec  `yaml:"pki,omitempty"`
 	} `yaml:"spec"`
 }
 
@@ -177,6 +178,30 @@ type file struct {
 	Path    string `yaml:"path"`
 	Mode    string `yaml:"mode,omitempty"`
 	Content string `yaml:"content"`
+}
+
+// pkiSpec, pkiAuthority and pkiCertificate are spec.pki as docs/architecture/config.md names it.
+type pkiSpec struct {
+	Authorities  []pkiAuthority   `yaml:"authorities"`
+	Certificates []pkiCertificate `yaml:"certificates"`
+}
+
+type pkiAuthority struct {
+	Name            string `yaml:"name"`
+	Certificate     string `yaml:"certificate"`
+	Key             string `yaml:"key,omitempty"`
+	CertificatePath string `yaml:"certificatePath"`
+}
+
+type pkiCertificate struct {
+	Name            string   `yaml:"name"`
+	Authority       string   `yaml:"authority"`
+	CertificatePath string   `yaml:"certificatePath"`
+	KeyPath         string   `yaml:"keyPath"`
+	CommonName      string   `yaml:"commonName"`
+	Usage           string   `yaml:"usage"`
+	NodeAddresses   bool     `yaml:"nodeAddresses,omitempty"`
+	Restart         []string `yaml:"restart,omitempty"`
 }
 
 // NaruYAML is the Node's naru.yaml, which is its NoCloud user-data. It carries mvmd's
@@ -209,6 +234,9 @@ func (c Config) NaruYAML() ([]byte, error) {
 	registry := service{Name: "registry", Binary: path.Join(root, "bin/naru-registry"), Args: []string{"-listen", fixture.RegistryAddr, "-dir", path.Join(root, "registry")}}
 	if c.Gaon != nil {
 		n.Spec.Files = append(n.Spec.Files, c.Gaon.files(c)...)
+		if c.Gaon.issues(c) {
+			n.Spec.PKI = c.Gaon.pki(c)
+		}
 		n.Spec.Services = append([]service{mvmd, registry}, c.Gaon.services(c)...)
 		return yaml.Marshal(n)
 	}

@@ -46,6 +46,11 @@ func run(args []string, out, errOut io.Writer) int {
 		want := judge.Node(n.name, n.controlPlane, n.probe)
 		if *gaon {
 			want = judge.Gaon(n.name, n.controlPlane, 1)
+			// A control-plane Node whose log shows init writing an authority issued its pairs from
+			// spec.pki (ADR 0013), and its issuing is judged too; one that shows none carried them.
+			if n.controlPlane && judge.HasLine(log.Text, []string{"authority written"}) {
+				want = append(want, judge.Issuance(judge.GaonIssued...)...)
+			}
 		}
 		bad := judge.Check(n.name, log, want)
 		fmt.Fprintf(out, "%s: %s: %d bytes, %d re-printed block(s), %d line(s) dropped by init; %d of %d expectations met\n",

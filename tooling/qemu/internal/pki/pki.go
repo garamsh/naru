@@ -1,6 +1,7 @@
 // Package pki issues the certificates of a test cluster's gaon services: a throwaway CA, the API
-// server's serving certificate, and one client certificate per caller. It is test tooling: naru
-// issues no certificate at boot and carries the files the tooling issues (ADR 0012).
+// server's serving certificate, and one client certificate per caller. It is test tooling: the
+// leaf pairs it issues are carried as files (ADR 0012), and the CA it makes is the one a Node's
+// spec.pki carries for init to issue from (ADR 0013).
 package pki
 
 import (
@@ -29,9 +30,11 @@ type Pair struct {
 // CA is a certificate authority that signs the certificates of one cluster.
 type CA struct {
 	// PEM is the CA's certificate.
-	PEM  []byte
-	cert *x509.Certificate
-	key  *ecdsa.PrivateKey
+	PEM []byte
+	// KeyPEM is the CA's private key.
+	KeyPEM []byte
+	cert   *x509.Certificate
+	key    *ecdsa.PrivateKey
 }
 
 // NewCA returns a new self-signed CA.
@@ -58,7 +61,15 @@ func NewCA() (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CA{PEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), cert: cert, key: key}, nil
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+	return &CA{
+		PEM:    pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		KeyPEM: pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+		cert:   cert, key: key,
+	}, nil
 }
 
 // Server issues a serving certificate with cn as its subject and each of ips as an IP SAN.
@@ -122,6 +133,9 @@ func serial() *big.Int {
 type Cluster struct {
 	// CA is the CA's certificate, PEM: the file every service names as the CA it trusts.
 	CA []byte
+	// CAKey is the CA's private key, PEM: what a Node whose spec.pki issues its own certificates
+	// carries, and no other Node.
+	CAKey []byte
 	// APIServer is the API server's serving certificate.
 	APIServer Pair
 	// Agents holds one client certificate per Node, its CN the Node's name.
@@ -140,7 +154,7 @@ func NewCluster(nodes []string, serverIPs ...net.IP) (*Cluster, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Cluster{CA: ca.PEM, Agents: map[string]Pair{}}
+	c := &Cluster{CA: ca.PEM, CAKey: ca.KeyPEM, Agents: map[string]Pair{}}
 	if c.APIServer, err = ca.Server("gaon-apiserver", serverIPs...); err != nil {
 		return nil, err
 	}

@@ -27,6 +27,9 @@ type ClusterSpec struct {
 	// Gaon runs gaon on the Nodes: the Node Agent on each, and etcd, the API server, the scheduler and
 	// the controllers on Node 1, with the certificates the cluster issues (ADR 0012).
 	Gaon bool
+	// BootPKI, with Gaon, has Node 1 issue its certificates from the CA its spec.pki carries; the
+	// other Nodes carry their agent's pair as files (ADR 0013).
+	BootPKI bool
 }
 
 // Cluster is the Nodes of one network. Node 1 is the one whose configuration
@@ -65,7 +68,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 			return nil, fmt.Errorf("issue the certificates: %w", err)
 		}
 		c.HostAddr = "127.0.0.1:" + strconv.Itoa(port)
-		gaon = &Gaon{Certs: c.Certs, APIServerIP: apiIP}
+		gaon = &Gaon{Certs: c.Certs, APIServerIP: apiIP, BootPKI: spec.BootPKI}
 		gaon.HostPort = port
 	}
 	for i := 1; i <= spec.N; i++ {

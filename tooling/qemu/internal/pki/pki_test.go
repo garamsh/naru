@@ -82,6 +82,19 @@ func TestNewCluster_IssuesWhatGaonsFlagsTake(t *testing.T) {
 	})
 }
 
+func TestNewCluster_CarriesTheCAKeyThatMatchesTheCAsCertificate(t *testing.T) {
+	server := net.ParseIP("10.78.0.1")
+	c, err := pki.NewCluster([]string{"node-1"}, server)
+	require.NoError(t, err)
+	other, err := pki.NewCluster([]string{"node-1"}, server)
+	require.NoError(t, err)
+
+	_, err = tls.X509KeyPair(c.CA, c.CAKey)
+	assert.NoError(t, err, "the CA's key is its certificate's")
+	_, err = tls.X509KeyPair(c.CA, other.CAKey)
+	assert.Error(t, err, "another CA's key is not")
+}
+
 func TestCA_RefusesWhatIsNotACertificate(t *testing.T) {
 	ca, err := pki.NewCA()
 	require.NoError(t, err)

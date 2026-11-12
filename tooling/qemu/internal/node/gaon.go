@@ -38,6 +38,11 @@ type Gaon struct {
 	// HostPort is the host port forwarded to the API server through the Node's second NIC, or 0
 	// for a Node with no such NIC. Only the control-plane Node has one.
 	HostPort int
+	// BootPKI makes the control-plane Node issue its own certificates: its configuration carries the
+	// CA and its key in spec.pki (ADR 0013), and init issues the API server's, the scheduler's, the
+	// controllers' and the Node's own agent's pairs at boot. The other Nodes keep carrying their
+	// agent's pair as files.
+	BootPKI bool
 }
 
 // hostMAC is the address of the second NIC: the form of the first, in the next block of the
@@ -60,6 +65,9 @@ func gaonPath(name string) string { return path.Join(GaonCertDir, name) }
 // the control-plane Node, the API server's pair and the scheduler's and the controllers' pairs.
 // The keys are 0600 and the certificates 0644.
 func (g *Gaon) files(c Config) []file {
+	if g.issues(c) {
+		return nil // init writes the CA and every pair from spec.pki
+	}
 	files := []file{
 		{Path: gaonPath("ca.pem"), Mode: "0644", Content: string(g.Certs.CA)},
 		{Path: gaonPath("agent.pem"), Mode: "0644", Content: string(g.Certs.Agents[c.Name].CertPEM)},
@@ -82,6 +90,35 @@ func (g *Gaon) files(c Config) []file {
 		)
 	}
 	return files
+}
+
+// issues reports whether the Node's certificates come from spec.pki: only the control-plane Node's
+// do, when BootPKI is set.
+func (g *Gaon) issues(c Config) bool { return g.BootPKI && c.ControlPlane }
+
+// pki is the control-plane Node's spec.pki: the cluster's CA with its key, written where the
+// services name it, and the four pairs the Node's services take, each restarting its service when
+// init renews it. The paths are those the files take otherwise, so services() is the same either way.
+func (g *Gaon) pki(c Config) *pkiSpec {
+	cert := func(name, cn, usage, service string) pkiCertificate {
+		return pkiCertificate{
+			Name: name, Authority: "gaon", CertificatePath: gaonPath(name + ".pem"), KeyPath: gaonPath(name + ".key"),
+			CommonName: cn, Usage: usage, Restart: []string{service},
+		}
+	}
+	apiserver := cert("apiserver", "gaon-apiserver", "server", "gaon-apiserver")
+	apiserver.NodeAddresses = true
+	return &pkiSpec{
+		Authorities: []pkiAuthority{{
+			Name: "gaon", Certificate: string(g.Certs.CA), Key: string(g.Certs.CAKey), CertificatePath: gaonPath("ca.pem"),
+		}},
+		Certificates: []pkiCertificate{
+			apiserver,
+			cert("scheduler", "gaon-scheduler", "client", "gaon-scheduler"),
+			cert("controllers", "gaon-controllers", "client", "gaon-controllers"),
+			cert("agent", c.Name, "client", "gaon-node-agent"),
+		},
+	}
 }
 
 // services are gaon's, in the order init starts them: etcd, then the API server that dials it, then

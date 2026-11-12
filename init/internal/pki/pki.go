@@ -1,6 +1,6 @@
 // Package pki issues the certificates spec.pki asks for, from the authorities
 // the configuration carries, and renews them when two thirds of their
-// validity has passed (docs/architecture/adr/0013-init-issues-certificates-at-boot.md).
+// validity has passed (docs/architecture/adr/0013-init-issues-certificates-at-boot-from-a-ca-carried-in-spec-pki-and-renews-them.md).
 package pki
 
 import (
