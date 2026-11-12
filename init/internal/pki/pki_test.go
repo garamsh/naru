@@ -107,8 +107,14 @@ type rig struct {
 
 func newRig(t *testing.T, certs ...config.Certificate) *rig {
 	t.Helper()
+	return newRigExpiring(t, epoch.Add(24*365*time.Hour), certs...)
+}
+
+// newRigExpiring is newRig with an authority whose certificate expires at notAfter.
+func newRigExpiring(t *testing.T, notAfter time.Time, certs ...config.Certificate) *rig {
+	t.Helper()
 	r := &rig{root: t.TempDir(), clock: newFakeClock(), restarts: restarts{make(chan string, 16)}, log: &bytes.Buffer{}}
-	r.ca = pkitest.NewCA(t, epoch.Add(-24*time.Hour), epoch.Add(24*365*time.Hour))
+	r.ca = pkitest.NewCA(t, epoch.Add(-24*time.Hour), notAfter)
 	r.spec = config.PKI{
 		Authorities:  []config.Authority{{Name: "ca", Certificate: r.ca.Cert, Key: r.ca.Key, CertificatePath: "/run/pki/ca.pem"}},
 		Certificates: certs,
@@ -367,6 +373,149 @@ func TestRun_RetriesARenewalThatFailsAndRestartsNothingUntilItSucceeds(t *testin
 
 	assert.Equal(t, "apiserver", r.restarts.next(t))
 	assert.NotEqual(t, oldCert.SerialNumber, r.readCert(t, "/run/pki/apiserver.pem").SerialNumber)
+}
+
+// runRenewal starts the issuer's renewal and stops it when the test ends.
+func (r *rig) runRenewal(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); r.issuer.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+}
+
+func TestRun_RenewsAtTwoThirdsOfAValidityThatTwoTimesWouldOverflow(t *testing.T) {
+	// The control is the first renewal test: the same arithmetic, on a validity it does not overflow on.
+	long := serverCert()
+	long.Validity = "1500000h" // 171 years: twice that is more than an int64 holds in nanoseconds
+	r := newRigExpiring(t, epoch.Add(200*365*24*time.Hour), long)
+	require.NoError(t, r.issuer.Issue(r.spec, nodeAddrs))
+	r.runRenewal(t)
+
+	assert.Equal(t, 1000000*time.Hour, r.clock.nextTimer(t).d, "two thirds of 1500000h")
+}
+
+func TestIssue_EndsALeafAtTheAuthoritiesExpiry(t *testing.T) {
+	long := serverCert()
+	long.Validity = "720h"
+	r := newRigExpiring(t, epoch.Add(48*time.Hour), long)
+	require.NoError(t, r.issuer.Issue(r.spec, nodeAddrs))
+	r.runRenewal(t)
+
+	assert.True(t, r.readCert(t, "/run/pki/apiserver.pem").NotAfter.Equal(epoch.Add(48*time.Hour)), "not past the authority, 720h being the validity")
+	assert.Contains(t, r.log.String(), "msg=\"authority expires soon\" name=ca")
+	first := r.clock.nextTimer(t)
+	assert.Equal(t, 32*time.Hour, first.d, "two thirds of the 48h it lives, not of 720h")
+	r.clock.advance(32 * time.Hour)
+	first.ch <- time.Time{}
+
+	assert.Equal(t, "apiserver", r.restarts.next(t))
+	assert.True(t, r.readCert(t, "/run/pki/apiserver.pem").NotAfter.Equal(epoch.Add(48*time.Hour)), "the renewal is capped too")
+	assert.Equal(t, 10*time.Hour+40*time.Minute, r.clock.nextTimer(t).d, "two thirds of the 16h left")
+}
+
+func TestIssue_RefusesALeafThatWouldLiveLessThanAnHour(t *testing.T) {
+	// The control is the renewal test below: the same specification issues while the authority leaves two hours.
+	r := newRigExpiring(t, epoch.Add(30*time.Minute), serverCert())
+
+	err := r.issuer.Issue(r.spec, nodeAddrs)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "authority ca expires at 2030-01-01T00:30:00Z")
+	assert.NoFileExists(t, r.path("/run/pki/apiserver.pem"))
+	assert.Contains(t, r.log.String(), "msg=\"authority expires soon\"")
+}
+
+func TestRun_RefusesARenewalThatWouldLiveLessThanAnHourAndRetries(t *testing.T) {
+	r := newRigExpiring(t, epoch.Add(2*time.Hour), serverCert())
+	require.NoError(t, r.issuer.Issue(r.spec, nodeAddrs))
+	old := mustRead(t, r.path("/run/pki/apiserver.pem"))
+	r.runRenewal(t)
+
+	first := r.clock.nextTimer(t)
+	assert.Equal(t, 80*time.Minute, first.d, "two thirds of the 2h it was issued for")
+	r.clock.advance(80 * time.Minute)
+	first.ch <- time.Time{}
+	retry := r.clock.nextTimer(t)
+
+	assert.Equal(t, time.Minute, retry.d)
+	assert.Contains(t, r.log.String(), "msg=\"certificate renewal failed\" name=apiserver")
+	assert.Contains(t, r.log.String(), "authority ca expires at 2030-01-01T02:00:00Z")
+	assert.Equal(t, old, mustRead(t, r.path("/run/pki/apiserver.pem")), "the certificate stands")
+	r.restarts.none(t)
+}
+
+func TestRun_LeavesTheOldPairWhenTheCertificateCannotBeReplaced(t *testing.T) {
+	r := newRig(t, serverCert())
+	require.NoError(t, r.issuer.Issue(r.spec, nodeAddrs))
+	oldKey := mustRead(t, r.path("/run/pki/apiserver.key"))
+	oldCert := mustRead(t, r.path("/run/pki/apiserver.pem"))
+	// A directory where the certificate is: the new key is renamed in, and the new certificate cannot be.
+	require.NoError(t, os.Remove(r.path("/run/pki/apiserver.pem")))
+	require.NoError(t, os.Mkdir(r.path("/run/pki/apiserver.pem"), 0o755))
+	r.runRenewal(t)
+
+	first := r.clock.nextTimer(t)
+	r.clock.advance(16 * time.Hour)
+	first.ch <- time.Time{}
+	retry := r.clock.nextTimer(t)
+
+	assert.Contains(t, r.log.String(), "msg=\"certificate renewal failed\" name=apiserver")
+	assert.Equal(t, oldKey, mustRead(t, r.path("/run/pki/apiserver.key")), "the old key is back beside the certificate")
+	entries, err := os.ReadDir(r.path("/run/pki"))
+	require.NoError(t, err)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	assert.ElementsMatch(t, []string{"ca.pem", "apiserver.key", "apiserver.pem"}, names, "no staged file is left")
+	r.restarts.none(t)
+
+	// The control: the same renewal succeeds once the certificate's path is a file again.
+	require.NoError(t, os.Remove(r.path("/run/pki/apiserver.pem")))
+	require.NoError(t, os.WriteFile(r.path("/run/pki/apiserver.pem"), oldCert, 0o644))
+	r.clock.advance(time.Minute)
+	retry.ch <- time.Time{}
+
+	assert.Equal(t, "apiserver", r.restarts.next(t))
+	assert.NotEqual(t, oldKey, mustRead(t, r.path("/run/pki/apiserver.key")))
+}
+
+func TestRun_RestartsAServiceTwoCertificatesNameOnceAfterBothRenewals(t *testing.T) {
+	first, second := serverCert(), clientCert()
+	first.Restart = []string{"apiserver", "shared"}
+	second.Restart = []string{"shared", "agent"}
+	r := newRig(t, first, second)
+	require.NoError(t, r.issuer.Issue(r.spec, nodeAddrs))
+	r.runRenewal(t)
+
+	timer := r.clock.nextTimer(t)
+	r.clock.advance(16 * time.Hour)
+	timer.ch <- time.Time{}
+
+	assert.Equal(t, "apiserver", r.restarts.next(t))
+	assert.Equal(t, "shared", r.restarts.next(t))
+	assert.Equal(t, "agent", r.restarts.next(t), "in the order first named")
+	r.clock.nextTimer(t)
+	r.restarts.none(t)
+}
+
+func TestRun_ReturnsAtOnceWhenIssuingFailedAfterIssuingSome(t *testing.T) {
+	// The control is the renewal tests: after a complete Issue the same Run waits for a renewal.
+	missing := clientCert()
+	missing.Authority = "nope"
+	r := newRig(t, serverCert(), missing)
+	require.Error(t, r.issuer.Issue(r.spec, nodeAddrs))
+	require.FileExists(t, r.path("/run/pki/apiserver.pem"), "the first certificate was issued")
+	done := make(chan struct{})
+
+	go func() { defer close(done); r.issuer.Run(context.Background()) }()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run waits to renew a certificate of a refused boot")
+	}
 }
 
 func TestRun_StopsWhenItsContextEnds(t *testing.T) {

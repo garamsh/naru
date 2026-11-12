@@ -81,6 +81,21 @@ func TestParse_AcceptsASpecPKI(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestParse_AcceptsTheValidityBounds(t *testing.T) {
+	// The control of the two refusals of a validity under an hour and over ten years.
+	ca := newCA(t)
+	for _, v := range []string{"1h", "87600h"} {
+		doc := strings.Replace(pkiDoc(t, ca, ca.Key), "validity: 24h", "validity: "+v, 1)
+
+		cfg, err := config.Parse([]byte(doc))
+
+		require.NoError(t, err, v)
+		d, perr := time.ParseDuration(v)
+		require.NoError(t, perr)
+		assert.Equal(t, d, cfg.Spec.PKI.Certificates[0].ValidFor())
+	}
+}
+
 func TestParse_AcceptsAnAuthorityKeyPathWhenTheAuthorityCarriesItsKey(t *testing.T) {
 	ca := newCA(t)
 	doc := strings.Replace(pkiDoc(t, ca, ca.Key), "certificatePath: /run/pki/ca.pem", "certificatePath: /run/pki/ca.pem\n        keyPath: /run/pki/ca.key", 1)
@@ -125,6 +140,9 @@ func TestParse_RefusesASpecPKIAndNamesTheField(t *testing.T) {
 		{"server without any name", pkiDoc(t, ca, ca.Key), "        nodeAddresses: true\n", "", "spec.pki.certificates[0]"},
 		{"validity that is not a duration", pkiDoc(t, ca, ca.Key), "validity: 24h", "validity: soon", "spec.pki.certificates[0].validity"},
 		{"validity that is not positive", pkiDoc(t, ca, ca.Key), "validity: 24h", "validity: -1h", "spec.pki.certificates[0].validity"},
+		{"validity under an hour", pkiDoc(t, ca, ca.Key), "validity: 24h", "validity: 59m59s", "spec.pki.certificates[0].validity"},
+		{"validity over ten years", pkiDoc(t, ca, ca.Key), "validity: 24h", "validity: 87601h", "spec.pki.certificates[0].validity"},
+		{"validity that overflows the two thirds of it", pkiDoc(t, ca, ca.Key), "validity: 24h", "validity: 1500000h", "spec.pki.certificates[0].validity"},
 		{"unknown field", pkiDoc(t, ca, ca.Key), "usage: client", "usage: client\n        bogus: 1", "spec.pki.certificates[1].bogus"},
 	}
 	for _, tt := range tests {

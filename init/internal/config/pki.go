@@ -14,8 +14,15 @@ import (
 	"time"
 )
 
-// DefaultValidity is how long a certificate is valid when spec.pki gives none.
-const DefaultValidity = 720 * time.Hour
+const (
+	// DefaultValidity is how long a certificate is valid when spec.pki gives none.
+	DefaultValidity = 720 * time.Hour
+	// MinValidity is the shortest validity spec.pki accepts, and the shortest
+	// life init issues a certificate for.
+	MinValidity = time.Hour
+	// MaxValidity is the longest validity spec.pki accepts: ten years.
+	MaxValidity = 87600 * time.Hour
+)
 
 // Usage is what a certificate is issued for.
 type Usage string
@@ -253,8 +260,8 @@ func (v *validation) pki(p PKI, files []File, services []Service) {
 			v.fail(field, "a server certificate needs dnsNames, ipAddresses or nodeAddresses")
 		}
 		if c.Validity != "" {
-			if d, err := time.ParseDuration(c.Validity); err != nil || d <= 0 {
-				v.fail(field+".validity", "must be a positive duration such as 720h, got %q", c.Validity)
+			if d, err := time.ParseDuration(c.Validity); err != nil || d < MinValidity || d > MaxValidity {
+				v.fail(field+".validity", "must be a duration from %s to %s, such as 720h, got %q", MinValidity, MaxValidity, c.Validity)
 			}
 		}
 		for j, name := range c.Restart {

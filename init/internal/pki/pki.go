@@ -72,8 +72,14 @@ func New(root string, clock Clock, restarter Restarter, log *slog.Logger) *Issue
 // certificates of spec, with addrs as the addresses nodeAddresses stands for.
 // It refuses, and leaves the remaining certificates unissued, at the first
 // failure.
-func (i *Issuer) Issue(spec config.PKI, addrs []netip.Addr) error {
+func (i *Issuer) Issue(spec config.PKI, addrs []netip.Addr) (err error) {
 	i.spec, i.addrs, i.issued = spec, addrs, nil
+	// After a refusal Run has nothing to renew: the boot it belongs to starts no service.
+	defer func() {
+		if err != nil {
+			i.issued = nil
+		}
+	}()
 	for _, a := range spec.Authorities {
 		if err := i.create(a.CertificatePath, []byte(a.Certificate), 0o644); err != nil {
 			return fmt.Errorf("write authority %s: %w", a.Name, err)
@@ -86,7 +92,8 @@ func (i *Issuer) Issue(spec config.PKI, addrs []netip.Addr) error {
 		i.log.Info("authority written", "name", a.Name, "path", a.CertificatePath, "key", a.KeyPath != "")
 	}
 	for _, c := range spec.Certificates {
-		certPEM, keyPEM, expires, err := i.sign(c)
+		now := i.clock.Now()
+		certPEM, keyPEM, expires, err := i.sign(c, now)
 		if err != nil {
 			return fmt.Errorf("issue certificate %s: %w", c.Name, err)
 		}
@@ -96,14 +103,15 @@ func (i *Issuer) Issue(spec config.PKI, addrs []netip.Addr) error {
 		if err := i.create(c.CertificatePath, certPEM, 0o644); err != nil {
 			return fmt.Errorf("write certificate %s: %w", c.Name, err)
 		}
-		i.issued = append(i.issued, &issued{cert: c, due: dueAt(i.clock.Now(), c.ValidFor())})
+		i.issued = append(i.issued, &issued{cert: c, due: dueAt(now, expires.Sub(now))})
 		i.log.Info("certificate issued", "name", c.Name, "authority", c.Authority, "usage", string(c.Usage), "path", c.CertificatePath, "expires", expires.UTC().Format(time.RFC3339))
 	}
 	return nil
 }
 
-// Run renews each issued certificate when two thirds of its validity has
-// passed, until ctx ends. A renewal that fails is logged and retried.
+// Run renews each issued certificate when two thirds of its life has passed,
+// until ctx ends, and returns at once when none was issued. A renewal that
+// fails is logged and retried. It must not run while Issue does.
 func (i *Issuer) Run(ctx context.Context) {
 	for len(i.issued) > 0 {
 		next := i.issued[0].due
@@ -123,6 +131,8 @@ func (i *Issuer) Run(ctx context.Context) {
 
 func (i *Issuer) renewDue(ctx context.Context) {
 	now := i.clock.Now()
+	var restart []string
+	named := map[string]bool{}
 	for _, s := range i.issued {
 		if ctx.Err() != nil {
 			return
@@ -130,7 +140,7 @@ func (i *Issuer) renewDue(ctx context.Context) {
 		if s.due.After(now) {
 			continue
 		}
-		certPEM, keyPEM, expires, err := i.sign(s.cert)
+		certPEM, keyPEM, expires, err := i.sign(s.cert, now)
 		if err == nil {
 			err = i.replace(s.cert, certPEM, keyPEM)
 		}
@@ -139,21 +149,36 @@ func (i *Issuer) renewDue(ctx context.Context) {
 			i.log.Error("certificate renewal failed", "name", s.cert.Name, "err", err, "retry", retryAfter.String())
 			continue
 		}
-		s.due = dueAt(now, s.cert.ValidFor())
+		s.due = dueAt(now, expires.Sub(now))
 		i.log.Info("certificate renewed", "name", s.cert.Name, "authority", s.cert.Authority, "path", s.cert.CertificatePath, "expires", expires.UTC().Format(time.RFC3339))
 		for _, name := range s.cert.Restart {
-			i.restarter.Restart(name)
+			if !named[name] {
+				named[name] = true
+				restart = append(restart, name)
+			}
 		}
+	}
+	// Once per service, after every renewal of the pass, so a service that two
+	// certificates name restarts once and reads both new pairs.
+	for _, name := range restart {
+		if ctx.Err() != nil {
+			return
+		}
+		i.restarter.Restart(name)
 	}
 }
 
-// dueAt is when a certificate issued at now, valid for d, is renewed.
+// dueAt is when a certificate issued at now, with a life of d, is renewed: two
+// thirds of d, taken as d/3*2 because d*2 overflows for a d over about 146 years.
 func dueAt(now time.Time, d time.Duration) time.Time {
-	return now.Add(d * 2 / 3)
+	return now.Add(d / 3 * 2)
 }
 
-// sign returns a new certificate for c with a new key, both in PEM, and when it expires.
-func (i *Issuer) sign(c config.Certificate) (certPEM, keyPEM []byte, expires time.Time, err error) {
+// sign returns a new certificate for c, issued at now, with a new key, both in
+// PEM, and when it expires: its validity from now, or the authority's expiry
+// when that comes first. It refuses a certificate that would live less than
+// config.MinValidity.
+func (i *Issuer) sign(c config.Certificate, now time.Time) (certPEM, keyPEM []byte, expires time.Time, err error) {
 	auth, ok := i.spec.Authority(c.Authority)
 	if !ok {
 		return nil, nil, time.Time{}, fmt.Errorf("authority %q is not in spec.pki", c.Authority)
@@ -162,9 +187,16 @@ func (i *Issuer) sign(c config.Certificate) (certPEM, keyPEM []byte, expires tim
 	if err != nil {
 		return nil, nil, time.Time{}, fmt.Errorf("authority %s: %w", c.Authority, err)
 	}
-	now := i.clock.Now()
 	if now.Before(signer.Certificate.NotBefore) || now.After(signer.Certificate.NotAfter) {
 		return nil, nil, time.Time{}, fmt.Errorf("authority %s is not valid at %s", c.Authority, now.UTC().Format(time.RFC3339))
+	}
+	expires = now.Add(c.ValidFor())
+	if notAfter := signer.Certificate.NotAfter; notAfter.Before(expires) {
+		expires = notAfter
+		i.log.Warn("authority expires soon", "name", c.Authority, "expires", notAfter.UTC().Format(time.RFC3339), "certificate", c.Name)
+		if expires.Sub(now) < config.MinValidity {
+			return nil, nil, time.Time{}, fmt.Errorf("authority %s expires at %s, which leaves less than %s for certificate %s", c.Authority, notAfter.UTC().Format(time.RFC3339), config.MinValidity, c.Name)
+		}
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -182,7 +214,6 @@ func (i *Issuer) sign(c config.Certificate) (certPEM, keyPEM []byte, expires tim
 	if c.Usage == config.Server {
 		usage = x509.ExtKeyUsageServerAuth
 	}
-	expires = now.Add(c.ValidFor())
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      subject,
@@ -251,36 +282,57 @@ func (i *Issuer) create(path string, data []byte, perm os.FileMode) error {
 	return errors.Join(err, f.Close())
 }
 
-// replace swaps in a renewed key and certificate, each by rename, the key
-// first.
-func (i *Issuer) replace(c config.Certificate, certPEM, keyPEM []byte) error {
-	if err := i.swap(c.KeyPath, keyPEM, 0o600); err != nil {
+// replace swaps in a renewed key and certificate. It writes both beside their
+// paths first, and renames only once both are written, the key first. When the
+// certificate's rename fails it puts the old key back, from a link made before
+// the key was replaced, so a failure leaves the old pair. What it cannot close
+// is a crash between the two renames, and a failure to put the old key back;
+// the error says so for the latter.
+func (i *Issuer) replace(c config.Certificate, certPEM, keyPEM []byte) (err error) {
+	keyPath, certPath := filepath.Join(i.root, c.KeyPath), filepath.Join(i.root, c.CertificatePath)
+	keyTmp, err := stage(keyPath, keyPEM, 0o600)
+	if err != nil {
+		return fmt.Errorf("write the new key: %w", err)
+	}
+	defer func() { _ = os.Remove(keyTmp) }()
+	certTmp, err := stage(certPath, certPEM, 0o644)
+	if err != nil {
+		return fmt.Errorf("write the new certificate: %w", err)
+	}
+	defer func() { _ = os.Remove(certTmp) }()
+
+	oldKey := keyTmp + ".old"
+	if err := os.Link(keyPath, oldKey); err != nil {
+		return fmt.Errorf("keep the old key: %w", err)
+	}
+	defer func() { _ = os.Remove(oldKey) }()
+	if err := os.Rename(keyTmp, keyPath); err != nil {
 		return fmt.Errorf("replace the key: %w", err)
 	}
-	if err := i.swap(c.CertificatePath, certPEM, 0o644); err != nil {
-		return fmt.Errorf("replace the certificate: %w", err)
+	if err := os.Rename(certTmp, certPath); err != nil {
+		err = fmt.Errorf("replace the certificate: %w", err)
+		if back := os.Rename(oldKey, keyPath); back != nil {
+			return errors.Join(err, fmt.Errorf("put the old key back, so the new key stands beside the old certificate: %w", back))
+		}
+		return err
 	}
 	return nil
 }
 
-// swap writes data beside path and renames it over path, so a reader sees the
-// old file or the new one whole.
-func (i *Issuer) swap(path string, data []byte, perm os.FileMode) error {
-	p := filepath.Join(i.root, path)
-	f, err := os.CreateTemp(filepath.Dir(p), ".naru-pki-*")
+// stage writes data to a new file beside path, with exactly perm, and returns
+// its name.
+func stage(path string, data []byte, perm os.FileMode) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(path), ".naru-pki-*")
 	if err != nil {
-		return err
+		return "", err
 	}
-	tmp := f.Name()
 	_, err = f.Write(data)
 	if err == nil {
 		err = f.Chmod(perm)
 	}
-	if err = errors.Join(err, f.Close()); err == nil {
-		err = os.Rename(tmp, p)
+	if err = errors.Join(err, f.Close()); err != nil {
+		_ = os.Remove(f.Name())
+		return "", err
 	}
-	if err != nil {
-		_ = os.Remove(tmp)
-	}
-	return err
+	return f.Name(), nil
 }
