@@ -104,6 +104,9 @@ type Node struct {
 	Tokens []string
 	// CA is the cluster's authority. Only a control-plane Node that issues carries its key.
 	CA *pki.CA
+	// API is the Node API authority, separate from CA. When set, spec.api carries its certificate
+	// and a serving pair it issued, and never its key.
+	API *pki.CA
 }
 
 type service struct {
@@ -164,6 +167,7 @@ type nodeConfig struct {
 		Services []service `yaml:"services"`
 		Files    []file    `yaml:"files"`
 		PKI      *pkiSpec  `yaml:"pki,omitempty"`
+		API      *apiSpec  `yaml:"api,omitempty"`
 	} `yaml:"spec"`
 }
 
@@ -248,6 +252,9 @@ func (n Node) UserData() ([]byte, error) {
 	c.Spec.Files = append(c.Spec.Files, n.tokenFiles()...)
 	if n.Mode.plan(n.Name).specPKI {
 		c.Spec.PKI = n.pkiSpec()
+	}
+	if c.Spec.API, err = n.specAPI(); err != nil {
+		return nil, fmt.Errorf("issue the Node API's serving pair: %w", err)
 	}
 	c.Spec.Services = n.services()
 	n.withoutDisabled(&c)
