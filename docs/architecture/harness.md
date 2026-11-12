@@ -4,23 +4,24 @@ The public contract of `naru-cluster`, the command an external harness runs to b
 
 ## Current decisions
 
-- **The command** is `github.com/garamsh/naru/tooling/qemu/cmd/naru-cluster`. A harness runs it with `go run github.com/garamsh/naru/tooling/qemu/cmd/naru-cluster@<commit>` from any directory. It needs nothing of a naru checkout, and it builds no program.
+- **The command** is `github.com/garamsh/naru/tooling/qemu/cmd/naru-cluster`. A harness builds it and then runs the binary: `GOBIN=<dir> go install github.com/garamsh/naru/tooling/qemu/cmd/naru-cluster@<commit>`, then `<dir>/naru-cluster ...`, from any directory. It needs nothing of a naru checkout, and it builds no program. `go run …@<commit>` is not a supported form: `go run` does not forward SIGINT or SIGTERM to the program, so a signal that stops `go run` leaves the program and its QEMU processes running.
 - **It boots from a release.** `-release` names a directory with the assets `make release` writes. It reads `naru-<version>.qcow2`, `naru-data-<version>.qcow2`, `naru-guest-<version>.json` and `naru-inputs-<version>.json`; the version is the one in the guest manifest's name, and the directory must hold exactly one. It converts the two disks to raw files under `-dir` and reads the data disk's `inputs/` tree with `debugfs`.
 - **It runs gaon on the Nodes** as the QEMU tests do ([image.md](./image.md), [ADR 0012](./adr/0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md)): mvmd, the registry and the Node Agent on every Node, and etcd, the API server, the scheduler and the controllers on node-1, which has the second NIC and the host forward.
 - **It keeps running until signalled** (SIGINT or SIGTERM), then stops every Node and exits 0.
+- **A signal before `cluster.json` exists** also stops every Node started, at any point from the command's start, and exits with status 3 and the one-line reason `signalled before every Node was up`. Status 1 is any other failure. Whatever the way the command ends, including SIGKILL, no Node's QEMU process outlives it: each QEMU is started with the kernel's parent-death signal set to SIGKILL.
 
 ## Flags
 
 | Flag | Meaning |
 | --- | --- |
 | `-release <dir>` | Required. The release directory. |
-| `-dir <dir>` | Required. Where the command puts the Nodes' disks and serial logs, the client files and `cluster.json`. A `cluster.json` already there is removed first. |
+| `-dir <dir>` | Required. Where the command puts the Nodes' disks and serial logs, the client files and `cluster.json`. It must not exist or must be empty; any other content is an error naming the directory, because a second run on it would mix its inputs with the first's. |
 | `-n <count>` | The number of Nodes, named `node-1` to `node-<count>`. Default 2. |
 | `-gaon-bin <dir>` | Any of `gaon-apiserver`, `gaon-scheduler`, `gaon-controllers` and `gaon-node-agent` found in the directory is copied to every Node's data disk under `/var/lib/naru/inputs/gaon/`, and the service runs it in place of the image's. A binary not found leaves the image's. It is an error when the directory holds none of the four. Leaving a binary out does not disable the service. |
-| `-inputs <dir>` | The directory's files are copied to `/var/lib/naru/inputs/extra/` on every Node. |
+| `-inputs <dir>` | The directory's files are copied to `/var/lib/naru/inputs/extra/` on every Node. A symbolic link or any other file that is not a regular file or a directory is an error naming it. |
 | `-disable <service>[,<service>...]` | The named services are left out of every Node's configuration. The names are `registry`, `etcd`, `gaon-apiserver`, `gaon-scheduler`, `gaon-controllers` and `gaon-node-agent`; any other name is an error, and `mvmd` cannot be disabled. |
 | `-boot-pki` | Default true: node-1 issues its certificates at boot from the CA its `spec.pki` carries ([ADR 0013](./adr/0013-init-issues-certificates-at-boot-from-a-ca-carried-in-spec-pki-and-renews-them.md)). False: every Node carries its pairs as files. `cluster.json`'s client pair is signed by the cluster's CA either way. |
-| `-timeout <duration>` | How long the Nodes have to come up. Default 5m. |
+| `-timeout <duration>` | How long the Nodes have to come up: one deadline, set once every Node's process has started, for every Node's services and for every Node's registering and becoming Ready together. Default 5m. |
 
 The command logs to standard error, as `slog` text lines.
 
@@ -57,7 +58,8 @@ The command logs to standard error, as `slog` text lines.
 
 - **The files in `cluster.json` exist and stay** while the command runs: the client pair works for the cluster the file describes, whichever of the two certificate paths `-boot-pki` selects.
 - **Killing a Node's process** with `kill -KILL <pid>` is a power-off of that Node. The command logs a `node lost` line naming it, does not restart it, does not exit, and keeps the other Nodes running. A killed Node stays down for the rest of the run.
-- **The command stops every Node it started** when it is signalled. It does not clean `-dir`.
+- **The command stops every Node it started** when it is signalled, and no Node outlives it however it ends. It does not clean `-dir`.
+- **When the deadline passes** the command exits 1, naming the Node and the services it was waiting for and the last lines of that Node's console.
 - **Services run the binaries `-gaon-bin` supplied**, from `/var/lib/naru/inputs/gaon/<name>`, and no other copy.
 - **A harness may not rely on** the Nodes' addresses, the host port's value, the order of services starting, the content of the logs besides what is said here, the paths under `-dir` other than those `cluster.json` names, or the test image's content beyond its being pullable by digest.
 
