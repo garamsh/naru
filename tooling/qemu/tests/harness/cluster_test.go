@@ -330,7 +330,6 @@ const stub = `package main
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 )
 
