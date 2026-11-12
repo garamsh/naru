@@ -19,7 +19,9 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/garamsh/naru/init/internal/config"
@@ -51,9 +53,17 @@ type Issuer struct {
 	restarter Restarter
 	log       *slog.Logger
 
-	spec   config.PKI
-	addrs  []netip.Addr
-	issued []*issued
+	// wake tells Run that issued changed. It holds at most one signal.
+	wake chan struct{}
+
+	// mu guards every field below and every file the Issuer writes, so a
+	// renewal and a Reissue never interleave: the one that runs second sees
+	// what the first left.
+	mu      sync.Mutex
+	spec    config.PKI
+	addrs   []netip.Addr
+	issued  []*issued
+	refused bool
 }
 
 // issued is one certificate of the spec as it was last issued.
@@ -65,7 +75,7 @@ type issued struct {
 // New returns an Issuer that writes the paths of the configuration under
 // root, which is empty on a Node.
 func New(root string, clock Clock, restarter Restarter, log *slog.Logger) *Issuer {
-	return &Issuer{root: root, clock: clock, restarter: restarter, log: log}
+	return &Issuer{root: root, clock: clock, restarter: restarter, log: log, wake: make(chan struct{}, 1)}
 }
 
 // Issue writes the certificates of the authorities and issues the
@@ -73,11 +83,13 @@ func New(root string, clock Clock, restarter Restarter, log *slog.Logger) *Issue
 // It refuses, and leaves the remaining certificates unissued, at the first
 // failure.
 func (i *Issuer) Issue(spec config.PKI, addrs []netip.Addr) (err error) {
-	i.spec, i.addrs, i.issued = spec, addrs, nil
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.spec, i.addrs, i.issued, i.refused = spec, addrs, nil, false
 	// After a refusal Run has nothing to renew: the boot it belongs to starts no service.
 	defer func() {
 		if err != nil {
-			i.issued = nil
+			i.issued, i.refused = nil, true
 		}
 	}()
 	for _, a := range spec.Authorities {
@@ -109,33 +121,123 @@ func (i *Issuer) Issue(spec config.PKI, addrs []netip.Addr) (err error) {
 	return nil
 }
 
+// Reissue issues the certificates of spec that names lists again, with spec as
+// the authorities and certificates from now on: a certificate spec no longer
+// holds is no longer renewed, and one it newly holds is renewed from now on.
+// Where a certificate's paths are the ones it was issued to, the new pair
+// replaces the old; otherwise they are created. It refuses at the first
+// failure, leaving the certificates after it as they were. It restarts no
+// service: the caller does, once it has everything it changed in place.
+func (i *Issuer) Reissue(spec config.PKI, names []string) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.spec = spec
+	now := i.clock.Now()
+	for _, c := range spec.Certificates {
+		if !slices.Contains(names, c.Name) {
+			continue
+		}
+		certPEM, keyPEM, expires, err := i.sign(c, now)
+		if err != nil {
+			return fmt.Errorf("issue certificate %s: %w", c.Name, err)
+		}
+		if err := i.place(c, certPEM, keyPEM); err != nil {
+			return fmt.Errorf("write certificate %s: %w", c.Name, err)
+		}
+		entry := &issued{cert: c, due: dueAt(now, expires.Sub(now))}
+		if at := slices.IndexFunc(i.issued, func(s *issued) bool { return s.cert.Name == c.Name }); at >= 0 {
+			i.issued[at] = entry
+		} else {
+			i.issued = append(i.issued, entry)
+		}
+		i.log.Info("certificate issued", "name", c.Name, "authority", c.Authority, "usage", string(c.Usage), "path", c.CertificatePath, "expires", expires.UTC().Format(time.RFC3339))
+	}
+	i.issued = slices.DeleteFunc(i.issued, func(s *issued) bool {
+		_, ok := certificateNamed(spec, s.cert.Name)
+		return !ok
+	})
+	select {
+	case i.wake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func certificateNamed(spec config.PKI, name string) (config.Certificate, bool) {
+	at := slices.IndexFunc(spec.Certificates, func(c config.Certificate) bool { return c.Name == name })
+	if at < 0 {
+		return config.Certificate{}, false
+	}
+	return spec.Certificates[at], true
+}
+
+// place writes the pair of c over the pair that is there, or creates it.
+func (i *Issuer) place(c config.Certificate, certPEM, keyPEM []byte) error {
+	_, keyErr := os.Stat(filepath.Join(i.root, c.KeyPath))
+	_, certErr := os.Stat(filepath.Join(i.root, c.CertificatePath))
+	if keyErr == nil && certErr == nil {
+		return i.replace(c, certPEM, keyPEM)
+	}
+	if err := i.create(c.KeyPath, keyPEM, 0o600); err != nil {
+		return err
+	}
+	return i.create(c.CertificatePath, certPEM, 0o644)
+}
+
 // Run renews each issued certificate when two thirds of its life has passed,
-// until ctx ends, and returns at once when none was issued. A renewal that
-// fails is logged and retried. It must not run while Issue does.
+// until ctx ends, and returns at once when the last Issue refused. A renewal
+// that fails is logged and retried. It waits for Reissue when nothing is
+// issued. It may run while Reissue does: the two take turns.
 func (i *Issuer) Run(ctx context.Context) {
-	for len(i.issued) > 0 {
-		next := i.issued[0].due
-		for _, s := range i.issued[1:] {
-			if s.due.Before(next) {
-				next = s.due
+	for {
+		i.mu.Lock()
+		refused := i.refused
+		var due <-chan time.Time
+		if len(i.issued) > 0 {
+			next := i.issued[0].due
+			for _, s := range i.issued[1:] {
+				if s.due.Before(next) {
+					next = s.due
+				}
 			}
+			due = i.clock.After(next.Sub(i.clock.Now()))
+		}
+		i.mu.Unlock()
+		if refused {
+			return
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-i.clock.After(next.Sub(i.clock.Now())):
+		case <-i.wake:
+		case <-due:
+			i.renewDue(ctx)
 		}
-		i.renewDue(ctx)
 	}
 }
 
 func (i *Issuer) renewDue(ctx context.Context) {
+	i.mu.Lock()
+	restart := i.renewLocked(ctx)
+	i.mu.Unlock()
+	// Once per service, after every renewal of the pass, so a service that two
+	// certificates name restarts once and reads both new pairs.
+	for _, name := range restart {
+		if ctx.Err() != nil {
+			return
+		}
+		i.restarter.Restart(name)
+	}
+}
+
+// renewLocked renews the certificates that are due, and returns the services
+// to restart. i.mu is held.
+func (i *Issuer) renewLocked(ctx context.Context) (restart []string) {
 	now := i.clock.Now()
-	var restart []string
 	named := map[string]bool{}
 	for _, s := range i.issued {
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 		if s.due.After(now) {
 			continue
@@ -158,14 +260,7 @@ func (i *Issuer) renewDue(ctx context.Context) {
 			}
 		}
 	}
-	// Once per service, after every renewal of the pass, so a service that two
-	// certificates name restarts once and reads both new pairs.
-	for _, name := range restart {
-		if ctx.Err() != nil {
-			return
-		}
-		i.restarter.Restart(name)
-	}
+	return restart
 }
 
 // dueAt is when a certificate issued at now, with a life of d, is renewed: two

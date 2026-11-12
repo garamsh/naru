@@ -115,6 +115,33 @@ func (h *Host) WriteFiles(files []config.File) error {
 	return nil
 }
 
+// ReplaceFile writes the file of the configuration over the one at its path,
+// or creates it, so a reader sees the old file or the new one and never a
+// partial one. It creates the file's directories.
+func (h *Host) ReplaceFile(f config.File) (err error) {
+	if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
+		return fmt.Errorf("write %s: %w", f.Path, err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(f.Path), ".naru-file-*")
+	if err != nil {
+		return fmt.Errorf("write %s: %w", f.Path, err)
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmp.Name())
+			err = fmt.Errorf("write %s: %w", f.Path, err)
+		}
+	}()
+	_, err = tmp.WriteString(f.Content)
+	if err == nil {
+		err = tmp.Chmod(f.Perm())
+	}
+	if err = errors.Join(err, tmp.Close()); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), f.Path)
+}
+
 // writeFile creates path, and its directories, with exactly the mode given and
 // refuses to replace a file that exists.
 func writeFile(path string, data []byte, mode os.FileMode) error {
