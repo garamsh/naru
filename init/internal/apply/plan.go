@@ -117,6 +117,16 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 		}})
 		name(c.Restart)
 	}
+	for _, old := range running.Spec.PKI.Certificates {
+		if _, ok := certificateAt(next.Spec.PKI.Certificates, old.Name); ok {
+			continue
+		}
+		// The issuer renews what its spec holds, so it is given the spec
+		// without the deleted certificate; it signs nothing.
+		steps = append(steps, step{Action{"forget-certificate", old.Name}, func() error {
+			return e.deps.Certificates.Reissue(next.Spec.PKI, nil)
+		}})
+	}
 	if na, ra := next.Spec.API, running.Spec.API; na != nil && ra != nil && *na != *ra {
 		steps = append(steps, step{Action{"reload-api", "spec.api"}, func() error { return e.deps.API.Reload(*na) }})
 	}

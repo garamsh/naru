@@ -23,7 +23,8 @@ type rig struct {
 	mu      sync.Mutex
 	journal []string
 	saved   []store.Stored
-	failOn  string // a journal entry that fails
+	specs   []config.PKI // the spec each Reissue was given
+	failOn  string       // a journal entry that fails
 }
 
 func (r *rig) note(entry string) error {
@@ -50,7 +51,8 @@ func (r *rig) Start(s config.Service) error    { return r.note("start " + s.Name
 func (r *rig) Stop(name string)                { _ = r.note("stop " + name) }
 func (r *rig) Restart(name string)             { _ = r.note("restart " + name) }
 func (r *rig) ReplaceFile(f config.File) error { return r.note("file " + f.Path) }
-func (r *rig) Reissue(_ config.PKI, names []string) error {
+func (r *rig) Reissue(spec config.PKI, names []string) error {
+	r.specs = append(r.specs, spec)
 	return r.note(fmt.Sprintf("issue %v", names))
 }
 func (r *rig) Reload(config.API) error { return r.note("reload") }
@@ -338,6 +340,17 @@ func TestApply_ACertificateThatChangedIsIssuedAgainAndItsServicesRestart(t *test
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"store", "issue [c1]", "restart b"}, r.calls())
+}
+
+func TestApply_ADeletedCertificateIsHandedToTheIssuerSoItIsNotRenewed(t *testing.T) {
+	r := newRig(t)
+
+	_, err := r.engine.Apply(apply.Request{Patch: patch(obj{"pki": obj{"certificates": []any{obj{"name": "c1", "$patch": "delete"}}}}), Mode: apply.NoReboot})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"store", "issue []"}, r.calls(), "no certificate is signed and no service restarts")
+	require.Len(t, r.specs, 1)
+	assert.Empty(t, r.specs[0].Certificates, "the issuer is given a spec without the deleted certificate")
 }
 
 func TestApply_ANewAPIPairReloadsTheListener(t *testing.T) {
