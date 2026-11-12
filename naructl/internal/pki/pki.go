@@ -31,6 +31,9 @@ const (
 	// CertFile and KeyFile are the names of the authority's files in the directory of gen ca.
 	CertFile = "ca.pem"
 	KeyFile  = "ca.key"
+	// APIDir is the directory under a cluster's directory that holds the Node API authority, which
+	// is not the cluster's CA.
+	APIDir = "api"
 )
 
 // Pair is a certificate and its private key, both PEM.
@@ -169,13 +172,14 @@ func (c *CA) Server(cn string, ips ...net.IP) (Pair, error) {
 	})
 }
 
-// Client issues a client certificate whose subject CN, the caller's identity to gaon, is cn.
-func (c *CA) Client(cn string) (Pair, error) {
+// Client issues a client certificate whose subject CN, the caller's identity to gaon, is cn, with
+// orgs as its Organizations.
+func (c *CA) Client(cn string, orgs ...string) (Pair, error) {
 	if cn == "" {
 		return Pair{}, errors.New("a client certificate needs a CN")
 	}
 	return c.issue(&x509.Certificate{
-		Subject:     pkix.Name{CommonName: cn},
+		Subject:     pkix.Name{CommonName: cn, Organization: orgs},
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})

@@ -1,4 +1,4 @@
-// Package command is naructl's command line: gen ca, gen client, gen token and gen node, and topology.
+// Package command is naructl's command line: the gen commands, topology, and the Node API's client commands.
 package command
 
 import (
@@ -15,9 +15,17 @@ import (
 	"github.com/garamsh/naru/naructl/internal/pki"
 )
 
-const usage = `usage: naructl gen <ca|client|token|node> [flags]
+const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client> [flags]
+       naructl <version|services|logs|get config|apply> --config <client file> [--node <ip[:port]>] [flags]
        naructl topology                              print the services a Node runs, and which signs, as JSON
 
+  gen api-ca  --ca-dir <dir>                    write the Node API authority, <dir>/api/ca.pem and ca.key
+  gen api-client --ca-dir <dir> --role admin|reader --endpoint <ip[:port]> --out <file>
+              write a client file for the Node API
+  version | services | get config               read a Node
+  logs <service> [-f]                           print a service's kept log, and with -f each new line
+  apply -f <patch> [--mode no-reboot|staged] [--dry-run]
+              merge a patch into the Node's configuration
   gen ca      --out <dir>                       write ca.pem and ca.key
   gen client  --ca <dir> --cn <name> --out <dir> write an operator's client.pem and client.key
   gen token   --ca <dir> --name <name>              write the Node's bootstrap token to <dir>/tokens/<name>, if none is there
@@ -36,11 +44,31 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		_, err = fmt.Fprintf(stdout, "%s\n", b)
 		return err
 	}
+	if len(args) > 0 {
+		switch args[0] {
+		case "version":
+			return version(args[1:], stdout, stderr)
+		case "services":
+			return services(args[1:], stdout, stderr)
+		case "logs":
+			return logs(args[1:], stdout, stderr)
+		case "apply":
+			return apply(args[1:], stdout, stderr)
+		case "get":
+			if len(args) > 1 && args[1] == "config" {
+				return getConfig(args[2:], stdout, stderr)
+			}
+		}
+	}
 	if len(args) < 2 || args[0] != "gen" {
 		_, _ = fmt.Fprint(stderr, usage)
 		return errors.New("a command is required")
 	}
 	switch args[1] {
+	case "api-ca":
+		return genAPICA(args[2:], stdout, stderr)
+	case "api-client":
+		return genAPIClient(args[2:], stdout, stderr)
 	case "ca":
 		return genCA(args[2:], stdout, stderr)
 	case "client":
@@ -61,7 +89,7 @@ func (l *list) String() string     { return strings.Join(*l, ",") }
 func (l *list) Set(v string) error { *l = append(*l, v); return nil }
 
 func newFlags(name string, stderr io.Writer) *flag.FlagSet {
-	fs := flag.NewFlagSet("naructl gen "+name, flag.ContinueOnError)
+	fs := flag.NewFlagSet("naructl "+name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	return fs
 }
@@ -94,7 +122,7 @@ func needs(fs *flag.FlagSet, with string, flags ...string) error {
 }
 
 func genCA(args []string, stdout, stderr io.Writer) error {
-	fs := newFlags("ca", stderr)
+	fs := newFlags("gen ca", stderr)
 	out := fs.String("out", "", "directory that receives ca.pem and ca.key (0600)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -117,7 +145,7 @@ func genCA(args []string, stdout, stderr io.Writer) error {
 }
 
 func genClient(args []string, stdout, stderr io.Writer) error {
-	fs := newFlags("client", stderr)
+	fs := newFlags("gen client", stderr)
 	caDir := fs.String("ca", "", "directory of ca.pem and ca.key")
 	cn := fs.String("cn", "", "the certificate's CN, the caller's identity to gaon")
 	out := fs.String("out", "", "directory that receives client.pem and client.key (0600)")
@@ -143,7 +171,7 @@ func genClient(args []string, stdout, stderr io.Writer) error {
 }
 
 func genToken(args []string, stdout, stderr io.Writer) error {
-	fs := newFlags("token", stderr)
+	fs := newFlags("gen token", stderr)
 	caDir := fs.String("ca", "", "directory of the cluster's authority, which holds tokens/")
 	name := fs.String("name", "", "the Node's name, such as node-2")
 	if err := fs.Parse(args); err != nil {
@@ -163,7 +191,7 @@ func genToken(args []string, stdout, stderr io.Writer) error {
 }
 
 func genNode(args []string, stdout, stderr io.Writer) error {
-	fs := newFlags("node", stderr)
+	fs := newFlags("gen node", stderr)
 	var (
 		nameservers, serving, binaries, disable list
 		n                                       layout.Node
@@ -182,7 +210,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&n.Search, "search", "", "the search domain (with --network-config)")
 	fs.StringVar(&extraNIC, "extra-nic", "", "a second card, <mac>=<cidr>, with no gateway (with --network-config)")
 	fs.StringVar(&apiServer, "api-server", "", "the control-plane Node's address, which every agent dials")
-	fs.Var(&serving, "serving-address", "another address the API server's certificate names, repeatable")
+	fs.Var(&serving, "serving-address", "another address the API server's certificate and the Node API's certificate name, repeatable")
 	fs.Var(&binaries, "binary", "<service>=<absolute path>, the executable of a service in place of the image's, repeatable")
 	fs.Var(&disable, "disable", "a service to leave out ("+strings.Join(layout.Gaon.Names(), ", ")+"), repeatable")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
@@ -209,6 +237,13 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	}
 	// The Node's own token is made if there is none. A control-plane Node's API server lists the
 	// token of every Node whose file is in the directory now: run gen token for the others first.
+	if _, err := os.Stat(filepath.Join(caDir, pki.APIDir)); err == nil {
+		if n.API, err = pki.Load(filepath.Join(caDir, pki.APIDir)); err != nil {
+			return fmt.Errorf("the Node API authority: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	n.Mode = layout.ModeOf(controlPlane, pairsAsFiles)
 	if n.Token, n.Tokens, err = n.Mode.LoadTokens(caDir, n.Name); err != nil {
 		return err
