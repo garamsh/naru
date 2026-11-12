@@ -78,7 +78,7 @@ func UserData(tool naructl.Tool, guest, firecracker string) (map[string][]byte, 
 		p := filepath.Join(work, UserDataName(i))
 		if err := tool.GenNode(naructl.Node{
 			CA: ca, Name: d.Name, ControlPlane: i == 1, Address: d.Address, APIServer: APIServer, MachinePrefix: d.MachinePrefix,
-			Guest: guest, Firecracker: firecracker, PairsAsFiles: true, Out: p,
+			Guest: guest, Firecracker: firecracker, PairsAsFiles: i == 1, Out: p,
 		}); err != nil {
 			return nil, err
 		}

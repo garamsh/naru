@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,6 +205,20 @@ func markedBinaries(t *testing.T) (string, map[string]string) {
 	return dir, sums
 }
 
+// assertDirHoldsNoCAKey shows what naru-cluster leaves in -dir: no ca/ directory and no ca.key, since
+// a harness may archive -dir, and the pair of cluster.json's CA certificate is where cluster.json says.
+func assertDirHoldsNoCAKey(t *testing.T, dir string, f clusterfile.File) {
+	t.Helper()
+	assert.NoDirExists(t, filepath.Join(dir, "ca"), "the CA's directory is removed once the user-data is written")
+	require.NoError(t, filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			assert.NotEqual(t, "ca.key", d.Name(), p)
+		}
+		return nil
+	}))
+	assert.FileExists(t, f.PKI.CA, "cluster.json's CA certificate")
+}
+
 var imageRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 
 // TestCluster_AHarnessReachesTheClusterThroughClusterJSONAndSurvivesOneNodeBeingKilled boots two
@@ -215,6 +230,7 @@ func TestCluster_AHarnessReachesTheClusterThroughClusterJSONAndSurvivesOneNodeBe
 	r := start(t, "-n", "2", "-gaon-bin", bin)
 	f := r.file
 
+	assertDirHoldsNoCAKey(t, r.dir, f)
 	assert.Equal(t, clusterfile.Version, f.Version)
 	require.Len(t, f.Nodes, 2)
 	assert.Equal(t, []bool{true, false}, []bool{f.Nodes[0].ControlPlane, f.Nodes[1].ControlPlane}, "node-1 is the control plane")
@@ -287,6 +303,7 @@ func TestCluster_DisablingAServiceLeavesItOutOfEveryNodeAndTheOperatorFilesPathS
 	r := start(t, "-n", "2", "-gaon-bin", gaonDir, "-boot-pki=false", "-disable", "gaon-controllers")
 	f := r.file
 
+	assertDirHoldsNoCAKey(t, r.dir, f)
 	require.NotEmpty(t, f.Images)
 	assert.Regexp(t, imageRef, f.Images[0].Reference, "images are listed whatever is disabled")
 	for _, n := range f.Nodes {
@@ -313,6 +330,7 @@ const stub = `package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 )
 

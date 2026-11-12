@@ -73,6 +73,8 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 			return nil, err
 		}
 		c.Client, c.HostAddr = gen.client, "127.0.0.1:"+strconv.Itoa(gen.port)
+		// The CA's key stays on disk only while naructl needs it, whichever way StartCluster returns.
+		defer func() { _ = gen.dropCA() }()
 	}
 	for i := 1; i <= spec.N; i++ {
 		name := fmt.Sprintf("node-%d", i)
@@ -144,11 +146,26 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 	if err := spec.Naructl.GenCA(g.caDir); err != nil {
 		return nil, err
 	}
-	if g.client, err = spec.Naructl.GenClient(g.caDir, "naru-test-host", filepath.Join(spec.Dir, "client")); err != nil {
+	clientDir := filepath.Join(spec.Dir, "client")
+	if g.client, err = spec.Naructl.GenClient(g.caDir, "naru-test-host", clientDir); err != nil {
+		return nil, err
+	}
+	// The CA's directory is removed once the last Node's user-data is written, key and all, so the
+	// client keeps its own copy of the certificate.
+	cert, err := os.ReadFile(g.client.CA)
+	if err != nil {
+		return nil, err
+	}
+	g.client.CA = filepath.Join(clientDir, "ca.pem")
+	if err := os.WriteFile(g.client.CA, cert, 0o644); err != nil { //nolint:gosec // a certificate
 		return nil, err
 	}
 	return g, nil
 }
+
+// dropCA removes the CA's directory: no file under -dir holds the CA's own key once the Nodes'
+// user-data is written, except a control-plane Node's user-data that issues its certificates at boot.
+func (g *gaonFiles) dropCA() error { return os.RemoveAll(g.caDir) }
 
 // node has naructl write the user-data and network-config of the Node c names, on the shared
 // network. The serving certificate names the Nodes' address and the host forward's.
@@ -160,7 +177,7 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 		return nil, nil, err
 	}
 	a := naructl.Node{
-		CA: g.caDir, Name: c.Name, ControlPlane: c.ControlPlane, PairsAsFiles: !spec.BootPKI,
+		CA: g.caDir, Name: c.Name, ControlPlane: c.ControlPlane, PairsAsFiles: c.ControlPlane && !spec.BootPKI,
 		Address: n.IP + "/" + strconv.Itoa(ones), MAC: n.MAC, Gateway: n.Gateway, Nameservers: n.Nameservers, Search: n.Search,
 		APIServer: QEMUNetwork(1, spec.N).IP, MachinePrefix: n.MachinePrefix.String(),
 		Guest: g.guest, Firecracker: spec.Inputs.FirecrackerSHA256,
