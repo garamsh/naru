@@ -44,6 +44,15 @@ Claims about garamsh/mvmd hold at commit `1b08e5e04273b8839f66d9e154bf96086fbc3d
 - **The console log is kept and re-printed.** From before its first mount, init keeps every line it logs and every line its services write, and every 30 s writes all of them again in one block: `NARU-LOG-BEGIN seq=<n> lines=<k> dropped=<d>`, the lines, then `NARU-LOG-END seq=<n>`, with `seq` rising from 1. A reader that attaches late therefore has the whole log within 30 s. The kept lines are bounded at 1 MiB, and a line over 4096 bytes is kept as several; past the bound the oldest lines are dropped and counted in `dropped`, which is the number of lines dropped since boot. Kernel messages are not kept. A reader of the log treats each line as possibly repeated ([ADR 0009](./adr/0009-init-re-prints-the-console-log-at-a-fixed-interval-between-numbered-markers.md)).
 - **Signals.** SIGTERM stops every service, syncs, unmounts the data disk and powers off. SIGINT does the same and reboots.
 
+## Decided, not yet implemented
+
+Decided in [ADR 0017](./adr/0017-the-node-api-is-served-by-init-over-mutual-tls-from-its-own-authority-and-naructl-is-its-client.md) and [ADR 0018](./adr/0018-a-nodes-configuration-is-a-base-and-numbered-revisions-stored-on-the-data-disk-and-changed-by-merge-patch.md) (garamsh/naru#46); garamsh/naru#47 builds them and moves each entry into §Current decisions. Until then init does none of it.
+
+- **Boot order gains a choice.** After step 5 (the data disk mounts), init chooses the effective configuration: the stored one when its base digest equals the current `user-data`'s and it validates, otherwise the base, logging the discard and storing the base as revision 0. Steps 6 to 11 act on the effective configuration; steps 1 to 5 act on the base.
+- **Init serves the Node API** when the effective configuration has `spec.api`: HTTPS, mutual TLS 1.3, `naru:admin` and `naru:reader` roles, and the five v1 endpoints. Without `spec.api` it logs that the API is off.
+- **Init applies a configuration change on a running Node**: the store is written first; then per service it starts the added, stops the removed and restarts the changed, rewrites changed files and restarts the services their `restart` names, issues changed certificates again, and reloads the API's pair and `clientCA`. An unchanged service is not touched. A refusal changes nothing.
+- **The kept log is attributed per service**, so a service's lines can be read back; the markers and the 30 s re-print of ADR 0009 are unchanged.
+
 ## What init requires of mvmd's placement
 
 mvmd places its supervisors outside its own cgroup, so that stopping mvmd does not stop a running microVM (mvmd `runtime.md` §Fencing; mvmd ADR 0003 §Placement; mvmd ADR 0015). Read at the commit above, in `daemon/internal/supervision/supervision.go`, `supervision/cgroup.go` and `app/config.go`:
@@ -64,6 +73,8 @@ What init provides, and what the Node's configuration must carry:
 
 ## Rationale
 
+- [ADR 0018](./adr/0018-a-nodes-configuration-is-a-base-and-numbered-revisions-stored-on-the-data-disk-and-changed-by-merge-patch.md): the store, the apply and the boot choice.
+- [ADR 0017](./adr/0017-the-node-api-is-served-by-init-over-mutual-tls-from-its-own-authority-and-naructl-is-its-client.md): the API init serves and who may call it.
 - [ADR 0013](./adr/0013-init-issues-certificates-at-boot-from-a-ca-carried-in-spec-pki-and-renews-them.md): why init issues the `spec.pki` certificates with keys made on the Node, the renewal at two thirds of the validity, and the signs it was wrong.
 - [ADR 0004](./adr/0004-p0-boots-a-host-kernel-and-a-read-only-initramfs-in-qemu-and-naru-init-supervises-the-configured-services.md): why init is PID 1 of a read-only initramfs and supervises the configured services.
 - [ADR 0003](./adr/0003-naru-deploys-and-supervises-mvmd-builds-both-kernels-and-carries-mvmds-deployment-constraints.md): the data disk's `verity` requirement, the forwarding obligation, and mvmd's supervisor placement.
@@ -76,4 +87,4 @@ What init provides, and what the Node's configuration must carry:
 
 - **Verifying the P0 kernel's options.** Whether the image's kernel has `CONFIG_RT_GROUP_SCHED` off and cgroup v2 with the three controllers on is checked by the QEMU test of the image, not by init.
 - **Boot and PID 1 behaviour.** Init's behaviour as PID 1 (mounts, console, power-off, reboot) is covered by the QEMU test of the image, not by `make test`.
-- **A failed service.** A service that keeps failing is restarted at 30 s forever; whether init gives up, and how a Node reports it, waits for a node API.
+- **A failed service.** A service that keeps failing is restarted at 30 s forever; whether init gives up is not decided. How a Node reports it is decided ahead: `GET /v1/services` gives each service's state and restart count ([ADR 0017](./adr/0017-the-node-api-is-served-by-init-over-mutual-tls-from-its-own-authority-and-naructl-is-its-client.md)).
