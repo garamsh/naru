@@ -11,10 +11,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -63,17 +65,18 @@ func run(m *testing.M) int {
 
 // running is a naru-cluster process.
 type running struct {
-	cmd  *exec.Cmd
-	dir  string
-	log  string
-	file clusterfile.File
+	cmd    *exec.Cmd
+	dir    string
+	log    string
+	exited chan struct{}
+	file   clusterfile.File
 }
 
-// start runs naru-cluster with args from a directory outside the checkout, waits for cluster.json,
-// and stops it when the test ends, which must leave no Node's process behind.
-func start(t *testing.T, args ...string) *running {
+// launch runs naru-cluster with args from a directory outside the checkout, on a -dir of its own,
+// and stops it when the test ends, which must leave no QEMU process of that -dir behind.
+func launch(t *testing.T, args ...string) *running {
 	t.Helper()
-	r := &running{dir: t.TempDir(), log: filepath.Join(t.TempDir(), "naru-cluster.log")}
+	r := &running{dir: filepath.Join(t.TempDir(), "cluster"), log: filepath.Join(t.TempDir(), "naru-cluster.log"), exited: make(chan struct{})}
 	logFile, err := os.Create(r.log)
 	require.NoError(t, err)
 	absRelease, err := filepath.Abs(releaseDir)
@@ -82,46 +85,84 @@ func start(t *testing.T, args ...string) *running {
 	r.cmd.Dir = t.TempDir()                                                                                // not the checkout
 	r.cmd.Stdout, r.cmd.Stderr = logFile, logFile
 	require.NoError(t, r.cmd.Start())
-	exited := make(chan struct{})
-	go func() { _ = r.cmd.Wait(); close(exited) }()
+	go func() { _ = r.cmd.Wait(); close(r.exited) }()
 	t.Cleanup(func() {
-		pids := []int{}
-		for _, n := range r.file.Nodes {
-			pids = append(pids, n.PID)
-		}
 		_ = r.cmd.Process.Signal(syscall.SIGTERM)
 		select {
-		case <-exited:
+		case <-r.exited:
 		case <-time.After(time.Minute):
 			_ = r.cmd.Process.Kill()
 			t.Errorf("naru-cluster did not stop within a minute of SIGTERM")
 		}
-		for _, pid := range pids {
-			if alive(pid) {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-				t.Errorf("the QEMU process %d outlived naru-cluster", pid)
-			}
+		for _, pid := range qemuUnder(r.dir) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Errorf("the QEMU process %d outlived naru-cluster", pid)
 		}
-		b, _ := os.ReadFile(r.log)
-		t.Logf("naru-cluster log:\n%s", b)
+		t.Logf("naru-cluster log:\n%s", r.logText())
 	})
-
-	path := filepath.Join(r.dir, clusterfile.Name)
-	require.Eventually(t, func() bool {
-		select {
-		case <-exited:
-			t.Fatalf("naru-cluster exited before cluster.json appeared")
-		default:
-		}
-		_, err := os.Stat(path)
-		return err == nil
-	}, upTimeout, time.Second, "cluster.json appears once every Node is up")
-	r.file, err = clusterfile.Read(path)
-	require.NoError(t, err)
 	return r
 }
 
-func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+// start is launch and then the wait for cluster.json, which appears once every Node is up.
+func start(t *testing.T, args ...string) *running {
+	t.Helper()
+	r := launch(t, args...)
+	require.NoError(t, r.waitClusterFile(upTimeout))
+	return r
+}
+
+func (r *running) logText() string {
+	b, _ := os.ReadFile(r.log)
+	return string(b)
+}
+
+// waitClusterFile reads cluster.json once it appears. It fails, with the command's log, as soon as
+// the command exits without having written it, and when the timeout passes.
+func (r *running) waitClusterFile(timeout time.Duration) error {
+	path := filepath.Join(r.dir, clusterfile.Name)
+	deadline := time.After(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			var err error
+			r.file, err = clusterfile.Read(path)
+			return err
+		}
+		select {
+		case <-r.exited:
+			return fmt.Errorf("naru-cluster exited (%v) before cluster.json appeared; its log:\n%s", r.cmd.ProcessState, r.logText())
+		case <-deadline:
+			return fmt.Errorf("no cluster.json within %s; the log:\n%s", timeout, r.logText())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// alive reports whether the process runs; a zombie waiting to be reaped does not.
+func alive(pid int) bool {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	i := strings.LastIndex(string(b), ") ")
+	return i >= 0 && len(b) > i+2 && b[i+2] != 'Z'
+}
+
+// qemuUnder is the pids of the QEMU processes running on files under dir.
+func qemuUnder(dir string) []int {
+	entries, _ := os.ReadDir("/proc")
+	var pids []int
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || !alive(pid) {
+			continue
+		}
+		cmdline, _ := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		if strings.Contains(string(cmdline), "qemu-system") && strings.Contains(string(cmdline), dir) {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
 
 // client is what a harness builds from cluster.json: the resource API's client with the pair the
 // file names, and the gaon CLI's argument list for the same server.
@@ -218,17 +259,28 @@ func TestCluster_AHarnessReachesTheClusterThroughClusterJSONAndSurvivesOneNodeBe
 		}, upTimeout, time.Second, n.Name+" is Admitted")
 	}
 
-	// A kill of node-2 is a power-off: logged, not fatal, and node-1 keeps serving.
-	require.NoError(t, syscall.Kill(f.Nodes[1].PID, syscall.SIGKILL))
-	require.Eventually(t, func() bool { return !alive(f.Nodes[1].PID) }, time.Minute, 100*time.Millisecond, "node-2's process is gone")
+	// A kill of the Node that is not the control plane is a power-off: logged, not fatal, and the
+	// control plane keeps serving. The Nodes are told apart by their role, not their position.
+	var victim, keeper clusterfile.Node
+	for _, n := range f.Nodes {
+		if n.ControlPlane {
+			keeper = n
+		} else {
+			victim = n
+		}
+	}
+	require.NotEmpty(t, victim.Name, "a Node that is not the control plane")
+	require.NotEmpty(t, keeper.Name, "the control plane")
+	require.NoError(t, syscall.Kill(victim.PID, syscall.SIGKILL))
+	require.Eventually(t, func() bool { return !alive(victim.PID) }, time.Minute, 100*time.Millisecond, victim.Name+"'s process is gone")
 	require.Eventually(t, func() bool {
-		b, _ := os.ReadFile(r.log)
-		return strings.Contains(string(b), "node lost") && strings.Contains(string(b), "node-2")
+		b := r.logText()
+		return strings.Contains(b, "node lost") && strings.Contains(b, victim.Name)
 	}, time.Minute, 100*time.Millisecond, "naru-cluster logs the loss")
 	assert.True(t, alive(r.cmd.Process.Pid), "naru-cluster keeps running")
-	assert.True(t, alive(f.Nodes[0].PID), "node-1 keeps running")
-	got, err := api.Node(ctx, "node-1")
-	require.NoError(t, err, "node-1's API server still answers")
+	assert.True(t, alive(keeper.PID), "the control plane keeps running")
+	got, err := api.Node(ctx, keeper.Name)
+	require.NoError(t, err, "the control plane's API server still answers")
 	assert.True(t, got.Ready())
 	assert.Contains(t, gaonCLI(t, global, "get", "node", "node-1"), "node-1", "and the CLI is still served")
 }
@@ -241,6 +293,8 @@ func TestCluster_DisablingAServiceLeavesItOutOfEveryNodeAndTheOperatorFilesPathS
 	r := start(t, "-n", "2", "-gaon-bin", gaonDir, "-boot-pki=false", "-disable", "gaon-controllers")
 	f := r.file
 
+	require.NotEmpty(t, f.Images)
+	assert.Regexp(t, imageRef, f.Images[0].Reference, "images are listed whatever is disabled")
 	for _, n := range f.Nodes {
 		b, err := os.ReadFile(n.SerialLog)
 		require.NoError(t, err)
@@ -293,4 +347,68 @@ func TestCluster_ASuppliedBinaryIsWhatTheServiceRuns(t *testing.T) {
 	b, err := os.ReadFile(serial)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "service=gaon-apiserver", "the API server, with no binary supplied, runs the image's")
+}
+
+// TestCluster_ANodeStartedIsKilledWithNaruClusterEvenWhenItIsKilled shows that SIGKILL of naru-cluster,
+// which it cannot catch, still leaves no Node's QEMU process running.
+func TestCluster_ANodeStartedIsKilledWithNaruClusterEvenWhenItIsKilled(t *testing.T) {
+	r := start(t, "-n", "2", "-gaon-bin", gaonDir, "-boot-pki=false")
+	pids := []int{}
+	for _, n := range r.file.Nodes {
+		require.True(t, alive(n.PID), n.Name)
+		pids = append(pids, n.PID)
+	}
+
+	require.NoError(t, r.cmd.Process.Signal(syscall.SIGKILL))
+
+	<-r.exited
+	for _, pid := range pids {
+		require.Eventually(t, func() bool { return !alive(pid) }, 30*time.Second, 100*time.Millisecond, "the QEMU process %d is gone with naru-cluster", pid)
+	}
+	assert.Empty(t, qemuUnder(r.dir))
+}
+
+// TestCluster_ASignalDuringStartupStopsEveryNodeStartedAndSaysSo signals naru-cluster at two points
+// before cluster.json exists, and shows exit status 3, the one-line reason, and no QEMU left.
+func TestCluster_ASignalDuringStartupStopsEveryNodeStartedAndSaysSo(t *testing.T) {
+	for name, trigger := range map[string]func(r *running) bool{
+		"while the first Node is being started": func(r *running) bool {
+			_, err := os.Stat(filepath.Join(r.dir, "node-1", "qemu.log"))
+			return err == nil
+		},
+		"once the Nodes are started and being waited for": func(r *running) bool {
+			return strings.Contains(r.logText(), "node started")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := launch(t, "-n", "2", "-gaon-bin", gaonDir, "-boot-pki=false")
+			require.Eventually(t, func() bool { return trigger(r) }, time.Minute, 5*time.Millisecond, "the trigger happens")
+
+			require.NoError(t, r.cmd.Process.Signal(syscall.SIGTERM))
+
+			select {
+			case <-r.exited:
+			case <-time.After(time.Minute):
+				t.Fatalf("naru-cluster did not stop within a minute of SIGTERM; its log:\n%s", r.logText())
+			}
+			assert.Equal(t, 3, r.cmd.ProcessState.ExitCode(), r.logText())
+			assert.Contains(t, r.logText(), "signalled before every Node was up")
+			assert.NoFileExists(t, filepath.Join(r.dir, clusterfile.Name))
+			assert.Empty(t, qemuUnder(r.dir), "no QEMU process it started survives")
+		})
+	}
+}
+
+// TestCluster_ACommandThatExitsBeforeClusterJSONIsAFailureThatQuotesItsLog shows that the wait
+// returns the command's failure at once instead of waiting out its timeout.
+func TestCluster_ACommandThatExitsBeforeClusterJSONIsAFailureThatQuotesItsLog(t *testing.T) {
+	r := launch(t, "-n", "0")
+	began := time.Now()
+
+	err := r.waitClusterFile(time.Minute)
+
+	require.Error(t, err)
+	assert.Less(t, time.Since(began), 30*time.Second, "it does not wait for its timeout")
+	assert.Contains(t, err.Error(), "exited")
+	assert.Contains(t, err.Error(), "-n is 0")
 }

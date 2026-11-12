@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -331,4 +332,41 @@ func TestMissingBinaries_FindsNothingMissingWhenEveryBinaryIsThere(t *testing.T)
 		require.NoError(t, err)
 		assert.Empty(t, missing, name)
 	}
+}
+
+// fakeBuildInputs writes what make image and make disk would leave, as small files: the inputs file
+// with a Firecracker digest, the guest manifest, and a boot disk.
+func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
+	t.Helper()
+	imageDir, diskDir, guestDir := t.TempDir(), t.TempDir(), t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(imageDir, "inputs.env"), []byte("MVMD_FIRECRACKER_SHA256="+firecracker+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(diskDir, "naru.qcow2"), []byte("boot"), 0o600))
+	d := strings.Repeat("a", 64)
+	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "guest.json"), []byte(`{"kernels":{"naru":{"path":"/k","sha256":"`+d+`"}},"default_kernel":"naru",
+"guest_initrd":{"path":"/g","sha256":"`+d+`"},"converter_initrd":{"path":"/c","sha256":"`+d+`"}}`), 0o600))
+	return release.Options{Root: repoRoot(t), ImageDir: imageDir, DiskDir: diskDir, GuestDir: guestDir, Out: t.TempDir(), Version: "v9"}
+}
+
+func TestBuild_WritesTheInputsAssetListsItInSHA256SUMSAndCarriesWhatWasStaged(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+
+	assets, err := release.Build(o)
+
+	require.NoError(t, err)
+	name := fixture.ReleaseInputsName("v9")
+	b, err := os.ReadFile(filepath.Join(o.Out, name))
+	require.NoError(t, err, "the release holds the inputs asset")
+	var got fixture.ReleaseInputs
+	require.NoError(t, json.Unmarshal(b, &got))
+	assert.Equal(t, strings.Repeat("7", 64), got.FirecrackerSHA256, "the digest inputs.env named")
+	assert.Equal(t, fixture.RegistryAddr+"/test/entry", got.ImageRepository)
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, got.ImageDigest, "the digest of the test image the data disk carries")
+	var listed []string
+	for _, a := range assets {
+		listed = append(listed, a.Name)
+	}
+	assert.Contains(t, listed, name)
+	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
+	require.NoError(t, err)
+	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists it")
 }

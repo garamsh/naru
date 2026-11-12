@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
@@ -107,10 +109,12 @@ func (n *Node) launch() error {
 	n.once = sync.Once{}
 	n.waitErr = nil
 	cmd := exec.Command("qemu-system-x86_64", n.argv(n.console)...) //nolint:gosec // arguments are built here
+	// QEMU dies with the process that started it, however that process ends.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if out, err := os.Create(filepath.Join(n.dir, "qemu.log")); err == nil {
 		cmd.Stdout, cmd.Stderr = out, out
 	}
-	if err := cmd.Start(); err != nil {
+	if err := startOnLockedThread(cmd); err != nil {
 		return fmt.Errorf("start qemu: %w", err)
 	}
 	n.cmd = cmd
@@ -120,6 +124,27 @@ func (n *Node) launch() error {
 		close(done)
 	}()
 	return nil
+}
+
+// launcher is a goroutine locked to one thread for the life of the process, which starts every
+// QEMU. Pdeathsig fires when the thread that forked the child exits, and Go ends a thread when a
+// goroutine locked to it exits, so a child started from any other goroutine could be killed early.
+var launcher = sync.OnceValue(func() chan<- func() {
+	jobs := make(chan func())
+	go func() {
+		runtime.LockOSThread()
+		for job := range jobs {
+			job()
+		}
+	}()
+	return jobs
+})
+
+// startOnLockedThread starts cmd from the launcher's thread.
+func startOnLockedThread(cmd *exec.Cmd) error {
+	res := make(chan error, 1)
+	launcher() <- func() { res <- cmd.Start() }
+	return <-res
 }
 
 // Reboot kills the Node's QEMU process, as a power cut does, and starts it again on the same boot

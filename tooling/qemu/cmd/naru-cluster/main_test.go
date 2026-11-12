@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -34,6 +35,17 @@ func TestNaruCluster_AKnownServiceToDisablePassesTheCheckAndFailsLaterOnTheEmpty
 	require.Error(t, err)
 	assert.NotContains(t, out, "is not a service")
 	assert.Contains(t, out, "read the release")
+}
+
+func TestNaruCluster_ADirectoryThatIsNotEmptyIsRefusedAndNamed(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cluster.json"), []byte("{}"), 0o600))
+
+	out, err := naruCluster(t, "-release", t.TempDir(), "-dir", dir)
+
+	require.Error(t, err)
+	assert.Contains(t, out, "-dir "+dir+" is not empty")
+	assert.NotContains(t, out, "read the release", "the check comes before anything is read or written")
 }
 
 func TestNaruCluster_TheReleaseAndTheDirectoryAreRequired(t *testing.T) {

@@ -1,12 +1,14 @@
 // Command naru-cluster boots QEMU Nodes from the assets of a naru release, with the gaon binaries a
 // harness supplies, writes cluster.json once every Node is up, and keeps the Nodes running until
-// it is signalled. It needs nothing of a checkout: `go run
-// github.com/garamsh/naru/tooling/qemu/cmd/naru-cluster@<commit>` runs it. docs/architecture/harness.md
-// is its contract: the flags, cluster.json and what a harness may rely on.
+// it is signalled. It needs nothing of a checkout: `GOBIN=<dir> go install
+// github.com/garamsh/naru/tooling/qemu/cmd/naru-cluster@<commit>` builds it, and `<dir>/naru-cluster`
+// runs it. docs/architecture/harness.md is its contract: the flags, cluster.json, the exit statuses
+// and what a harness may rely on.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,9 +31,21 @@ import (
 // gaonServices are the binaries -gaon-bin may supply, named as the services are.
 var gaonServices = []string{"gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
 
+// exitSignalled is the status of a run that was signalled before cluster.json was written.
+const exitSignalled = 3
+
+// consoleTail is how many lines of a Node's console an error carries.
+const consoleTail = 40
+
+// errSignalled says a signal arrived before every Node was up.
+var errSignalled = errors.New("signalled before every Node was up; every Node started was stopped")
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "naru-cluster:", err)
+		if errors.Is(err, errSignalled) {
+			os.Exit(exitSignalled)
+		}
 		os.Exit(1)
 	}
 }
@@ -65,11 +79,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	// A directory of an earlier run would carry its inputs and Node directories into this one.
+	if entries, err := os.ReadDir(root); err == nil && len(entries) > 0 {
+		return fmt.Errorf("-dir %s is not empty; give it a directory that does not exist or is empty", root)
+	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	// A cluster.json left by an earlier run would be read as this one's.
-	if err := os.Remove(filepath.Join(root, clusterfile.Name)); err != nil && !os.IsNotExist(err) {
+	// The handler comes before the first Node, so that a signal at any point stops the Nodes started.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
 	rel, err := fixture.ReadRelease(*release, filepath.Join(root, "release"))
@@ -85,6 +104,9 @@ func run() error {
 			return fmt.Errorf("-inputs: %w", err)
 		}
 	}
+	if ctx.Err() != nil {
+		return errSignalled
+	}
 
 	c, err := node.StartCluster(node.ClusterSpec{
 		N: *n, Disk: rel.BootDisk, Dir: root, Inputs: rel.Inputs, Gaon: true, BootPKI: *bootPKI,
@@ -94,8 +116,10 @@ func run() error {
 		return err
 	}
 	defer c.Stop()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if ctx.Err() != nil {
+		return errSignalled
+	}
+	deadline := time.Now().Add(*timeout)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	for _, nd := range c.Nodes {
 		log.Info("node started", "node", nd.Name, "pid", nd.Pid(), "serial", nd.ConsolePath())
@@ -112,8 +136,14 @@ func run() error {
 		}()
 	}
 
-	if err := waitUp(ctx, c, disabled, *timeout, log); err != nil {
+	if err := waitUp(ctx, c, disabled, deadline, log); err != nil {
+		if ctx.Err() != nil {
+			return errSignalled
+		}
 		return err
+	}
+	if ctx.Err() != nil {
+		return errSignalled
 	}
 	if err := writeClusterFile(root, c, rel.Inputs.Image); err != nil {
 		return err
@@ -152,7 +182,8 @@ func stageGaonBinaries(from, inputs string) ([]string, error) {
 }
 
 // copyTree copies the files of from into to, directories 0755, files 0755 where the source is
-// executable and 0644 otherwise, since the services read them as other users.
+// executable and 0644 otherwise, since the services read them as other users. It refuses a
+// symbolic link or any file that is not regular, so what a Node carries is what the directory holds.
 func copyTree(from, to string) error {
 	return filepath.WalkDir(from, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -165,7 +196,10 @@ func copyTree(from, to string) error {
 		if d.IsDir() {
 			return os.MkdirAll(filepath.Join(to, rel), 0o755)
 		}
-		info, err := os.Stat(p)
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("%s is not a regular file or a directory (a symbolic link is refused)", p)
+		}
+		info, err := d.Info()
 		if err != nil {
 			return err
 		}
@@ -200,24 +234,55 @@ func copyFile(from, to string, mode fs.FileMode) error {
 	return os.Chmod(to, mode)
 }
 
+// upNode is what waitServices needs of a Node, so that a test can stand in for one.
+type upNode interface {
+	WaitFor(ctx context.Context, timeout time.Duration, want ...string) error
+	Console() string
+}
+
+// serviceWait is a Node and the services whose start waitServices waits for.
+type serviceWait struct {
+	name     string
+	node     upNode
+	services []string
+}
+
+// waitServices waits until every Node's init has started its services. The deadline is one for all
+// of them together.
+func waitServices(ctx context.Context, deadline time.Time, waits []serviceWait, log *slog.Logger) error {
+	for _, w := range waits {
+		for _, s := range w.services {
+			if err := w.node.WaitFor(ctx, time.Until(deadline), "started", "service="+s); err != nil {
+				return fmt.Errorf("%s: %w\n%s", w.name, err, tail(w.node.Console(), consoleTail))
+			}
+		}
+		log.Info("node's services started", "node", w.name)
+	}
+	return nil
+}
+
+// tail is the last n lines of s.
+func tail(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	return strings.Join(lines[max(0, len(lines)-n):], "\n")
+}
+
 // waitUp waits until every Node's init has started the services its configuration names, and, where
-// the API server and the Node Agent both run, until every Node is registered and Ready.
-func waitUp(ctx context.Context, c *node.Cluster, disabled []string, timeout time.Duration, log *slog.Logger) error {
+// the API server and the Node Agent both run, until every Node is registered and Ready, all before
+// the one deadline.
+func waitUp(ctx context.Context, c *node.Cluster, disabled []string, deadline time.Time, log *slog.Logger) error {
 	on := func(s string) bool { return !slices.Contains(disabled, s) }
-	for _, nd := range c.Nodes {
+	var waits []serviceWait
+	for i, nd := range c.Nodes {
 		services := []string{"registry", "gaon-node-agent"}
-		if nd == c.Nodes[0] {
+		if i == 0 {
 			services = append(services, "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers")
 		}
-		for _, s := range services {
-			if !on(s) {
-				continue
-			}
-			if err := nd.WaitFor(ctx, timeout, "started", "service="+s); err != nil {
-				return fmt.Errorf("%s: %w\n%s", nd.Name, err, nd.Console())
-			}
-		}
-		log.Info("node's services started", "node", nd.Name)
+		services = slices.DeleteFunc(services, func(s string) bool { return !on(s) })
+		waits = append(waits, serviceWait{name: nd.Name, node: nd, services: services})
+	}
+	if err := waitServices(ctx, deadline, waits, log); err != nil {
+		return err
 	}
 	if !on("gaon-apiserver") || !on("gaon-node-agent") {
 		return nil
@@ -226,14 +291,13 @@ func waitUp(ctx context.Context, c *node.Cluster, disabled []string, timeout tim
 	if err != nil {
 		return err
 	}
-	deadline := time.Now().Add(timeout)
 	for _, nd := range c.Nodes {
 		for {
 			if got, err := api.Node(ctx, nd.Name); err == nil && got.Ready() {
 				break
 			}
 			if time.Now().After(deadline) {
-				return fmt.Errorf("%s did not register and become Ready within %s", nd.Name, timeout)
+				return fmt.Errorf("%s did not register and become Ready before the -timeout deadline", nd.Name)
 			}
 			select {
 			case <-ctx.Done():
