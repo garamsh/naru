@@ -3,7 +3,7 @@ module github.com/garamsh/naru/tooling/probe
 go 1.26.0
 
 require (
-	github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261112010339-b68db37c093b
+	github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261112030054-f08e9130c57c
 	github.com/stretchr/testify v1.12.1
 	google.golang.org/protobuf v1.36.12
 )

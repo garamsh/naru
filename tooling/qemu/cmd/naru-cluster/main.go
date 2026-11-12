@@ -32,6 +32,20 @@ import (
 // gaonServices are the binaries -gaon-bin may supply, named as the services are.
 var gaonServices = []string{"gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
 
+// checkDisable refuses a name -disable may not carry, and gaon-controllers under -boot-pki: the
+// controllers sign the agents' requests there, so without them no agent gets a pair.
+func checkDisable(disabled []string, bootPKI bool) error {
+	for _, d := range disabled {
+		if !slices.Contains(disableNames, d) {
+			return fmt.Errorf("-disable: %q is not a service; the names are %s", d, strings.Join(disableNames, ", "))
+		}
+	}
+	if bootPKI && slices.Contains(disabled, "gaon-controllers") {
+		return errors.New("-disable gaon-controllers needs -boot-pki=false: the controllers sign the agents' certificate requests")
+	}
+	return nil
+}
+
 // disableNames are the services -disable may name; naructl refuses any other.
 var disableNames = []string{"registry", "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
 
@@ -74,10 +88,8 @@ func run() error {
 	if *disable != "" {
 		disabled = strings.Split(*disable, ",")
 	}
-	for _, d := range disabled {
-		if !slices.Contains(disableNames, d) {
-			return fmt.Errorf("-disable: %q is not a service; the names are %s", d, strings.Join(disableNames, ", "))
-		}
+	if err := checkDisable(disabled, *bootPKI); err != nil {
+		return err
 	}
 	root, err := filepath.Abs(*dir)
 	if err != nil {

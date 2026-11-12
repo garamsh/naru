@@ -30,11 +30,23 @@ func TestNaruCluster_AnUnknownServiceToDisableIsAnErrorThatNamesTheValidOnes(t *
 
 func TestNaruCluster_AKnownServiceToDisablePassesTheCheckAndFailsLaterOnTheEmptyRelease(t *testing.T) {
 	// The control for the refusal above: the same arguments with a valid name get past the check.
-	out, err := naruCluster(t, "-release", t.TempDir(), "-dir", t.TempDir(), "-disable", "gaon-controllers")
+	out, err := naruCluster(t, "-release", t.TempDir(), "-dir", t.TempDir(), "-disable", "gaon-scheduler")
 
 	require.Error(t, err)
 	assert.NotContains(t, out, "is not a service")
 	assert.Contains(t, out, "read the release")
+}
+
+func TestNaruCluster_DisablingTheControllersNeedsBootPKIFalseAndIsRefusedBeforeTheReleaseIsRead(t *testing.T) {
+	out, err := naruCluster(t, "-release", t.TempDir(), "-dir", t.TempDir(), "-disable", "gaon-controllers")
+
+	require.Error(t, err)
+	assert.Contains(t, out, "-boot-pki=false")
+	assert.NotContains(t, out, "read the release")
+
+	out, err = naruCluster(t, "-release", t.TempDir(), "-dir", t.TempDir(), "-disable", "gaon-controllers", "-boot-pki=false")
+	require.Error(t, err)
+	assert.Contains(t, out, "read the release", "with -boot-pki=false it gets past the check")
 }
 
 func TestNaruCluster_ADirectoryThatIsNotEmptyIsRefusedAndNamed(t *testing.T) {
