@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 )
@@ -270,6 +271,15 @@ func (v *validation) pki(p PKI, files []File, services []Service) {
 			}
 		}
 	}
+}
+
+// Equal reports whether o is the same certificate. A nil list equals an empty one.
+func (c Certificate) Equal(o Certificate) bool {
+	return c.Name == o.Name && c.Authority == o.Authority && c.CertificatePath == o.CertificatePath &&
+		c.KeyPath == o.KeyPath && c.CommonName == o.CommonName && c.Organization == o.Organization &&
+		c.Usage == o.Usage && c.NodeAddresses == o.NodeAddresses && c.ValidFor() == o.ValidFor() &&
+		slices.Equal(c.DNSNames, o.DNSNames) && slices.Equal(c.IPAddresses, o.IPAddresses) &&
+		slices.Equal(c.Restart, o.Restart)
 }
 
 // Authority returns the authority named name.

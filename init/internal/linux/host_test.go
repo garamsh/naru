@@ -275,6 +275,26 @@ func TestHost_WriteFiles(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrExist, "a file that exists is not replaced")
 }
 
+func TestHost_ReplaceFile(t *testing.T) {
+	h, _ := testHost(t, nil)
+	path := filepath.Join(t.TempDir(), "mvmd/config.json")
+	require.NoError(t, h.WriteFiles([]config.File{{Path: path, Mode: "0600", Content: "old"}}))
+
+	require.NoError(t, h.ReplaceFile(config.File{Path: path, Mode: "0640", Content: "new"}))
+
+	assert.Equal(t, "new", read(t, path), "a file that exists is replaced")
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm(), "the mode is the new file's")
+	entries, err := os.ReadDir(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no temporary file stays beside it")
+
+	fresh := filepath.Join(t.TempDir(), "deep/new")
+	require.NoError(t, h.ReplaceFile(config.File{Path: fresh, Content: "x"}))
+	assert.Equal(t, "x", read(t, fresh), "a file that does not exist is created with its directories")
+}
+
 func TestHost_MountDataDisk(t *testing.T) {
 	verity := ext4test.Image(t, "NARUDATA", "verity", nil)
 	plain := ext4test.Image(t, "NARUDATA", "", nil)

@@ -16,6 +16,7 @@ import (
 	"github.com/garamsh/naru/init/internal/linux"
 	"github.com/garamsh/naru/init/internal/pki"
 	"github.com/garamsh/naru/init/internal/service"
+	"github.com/garamsh/naru/init/internal/store"
 )
 
 const (
@@ -59,7 +60,13 @@ func main() {
 	services := service.NewManager(linux.NewCgroupTree(cgroupRoot), linux.NewLauncher(reaper, con), service.SystemClock{}, log)
 
 	issuer := pki.New("", service.SystemClock{}, services, log)
-	stopRenewing := bootAndRenew(host, issuer, services, log)
+	configs := store.New(store.Dir)
+	stopRenewing, booted := bootAndRenew(host, issuer, services, configs, log)
+	if booted != nil {
+		engine := newEngine(*booted, configs, services, host, issuer)
+		revision, _ := engine.Config()
+		log.Info("the apply engine is ready", "revision", revision)
+	}
 
 	sig := <-sigs
 	// A renewal in flight must not restart a service after it is stopped.

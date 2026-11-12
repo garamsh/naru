@@ -15,6 +15,7 @@ import (
 	"github.com/garamsh/naru/init/internal/netcfg"
 	"github.com/garamsh/naru/init/internal/pki"
 	"github.com/garamsh/naru/init/internal/pkitest"
+	"github.com/garamsh/naru/init/internal/store"
 )
 
 const nodeNetwork = `version: 1
@@ -113,8 +114,9 @@ spec:
 	clk := &clock{now: epoch, timers: make(chan chan time.Time, 4)}
 	issuer := pki.New(t.TempDir(), clk, n, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	stop := bootAndRenew(n, issuer, n, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	stop, booted := bootAndRenew(n, issuer, n, store.New(t.TempDir()), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(stop)
+	assert.Nil(t, booted, "the boot was refused, so there is no effective configuration")
 
 	var timer chan time.Time
 	select {
