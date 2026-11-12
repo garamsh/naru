@@ -5,7 +5,7 @@
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
 
-Drafted for garamsh/naru#36, part of goal garamsh/naru#34, with the PM's amendment of that issue. It adds to [ADR 0012](./0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md), [ADR 0013](./0013-init-issues-certificates-at-boot-from-a-ca-carried-in-spec-pki-and-renews-them.md) and [ADR 0014](./0014-naru-cluster-is-a-public-command-that-boots-nodes-from-a-releases-assets-and-publishes-cluster-json.md), and supersedes no item of any.
+Drafted for garamsh/naru#36, part of goal garamsh/naru#34, with the PM's amendment of that issue. It adds to [ADR 0012](./0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md), [ADR 0013](./0013-init-issues-certificates-at-boot-from-a-ca-carried-in-spec-pki-and-renews-them.md) and [ADR 0014](./0014-naru-cluster-is-a-public-command-that-boots-nodes-from-a-releases-assets-and-publishes-cluster-json.md), and changes two items of them: it amends [ADR 0014](./0014-naru-cluster-is-a-public-command-that-boots-nodes-from-a-releases-assets-and-publishes-cluster-json.md) item 1, which lists the assets `-release` reads, by adding `naructl-<version>-linux-amd64` to them and the workflow's count (ADR 0014 item 2: seven files) to eight; and it supersedes the test CA of [ADR 0012](./0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md)'s Consequences, "valid for 48 hours", with a CA of ten years and certificates of one year (Consequences below). The rest of both stands.
 
 ## Context
 
@@ -28,6 +28,7 @@ Drafted for garamsh/naru#36, part of goal garamsh/naru#34, with the PM's amendme
 
 - **A change to a gaon service's flags or paths is made once**, in `naructl`, and the QEMU tests, `naru-cluster` and the release all pick it up.
 - **The tests build `naructl` and run it**, so the QEMU tests and the release tests need the Go toolchain and the checkout; `naru-cluster` needs neither, only the asset.
+- **`naru-cluster` refuses every release without a `naructl-<version>-linux-amd64`**, naming the asset, as ADR 0014 did for `naru-inputs-<version>.json`. Every release made before this one is such a release; a harness that pins an older release must move to one that carries the asset, and [harness.md](../harness.md) says so.
 - **Test certificates now last as long as `naructl`'s** (a CA of ten years, certificates of one year) and no longer 48 hours, because the operator's and the test tool's certificates are one code path. A cluster of tests still lives for its run.
 - **The guest manifest's reader is written twice**: `tooling/qemu/internal/guest` for the data disk's tree, and `naructl`'s own, because `naructl` may not import `tooling/qemu`. They read one file format; the duplication is the price of the boundary.
 - **The Nodes that are not gaon's keep a writer of mvmd's configuration and `network-config` in `tooling/qemu/internal/node`.** The stand-ins and the probe run on image components that no operator deploys.
