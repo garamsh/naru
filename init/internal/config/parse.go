@@ -106,6 +106,7 @@ func validate(cfg NodeConfig) error {
 	v.network(cfg.Spec.Network)
 	v.files(cfg.Spec.Files, cfg.Spec.Services)
 	v.api(cfg.Spec.API)
+	v.time(cfg.Spec.Time)
 	v.pki(cfg.Spec.PKI, cfg.Spec.Files, cfg.Spec.Services)
 	return errors.Join(v.errs...)
 }

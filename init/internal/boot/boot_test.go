@@ -17,6 +17,7 @@ import (
 	"github.com/garamsh/naru/init/internal/netcfg"
 	"github.com/garamsh/naru/init/internal/pkitest"
 	"github.com/garamsh/naru/init/internal/store"
+	"github.com/garamsh/naru/init/internal/timesync"
 )
 
 const validNetwork = `version: 1
@@ -64,6 +65,7 @@ type recorder struct {
 	prepareErr error
 	sealErr    error
 	issueErr   error
+	timeErr    error
 	startErr   error
 	apiErr     error
 	api        *store.Stored
@@ -80,6 +82,8 @@ type recorder struct {
 	written   []config.File
 	issuedPKI config.PKI
 	issuedTo  []netip.Addr
+
+	timeServers []string
 }
 
 func (r *recorder) ReadSeed() ([]byte, []byte, error) {
@@ -109,6 +113,12 @@ func (r *recorder) EnableForwarding(f []config.Family) error {
 	r.calls = append(r.calls, "forward")
 	r.forwarded = f
 	return r.forwardErr
+}
+
+func (r *recorder) SyncTime(servers []string) (timesync.Result, error) {
+	r.calls = append(r.calls, "time")
+	r.timeServers = servers
+	return timesync.Result{Server: "ntp.example:123", Correction: timesync.Step}, r.timeErr
 }
 
 func (r *recorder) SealRoot() error {
@@ -221,6 +231,41 @@ func TestRun_IssuesCertificatesAfterTheNetworkAndBeforeAnyServiceStarts(t *testi
 	require.Len(t, r.issuedPKI.Certificates, 1)
 	assert.Equal(t, "server", r.issuedPKI.Certificates[0].Name)
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.78.0.1")}, r.issuedTo, "the Node's addresses come from the network-config")
+}
+
+// withTime adds a spec.time to doc, which holds the spec.services line.
+func withTime(t *testing.T, doc string) string {
+	t.Helper()
+	return replace(t, doc, "  services:\n", "  time:\n    servers: [ntp.example, '192.0.2.1:1123']\n  services:\n")
+}
+
+func TestRun_SynchronisesTheClockAfterTheNetworkAndBeforeCertificatesAreIssued(t *testing.T) {
+	r := &recorder{raw: withTime(t, withPKI(t))}
+
+	require.NoError(t, run(r))
+
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "time", "issue", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, []string{"ntp.example:123", "192.0.2.1:1123"}, r.timeServers, "each server is given with its port")
+}
+
+func TestRun_GoesOnWhenNoTimeServerAnswers(t *testing.T) {
+	// The control is the test above: with the same configuration, the clock is set.
+	r := &recorder{raw: withTime(t, withPKI(t)), timeErr: errors.New("no server answered")}
+
+	require.NoError(t, run(r))
+
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "time", "issue", "prepare", "seal", "start mvmd"}, r.calls)
+}
+
+func TestRun_SetsNoClockWithoutSpecTime(t *testing.T) {
+	var out strings.Builder
+	r := &recorder{raw: validConfig, network: validNetwork}
+
+	_, err := boot.Run(r, r, r, r, apiProbe{r}, slog.New(slog.NewTextHandler(&out, nil)))
+
+	require.NoError(t, err)
+	assert.NotContains(t, r.calls, "time")
+	assert.Contains(t, out.String(), "time is not synchronised")
 }
 
 func TestRun_StartsNothingWhenACertificateCannotBeIssued(t *testing.T) {

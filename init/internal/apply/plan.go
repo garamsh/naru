@@ -85,7 +85,8 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 }
 
 // plan returns the live steps that take the running configuration to next, in
-// the order they run: files and certificates are written first, then the
+// the order they run: the clock's servers change first, since the certificates
+// issued next depend on the clock; files and certificates are written, then the
 // listener reloads, then services stop, start or restart, and last the
 // services a written file or certificate names restart, each once and only if
 // the apply did not start or restart it already.
@@ -101,6 +102,12 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 		}
 	}
 
+	switch nt, rt := next.Spec.Time.Addrs(), running.Spec.Time.Addrs(); {
+	case len(nt) == 0 && len(rt) > 0:
+		steps = append(steps, step{Action{"stop-time-sync", "spec.time"}, func() error { e.deps.Time.ConfigureTime(nil); return nil }})
+	case len(nt) > 0 && !slices.Equal(nt, rt):
+		steps = append(steps, step{Action{"sync-time", "spec.time"}, func() error { e.deps.Time.ConfigureTime(nt); return nil }})
+	}
 	for _, f := range next.Spec.Files {
 		if old, ok := fileAt(running.Spec.Files, f.Path); ok && old.Perm() == f.Perm() && old.Content == f.Content {
 			continue

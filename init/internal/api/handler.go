@@ -16,6 +16,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/version", s.version)
 	mux.HandleFunc("GET /v1/services", s.services)
 	mux.HandleFunc("GET /v1/services/{name}/logs", s.logs)
+	mux.HandleFunc("GET /v1/time", s.time)
 	mux.HandleFunc("GET /v1/config", s.getConfig)
 	mux.HandleFunc("POST /v1/config", s.postConfig)
 	return s.recovering(s.logged(s.authorised(mux)))

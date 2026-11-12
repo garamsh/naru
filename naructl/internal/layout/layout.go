@@ -107,6 +107,10 @@ type Node struct {
 	// API is the Node API authority, separate from CA. When set, spec.api carries its certificate
 	// and a serving pair it issued, and never its key.
 	API *pki.CA
+
+	// TimeServers are the SNTP servers init sets the clock from, each a host or host:port, in the
+	// order they are asked. With none, spec.time is left out and the Node's clock is not set.
+	TimeServers []string
 }
 
 type service struct {
@@ -149,6 +153,11 @@ type pkiCertificate struct {
 	Restart         []string `yaml:"restart,omitempty"`
 }
 
+// timeSpec is spec.time.
+type timeSpec struct {
+	Servers []string `yaml:"servers"`
+}
+
 type nodeConfig struct {
 	APIVersion string `yaml:"apiVersion"`
 	Kind       string `yaml:"kind"`
@@ -168,6 +177,7 @@ type nodeConfig struct {
 		Files    []file    `yaml:"files"`
 		PKI      *pkiSpec  `yaml:"pki,omitempty"`
 		API      *apiSpec  `yaml:"api,omitempty"`
+		Time     *timeSpec `yaml:"time,omitempty"`
 	} `yaml:"spec"`
 }
 
@@ -255,6 +265,9 @@ func (n Node) UserData() ([]byte, error) {
 	}
 	if c.Spec.API, err = n.specAPI(); err != nil {
 		return nil, fmt.Errorf("issue the Node API's serving pair: %w", err)
+	}
+	if len(n.TimeServers) > 0 {
+		c.Spec.Time = &timeSpec{Servers: n.TimeServers}
 	}
 	c.Spec.Services = n.services()
 	n.withoutDisabled(&c)

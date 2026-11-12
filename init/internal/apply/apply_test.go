@@ -56,13 +56,16 @@ func (r *rig) Reissue(spec config.PKI, names []string) error {
 	return r.note(fmt.Sprintf("issue %v", names))
 }
 func (r *rig) Reload(config.API) error { return r.note("reload") }
+func (r *rig) ConfigureTime(servers []string) {
+	_ = r.note(fmt.Sprintf("time %v", servers))
+}
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
 	r := &rig{}
 	cfg, err := config.Parse([]byte(baseDoc(t)))
 	require.NoError(t, err)
-	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Certificates: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
+	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Certificates: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
 	return r
 }
 

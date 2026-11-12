@@ -14,6 +14,7 @@ import (
 	"github.com/garamsh/naru/init/internal/ext4"
 	"github.com/garamsh/naru/init/internal/iso9660"
 	"github.com/garamsh/naru/init/internal/netcfg"
+	"github.com/garamsh/naru/init/internal/timesync"
 )
 
 const (
@@ -41,6 +42,8 @@ type Host struct {
 	links          links
 
 	dataMountPoint string
+
+	time *timesync.Syncer
 }
 
 // NewHost returns the Host of the running machine. A disk or a network
@@ -57,6 +60,7 @@ func NewHost(diskWait time.Duration) *Host {
 		seedMountPoint: seedMountPoint,
 		resolvConf:     resolvConf,
 		links:          netlinkLinks{},
+		time:           timesync.New(SystemClock{}, timesync.UDP{Now: time.Now}),
 	}
 }
 
