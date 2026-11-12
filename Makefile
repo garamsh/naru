@@ -83,6 +83,10 @@ GUEST := $(IMAGE)/guest
 E2FS := $(IMAGE)/e2fsprogs
 GAON := $(IMAGE)/gaon
 ETCD := $(IMAGE)/etcd
+# VERSION is the version naru-init reports on the Node API and the release assets carry: `git describe
+# --tags --always`, or VERSION=.
+VERSION ?= $(shell git describe --tags --always)
+export NARU_VERSION := $(VERSION)
 image:
 	image/kernel/build.sh $(BUILD)/kernel $(IMAGE)
 	image/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
@@ -141,19 +145,19 @@ nodes: disk
 # JUDGE_NODE1_INTERFACES=<n> sets the interfaces node-1's network-config gives it (1 when unset;
 # the QEMU tests' control-plane Node has 2). JUDGE_GAON=1 also needs JUDGE_NARUCTL=<a naructl
 # binary, the release's naructl-<version>-linux-amd64>: the services to expect are the ones its
-# `topology` command prints (ADR 0019).
+# `topology` command prints (ADR 0019). JUDGE_NODE_API=listening|off also requires init's Node API
+# line on both Nodes, that it serves the API or that it says the API is off (the release's test
+# user-data has no spec.api, so off); left out, the line is not judged.
 judge-serial:
 	@test -n "$(NODE1)" -a -n "$(NODE2)" || { echo "judge-serial: usage: make judge-serial NODE1=<log> NODE2=<log>" >&2; exit 2; }
-	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_GAON),-gaon) $(if $(JUDGE_NARUCTL),-naructl "$(abspath $(JUDGE_NARUCTL))") $(if $(JUDGE_PKI),-pki) $(if $(JUDGE_NODE1_INTERFACES),-node1-interfaces $(JUDGE_NODE1_INTERFACES)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
+	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_GAON),-gaon) $(if $(JUDGE_NARUCTL),-naructl "$(abspath $(JUDGE_NARUCTL))") $(if $(JUDGE_PKI),-pki) $(if $(JUDGE_NODE_API),-node-api $(JUDGE_NODE_API)) $(if $(JUDGE_NODE1_INTERFACES),-node1-interfaces $(JUDGE_NODE1_INTERFACES)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
 
 # release writes the assets of a deployment into $(RELEASE): naru-<version>.qcow2 (the boot disk),
 # naru-data-<version>.qcow2 (the one data disk both Nodes attach), naru-guest-<version>.json,
 # naru-inputs-<version>.json (what naru-cluster reads besides the disks), naructl-<version>-linux-amd64
 # (the operator's tool, which also writes the test user-data below from a CA that lives only for the
 # run), naru-node-1.test.yaml and naru-node-2.test.yaml (test-only user-data for Proxmox: they carry
-# gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. The version is `git describe --tags --always`, or
-# VERSION=.
-VERSION ?= $(shell git describe --tags --always)
+# gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. VERSION is defined above image.
 RELEASE := $(BUILD)/release
 release: disk
 	rm -rf $(RELEASE)

@@ -9,6 +9,8 @@
 # stamps every mtime with SOURCE_DATE_EPOCH; it is compressed with gzip -9n, which stores no name
 # or time. The same inputs therefore give the same bytes (image/build.env fixes the environment).
 #
+# NARU_VERSION (optional, in the environment) is the version naru-init reports on the Node API.
+#
 # Usage: build.sh <build-dir> <kernel-build-dir> <output-dir> <guest-dir> <e2fsprogs-dir> <gaon-dir> <etcd-dir>
 # <build-dir> receives the mvmd checkout and the built programs, <kernel-build-dir> is the one
 # image/kernel/build.sh was given, whose dl/ holds the verified kernel tarball (gen_init_cpio.c is
@@ -51,10 +53,12 @@ rm -rf "$bin"
 mkdir -p "$bin"
 
 # naru-init and the stand-in are built from this repository.
-gobuild() { # <module-dir> <output> <package>
-  (cd "$1" && CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$2" "$3")
+gobuild() { # <module-dir> <output> <package> [<extra ldflags>]
+  (cd "$1" && CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -ldflags="-s -w ${4:-}" -o "$2" "$3")
 }
-gobuild "$root/init" "$bin/naru-init" ./cmd/naru-init
+# NARU_VERSION, when set, is the version naru-init reports on the Node API. The same value gives the
+# same bytes: it is the only thing that enters the binary.
+gobuild "$root/init" "$bin/naru-init" ./cmd/naru-init "${NARU_VERSION:+-X main.buildVersion=$NARU_VERSION}"
 gobuild "$root/tooling/qemu" "$bin/naru-standin" ./cmd/naru-standin
 
 # mvmd is fetched at its pinned commit and nowhere else.

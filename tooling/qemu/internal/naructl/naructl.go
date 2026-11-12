@@ -150,6 +150,36 @@ func (t Tool) GenClient(caDir, cn, out string) (Client, error) {
 	return Client{CA: filepath.Join(caDir, "ca.pem"), Cert: filepath.Join(out, "client.pem"), Key: filepath.Join(out, "client.key")}, nil
 }
 
+// GenAPICA has naructl write the Node API's authority, api/ca.pem and api/ca.key, under dir. A Node's
+// user-data written from dir afterwards carries spec.api (ADR 0017).
+func (t Tool) GenAPICA(dir string) error { return t.run("gen", "api-ca", "--ca-dir", dir) }
+
+// GenAPIClient has naructl write the Node API client file out, with the certificate of role (admin or
+// reader) from the authority under caDir, for the Node at endpoint (an IP address with a port).
+func (t Tool) GenAPIClient(caDir, role, endpoint, out string) error {
+	return t.run("gen", "api-client", "--ca-dir", caDir, "--role", role, "--endpoint", endpoint, "--out", out)
+}
+
+// Result is what a run of naructl printed and how it ended.
+type Result struct {
+	Stdout, Stderr string
+	// Err is nil when naructl exited 0.
+	Err error
+}
+
+// Run runs naructl with args and returns what it printed; a refusal is a Result with Err set, not
+// an error of the caller's.
+func (t Tool) Run(args ...string) Result {
+	if t.Bin == "" {
+		return Result{Err: fmt.Errorf("no naructl binary is named")}
+	}
+	cmd := exec.Command(t.Bin, args...) //nolint:gosec // the binary the caller named
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	return Result{Stdout: stdout.String(), Stderr: stderr.String(), Err: err}
+}
+
 // Node is the arguments of gen node; empty ones are left to naructl's default or refusal.
 type Node struct {
 	CA, Name     string

@@ -45,6 +45,9 @@ type Config struct {
 	// HostPort, when not 0, gives the Node a second NIC on QEMU's user-mode network, which forwards
 	// the host's loopback port HostPort to the API server (see hostnic.go).
 	HostPort int
+	// APIHostPort, when not 0 and with HostPort, adds a forward of the host's loopback port to the
+	// Node API's port on the same NIC.
+	APIHostPort int
 }
 
 // Network is what a Node's network-config and its configuration say of addresses. The QEMU tests

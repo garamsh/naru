@@ -30,7 +30,12 @@ func run(args []string, out, errOut io.Writer) int {
 	pki := fs.Bool("pki", false, "with -gaon, node-1 issued its gaon pairs from spec.pki (ADR 0013), and its issuing is judged")
 	node1Interfaces := fs.Int("node1-interfaces", 1, "with -gaon, the interfaces node-1's network-config gives it: the QEMU tests' control-plane Node has two, a Proxmox Node one or two")
 	naructlBin := fs.String("naructl", "", "with -gaon, the naructl binary of the release the Nodes booted from (naructl-<version>-linux-amd64): its topology says which services the logs must show")
+	nodeAPI := fs.String("node-api", "", "\"listening\" or \"off\": judge that init serves the Node API on both Nodes, or says it is off (the release's test user-data has no spec.api); left out, the Node API's lines are not judged, so a log of a release before v0.4.0 passes")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *nodeAPI != "" && *nodeAPI != "listening" && *nodeAPI != "off" {
+		fmt.Fprintln(errOut, "naru-judge: -node-api is listening or off")
 		return 2
 	}
 	if (*pki || *node1Interfaces != 1 || *naructlBin != "") && !*gaon {
@@ -80,6 +85,9 @@ func run(args []string, out, errOut io.Writer) int {
 			if n.controlPlane && *pki {
 				want = append(want, judge.Issuance(judge.GaonIssued...)...)
 			}
+		}
+		if *nodeAPI != "" {
+			want = append(want, judge.NodeAPI(*nodeAPI == "listening")...)
 		}
 		bad := judge.Check(n.name, log, want)
 		fmt.Fprintf(out, "%s: %s: %d bytes, %d re-printed block(s), %d line(s) dropped by init; %d of %d expectations met\n",
