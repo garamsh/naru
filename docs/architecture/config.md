@@ -2,7 +2,7 @@
 
 How a Node's configuration and network reach init in P0, and the shape of the files.
 
-Claims about garamsh/gaon hold at commit `cd05f7ed59b62c43279e13d0cb3b3821c93abcc2`, and about garamsh/mvmd at `3b37892f303a4d4dbd8e5360906d0f9c036b562e`; they promise nothing about later versions. They were read again at those commits when they replaced `d643b1cb6a6cc01ea587dd7c967bdfd07280fe0b` and `cfe57fb9f9bfbd7ec8e24b54915656030f1e2b64`: gaon's `resource-api.md` §Common rules and mvmd's `runtime.md` §Network.
+Claims about garamsh/gaon hold at commit `cd05f7ed59b62c43279e13d0cb3b3821c93abcc2`, and about garamsh/mvmd at `b68db37c093b764d40a3930618f47041178253f7`; they promise nothing about later versions. They were read at those commits when they replaced `d643b1cb6a6cc01ea587dd7c967bdfd07280fe0b` and `3b37892f303a4d4dbd8e5360906d0f9c036b562e`: gaon's `resource-api.md` §Common rules and mvmd's `runtime.md` §Network and `daemon/internal/app/config.go`.
 
 ## Current decisions
 
@@ -22,6 +22,8 @@ Claims about garamsh/gaon hold at commit `cd05f7ed59b62c43279e13d0cb3b3821c93abc
 - **Init validates before it acts.** An unknown `apiVersion` or `kind`, a field the shape does not name, a value that fails validation, or a file that does not parse, stops init before any service starts; the error names the field. The same holds for a `network-config` that is malformed or asks for what init does not apply, and for a drive that is missing, has no `user-data` or has no `network-config`. What init does next is in [init.md](./init.md).
 - **Restart backoff is fixed in P0.** A service that exits is restarted after 1 s, doubling to a cap of 30 s, reset after a run of 60 s. The file has no field for it.
 - **Forwarding.** Init turns on `net.ipv4.ip_forward` and `net.ipv6.conf.all.forwarding` for the families `network` names, before it starts mvmd, since mvmd never sets it and refuses to start when a served family has it off (garamsh/mvmd#311).
+- **mvmd's `network` section is required.** mvmd refuses, at load, a Firecracker or Cloud Hypervisor configuration without it (mvmd `docs/architecture/runtime.md` §Network, "A real Driver needs the `network` section"; `daemon/internal/app/config.go`, `Config.check`). The Node configuration tooling writes `network.ipv4_prefix`, `ipv4_gateway` and `resolvers` (`node.Config.MvmdJSON`), and `spec.network.forwarding` turns forwarding on, so both of mvmd's conditions hold.
+- **mvmd's `supervision.dir` is left empty.** mvmd refuses one that is the state directory, an ancestor of it, or inside it other than at `machines`; empty means `machines` under `state_dir` (`daemon/internal/app/config.go`, `sharesStateDir`), which `node.Config.MvmdJSON` relies on.
 - **naru knows no service's internals.** Name, binary and arguments come from this file.
 - **gaon's certificates are `files`.** The shape did not change for gaon: a Node's CA, its agent's pair and, on the control-plane Node, the API server's, the scheduler's and the controllers' pairs are entries of `spec.files` under `/run/gaon/`, which the gaon services name with their `--tls-*` flags, as gaon's `deployment.md` §Certificates and §Config shape ask. The files' content is the tooling's input; init writes it and knows nothing of it ([ADR 0012](./adr/0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md)).
 

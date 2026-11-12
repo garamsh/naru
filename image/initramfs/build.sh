@@ -63,17 +63,17 @@ src=$build/mvmd
 (cd "$src" && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$bin/mvmd" ./daemon/cmd/mvmd)
 (cd "$src" && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$bin/mvmd-supervisor" ./daemon/cmd/mvmd-supervisor)
 
-# Firecracker, from mvmd's own checked fetch. The same script also fetches the guest kernel mvmd's
-# tests boot, which naru does not use (ADR 0010); only the Firecracker lines of its inputs.env are
-# kept, since the tests read the Firecracker SHA-256 from it.
-"$src/tooling/firecracker/fetch.sh" "$build/inputs" >/dev/null
+# Firecracker, from mvmd's own checked fetch. --firecracker-only fetches and verifies the
+# Firecracker binary alone: no guest kernel (which naru does not use, ADR 0010) is requested, and
+# inputs.env names only MVMD_FIRECRACKER and MVMD_FIRECRACKER_SHA256, which the tests read.
+"$src/tooling/firecracker/fetch.sh" --firecracker-only "$build/inputs" >/dev/null
 cp "$build/inputs/firecracker" "$bin/firecracker"
 cp "$e2fsprogs/mke2fs" "$bin/mkfs.ext4"
 for f in gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers; do
   cp "$gaon/$f" "$bin/$f"
 done
 cp "$etcd/etcd" "$bin/etcd"
-grep '^MVMD_FIRECRACKER' "$build/inputs/inputs.env" | sed "s#=$build/inputs/#=$out/#" >"$out/inputs.env"
+sed "s#=$build/inputs/#=$out/#" "$build/inputs/inputs.env" >"$out/inputs.env"
 
 for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 naru-standin gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd; do
   if ! file "$bin/$f" | grep -Eq 'statically linked|static-pie linked'; then

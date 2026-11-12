@@ -123,13 +123,17 @@ func TestMvmdJSON_NamesTheImagesGuestFilesByTheirPathsAndDigestsInGuestJSON(t *t
 	m := mvmd(t, cfg(1, 2, true, false))
 
 	fc := m["firecracker"].(map[string]any)
-	assert.Equal(t, "/usr/lib/naru/guest/kernels/naru/vmlinux", fc["kernel"])
-	assert.Equal(t, sum("k"), fc["kernel_sha256"])
+	assert.Equal(t, map[string]any{"naru": map[string]any{
+		"path": "/usr/lib/naru/guest/kernels/naru/vmlinux", "sha256": sum("k"),
+	}}, fc["kernels"])
+	assert.Equal(t, "naru", fc["default_kernel"])
+	assert.NotContains(t, fc, "kernel", "mvmd refuses the single-kernel fields")
+	assert.NotContains(t, fc, "kernel_sha256")
 	assert.Equal(t, "/usr/lib/naru/guest/guest-initrd.cpio", fc["initrd"])
 	assert.Equal(t, sum("g"), fc["initrd_sha256"])
 	conv := m["conversion"].(map[string]any)
-	assert.Equal(t, fc["kernel"], conv["kernel"])
-	assert.Equal(t, fc["kernel_sha256"], conv["kernel_sha256"])
+	assert.Equal(t, "/usr/lib/naru/guest/kernels/naru/vmlinux", conv["kernel"])
+	assert.Equal(t, sum("k"), conv["kernel_sha256"])
 	assert.Equal(t, "/usr/lib/naru/guest/converter-initrd.cpio", conv["initrd"])
 	assert.Equal(t, sum("c"), conv["initrd_sha256"])
 }
@@ -145,7 +149,7 @@ func TestMvmdJSON_NamesTheMkfsExt4TheInitramfsInstallsAndNotOneOnTheDataDisk(t *
 	assert.Regexp(t, `(?m)^file `+regexp.QuoteMeta(mkfs)+` @OUT@/mkfs\.ext4 0755 `, string(list))
 }
 
-func TestMvmdJSON_TakesTheKernelFromTheDefaultOfTheDeclaredKernels(t *testing.T) {
+func TestMvmdJSON_WritesEveryDeclaredKernelAndTheDefaultToTheDriverAndTheDefaultToTheConverter(t *testing.T) {
 	c := cfg(1, 2, true, false)
 	c.Inputs.Guest = guest.Manifest{
 		Kernels: map[string]guest.File{
@@ -155,10 +159,17 @@ func TestMvmdJSON_TakesTheKernelFromTheDefaultOfTheDeclaredKernels(t *testing.T)
 		DefaultKernel: "other", GuestInitrd: guestFiles.GuestInitrd, ConverterInitrd: guestFiles.ConverterInitrd,
 	}
 
-	fc := mvmd(t, c)["firecracker"].(map[string]any)
+	m := mvmd(t, c)
+	fc := m["firecracker"].(map[string]any)
 
-	assert.Equal(t, "/b", fc["kernel"])
-	assert.Equal(t, sum("b"), fc["kernel_sha256"])
+	assert.Equal(t, map[string]any{
+		"naru":  map[string]any{"path": "/a", "sha256": sum("a")},
+		"other": map[string]any{"path": "/b", "sha256": sum("b")},
+	}, fc["kernels"])
+	assert.Equal(t, "other", fc["default_kernel"])
+	conv := m["conversion"].(map[string]any)
+	assert.Equal(t, "/b", conv["kernel"])
+	assert.Equal(t, sum("b"), conv["kernel_sha256"])
 }
 
 func TestMvmdJSON_GivesEachNodeItsOwnMachineNetwork(t *testing.T) {
