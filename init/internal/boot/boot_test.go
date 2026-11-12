@@ -16,6 +16,7 @@ import (
 	"github.com/garamsh/naru/init/internal/config"
 	"github.com/garamsh/naru/init/internal/netcfg"
 	"github.com/garamsh/naru/init/internal/pkitest"
+	"github.com/garamsh/naru/init/internal/store"
 )
 
 const validNetwork = `version: 1
@@ -65,6 +66,12 @@ type recorder struct {
 	issueErr   error
 	startErr   error
 
+	stored  *store.Stored
+	loadErr error
+	saved   []store.Stored
+	mounted config.DataDisk
+	started []string
+
 	calls     []string
 	forwarded []config.Family
 	applied   netcfg.Config
@@ -90,8 +97,9 @@ func (r *recorder) WriteFiles(f []config.File) error {
 	return r.filesErr
 }
 
-func (r *recorder) MountDataDisk(config.DataDisk) error {
+func (r *recorder) MountDataDisk(d config.DataDisk) error {
 	r.calls = append(r.calls, "mount")
+	r.mounted = d
 	return r.diskErr
 }
 
@@ -120,14 +128,34 @@ func (r *recorder) Prepare() error {
 
 func (r *recorder) Start(s config.Service) error {
 	r.calls = append(r.calls, "start "+s.Name)
+	r.started = append(r.started, s.Name)
 	return r.startErr
 }
 
+func (r *recorder) Load() (store.Stored, error) {
+	r.calls = append(r.calls, "load")
+	if r.stored == nil {
+		return store.Stored{}, store.ErrNotFound
+	}
+	return *r.stored, r.loadErr
+}
+
+func (r *recorder) Save(st store.Stored) error {
+	r.calls = append(r.calls, "save")
+	r.saved = append(r.saved, st)
+	return nil
+}
+
 func run(r *recorder) error {
+	_, err := runStored(r)
+	return err
+}
+
+func runStored(r *recorder) (store.Stored, error) {
 	if r.network == "" {
 		r.network = validNetwork
 	}
-	return boot.Run(r, r, r, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return boot.Run(r, r, r, r, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestRun_StartsServicesAfterTheMachineIsReady(t *testing.T) {
@@ -135,7 +163,7 @@ func TestRun_StartsServicesAfterTheMachineIsReady(t *testing.T) {
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "network", "mount", "forward", "files", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "forward", "files", "prepare", "seal", "start mvmd"}, r.calls)
 	assert.Equal(t, []config.Family{config.IPv4}, r.forwarded)
 	require.Len(t, r.applied.Interfaces, 1)
 	assert.Equal(t, "eth0", r.applied.Interfaces[0].Name)
@@ -148,7 +176,7 @@ func TestRun_StartsAControlPlaneServiceOnlyOnAControlPlaneNode(t *testing.T) {
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "network", "mount", "forward", "files", "prepare", "seal", "start mvmd", "start gaon"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "forward", "files", "prepare", "seal", "start mvmd", "start gaon"}, r.calls)
 }
 
 // withPKI adds a spec.pki that asks for one certificate to validConfig.
@@ -178,7 +206,7 @@ func TestRun_IssuesCertificatesAfterTheNetworkAndBeforeAnyServiceStarts(t *testi
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "network", "mount", "forward", "files", "issue", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "forward", "files", "issue", "prepare", "seal", "start mvmd"}, r.calls)
 	require.Len(t, r.issuedPKI.Certificates, 1)
 	assert.Equal(t, "server", r.issuedPKI.Certificates[0].Name)
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.78.0.1")}, r.issuedTo, "the Node's addresses come from the network-config")
@@ -191,7 +219,7 @@ func TestRun_StartsNothingWhenACertificateCannotBeIssued(t *testing.T) {
 	err := run(r)
 
 	assert.ErrorIs(t, err, r.issueErr)
-	assert.Equal(t, []string{"read", "network", "mount", "forward", "files", "issue"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "forward", "files", "issue"}, r.calls)
 }
 
 func TestRun_RefusesAnInvalidConfigurationAndStartsNothing(t *testing.T) {
@@ -225,10 +253,10 @@ func TestRun_StartsNothingWhenAStepBeforeTheServicesFails(t *testing.T) {
 		"configuration cannot be read": {&recorder{raw: validConfig, readErr: boom}, []string{"read"}},
 		"network cannot be applied":    {&recorder{raw: validConfig, networkErr: boom}, []string{"read", "network"}},
 		"data disk is refused":         {&recorder{raw: validConfig, diskErr: boom}, []string{"read", "network", "mount"}},
-		"forwarding cannot be set":     {&recorder{raw: validConfig, forwardErr: boom}, []string{"read", "network", "mount", "forward"}},
-		"files cannot be written":      {&recorder{raw: validConfig, filesErr: boom}, []string{"read", "network", "mount", "forward", "files"}},
-		"cgroups cannot be prepared":   {&recorder{raw: validConfig, prepareErr: boom}, []string{"read", "network", "mount", "forward", "files", "prepare"}},
-		"root cannot be sealed":        {&recorder{raw: validConfig, sealErr: boom}, []string{"read", "network", "mount", "forward", "files", "prepare", "seal"}},
+		"forwarding cannot be set":     {&recorder{raw: validConfig, forwardErr: boom}, []string{"read", "network", "mount", "load", "forward"}},
+		"files cannot be written":      {&recorder{raw: validConfig, filesErr: boom}, []string{"read", "network", "mount", "load", "forward", "files"}},
+		"cgroups cannot be prepared":   {&recorder{raw: validConfig, prepareErr: boom}, []string{"read", "network", "mount", "load", "forward", "files", "prepare"}},
+		"root cannot be sealed":        {&recorder{raw: validConfig, sealErr: boom}, []string{"read", "network", "mount", "load", "forward", "files", "prepare", "seal"}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
