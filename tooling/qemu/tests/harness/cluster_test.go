@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,8 +28,8 @@ import (
 
 	"github.com/garamsh/naru/tooling/qemu/internal/clusterfile"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
-	"github.com/garamsh/naru/tooling/qemu/internal/pki"
 )
 
 const upTimeout = 6 * time.Minute
@@ -168,13 +169,7 @@ func qemuUnder(dir string) []int {
 // file names, and the gaon CLI's argument list for the same server.
 func client(t *testing.T, f clusterfile.File) (*hostapi.Client, []string) {
 	t.Helper()
-	ca, err := os.ReadFile(f.PKI.CA)
-	require.NoError(t, err)
-	cert, err := os.ReadFile(f.PKI.ClientCert)
-	require.NoError(t, err)
-	key, err := os.ReadFile(f.PKI.ClientKey)
-	require.NoError(t, err)
-	api, err := hostapi.New(f.APIServer.Address, &pki.Cluster{CA: ca, Client: pki.Pair{CertPEM: cert, KeyPEM: key}})
+	api, err := hostapi.New(f.APIServer.Address, naructl.Client{CA: f.PKI.CA, Cert: f.PKI.ClientCert, Key: f.PKI.ClientKey})
 	require.NoError(t, err)
 	return api, []string{"--server", "https://" + f.APIServer.Address + hostapi.Root, "--tls-ca", f.PKI.CA, "--tls-cert", f.PKI.ClientCert, "--tls-key", f.PKI.ClientKey}
 }
@@ -210,6 +205,20 @@ func markedBinaries(t *testing.T) (string, map[string]string) {
 	return dir, sums
 }
 
+// assertDirHoldsNoCAKey shows what naru-cluster leaves in -dir: no ca/ directory and no ca.key, since
+// a harness may archive -dir, and the pair of cluster.json's CA certificate is where cluster.json says.
+func assertDirHoldsNoCAKey(t *testing.T, dir string, f clusterfile.File) {
+	t.Helper()
+	assert.NoDirExists(t, filepath.Join(dir, "ca"), "the CA's directory is removed once the user-data is written")
+	require.NoError(t, filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			assert.NotEqual(t, "ca.key", d.Name(), p)
+		}
+		return nil
+	}))
+	assert.FileExists(t, f.PKI.CA, "cluster.json's CA certificate")
+}
+
 var imageRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 
 // TestCluster_AHarnessReachesTheClusterThroughClusterJSONAndSurvivesOneNodeBeingKilled boots two
@@ -221,6 +230,7 @@ func TestCluster_AHarnessReachesTheClusterThroughClusterJSONAndSurvivesOneNodeBe
 	r := start(t, "-n", "2", "-gaon-bin", bin)
 	f := r.file
 
+	assertDirHoldsNoCAKey(t, r.dir, f)
 	assert.Equal(t, clusterfile.Version, f.Version)
 	require.Len(t, f.Nodes, 2)
 	assert.Equal(t, []bool{true, false}, []bool{f.Nodes[0].ControlPlane, f.Nodes[1].ControlPlane}, "node-1 is the control plane")
@@ -293,6 +303,7 @@ func TestCluster_DisablingAServiceLeavesItOutOfEveryNodeAndTheOperatorFilesPathS
 	r := start(t, "-n", "2", "-gaon-bin", gaonDir, "-boot-pki=false", "-disable", "gaon-controllers")
 	f := r.file
 
+	assertDirHoldsNoCAKey(t, r.dir, f)
 	require.NotEmpty(t, f.Images)
 	assert.Regexp(t, imageRef, f.Images[0].Reference, "images are listed whatever is disabled")
 	for _, n := range f.Nodes {

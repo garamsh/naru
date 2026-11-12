@@ -3,8 +3,6 @@ package hostapi_test
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,29 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
-	"github.com/garamsh/naru/tooling/qemu/internal/pki"
 )
 
 // serve starts a server that, like gaon's API server, requires a client certificate the cluster's
 // CA signed, and serves the paths of handler under the API root.
-func serve(t *testing.T, certs *pki.Cluster, handler http.Handler) string {
+func serve(t *testing.T, c testCluster, handler http.Handler) string {
 	t.Helper()
-	pair, err := tls.X509KeyPair(certs.APIServer.CertPEM, certs.APIServer.KeyPEM)
-	require.NoError(t, err)
-	roots := x509.NewCertPool()
-	require.True(t, roots.AppendCertsFromPEM(certs.CA))
 	srv := httptest.NewUnstartedServer(handler)
-	srv.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{pair}, ClientCAs: roots, ClientAuth: tls.RequireAndVerifyClientCert}
+	srv.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{c.server}, ClientCAs: c.roots, ClientAuth: tls.RequireAndVerifyClientCert}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	return srv.Listener.Addr().String()
-}
-
-func cluster(t *testing.T) *pki.Cluster {
-	t.Helper()
-	c, err := pki.NewCluster([]string{"node-1"}, net.ParseIP("127.0.0.1"))
-	require.NoError(t, err)
-	return c
 }
 
 func TestClient_ReadsNodesAndLeasesOverMutualTLS(t *testing.T) {
@@ -48,7 +34,7 @@ func TestClient_ReadsNodesAndLeasesOverMutualTLS(t *testing.T) {
 	mux.HandleFunc(hostapi.Root+"/leases/node-1", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"spec":{"holder":"node-1","renewTime":"2026-11-12T01:02:03Z","durationSeconds":30}}`))
 	})
-	c, err := hostapi.New(serve(t, certs, mux), certs)
+	c, err := hostapi.New(serve(t, certs, mux), certs.client)
 	require.NoError(t, err)
 
 	n, err := c.Node(context.Background(), "node-1")
@@ -73,7 +59,7 @@ func TestNode_ReadyIsTheReadyConditionBeingTrue(t *testing.T) {
 
 func TestClient_AnswersAMissingResourceWithErrNotFound(t *testing.T) {
 	certs := cluster(t)
-	c, err := hostapi.New(serve(t, certs, http.NotFoundHandler()), certs)
+	c, err := hostapi.New(serve(t, certs, http.NotFoundHandler()), certs.client)
 	require.NoError(t, err)
 
 	_, err = c.Node(context.Background(), "absent")
@@ -89,7 +75,7 @@ func TestClient_CreateNodePutsAnAdmittedNode(t *testing.T) {
 		n, _ := r.Body.Read(buf)
 		body = string(buf[:n])
 	})
-	c, err := hostapi.New(serve(t, certs, h), certs)
+	c, err := hostapi.New(serve(t, certs, h), certs.client)
 	require.NoError(t, err)
 
 	require.NoError(t, c.CreateNode(context.Background(), "marker"))
@@ -100,7 +86,7 @@ func TestClient_CreateNodePutsAnAdmittedNode(t *testing.T) {
 
 func TestClient_ASecondCAIsNotTrusted(t *testing.T) {
 	served, other := cluster(t), cluster(t)
-	c, err := hostapi.New(serve(t, served, http.NotFoundHandler()), other)
+	c, err := hostapi.New(serve(t, served, http.NotFoundHandler()), other.client)
 	require.NoError(t, err)
 
 	_, err = c.Node(context.Background(), "node-1")

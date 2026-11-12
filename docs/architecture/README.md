@@ -24,7 +24,7 @@ Current architecture of the system and the decisions behind it. This file is the
   - [structure.md](./structure.md): the shape naru is partitioned into, what may reference what, and when a new unit is earned.
   - [boundaries.md](./boundaries.md): what naru owns, what it leaves to gaon and to mvmd, and the obligations mvmd's deployment puts on it.
   - [image.md](./image.md): what the P0 image holds (the guest kernel and initrds among it), where its inputs come from, and how a Node boots it, how a serial log is judged, what a release holds, and the workflow that publishes it.
-  - [config.md](./config.md): how a Node's configuration and network reach init in P0, and the shape of the files.
+  - [config.md](./config.md): how a Node's configuration and network reach init in P0, the shape of the files, and `naructl`, the operator's tool that writes them (CA, Node user-data, client pairs).
   - [init.md](./init.md): what init does as PID 1: boot order, the data-disk check, a cgroup per service, restart backoff, reaping, the kept and re-printed console log, and what it requires of mvmd's placement.
   - [harness.md](./harness.md): the public contract of `naru-cluster`: its flags, the `cluster.json` it writes with its `version`, and what an external harness may rely on.
 - ADRs
@@ -42,3 +42,4 @@ Current architecture of the system and the decisions behind it. This file is the
   - [0012](./adr/0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md): gaon's four services and etcd run on the Nodes from pinned builds, etcd's data is on the data disk, certificates are issued by test tooling and carried as files, and the test host reaches the API server through a user-mode NIC's host forward.
   - [0013](./adr/0013-init-issues-certificates-at-boot-from-a-ca-carried-in-spec-pki-and-renews-them.md): init issues the certificates of `spec.pki` at boot from a CA the configuration carries, with a key made on the Node each time, and renews them at two thirds of their validity, restarting the services they name; supersedes 0012's item 5.
   - [0014](./adr/0014-naru-cluster-is-a-public-command-that-boots-nodes-from-a-releases-assets-and-publishes-cluster-json.md): `naru-cluster` is a public command of `tooling/qemu` that boots Nodes from a release's assets and the gaon binaries a harness supplies, and publishes `cluster.json`; the release gains `naru-inputs-<version>.json`.
+  - [0015](./adr/0015-naructl-is-the-single-owner-of-the-gaon-node-layout-and-tooling-qemu-runs-it-as-a-binary.md): `naructl` is a unit that generates the CA, the Nodes' user-data and the client pairs and is the single owner of the gaon Node layout; `tooling/qemu` runs it as a binary and the release ships it.

@@ -25,11 +25,15 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/clusterfile"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
 // gaonServices are the binaries -gaon-bin may supply, named as the services are.
 var gaonServices = []string{"gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
+
+// disableNames are the services -disable may name; naructl refuses any other.
+var disableNames = []string{"registry", "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
 
 // exitSignalled is the status of a run that was signalled before cluster.json was written.
 const exitSignalled = 3
@@ -56,7 +60,7 @@ func run() error {
 	dir := flag.String("dir", "", "directory for the Nodes' disks and logs, and cluster.json")
 	gaonBin := flag.String("gaon-bin", "", "directory of gaon binaries (gaon-apiserver, gaon-scheduler, gaon-controllers, gaon-node-agent) the services run in place of the image's")
 	extra := flag.String("inputs", "", "directory copied to /var/lib/naru/inputs/extra/ on every Node")
-	disable := flag.String("disable", "", "comma-separated services left out of every Node's configuration: "+strings.Join(node.ServiceNames, ", "))
+	disable := flag.String("disable", "", "comma-separated services left out of every Node's configuration: "+strings.Join(disableNames, ", "))
 	bootPKI := flag.Bool("boot-pki", true, "node-1 issues its certificates at boot from spec.pki (false: every Node carries its pairs as files)")
 	timeout := flag.Duration("timeout", 5*time.Minute, "how long the Nodes have to come up")
 	flag.Parse()
@@ -71,8 +75,8 @@ func run() error {
 		disabled = strings.Split(*disable, ",")
 	}
 	for _, d := range disabled {
-		if !slices.Contains(node.ServiceNames, d) {
-			return fmt.Errorf("-disable: %q is not a service; the names are %s", d, strings.Join(node.ServiceNames, ", "))
+		if !slices.Contains(disableNames, d) {
+			return fmt.Errorf("-disable: %q is not a service; the names are %s", d, strings.Join(disableNames, ", "))
 		}
 	}
 	root, err := filepath.Abs(*dir)
@@ -109,7 +113,7 @@ func run() error {
 	}
 
 	c, err := node.StartCluster(node.ClusterSpec{
-		N: *n, Disk: rel.BootDisk, Dir: root, Inputs: rel.Inputs, Gaon: true, BootPKI: *bootPKI,
+		N: *n, Disk: rel.BootDisk, Dir: root, Inputs: rel.Inputs, Gaon: true, BootPKI: *bootPKI, Naructl: naructl.Tool{Bin: rel.Naructl},
 		Disable: disabled, GaonBinaries: overrides,
 	})
 	if err != nil {
@@ -287,7 +291,7 @@ func waitUp(ctx context.Context, c *node.Cluster, disabled []string, deadline ti
 	if !on("gaon-apiserver") || !on("gaon-node-agent") {
 		return nil
 	}
-	api, err := hostapi.New(c.HostAddr, c.Certs)
+	api, err := hostapi.New(c.HostAddr, c.Client)
 	if err != nil {
 		return err
 	}
@@ -325,8 +329,12 @@ func writeClusterFile(dir string, c *node.Cluster, img fixture.Image) error {
 		},
 		Images: []clusterfile.Image{{Reference: img.Repository + "@" + img.Digest}},
 	}
-	for path, content := range map[string][]byte{f.PKI.CA: c.Certs.CA, f.PKI.ClientCert: c.Certs.Client.CertPEM, f.PKI.ClientKey: c.Certs.Client.KeyPEM} {
-		if err := os.WriteFile(path, content, 0o600); err != nil {
+	for to, from := range map[string]string{f.PKI.CA: c.Client.CA, f.PKI.ClientCert: c.Client.Cert, f.PKI.ClientKey: c.Client.Key} {
+		content, err := os.ReadFile(from)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(to, content, 0o600); err != nil {
 			return err
 		}
 	}

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/netip"
 	"path"
-	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -43,29 +42,9 @@ type Config struct {
 	Inputs fixture.Inputs
 	// Network is the Node's addresses; the zero value is QEMUNetwork(Index, Total).
 	Network Network
-	// Gaon, when set, makes the Node run gaon instead of the test services (see NaruYAML).
-	Gaon *Gaon
-	// Disabled names services left out of the Node's configuration (see ServiceNames).
-	Disabled []string
-}
-
-// ServiceNames are the services a Node's configuration can leave out: everything it names but mvmd,
-// which a Node cannot do without. The stand-ins and the probe are the tests' own and not among them.
-var ServiceNames = []string{"registry", "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
-
-// withoutDisabled drops the Disabled services from the Node's list, and from the restart lists of
-// spec.pki, which init refuses to resolve for a service the Node does not run.
-func (c Config) withoutDisabled(n *nodeConfig) {
-	if len(c.Disabled) == 0 {
-		return
-	}
-	n.Spec.Services = slices.DeleteFunc(n.Spec.Services, func(s service) bool { return slices.Contains(c.Disabled, s.Name) })
-	if n.Spec.PKI != nil {
-		for i := range n.Spec.PKI.Certificates {
-			r := &n.Spec.PKI.Certificates[i].Restart
-			*r = slices.DeleteFunc(*r, func(s string) bool { return slices.Contains(c.Disabled, s) })
-		}
-	}
+	// HostPort, when not 0, gives the Node a second NIC on QEMU's user-mode network, which forwards
+	// the host's loopback port HostPort to the API server (see hostnic.go).
+	HostPort int
 }
 
 // Network is what a Node's network-config and its configuration say of addresses. The QEMU tests
@@ -143,28 +122,11 @@ config:
           address: '%s'
           netmask: '%s'
           gateway: '%s'
-%s    - type: nameserver
+    - type: nameserver
       address:
 %s      search:
       - '%s'
-`, n.MAC, n.IP, n.Netmask, n.Gateway, c.hostNICConfig(), ns.String(), n.Search))
-}
-
-// hostNICConfig is the network-config entry of the second NIC, or nothing for a Node with none: a
-// static address on the user-mode network and no gateway, so that the default route stays on the
-// shared network.
-func (c Config) hostNICConfig() string {
-	if !c.hostNIC() {
-		return ""
-	}
-	return fmt.Sprintf(`    - type: physical
-      name: eth1
-      mac_address: '%s'
-      subnets:
-        - type: static
-          address: '%s'
-          netmask: '%s'
-`, c.hostMAC(), HostNICAddress, hostNICNetmask)
+`, n.MAC, n.IP, n.Netmask, n.Gateway, ns.String(), n.Search))
 }
 
 type service struct {
@@ -192,7 +154,6 @@ type nodeConfig struct {
 		} `yaml:"network"`
 		Services []service `yaml:"services"`
 		Files    []file    `yaml:"files"`
-		PKI      *pkiSpec  `yaml:"pki,omitempty"`
 	} `yaml:"spec"`
 }
 
@@ -202,38 +163,12 @@ type file struct {
 	Content string `yaml:"content"`
 }
 
-// pkiSpec, pkiAuthority and pkiCertificate are spec.pki as docs/architecture/config.md names it.
-type pkiSpec struct {
-	Authorities  []pkiAuthority   `yaml:"authorities"`
-	Certificates []pkiCertificate `yaml:"certificates"`
-}
-
-type pkiAuthority struct {
-	Name            string `yaml:"name"`
-	Certificate     string `yaml:"certificate"`
-	Key             string `yaml:"key,omitempty"`
-	CertificatePath string `yaml:"certificatePath"`
-}
-
-type pkiCertificate struct {
-	Name            string   `yaml:"name"`
-	Authority       string   `yaml:"authority"`
-	CertificatePath string   `yaml:"certificatePath"`
-	KeyPath         string   `yaml:"keyPath"`
-	CommonName      string   `yaml:"commonName"`
-	Usage           string   `yaml:"usage"`
-	NodeAddresses   bool     `yaml:"nodeAddresses,omitempty"`
-	Restart         []string `yaml:"restart,omitempty"`
-}
-
-// NaruYAML is the Node's naru.yaml, which is its NoCloud user-data. It carries mvmd's
+// NaruYAML is the Node's naru.yaml, which is its NoCloud user-data, for the Nodes that run the
+// tests' own services; a Node that runs gaon has the user-data naructl writes. It carries mvmd's
 // configuration as a file for init to write under /run. Its services, in this order: mvmd; the
 // registry that serves the test image; a stand-in that waits for mvmd's
 // socket and for the next Node's stand-in; a control-plane stand-in, which
-// starts only where spec.controlPlane is true; and, where asked, the probe. A Node with Gaon set
-// runs mvmd, the registry (the scheduler may bind a Machine to any Node, and mvmd pulls from the
-// registry on its own Node) and then gaon's services (gaon.go) in place of the rest, and its files
-// carry the certificates.
+// starts only where spec.controlPlane is true; and, where asked, the probe.
 func (c Config) NaruYAML() ([]byte, error) {
 	mvmdJSON, err := c.MvmdJSON()
 	if err != nil {
@@ -254,15 +189,6 @@ func (c Config) NaruYAML() ([]byte, error) {
 		Env: map[string]string{"SSL_CERT_FILE": path.Join(root, "registry/ca.pem")},
 	}
 	registry := service{Name: "registry", Binary: path.Join(root, "bin/naru-registry"), Args: []string{"-listen", fixture.RegistryAddr, "-dir", path.Join(root, "registry")}}
-	if c.Gaon != nil {
-		n.Spec.Files = append(n.Spec.Files, c.Gaon.files(c)...)
-		if c.Gaon.issues(c) {
-			n.Spec.PKI = c.Gaon.pki(c)
-		}
-		n.Spec.Services = append([]service{mvmd, registry}, c.Gaon.services(c)...)
-		c.withoutDisabled(&n)
-		return yaml.Marshal(n)
-	}
 	n.Spec.Services = []service{
 		mvmd,
 		registry,
@@ -281,7 +207,6 @@ func (c Config) NaruYAML() ([]byte, error) {
 			},
 		})
 	}
-	c.withoutDisabled(&n)
 	return yaml.Marshal(n)
 }
 

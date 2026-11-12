@@ -1,6 +1,6 @@
 // Command naru-release writes the release assets into a directory: the boot disk, the shared data
 // disk, the guest manifest, a test-only user-data per Node that runs gaon, naru-inputs-<version>.json
-// (the Firecracker digest and the test image's reference), and SHA256SUMS. `make release` runs it.
+// (the Firecracker digest and the test image's reference), the naructl binary, and SHA256SUMS. `make release` runs it.
 package main
 
 import (
@@ -27,9 +27,10 @@ func run() error {
 	flag.StringVar(&o.GuestDir, "guest", "", "the guest directory of make image (guest.json)")
 	flag.StringVar(&o.Out, "out", "", "directory that receives the assets")
 	flag.StringVar(&o.Version, "version", "", "version in the asset names")
+	flag.StringVar(&o.Naructl, "naructl", "", "the naructl binary (static, linux/amd64): an asset, and it writes the user-data")
 	flag.Parse()
-	if o.ImageDir == "" || o.DiskDir == "" || o.GuestDir == "" || o.Out == "" || o.Version == "" {
-		return fmt.Errorf("-image, -disk, -guest, -out and -version are required")
+	if o.ImageDir == "" || o.DiskDir == "" || o.GuestDir == "" || o.Out == "" || o.Version == "" || o.Naructl == "" {
+		return fmt.Errorf("-image, -disk, -guest, -out, -version and -naructl are required")
 	}
 	assets, err := release.Build(o)
 	if err != nil {

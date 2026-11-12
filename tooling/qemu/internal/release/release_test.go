@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,8 +20,7 @@ import (
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/guest"
-	"github.com/garamsh/naru/tooling/qemu/internal/node"
-	"github.com/garamsh/naru/tooling/qemu/internal/pki"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/release"
 )
 
@@ -54,6 +54,52 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
+var (
+	naructlOnce sync.Once
+	naructlBin  string
+	naructlErr  error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if naructlBin != "" {
+		_ = os.RemoveAll(filepath.Dir(naructlBin))
+	}
+	os.Exit(code)
+}
+
+// tool builds naructl from the checkout once, static, as a release does, and returns it.
+func tool(t *testing.T) naructl.Tool {
+	t.Helper()
+	naructlOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "naru36-naructl-")
+		if err != nil {
+			naructlErr = err
+			return
+		}
+		naructlBin = filepath.Join(dir, "naructl")
+		naructlErr = naructl.Build(repoRoot(t), naructlBin)
+	})
+	require.NoError(t, naructlErr)
+	return naructl.Tool{Bin: naructlBin}
+}
+
+// guestFile writes the guest manifest of inputs where naructl reads it.
+func guestFile(t *testing.T) string {
+	t.Helper()
+	b, err := json.Marshal(inputs.Guest)
+	require.NoError(t, err)
+	p := filepath.Join(t.TempDir(), "guest.json")
+	require.NoError(t, os.WriteFile(p, b, 0o600))
+	return p
+}
+
+// userDataFiles is release.UserData with naructl and the test inputs.
+func userDataFiles(t *testing.T) (map[string][]byte, error) {
+	t.Helper()
+	return release.UserData(tool(t), guestFile(t), inputs.FirecrackerSHA256)
+}
+
 // buildInit builds naru-init from the init module alone, as a release would, and returns its path.
 func buildInit(t *testing.T) string {
 	t.Helper()
@@ -68,7 +114,7 @@ func buildInit(t *testing.T) string {
 
 func TestUserData_EachFileIsOneNaruInitParses(t *testing.T) {
 	initBin := buildInit(t)
-	files, err := release.UserData(inputs)
+	files, err := userDataFiles(t)
 	require.NoError(t, err)
 	require.Len(t, files, 2)
 
@@ -85,7 +131,7 @@ func TestUserData_EachFileIsOneNaruInitParses(t *testing.T) {
 
 func TestUserData_ABrokenFileIsRefusedByNaruInit(t *testing.T) {
 	initBin := buildInit(t)
-	files, err := release.UserData(inputs)
+	files, err := userDataFiles(t)
 	require.NoError(t, err)
 	p := filepath.Join(t.TempDir(), "naru-node-1.test.yaml")
 	require.NoError(t, os.WriteFile(p, []byte(strings.Replace(string(files["naru-node-1.test.yaml"]), "kind: NodeConfig", "kind: Other", 1)), 0o600))
@@ -123,7 +169,7 @@ func (u userData) file(path string) string {
 }
 
 func TestUserData_CarriesTheDeploymentsAddressesAndRoles(t *testing.T) {
-	files, err := release.UserData(inputs)
+	files, err := userDataFiles(t)
 	require.NoError(t, err)
 
 	for _, tc := range []struct {
@@ -154,25 +200,14 @@ func TestUserData_CarriesTheDeploymentsAddressesAndRoles(t *testing.T) {
 	}
 }
 
-func TestUserData_HasTheServicesOfTheGaonNodesTheQEMUTestsBoot(t *testing.T) {
-	files, err := release.UserData(inputs)
-	require.NoError(t, err)
-	certs, err := pki.NewCluster([]string{"node-1", "node-2"}, net.ParseIP("10.78.0.1"))
+func TestUserData_HasTheServicesOfTheGaonNodesAndNoStandIn(t *testing.T) {
+	files, err := userDataFiles(t)
 	require.NoError(t, err)
 
 	for i := 1; i <= 2; i++ {
-		qemu, err := node.Config{
-			Name: release.Config(i, inputs).Name, Index: i, Total: 2, ControlPlane: i == 1, Inputs: inputs,
-			Gaon: &node.Gaon{Certs: certs, APIServerIP: "10.78.0.1"},
-		}.NaruYAML()
-		require.NoError(t, err)
-
 		got, err := release.ServiceBinaries(files[release.UserDataName(i)])
 		require.NoError(t, err)
-		want, err := release.ServiceBinaries(qemu)
-		require.NoError(t, err)
 
-		assert.Equal(t, want, got, "node-%d: the same generator, so the same services and binaries", i)
 		assert.NotContains(t, got, "standin", "a deployed Node runs no stand-in")
 		assert.NotContains(t, got, "control")
 		assert.NotContains(t, got, "probe")
@@ -182,7 +217,7 @@ func TestUserData_HasTheServicesOfTheGaonNodesTheQEMUTestsBoot(t *testing.T) {
 }
 
 func TestUserData_PublishesTheServingAndClientKeysAndNeverTheAuthoritysOrAnOperators(t *testing.T) {
-	files, err := release.UserData(inputs)
+	files, err := userDataFiles(t)
 	require.NoError(t, err)
 	first, second := parseUserData(t, files["naru-node-1.test.yaml"]), parseUserData(t, files["naru-node-2.test.yaml"])
 
@@ -239,7 +274,7 @@ func pemBlocks(text []byte) []*pem.Block {
 }
 
 func TestUserData_TheServingCertificateNamesNodeOnesAddressAndTheAgentsAreSignedByTheCA(t *testing.T) {
-	files, err := release.UserData(inputs)
+	files, err := userDataFiles(t)
 	require.NoError(t, err)
 	first := parseUserData(t, files["naru-node-1.test.yaml"])
 
@@ -264,9 +299,9 @@ func TestUserData_TheServingCertificateNamesNodeOnesAddressAndTheAgentsAreSigned
 }
 
 func TestUserData_TwoCallsDifferOnlyInTheCertificatesAndKeys(t *testing.T) {
-	one, err := release.UserData(inputs)
+	one, err := userDataFiles(t)
 	require.NoError(t, err)
-	two, err := release.UserData(inputs)
+	two, err := userDataFiles(t)
 	require.NoError(t, err)
 
 	for name := range one {
@@ -282,23 +317,8 @@ func TestUserData_TwoCallsDifferOnlyInTheCertificatesAndKeys(t *testing.T) {
 	}
 }
 
-func TestProxmox_GivesTheNetworkConfigTheDeploymentsGatewayResolversAndMACs(t *testing.T) {
-	first := string(release.Config(1, inputs).NetworkConfig())
-	second := string(release.Config(2, inputs).NetworkConfig())
-
-	assert.Contains(t, first, "mac_address: '02:00:00:00:03:E9'")
-	assert.Contains(t, first, "address: '192.168.0.40'")
-	assert.Contains(t, second, "mac_address: '02:00:00:00:03:F4'")
-	assert.Contains(t, second, "address: '192.168.0.61'")
-	for _, c := range []string{first, second} {
-		assert.Contains(t, c, "gateway: '192.168.0.1'")
-		assert.Contains(t, c, "- '1.1.1.1'")
-		assert.Contains(t, c, "- '8.8.8.8'")
-	}
-}
-
 func TestMissingBinaries_NamesAServiceWhoseBinaryIsNotOnTheDataDisk(t *testing.T) {
-	files, err := release.UserData(inputs)
+	files, err := userDataFiles(t)
 	require.NoError(t, err)
 	list := allInitramfsBinaries
 	have := func(p string) bool { return p != fixture.GuestRoot+"/bin/naru-registry" }
@@ -311,7 +331,7 @@ func TestMissingBinaries_NamesAServiceWhoseBinaryIsNotOnTheDataDisk(t *testing.T
 }
 
 func TestMissingBinaries_NamesAServiceWhoseBinaryTheInitramfsDoesNotInstall(t *testing.T) {
-	files, err := release.UserData(inputs)
+	files, err := userDataFiles(t)
 	require.NoError(t, err)
 
 	missing, err := release.MissingBinaries(files["naru-node-2.test.yaml"], func(string) bool { return true }, "file /bin/mvmd x\n")
@@ -322,7 +342,7 @@ func TestMissingBinaries_NamesAServiceWhoseBinaryTheInitramfsDoesNotInstall(t *t
 }
 
 func TestMissingBinaries_FindsNothingMissingWhenEveryBinaryIsThere(t *testing.T) {
-	files, err := release.UserData(inputs)
+	files, err := userDataFiles(t)
 	require.NoError(t, err)
 	list := allInitramfsBinaries
 
@@ -344,7 +364,7 @@ func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
 	d := strings.Repeat("a", 64)
 	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "guest.json"), []byte(`{"kernels":{"naru":{"path":"/k","sha256":"`+d+`"}},"default_kernel":"naru",
 "guest_initrd":{"path":"/g","sha256":"`+d+`"},"converter_initrd":{"path":"/c","sha256":"`+d+`"}}`), 0o600))
-	return release.Options{Root: repoRoot(t), ImageDir: imageDir, DiskDir: diskDir, GuestDir: guestDir, Out: t.TempDir(), Version: "v9"}
+	return release.Options{Root: repoRoot(t), ImageDir: imageDir, DiskDir: diskDir, GuestDir: guestDir, Out: t.TempDir(), Version: "v9", Naructl: tool(t).Bin}
 }
 
 func TestBuild_WritesTheInputsAssetListsItInSHA256SUMSAndCarriesWhatWasStaged(t *testing.T) {
@@ -369,4 +389,29 @@ func TestBuild_WritesTheInputsAssetListsItInSHA256SUMSAndCarriesWhatWasStaged(t 
 	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
 	require.NoError(t, err)
 	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists it")
+}
+
+func TestBuild_ShipsNaructlAsAnExecutableAssetListedInSHA256SUMS(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+
+	assets, err := release.Build(o)
+
+	require.NoError(t, err)
+	name := "naructl-v9-linux-amd64"
+	st, err := os.Stat(filepath.Join(o.Out, name))
+	require.NoError(t, err, "the release holds the naructl asset")
+	assert.Equal(t, os.FileMode(0o755), st.Mode().Perm())
+	want, err := os.ReadFile(o.Naructl)
+	require.NoError(t, err)
+	got, err := os.ReadFile(filepath.Join(o.Out, name))
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "the asset is the binary that wrote the user-data")
+	var listed []string
+	for _, a := range assets {
+		listed = append(listed, a.Name)
+	}
+	assert.Contains(t, listed, name)
+	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
+	require.NoError(t, err)
+	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums))
 }

@@ -28,8 +28,34 @@ Claims about garamsh/gaon hold at commit `cd05f7ed59b62c43279e13d0cb3b3821c93abc
 - **naru knows no service's internals.** Name, binary and arguments come from this file.
 - **gaon's certificates are `files`, or are issued from `spec.pki`.** A Node that carries no CA key gets its certificates as `files`, as below. A Node whose `spec.pki` carries the CA and its key gets the pairs init issues at boot under `/run/gaon/`, in the same places, and the services name them with the same flags ([ADR 0013](./adr/0013-init-issues-certificates-at-boot-from-a-ca-carried-in-spec-pki-and-renews-them.md), which supersedes item 5 of ADR 0012). For `files`: a Node's CA, its agent's pair and, on the control-plane Node, the API server's, the scheduler's and the controllers' pairs are entries of `spec.files` under `/run/gaon/`, which the gaon services name with their `--tls-*` flags, as gaon's `deployment.md` §Certificates and §Config shape ask. The files' content is the tooling's input; init writes it and knows nothing of it ([ADR 0012](./adr/0012-gaon-runs-on-the-nodes-with-etcd-on-the-data-disk-carried-certificates-and-a-host-forward-to-the-api-server.md)).
 
+## Operator tooling: naructl
+
+`naructl` is the operator's tool for a gaon cluster on naru Nodes. It writes the CA, each Node's user-data and `network-config`, and the operator's client certificate pair; it owns the gaon Node layout (services, `spec.pki`, the worker's files, mvmd's configuration, the data disk's paths), which `tooling/qemu` runs as a binary and does not copy ([ADR 0015](./adr/0015-naructl-is-the-single-owner-of-the-gaon-node-layout-and-tooling-qemu-runs-it-as-a-binary.md)). It is a static linux/amd64 binary, the release asset `naructl-<version>-linux-amd64`, and every file it writes is one `naru-init -validate` accepts. The example below is the release's example deployment, with `guest.json` the release's `naru-guest-<version>.json` and `$FIRECRACKER` the `firecrackerSha256` of its `naru-inputs-<version>.json`:
+
+```sh
+naructl gen ca --out ca                        # ca/ca.pem, ca/ca.key
+naructl gen node --ca ca --name node-1 --control-plane \
+  --address 192.168.0.40/24 --mac 02:00:00:00:03:e9 --gateway 192.168.0.1 --nameserver 1.1.1.1 \
+  --api-server 192.168.0.40 --machine-prefix 10.200.1.0/24 \
+  --guest guest.json --firecracker-sha256 "$FIRECRACKER" \
+  --out node-1.user-data --network-config node-1.network-config
+naructl gen node --ca ca --name node-2 \
+  --address 192.168.0.61/24 --mac 02:00:00:00:03:f4 --gateway 192.168.0.1 --nameserver 1.1.1.1 \
+  --api-server 192.168.0.40 --machine-prefix 10.200.2.0/24 \
+  --guest guest.json --firecracker-sha256 "$FIRECRACKER" \
+  --out node-2.user-data --network-config node-2.network-config
+naructl gen client --ca ca --cn alice --out client   # client/client.pem, client/client.key
+```
+
+- **`gen ca --out <dir>`** writes `ca.pem` and `ca.key` (ECDSA P-256, valid ten years; the key `0600`) and refuses to replace an existing `ca.key`.
+- **`gen node`** writes the Node's `user-data` (`--out`, mode `0600`) and, with `--network-config`, its `network-config`. On the control-plane Node (`--control-plane`) `spec.pki` carries the CA and its key and init issues the API server's, scheduler's, controllers' and agent's pairs at boot ([ADR 0013](./adr/0013-init-issues-certificates-at-boot-from-a-ca-carried-in-spec-pki-and-renews-them.md)); a worker's user-data carries `ca.pem` and its own agent pair, whose CN is the Node's name, signed by the CA (certificates valid one year, never past the CA's). `--pairs-as-files` makes the control-plane Node carry its pairs as files and no CA key instead, which is the form the release's test user-data takes. `--api-server` is the address every agent dials and the API server's serving certificate names; `--serving-address` (repeatable) adds more. `--binary <service>=<path>`, `--disable <service>`, `--extra-nic <mac>=<cidr>` and `--search` are the other flags; `naructl gen node -h` lists all. `--name` must be a DNS label, since it is the Node's CN, its etcd name and its `metadata.name`. A flag given without what makes it apply is refused: `--mac`, `--gateway`, `--nameserver`, `--search` and `--extra-nic` need `--network-config`, and `--serving-address` and `--pairs-as-files` need `--control-plane`. A file already at `--out`, or at a key's path, is replaced by one with the mode named here, never written into with the old file's mode. A CA whose certificate has expired is refused.
+- **The registry serves the data disk's test image.** A Node runs `registry` by default, and mvmd trusts its certificate through `SSL_CERT_FILE`, so the data disk's image is pullable by digest; the release's `naru-data-<version>.qcow2` carries it. `--disable registry` leaves both out, so an operator who pulls from elsewhere drops the registry and mvmd's `SSL_CERT_FILE` together.
+- **`gen client`** writes `client.pem` and `client.key` for an operator, CN as given, signed by the CA, for gaon's CLI (`--tls-ca ca/ca.pem --tls-cert client/client.pem --tls-key client/client.key`).
+- **The CA key goes only into the control-plane Node's user-data and the operator's secret store.** `naructl` writes it to `ca.key` and to `spec.pki` of the control-plane Node, and nowhere else: a worker's user-data holds none, and a release asset never does. Whoever holds `ca.key` can issue a certificate the API server accepts, so keep it out of version control, and treat the control-plane Node's user-data (and the NoCloud drive it is on) as holding it. The release's `naru-node-<n>.test.yaml` are different: they are made with `--pairs-as-files` from a CA that is discarded, so they hold no CA key ([image.md](./image.md#release-assets)).
+
 ## Rationale
 
+- [ADR 0015](./adr/0015-naructl-is-the-single-owner-of-the-gaon-node-layout-and-tooling-qemu-runs-it-as-a-binary.md): why one tool owns the gaon Node layout, and why `tooling/qemu` runs it as a binary.
 - [ADR 0013](./adr/0013-init-issues-certificates-at-boot-from-a-ca-carried-in-spec-pki-and-renews-them.md): why `spec.pki` carries authorities and certificates, the validation, and the signs it was wrong.
 - [ADR 0008](./adr/0008-a-node-reads-its-configuration-and-network-from-a-cloud-init-nocloud-drive.md): why a NoCloud drive, why `network-config` is read strictly, why the files field, and the signs it was wrong. It supersedes ADR 0005's delivery.
 - [ADR 0005](./adr/0005-configuration-is-a-yaml-file-on-a-labelled-ext4-disk-in-the-shape-of-gaons-resources.md): why gaon's shape and the forwarding duty; its delivery by an ext4 disk is superseded.

@@ -194,8 +194,8 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 	// untouched.
 	if spec.Config.hostNIC() {
 		args = append(args,
-			"-netdev", fmt.Sprintf("user,id=net1,restrict=on,hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.Gaon.HostPort, HostNICAddress, APIPort),
-			"-device", "virtio-net-pci,netdev=net1,mac="+spec.Config.hostMAC(),
+			"-netdev", fmt.Sprintf("user,id=net1,restrict=on,hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.HostPort, HostNICAddress, APIPort),
+			"-device", "virtio-net-pci,netdev=net1,mac="+spec.Config.HostMAC(),
 		)
 	}
 	return append(args, "-display", "none", "-monitor", "none", "-serial", "file:"+console, "-no-reboot"), nil
