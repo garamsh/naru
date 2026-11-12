@@ -277,6 +277,23 @@ func TestNode_UserDataOfV030FormWithNoSpecAPIBootsWithItsServicesAndLogsThatTheA
 // naructl cannot: it always names the Node's current revision.
 func rawApply(t *testing.T, file string, revision int, patchYAML, mode string) (int, string) {
 	t.Helper()
+	hc, endpoint := apiClient(t, file)
+	var patch map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(patchYAML), &patch))
+	payload, err := json.Marshal(map[string]any{"revision": revision, "patch": patch, "mode": mode})
+	require.NoError(t, err)
+	resp, err := hc.Post("https://"+endpoint+"/v1/config", "application/json", bytes.NewReader(payload))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	var out bytes.Buffer
+	_, err = out.ReadFrom(resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode, out.String()
+}
+
+// apiClient is an HTTPS client with the pair of a naructl client file, and the file's first endpoint.
+func apiClient(t *testing.T, file string) (*http.Client, string) {
+	t.Helper()
 	b, err := os.ReadFile(file)
 	require.NoError(t, err)
 	var f struct {
@@ -289,15 +306,5 @@ func rawApply(t *testing.T, file string, revision int, patchYAML, mode string) (
 	roots := x509.NewCertPool()
 	require.True(t, roots.AppendCertsFromPEM([]byte(f.CA)))
 	hc := &http.Client{Timeout: time.Minute, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{pair}}}}
-	var patch map[string]any
-	require.NoError(t, yaml.Unmarshal([]byte(patchYAML), &patch))
-	payload, err := json.Marshal(map[string]any{"revision": revision, "patch": patch, "mode": mode})
-	require.NoError(t, err)
-	resp, err := hc.Post("https://"+f.Endpoints[0]+"/v1/config", "application/json", bytes.NewReader(payload))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	var out bytes.Buffer
-	_, err = out.ReadFrom(resp.Body)
-	require.NoError(t, err)
-	return resp.StatusCode, out.String()
+	return hc, f.Endpoints[0]
 }

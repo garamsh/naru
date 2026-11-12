@@ -48,6 +48,11 @@ type Config struct {
 	// APIHostPort, when not 0 and with HostPort, adds a forward of the host's loopback port to the
 	// Node API's port on the same NIC.
 	APIHostPort int
+	// HostReach, with HostPort, leaves the second NIC's user-mode network unrestricted, so the
+	// guest reaches the test host at 10.0.2.2 (a time server the test runs on the host). The NIC
+	// has no gateway, so the Node still has no route off the host. Without it the NIC is
+	// restrict=on, as image.md describes.
+	HostReach bool
 }
 
 // Network is what a Node's network-config and its configuration say of addresses. The QEMU tests

@@ -33,3 +33,27 @@ func TestQemuArgs_TheHostNICForwardsLoopbackToTheAPIServer(t *testing.T) {
 func TestQemuArgs_ANodeWithoutAHostPortHasOneNIC(t *testing.T) {
 	assert.NotContains(t, qemuLine(t, cfg(2, 2, false, false)), "net1")
 }
+
+func TestQemuArgs_AHostReachNICIsNotRestricted(t *testing.T) {
+	c := cfg(1, 2, true, false)
+	c.HostPort, c.HostReach = 41234, true
+
+	line := qemuLine(t, c)
+
+	assert.Contains(t, line, "-netdev user,id=net1,hostfwd=tcp:127.0.0.1:41234-10.0.2.15:6443")
+	assert.NotContains(t, line, "restrict")
+}
+
+func TestQemuArgs_ARTCBaseStartsTheNodesClockAtThatDate(t *testing.T) {
+	spec := Spec{Config: cfg(1, 1, true, false), RTCBase: "2021-03-04T05:06:07"}
+	spec.Dir, spec.Disk, spec.Mcast = t.TempDir(), filepath.Join(t.TempDir(), "naru.img"), "230.78.0.1:5000"
+	require.NoError(t, os.WriteFile(spec.Disk, []byte("disk"), 0o644))
+
+	args, err := qemuArgs(spec, "naru15-node-1", "cidata.img", "data.img", "console.log")
+
+	require.NoError(t, err)
+	assert.Contains(t, strings.Join(args, " "), "-rtc base=2021-03-04T05:06:07,clock=vm")
+	assert.Contains(t, strings.Join(args, " "), "-cpu host,-kvmclock")
+	assert.NotContains(t, qemuLine(t, cfg(1, 1, true, false)), "-rtc")
+	assert.NotContains(t, qemuLine(t, cfg(1, 1, true, false)), "kvmclock")
+}

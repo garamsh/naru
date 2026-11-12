@@ -39,6 +39,10 @@ type Spec struct {
 	NaruYAML []byte
 	// NetworkConfig replaces the network-config the Config renders, when not empty.
 	NetworkConfig []byte
+	// RTCBase, when not empty, is QEMU's -rtc base, the date the Node's real-time clock starts at
+	// ("2021-03-04T05:06:07"), so that the Node boots with a wrong clock. The Node has no kvmclock
+	// (-cpu host,-kvmclock), which would otherwise give it the host's time.
+	RTCBase string
 }
 
 // Node is one running QEMU machine.
@@ -172,9 +176,15 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 	if _, err := os.Stat(OVMFCode); err != nil {
 		return nil, err
 	}
+	// A guest with kvmclock takes its wall clock from the host, whatever the RTC says, so a Node whose
+	// RTC is set to start in the past does without it.
+	cpu := "host"
+	if spec.RTCBase != "" {
+		cpu = "host,-kvmclock"
+	}
 	args := []string{
 		"-name", name + ",process=" + name,
-		"-enable-kvm", "-cpu", "host", "-smp", "2", "-m", "3072",
+		"-enable-kvm", "-cpu", cpu, "-smp", "2", "-m", "3072",
 		"-machine", "q35",
 		"-drive", "if=pflash,format=raw,unit=0,readonly=on,file=" + OVMFCode,
 		"-drive", "if=pflash,format=raw,unit=1,file=" + vars,
@@ -193,7 +203,11 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 	// privilege (ADR 0012). The network has no route off the host and the Nodes' network is
 	// untouched.
 	if spec.Config.hostNIC() {
-		netdev := fmt.Sprintf("user,id=net1,restrict=on,hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.HostPort, HostNICAddress, APIPort)
+		restrict := ",restrict=on"
+		if spec.Config.HostReach {
+			restrict = ""
+		}
+		netdev := fmt.Sprintf("user,id=net1%s,hostfwd=tcp:127.0.0.1:%d-%s:%s", restrict, spec.Config.HostPort, HostNICAddress, APIPort)
 		if spec.Config.APIHostPort != 0 {
 			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.APIHostPort, HostNICAddress, NodeAPIPort)
 		}
@@ -201,6 +215,9 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 			"-netdev", netdev,
 			"-device", "virtio-net-pci,netdev=net1,mac="+spec.Config.HostMAC(),
 		)
+	}
+	if spec.RTCBase != "" {
+		args = append(args, "-rtc", "base="+spec.RTCBase+",clock=vm")
 	}
 	return append(args, "-display", "none", "-monitor", "none", "-serial", "file:"+console, "-no-reboot"), nil
 }

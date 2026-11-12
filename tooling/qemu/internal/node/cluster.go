@@ -50,6 +50,11 @@ type ClusterSpec struct {
 	// NodeAPI, with Gaon, has `naructl gen api-ca` write the Node API's authority, so that every Node's
 	// user-data carries spec.api, and node-1's API is reachable from the host through a forward.
 	NodeAPI bool
+	// TimeServers, with Gaon, is node-1's spec.time.servers. The servers are on the test host, which
+	// node-1 reaches at 10.0.2.2 over its second NIC, left unrestricted for it (Config.HostReach).
+	TimeServers []string
+	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
+	RTCBase string
 }
 
 // Cluster is the Nodes of one network. Node 1 is the one whose configuration
@@ -103,11 +108,12 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		cfg := Config{
 			Name: name, Index: i, Total: spec.N, ControlPlane: i == 1, Probe: i == spec.ProbeOn, Inputs: spec.Inputs,
 		}
-		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast}
+		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase}
 		if gen != nil {
 			if i == 1 {
 				start.Config.HostPort = gen.port // only Node 1 has the second NIC
 				start.Config.APIHostPort = gen.apiPort
+				start.Config.HostReach = len(spec.TimeServers) > 0
 			}
 			var err error
 			if start.NaruYAML, start.NetworkConfig, err = gen.node(start.Config, spec); err != nil {
@@ -224,6 +230,7 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 		Out: filepath.Join(dir, "naru.yaml"), NetworkConfig: filepath.Join(dir, "network-config"),
 	}
 	if c.hostNIC() {
+		a.TimeServers = spec.TimeServers
 		a.ExtraNIC = c.HostMAC() + "=" + HostNICPrefix
 	}
 	if c.ControlPlane {
