@@ -1,4 +1,4 @@
-// Package command is naructl's command line: gen ca, gen client and gen node.
+// Package command is naructl's command line: gen ca, gen client, gen token and gen node.
 package command
 
 import (
@@ -15,10 +15,11 @@ import (
 	"github.com/garamsh/naru/naructl/internal/pki"
 )
 
-const usage = `usage: naructl gen <ca|client|node> [flags]
+const usage = `usage: naructl gen <ca|client|token|node> [flags]
 
   gen ca      --out <dir>                       write ca.pem and ca.key
   gen client  --ca <dir> --cn <name> --out <dir> write an operator's client.pem and client.key
+  gen token   --ca <dir> --name <name>              write the Node's bootstrap token to <dir>/tokens/<name>, if none is there
   gen node    --ca <dir> --name <name> --address <cidr> --mac <mac> --gateway <ip> --nameserver <ip>
               --api-server <ip> --machine-prefix <cidr> --guest <guest.json> --firecracker-sha256 <hex>
               --out <file> [--control-plane] [more flags: naructl gen node -h]
@@ -35,6 +36,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return genCA(args[2:], stdout, stderr)
 	case "client":
 		return genClient(args[2:], stdout, stderr)
+	case "token":
+		return genToken(args[2:], stdout, stderr)
 	case "node":
 		return genNode(args[2:], stdout, stderr)
 	}
@@ -130,6 +133,26 @@ func genClient(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+func genToken(args []string, stdout, stderr io.Writer) error {
+	fs := newFlags("token", stderr)
+	caDir := fs.String("ca", "", "directory of the cluster's authority, which holds tokens/")
+	name := fs.String("name", "", "the Node's name, such as node-2")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := require(fs, "ca", "name"); err != nil {
+		return err
+	}
+	if _, err := pki.Load(*caDir); err != nil {
+		return err
+	}
+	if _, err := pki.EnsureToken(*caDir, *name); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "naructl: %s holds the token of %s\n", filepath.Join(*caDir, pki.TokensDir, *name), *name)
+	return nil
+}
+
 func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("node", stderr)
 	var (
@@ -141,7 +164,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")
-	fs.BoolVar(&n.ControlPlane, "control-plane", false, "the Node runs etcd and gaon's control plane, and issues its certificates at boot")
+	fs.BoolVar(&n.ControlPlane, "control-plane", false, "the Node runs etcd and gaon's control plane, issues its certificates at boot and signs its agents' requests")
 	fs.StringVar(&address, "address", "", "the Node's address and prefix, such as 192.168.0.40/24")
 	fs.StringVar(&n.MAC, "mac", "", "the MAC address of the Node's card (with --network-config)")
 	fs.StringVar(&gateway, "gateway", "", "the default gateway (with --network-config)")
@@ -155,7 +178,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.StringVar(&guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
 	fs.StringVar(&n.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
-	fs.BoolVar(&n.PairsAsFiles, "pairs-as-files", false, "a control-plane Node carries its certificate pairs as files instead of issuing them")
+	fs.BoolVar(&n.PairsAsFiles, "pairs-as-files", false, "the Node carries operator-issued pairs as files, with no bootstrap token: on a control-plane Node every pair, and no signing key")
 	fs.StringVar(&out, "out", "", "the user-data file to write (0600: it carries keys; a file already there is replaced)")
 	fs.StringVar(&networkConfig, "network-config", "", "also write the NoCloud network-config to this file")
 	if err := fs.Parse(args); err != nil {
@@ -167,12 +190,24 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	if err := needs(fs, "network-config", "mac", "gateway", "nameserver", "search", "extra-nic"); err != nil {
 		return err
 	}
-	if err := needs(fs, "control-plane", "serving-address", "pairs-as-files"); err != nil {
+	if err := needs(fs, "control-plane", "serving-address"); err != nil {
 		return err
 	}
 	var err error
 	if n.CA, err = pki.Load(caDir); err != nil {
 		return err
+	}
+	if !n.PairsAsFiles {
+		// The Node's own token is made if there is none. A control-plane Node's API server lists the
+		// token of every Node whose file is in the directory now: run gen token for the others first.
+		if n.Token, err = pki.EnsureToken(caDir, n.Name); err != nil {
+			return err
+		}
+		if n.ControlPlane {
+			if n.Tokens, err = pki.ReadTokens(caDir); err != nil {
+				return err
+			}
+		}
 	}
 	if n.Address, err = netip.ParsePrefix(address); err != nil {
 		return fmt.Errorf("--address: %w", err)

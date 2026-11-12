@@ -130,3 +130,13 @@ func TestTail_KeepsTheLastLinesOnly(t *testing.T) {
 	assert.Equal(t, "a\nb", tail("a\nb", 5), "fewer lines than asked for are all kept")
 	assert.False(t, strings.HasSuffix(tail("a\nb\n", 5), "\n"))
 }
+
+func TestCheckDisable_ControllersNeedBootPKIFalseAndNothingElseDoes(t *testing.T) {
+	err := checkDisable([]string{"registry", "gaon-controllers"}, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "-boot-pki=false")
+
+	assert.NoError(t, checkDisable([]string{"gaon-controllers"}, false))
+	assert.NoError(t, checkDisable([]string{"gaon-scheduler", "registry"}, true))
+	assert.ErrorContains(t, checkDisable([]string{"nothing"}, true), "is not a service")
+}

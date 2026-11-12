@@ -117,6 +117,42 @@ func (m Machine) Running() bool {
 	return m.Spec.NodeName != "" && m.Status.Phase == "Running" && m.Status.BindingEpoch == m.Spec.BindingEpoch
 }
 
+// CSR is the part of a CertificateSigningRequest the tests read: its name, who the API server says
+// created it (spec.username, "bootstrap:<id>" for a token) and whether the signer approved it.
+type CSR struct {
+	Metadata struct {
+		Name string `json:"name"`
+	} `json:"metadata"`
+	Spec struct {
+		Username string `json:"username"`
+	} `json:"spec"`
+	Status struct {
+		Conditions  []Condition `json:"conditions"`
+		Certificate string      `json:"certificate"`
+	} `json:"status"`
+}
+
+// Approved reports whether the signer approved the request and wrote a certificate.
+func (r CSR) Approved() bool {
+	if r.Status.Certificate == "" {
+		return false
+	}
+	for _, c := range r.Status.Conditions {
+		if c.Type == "Approved" && c.Status == "True" {
+			return true
+		}
+	}
+	return false
+}
+
+// CSRs lists the CertificateSigningRequests; the API server keeps every one.
+func (c *Client) CSRs(ctx context.Context) ([]CSR, error) {
+	var l struct {
+		Items []CSR `json:"items"`
+	}
+	return l.Items, c.do(ctx, http.MethodGet, "/certificatesigningrequests", nil, &l)
+}
+
 // Machine reads the Machine of that name.
 func (c *Client) Machine(ctx context.Context, name string) (Machine, error) {
 	var m Machine

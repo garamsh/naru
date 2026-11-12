@@ -32,6 +32,20 @@ import (
 // gaonServices are the binaries -gaon-bin may supply, named as the services are.
 var gaonServices = []string{"gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
 
+// checkDisable refuses a name -disable may not carry, and gaon-controllers under -boot-pki: the
+// controllers sign the agents' requests there, so without them no agent gets a pair.
+func checkDisable(disabled []string, bootPKI bool) error {
+	for _, d := range disabled {
+		if !slices.Contains(disableNames, d) {
+			return fmt.Errorf("-disable: %q is not a service; the names are %s", d, strings.Join(disableNames, ", "))
+		}
+	}
+	if bootPKI && slices.Contains(disabled, "gaon-controllers") {
+		return errors.New("-disable gaon-controllers needs -boot-pki=false: the controllers sign the agents' certificate requests")
+	}
+	return nil
+}
+
 // disableNames are the services -disable may name; naructl refuses any other.
 var disableNames = []string{"registry", "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
 
@@ -61,7 +75,7 @@ func run() error {
 	gaonBin := flag.String("gaon-bin", "", "directory of gaon binaries (gaon-apiserver, gaon-scheduler, gaon-controllers, gaon-node-agent) the services run in place of the image's")
 	extra := flag.String("inputs", "", "directory copied to /var/lib/naru/inputs/extra/ on every Node")
 	disable := flag.String("disable", "", "comma-separated services left out of every Node's configuration: "+strings.Join(disableNames, ", "))
-	bootPKI := flag.Bool("boot-pki", true, "node-1 issues its certificates at boot from spec.pki (false: every Node carries its pairs as files)")
+	bootPKI := flag.Bool("boot-pki", true, "node-1 issues its certificates at boot from spec.pki and signs the agents' requests, each agent presents a bootstrap token (false: every Node carries its pairs as files)")
 	timeout := flag.Duration("timeout", 5*time.Minute, "how long the Nodes have to come up")
 	flag.Parse()
 	if *release == "" || *dir == "" {
@@ -74,10 +88,8 @@ func run() error {
 	if *disable != "" {
 		disabled = strings.Split(*disable, ",")
 	}
-	for _, d := range disabled {
-		if !slices.Contains(disableNames, d) {
-			return fmt.Errorf("-disable: %q is not a service; the names are %s", d, strings.Join(disableNames, ", "))
-		}
+	if err := checkDisable(disabled, *bootPKI); err != nil {
+		return err
 	}
 	root, err := filepath.Abs(*dir)
 	if err != nil {

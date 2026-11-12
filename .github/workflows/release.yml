@@ -3,6 +3,9 @@ name: release
 # A pushed tag v* builds the release assets with `make release` and publishes them as a GitHub
 # Release named after the tag. workflow_dispatch repeats a run for a tag that already exists.
 # The workflow boots no QEMU: the boot test is `make test-qemu`, which a contributor runs.
+# A tag whose name contains "-" (v0.1.0-rc.1) is published as a pre-release and not as the latest
+# release (`--prerelease --latest=false`, on both the create and the edit path); any other tag is
+# published as before.
 #
 # Moved by (every pin below): the PM, in a pull request that reads the action's current release and
 # the GitHub Advisory Database (ci.md), when an advisory is published for it and at each Go minor
@@ -151,7 +154,7 @@ jobs:
           Assets: `naru-@TAG@.qcow2` (the boot disk), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-inputs-@TAG@.json` (the Firecracker digest and the test image reference that `naru-cluster` reads), `naructl-@TAG@-linux-amd64` (the operator's tool: it generates a cluster CA, each Node's user-data and client certificates; a static binary), `naru-node-1.test.yaml` and `naru-node-2.test.yaml` (test-only user-data for Proxmox that runs gaon) and `SHA256SUMS` of the first seven.
 
           - **The data disk carries a test-only TLS authority, private key included.** `inputs/registry/key.pem` is the private key of the CA that `inputs/registry/ca.pem` and `cert.pem` belong to. It is generated for each build, is trusted only by the mvmd on the Node that holds the disk, and the registry that uses it listens on 127.0.0.1. Anyone can read the key from this public asset; do not trust the CA anywhere else.
-          - **The user-data assets are test-only and carry private keys.** `naru-node-1.test.yaml` and `naru-node-2.test.yaml` hold, in `spec.files`, the private keys of gaon's serving and client pairs, all issued by a test CA generated for the build whose own private key is published nowhere; the certificates are valid for one year from the build. Anyone can read those keys from this public asset: use the files on a throwaway deployment only. They differ between two builds of one tree in those certificates and keys.
+          - **The user-data assets are test-only and carry private keys.** `naru-node-1.test.yaml` and `naru-node-2.test.yaml` hold the bootstrap tokens of both Nodes in `spec.files`, and `naru-node-1.test.yaml` also holds, in `spec.pki`, a test-only TLS authority, private key included: the CA generated for the build, from which init issues node-1's pairs at boot and gaon's controllers sign the Node Agents' certificate requests. The CA is valid ten years from the build and the certificates one year. Anyone can read that key and those tokens from this public asset: do not trust the CA anywhere else, and use the files on a throwaway deployment only. Two builds of one tree differ in the CA and the tokens.
           - **The data disk is not byte-reproducible.** The registry's TLS authority, certificate and key are generated anew for every build, and they are the only files that differ between two builds of one tree. Pin the digest of the asset published here, not the digest of a rebuild.
           - **Relation to a workstation build.** The boot disk is the output of `make disk`, which `make image-repro` shows byte-identical across two clean builds on one workstation. This release was built on a runner whose compiler and `mke2fs` are Ubuntu 24.04's, and equality with a workstation build of the same commit has not been checked: build the commit with `make release VERSION=@TAG@` and compare `SHA256SUMS`, expecting the data disk to differ.
           NOTES
@@ -160,10 +163,17 @@ jobs:
 
       - name: Publish the release
         run: |
+          # A tag with "-" is a pre-release and never the latest release.
+          case "$TAG" in
+            *-*) kind="--prerelease --latest=false" ;;
+            *) kind="" ;;
+          esac
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file notes.md
+            # shellcheck disable=SC2086
+            gh release edit "$TAG" --title "$TAG" --notes-file notes.md $kind
             gh release upload "$TAG" release/* --clobber
           else
-            gh release create "$TAG" release/* --verify-tag --title "$TAG" --notes-file notes.md
+            # shellcheck disable=SC2086
+            gh release create "$TAG" release/* --verify-tag --title "$TAG" --notes-file notes.md $kind
           fi
           gh release view "$TAG" --json tagName,url,assets --jq '.tagName, .url, (.assets[] | "\(.name) \(.size)")'

@@ -240,14 +240,16 @@ func TestNode_GaonRegistersEachNodeKeepsItsLeaseAndSurvivesTheControlPlaneNodeRe
 	})
 }
 
-// TestNode_GaonRunsFromSpecPKIOnTheControlPlaneNodeWhichIssuesItsOwnCertificates boots two Nodes that
-// run gaon where node-1's configuration carries the CA and its key in spec.pki and no pair as a file,
-// and node-2 carries an operator agent pair in spec.files (ADR 0013). The host reaches node-1's API
-// server through the host forward, verifying the certificate init issued against the CA and its
-// names (127.0.0.1 is the host forward's), and both Nodes register and are Ready: node-1's agent
-// with the pair init issued, node-2's with the pair it was given. The console of node-1 shows init
-// issuing each pair before the first service starts, and no key.
-func TestNode_GaonRunsFromSpecPKIOnTheControlPlaneNodeWhichIssuesItsOwnCertificates(t *testing.T) {
+// TestNode_GaonAgentsGetTheirPairsFromSigningRequestsWithATokenAndAWorkerReusesItsPairAfterRebooting
+// boots two Nodes that run gaon where node-1's configuration carries the CA and its key in spec.pki
+// and every Node carries a bootstrap token (ADR 0013, ADR 0016). The host reaches node-1's API server
+// through the host forward, verifying the certificate init issued against the CA and its names
+// (127.0.0.1 is the host forward's). Both agents have no pair at first and get one through a
+// CertificateSigningRequest the controllers approve, so both Nodes register and are Ready. The console
+// of node-1 shows init issuing the API server's, the scheduler's and the controllers' pairs before the
+// first service starts, and no key. After node-2 loses power the agent reuses the pair it keeps on
+// the data disk: the Node's Lease is renewed again and no further request is created.
+func TestNode_GaonAgentsGetTheirPairsFromSigningRequestsWithATokenAndAWorkerReusesItsPairAfterRebooting(t *testing.T) {
 	c := start(t, node.ClusterSpec{N: 2, Gaon: true, BootPKI: true})
 	api, err := hostapi.New(c.HostAddr, c.Client)
 	require.NoError(t, err)
@@ -264,10 +266,50 @@ func TestNode_GaonRunsFromSpecPKIOnTheControlPlaneNodeWhichIssuesItsOwnCertifica
 		})
 	}
 
+	// Each agent presented a token and was issued a certificate: two approved requests by a token.
+	var issued []string
+	eventually(t, "two requests created with a token are approved", func() bool {
+		reqs, err := api.CSRs(ctx)
+		if err != nil {
+			return false
+		}
+		issued = nil
+		for _, r := range reqs {
+			if strings.HasPrefix(r.Spec.Username, "bootstrap:") && r.Approved() {
+				issued = append(issued, r.Metadata.Name)
+			}
+		}
+		return len(issued) == 2
+	})
+
 	console := judge.Log{Text: first.Console()}
 	assert.Empty(t, judge.Check(first.Name, console, judge.Issuance(judge.GaonIssued...)), "init issued every pair before it started a service")
 	assert.False(t, judge.HasLine(console.Text, []string{"PRIVATE KEY"}), "no key is logged")
 	assert.False(t, judge.HasLine(second.Console(), []string{"authority written"}), "node-2 holds no CA and issues nothing")
+
+	// The worker reboots: its agent finds the pair in its certificate directory.
+	var before time.Time
+	eventually(t, "node-2 has a Lease", func() bool {
+		l, err := api.Lease(ctx, second.Name)
+		before = l.Spec.RenewTime
+		return err == nil && !before.IsZero()
+	})
+	require.NoError(t, second.Reboot())
+	require.NoError(t, second.WaitFor(ctx, bootTimeout, "started", "service=gaon-node-agent"), "node-2 booted again")
+	// The Lease is renewed only by an agent that holds a certificate; the first boot's pair is the only one it can hold.
+	eventually(t, "node-2's Lease is renewed after the reboot", func() bool {
+		l, err := api.Lease(ctx, second.Name)
+		return err == nil && l.Spec.RenewTime.After(before.Add(time.Second))
+	})
+	reqs, err := api.CSRs(ctx)
+	require.NoError(t, err)
+	var after []string
+	for _, r := range reqs {
+		if strings.HasPrefix(r.Spec.Username, "bootstrap:") {
+			after = append(after, r.Metadata.Name)
+		}
+	}
+	assert.ElementsMatch(t, issued, after, "the agent reused its pair: no second request was created with a token")
 }
 
 // rootMounted is the line of the guest's console that says it mounted its root disk, vdb, as ext4.
@@ -291,7 +333,7 @@ spec:
 `
 
 // TestNode_AMachineAppliedWithTheGaonCLIIsBoundRunsOnTheGuestKernelFromTheTestRegistryOnAMkfsRootDisk
-// boots two Nodes that run gaon, admits both with gaon's CLI from the host, applies a Machine through
+// boots two Nodes that run gaon, whose agents get their pairs by bootstrap token, admits both with gaon's CLI from the host, applies a Machine through
 // node-1's API server with the same CLI, and waits for the scheduler to bind it and for it to be
 // Running. On the Node it is bound to, the Node's registry served the image's manifest, the Machine's
 // console (the vmm.log mvmd keeps for it) shows the guest kernel's banner and the guest mounting its
@@ -300,7 +342,7 @@ spec:
 func TestNode_AMachineAppliedWithTheGaonCLIIsBoundRunsOnTheGuestKernelFromTheTestRegistryOnAMkfsRootDisk(t *testing.T) {
 	cliBin := filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "gaon", "gaon")
 	require.FileExists(t, cliBin, "make image builds gaon's CLI from the pin")
-	c := start(t, node.ClusterSpec{N: 2, Gaon: true})
+	c := start(t, node.ClusterSpec{N: 2, Gaon: true, BootPKI: true})
 	api, err := hostapi.New(c.HostAddr, c.Client)
 	require.NoError(t, err)
 	cli := gaoncli.New(cliBin, c.HostAddr, c.Client)

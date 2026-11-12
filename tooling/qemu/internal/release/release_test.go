@@ -4,7 +4,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -149,6 +147,16 @@ type userData struct {
 			Args []string
 		}
 		Files []struct{ Path, Content string }
+		PKI   *struct {
+			Authorities []struct {
+				Certificate, Key string
+				KeyPath          string `yaml:"keyPath"`
+			}
+			Certificates []struct {
+				Name        string
+				IPAddresses []string `yaml:"ipAddresses"`
+			}
+		}
 	}
 }
 
@@ -216,96 +224,74 @@ func TestUserData_HasTheServicesOfTheGaonNodesAndNoStandIn(t *testing.T) {
 	}
 }
 
-func TestUserData_PublishesTheServingAndClientKeysAndNeverTheAuthoritysOrAnOperators(t *testing.T) {
+func TestUserData_PublishesTheTestAuthorityOnNodeOneAndNoKeyOnNodeTwoAndNoOperatorsPair(t *testing.T) {
 	files, err := userDataFiles(t)
 	require.NoError(t, err)
 	first, second := parseUserData(t, files["naru-node-1.test.yaml"]), parseUserData(t, files["naru-node-2.test.yaml"])
 
-	keys := func(u userData) []string {
-		var out []string
-		for _, f := range u.Spec.Files {
-			if strings.HasPrefix(f.Path, "/run/gaon/") && strings.HasSuffix(f.Path, ".key") {
-				out = append(out, strings.TrimPrefix(f.Path, "/run/gaon/"))
-			}
-		}
-		return out
-	}
-	assert.ElementsMatch(t, []string{"agent.key", "apiserver.key", "scheduler.key", "controllers.key"}, keys(first))
-	assert.ElementsMatch(t, []string{"agent.key"}, keys(second), "node-2 holds its own agent key and no control-plane key")
-
-	ca := first.file("/run/gaon/ca.pem")
-	require.NotEmpty(t, ca)
-	assert.Equal(t, ca, second.file("/run/gaon/ca.pem"), "both Nodes trust one authority")
-	caBlock, _ := pem.Decode([]byte(ca))
+	require.NotNil(t, first.Spec.PKI, "node-1 issues its pairs at boot")
+	require.Len(t, first.Spec.PKI.Authorities, 1)
+	authority := first.Spec.PKI.Authorities[0]
+	keyBlock, _ := pem.Decode([]byte(authority.Key))
+	require.NotNil(t, keyBlock, "the test authority's private key is published, as ADR 0016 says")
+	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	require.NoError(t, err)
+	caBlock, _ := pem.Decode([]byte(authority.Certificate))
 	caCert, err := x509.ParseCertificate(caBlock.Bytes)
 	require.NoError(t, err)
+	assert.True(t, key.PublicKey.Equal(caCert.PublicKey), "it is the key of the CA node-2 trusts")
+	assert.Equal(t, "/run/gaon/ca.key", authority.KeyPath, "the controllers sign with it")
+	assert.Equal(t, authority.Certificate, second.file("/run/gaon/ca.pem"), "both Nodes trust one authority")
+
+	assert.Nil(t, second.Spec.PKI, "node-2 carries no authority")
 	for name, content := range files {
 		assert.NotContains(t, string(content), "client.key", name)
-		for _, block := range pemBlocks(content) {
-			if block.Type != "EC PRIVATE KEY" {
-				continue
-			}
-			key, err := x509.ParseECPrivateKey(block.Bytes)
-			require.NoError(t, err)
-			assert.False(t, key.PublicKey.Equal(caCert.PublicKey), "%s holds the authority's private key", name)
-		}
+	}
+	for _, f := range second.Spec.Files {
+		assert.NotContains(t, f.Content, "PRIVATE KEY", "node-2 holds no key: %s", f.Path)
+	}
+	for _, f := range first.Spec.Files {
+		assert.NotContains(t, f.Content, "PRIVATE KEY", "node-1's files hold no key, its pairs are issued by init: %s", f.Path)
 	}
 }
 
-// pemBlocks returns the PEM blocks in text, including those a YAML scalar holds.
-func pemBlocks(text []byte) []*pem.Block {
-	var out []*pem.Block
-	var n userData
-	if yaml.Unmarshal(text, &n) != nil {
-		return nil
-	}
-	for _, f := range n.Spec.Files {
-		rest := []byte(f.Content)
-		for {
-			var b *pem.Block
-			b, rest = pem.Decode(rest)
-			if b == nil {
-				break
-			}
-			out = append(out, b)
-		}
-	}
-	return out
+func TestUserData_EveryNodeHasATokenAndNodeOnesAPIServerListsBoth(t *testing.T) {
+	files, err := userDataFiles(t)
+	require.NoError(t, err)
+	first, second := parseUserData(t, files["naru-node-1.test.yaml"]), parseUserData(t, files["naru-node-2.test.yaml"])
+
+	token := regexp.MustCompile(`^[a-z0-9]{6}\.[a-z0-9]{16}$`)
+	one, two := strings.TrimSpace(first.file("/run/gaon/bootstrap-token")), strings.TrimSpace(second.file("/run/gaon/bootstrap-token"))
+	assert.Regexp(t, token, one)
+	assert.Regexp(t, token, two)
+	assert.NotEqual(t, one, two)
+	assert.Equal(t, []string{one, two}, strings.Fields(first.file("/run/gaon/bootstrap-tokens")), "the list is the API server's")
+	assert.Empty(t, second.file("/run/gaon/bootstrap-tokens"))
 }
 
-func TestUserData_TheServingCertificateNamesNodeOnesAddressAndTheAgentsAreSignedByTheCA(t *testing.T) {
+func TestUserData_TheServingCertificateIsIssuedForNodeOnesAddress(t *testing.T) {
 	files, err := userDataFiles(t)
 	require.NoError(t, err)
 	first := parseUserData(t, files["naru-node-1.test.yaml"])
 
-	cert := func(path string) *x509.Certificate {
-		b, _ := pem.Decode([]byte(first.file(path)))
-		require.NotNil(t, b, path)
-		c, err := x509.ParseCertificate(b.Bytes)
-		require.NoError(t, err, path)
-		return c
+	var names []string
+	for _, c := range first.Spec.PKI.Certificates {
+		names = append(names, c.Name)
+		if c.Name == "apiserver" {
+			assert.Equal(t, []string{"192.168.0.40"}, c.IPAddresses)
+		}
 	}
-	pool := x509.NewCertPool()
-	require.True(t, pool.AppendCertsFromPEM([]byte(first.file("/run/gaon/ca.pem"))))
-
-	serving := cert("/run/gaon/apiserver.pem")
-	assert.True(t, serving.IPAddresses[0].Equal(net.ParseIP("192.168.0.40")), "%v", serving.IPAddresses)
-	_, err = serving.Verify(x509.VerifyOptions{Roots: pool, DNSName: "", CurrentTime: time.Now(), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
-	assert.NoError(t, err, "the CA signed the serving certificate")
-	agent := cert("/run/gaon/agent.pem")
-	assert.Equal(t, "node-1", agent.Subject.CommonName)
-	_, err = agent.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
-	assert.NoError(t, err, "the CA signed the agent certificate")
+	assert.ElementsMatch(t, []string{"apiserver", "scheduler", "controllers"}, names, "the agents' pairs come through signing requests")
 }
 
-func TestUserData_TwoCallsDifferOnlyInTheCertificatesAndKeys(t *testing.T) {
+func TestUserData_TwoCallsDifferInTheAuthorityTheTokensAndNothingElse(t *testing.T) {
 	one, err := userDataFiles(t)
 	require.NoError(t, err)
 	two, err := userDataFiles(t)
 	require.NoError(t, err)
 
 	for name := range one {
-		assert.NotEqual(t, one[name], two[name], "%s: fresh certificates and keys", name)
+		assert.NotEqual(t, one[name], two[name], "%s: a fresh authority and fresh tokens", name)
 		a, b := parseUserData(t, one[name]), parseUserData(t, two[name])
 		assert.Equal(t, a.Spec.Services, b.Spec.Services, name)
 		for i, f := range a.Spec.Files {
