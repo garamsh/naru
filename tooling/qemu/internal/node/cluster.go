@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 
@@ -53,6 +54,15 @@ type ClusterSpec struct {
 	// TimeServers, with Gaon, is node-1's spec.time.servers. The servers are on the test host, which
 	// node-1 reaches at 10.0.2.2 over its second NIC, left unrestricted for it (Config.HostReach).
 	TimeServers []string
+	// ControlPlanes, with Gaon, is the number of Nodes, the first ones, that are control-plane Nodes.
+	// Zero or one is Node 1 alone. More is a control plane of that many members (ADR 0024): each
+	// has etcd, the API server, the fence and the holder of VirtualAddress, which every Node's
+	// agent dials, and each has the second NIC with a host forward of its own.
+	ControlPlanes int
+	// EtcdProbeOn, with ControlPlanes above one, is the number of the Node that also runs naru-etcdprobe,
+	// which prints what a client of the control plane sees from a member's address and from one that
+	// is no member's, or 0 for none.
+	EtcdProbeOn int
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
 	// Configure, when set, changes each Node's Config before it starts, such as to give it routes.
@@ -68,6 +78,8 @@ type Cluster struct {
 	// CA that signed it, and the address on the test host, "127.0.0.1:port", that reaches the API server.
 	Client   naructl.Client
 	HostAddr string
+	// HostAddrs is the host side of each control-plane Node's forward to its API server, by Node name.
+	HostAddrs map[string]string
 	// API is set when the cluster has NodeAPI.
 	API *NodeAPI
 }
@@ -89,6 +101,9 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 	if spec.N < 1 {
 		return nil, errors.New("a cluster needs at least one Node")
 	}
+	if spec.ControlPlanes > spec.N || spec.ControlPlanes > 1 && !spec.Gaon {
+		return nil, errors.New("ControlPlanes needs Gaon and no more Nodes than the cluster has")
+	}
 	if spec.NodeAPI && !spec.Gaon {
 		return nil, errors.New("NodeAPI needs Gaon: the user-data with spec.api is naructl's")
 	}
@@ -102,24 +117,30 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		if gen, err = newGaonFiles(spec); err != nil {
 			return nil, err
 		}
-		c.Client, c.HostAddr, c.API = gen.client, "127.0.0.1:"+strconv.Itoa(gen.port), gen.api
+		c.Client, c.HostAddr, c.API = gen.client, "127.0.0.1:"+strconv.Itoa(gen.ports[1]), gen.api
+		c.HostAddrs = map[string]string{}
+		for i, p := range gen.ports {
+			c.HostAddrs[fmt.Sprintf("node-%d", i)] = "127.0.0.1:" + strconv.Itoa(p)
+		}
 		// The CA's key stays on disk only while naructl needs it, whichever way StartCluster returns.
 		defer func() { _ = gen.dropCA() }()
 	}
 	for i := 1; i <= spec.N; i++ {
 		name := fmt.Sprintf("node-%d", i)
 		cfg := Config{
-			Name: name, Index: i, Total: spec.N, ControlPlane: i == 1, Probe: i == spec.ProbeOn, Inputs: spec.Inputs,
+			Name: name, Index: i, Total: spec.N, ControlPlane: spec.controlPlane(i), Probe: i == spec.ProbeOn, Inputs: spec.Inputs,
 		}
 		if spec.Configure != nil {
 			spec.Configure(&cfg)
 		}
 		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase}
 		if gen != nil {
-			if i == 1 {
-				start.Config.HostPort = gen.port // only Node 1 has the second NIC
-				start.Config.APIHostPort = gen.apiPort
-				start.Config.HostReach = len(spec.TimeServers) > 0
+			if spec.controlPlane(i) {
+				start.Config.HostPort = gen.ports[i] // only a control-plane Node has the second NIC
+				if i == 1 {
+					start.Config.APIHostPort = gen.apiPort
+					start.Config.HostReach = len(spec.TimeServers) > 0
+				}
 			}
 			var err error
 			if start.NaruYAML, start.NetworkConfig, err = gen.node(start.Config, spec); err != nil {
@@ -136,6 +157,12 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 	}
 	return c, nil
 }
+
+// controlPlane reports whether Node i is a control-plane Node.
+func (spec ClusterSpec) controlPlane(i int) bool { return i <= max(spec.ControlPlanes, 1) }
+
+// ha reports whether the control plane has several members.
+func (spec ClusterSpec) ha() bool { return spec.ControlPlanes > 1 }
 
 // Stop ends every Node.
 func (c *Cluster) Stop() {
@@ -159,18 +186,22 @@ func freePort() (int, error) {
 type gaonFiles struct {
 	caDir, guest string
 	client       naructl.Client
-	port         int
+	// ports are the host ports forwarded to the API server of each control-plane Node, by number.
+	ports map[int]int
 	// api and apiPort are set when the cluster has a Node API.
 	api     *NodeAPI
 	apiPort int
 }
 
 func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
-	port, err := freePort()
-	if err != nil {
-		return nil, fmt.Errorf("pick a host port for the API server: %w", err)
+	g := &gaonFiles{caDir: filepath.Join(spec.Dir, "ca"), guest: filepath.Join(spec.Dir, "guest.json"), ports: map[int]int{}}
+	for i := 1; spec.controlPlane(i) && i <= spec.N; i++ {
+		port, err := freePort()
+		if err != nil {
+			return nil, fmt.Errorf("pick a host port for the API server: %w", err)
+		}
+		g.ports[i] = port
 	}
-	g := &gaonFiles{caDir: filepath.Join(spec.Dir, "ca"), guest: filepath.Join(spec.Dir, "guest.json"), port: port}
 	manifest, err := json.Marshal(spec.Inputs.Guest)
 	if err != nil {
 		return nil, err
@@ -230,7 +261,7 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	a := naructl.Node{
 		CA: g.caDir, Name: c.Name, ControlPlane: c.ControlPlane, PairsAsFiles: !spec.BootPKI,
 		Address: n.IP + "/" + strconv.Itoa(ones), MAC: n.MAC, Gateway: n.Gateway, Nameservers: n.Nameservers, Search: n.Search,
-		APIServer: QEMUNetwork(1, spec.N).IP, MachinePrefix: n.MachinePrefix.String(),
+		APIServer: spec.apiServer(), MachinePrefix: n.MachinePrefix.String(),
 		Guest: g.guest, Firecracker: spec.Inputs.FirecrackerSHA256,
 		Disable: spec.Disable, Binaries: map[string]string{},
 		Out: filepath.Join(dir, "naru.yaml"), NetworkConfig: filepath.Join(dir, "network-config"),
@@ -242,17 +273,40 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	if c.ControlPlane {
 		a.ServingAddresses = []string{"127.0.0.1"}
 	}
+	if spec.ha() {
+		for i := 1; i <= spec.ControlPlanes; i++ {
+			a.Members = append(a.Members, fmt.Sprintf("node-%d=%s", i, QEMUNetwork(i, spec.N).IP))
+		}
+	}
 	for _, name := range spec.GaonBinaries {
 		a.Binaries[name] = path.Join(OverrideDir, name)
 	}
 	if err := spec.Naructl.GenNode(a); err != nil {
 		return nil, nil, err
 	}
+	if spec.ha() && c.Index == spec.EtcdProbeOn {
+		if err := addEtcdProbe(a.Out, spec); err != nil {
+			return nil, nil, err
+		}
+	}
 	if userData, err = os.ReadFile(a.Out); err != nil {
 		return nil, nil, err
 	}
 	networkConfig, err = os.ReadFile(a.NetworkConfig)
 	return userData, networkConfig, err
+}
+
+// VirtualAddress is the address of the control plane of several members on the QEMU network: the
+// one the holder takes (ADR 0024), which every agent dials and the API server's certificate names.
+const VirtualAddress = "10.78.0.100"
+
+// apiServer is the address the Nodes dial the control plane at: the virtual address of several
+// members, or the control-plane Node's.
+func (spec ClusterSpec) apiServer() string {
+	if spec.ha() {
+		return VirtualAddress
+	}
+	return QEMUNetwork(1, spec.N).IP
 }
 
 // nodeAPIFiles has naructl write the Node API's authority into the CA directory, so that the Nodes'
@@ -322,4 +376,52 @@ func swapPair(base, from, out string) error {
 		return err
 	}
 	return os.WriteFile(out, b, 0o600)
+}
+
+// ProbeAlias is the address, in the Nodes' network and in no member's list, that naru-etcdprobe adds
+// to its card and dials from.
+const ProbeAlias = "10.78.0.50/24"
+
+// addEtcdProbe appends naru-etcdprobe to the services of the user-data in file, the last to start.
+func addEtcdProbe(file string, spec ClusterSpec) error {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return err
+	}
+	var members []string
+	for i := 1; i <= spec.ControlPlanes; i++ {
+		members = append(members, QEMUNetwork(i, spec.N).IP)
+	}
+	var extra yaml.Node
+	err = yaml.Unmarshal([]byte("name: naru59-etcdprobe\nbinary: "+path.Join(fixture.GuestRoot, "bin/naru-etcdprobe")+
+		"\nargs: [-member, \""+strings.Join(members, ",")+"\", -vip, "+VirtualAddress+", -alias, "+ProbeAlias+"]\n"), &extra)
+	if err != nil {
+		return err
+	}
+	services := yamlField(yamlField(doc.Content[0], "spec"), "services")
+	if services == nil {
+		return errors.New("the user-data has no spec.services")
+	}
+	services.Content = append(services.Content, extra.Content[0])
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(file, out, 0o600)
+}
+
+func yamlField(m *yaml.Node, key string) *yaml.Node {
+	if m == nil {
+		return nil
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return m.Content[i+1]
+		}
+	}
+	return nil
 }

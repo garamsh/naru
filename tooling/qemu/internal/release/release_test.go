@@ -308,7 +308,7 @@ func TestUserData_TheServingCertificateIsIssuedForNodeOnesAddress(t *testing.T) 
 			assert.Equal(t, []string{"192.168.0.40"}, c.IPAddresses)
 		}
 	}
-	assert.ElementsMatch(t, []string{"apiserver", "scheduler", "controllers"}, names, "the agents' pairs come through signing requests")
+	assert.ElementsMatch(t, []string{"apiserver", "scheduler", "controllers", "etcd-server", "etcd-peer", "apiserver-etcd"}, names, "the agents' pairs come through signing requests")
 }
 
 func TestUserData_TwoCallsDifferInTheAuthorityTheTokensAndNothingElse(t *testing.T) {

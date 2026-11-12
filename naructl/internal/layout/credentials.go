@@ -72,7 +72,7 @@ func tlsClient(name string) []string {
 }
 
 func (m Mode) plan(name string) plan {
-	controlPlanePairs := []pairSpec{{"apiserver", "gaon-apiserver"}, {"scheduler", "gaon-scheduler"}, {"controllers", Gaon.Signer}}
+	controlPlanePairs := []pairSpec{{"apiserver", "gaon-apiserver"}, {"scheduler", "gaon-scheduler"}, {"controllers", Gaon.Signer}, etcdServer, etcdPeer, apiserverTo}
 	tokenAgent := []string{"--tls-ca", gaonPath("ca.pem"), "--bootstrap-token-file", BootstrapTokenFile, "--cert-dir", AgentCertDir}
 	switch m {
 	case WorkerFiles:

@@ -185,6 +185,20 @@ func (c *CA) Client(cn string, orgs ...string) (Pair, error) {
 	})
 }
 
+// ClientAt issues a client certificate like Client, with each of ips as an IP SAN: the identity of a
+// peer that the server it dials checks against the address it dials from (etcd does).
+func (c *CA) ClientAt(cn string, ips ...net.IP) (Pair, error) {
+	if cn == "" {
+		return Pair{}, errors.New("a client certificate needs a CN")
+	}
+	return c.issue(&x509.Certificate{
+		Subject:     pkix.Name{CommonName: cn},
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		IPAddresses: ips,
+	})
+}
+
 func (c *CA) issue(tmpl *x509.Certificate) (Pair, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

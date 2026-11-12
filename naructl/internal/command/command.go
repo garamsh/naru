@@ -196,12 +196,12 @@ func genToken(args []string, stdout, stderr io.Writer) error {
 func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen node", stderr)
 	var (
-		nameservers, serving, binaries, disable, timeServers, peers list
-		n                                                           layout.Node
-		caDir, address, gateway, apiServer                          string
-		machinePrefix, guest, extraNIC                              string
-		out, networkConfig                                          string
-		controlPlane, pairsAsFiles                                  bool
+		nameservers, serving, binaries, disable, timeServers, peers, members list
+		n                                                                    layout.Node
+		caDir, address, gateway, apiServer                                   string
+		machinePrefix, guest, extraNIC                                       string
+		out, networkConfig                                                   string
+		controlPlane, pairsAsFiles                                           bool
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")
@@ -212,7 +212,8 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.Var(&nameservers, "nameserver", "a nameserver, repeatable (with --network-config)")
 	fs.StringVar(&n.Search, "search", "", "the search domain (with --network-config)")
 	fs.StringVar(&extraNIC, "extra-nic", "", "a second card, <mac>=<cidr>, with no gateway (with --network-config)")
-	fs.StringVar(&apiServer, "api-server", "", "the control-plane Node's address, which every agent dials")
+	fs.StringVar(&apiServer, "api-server", "", "the address every agent and naructl dial: the control-plane Node's, or the virtual address of several (--member)")
+	fs.Var(&members, "member", "<name>=<address>, a control-plane Node of a control plane of several, repeatable, in priority order and the same on every member, this Node among them (with --control-plane)")
 	fs.Var(&serving, "serving-address", "another address the API server's certificate and the Node API's certificate name, repeatable")
 	fs.Var(&binaries, "binary", "<service>=<absolute path>, the executable of a service in place of the image's, repeatable")
 	fs.Var(&disable, "disable", "a service to leave out ("+strings.Join(layout.Gaon.Names(), ", ")+"), repeatable")
@@ -233,7 +234,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	if err := needs(fs, "network-config", "mac", "gateway", "nameserver", "search", "extra-nic"); err != nil {
 		return err
 	}
-	if err := needs(fs, "control-plane", "serving-address"); err != nil {
+	if err := needs(fs, "control-plane", "serving-address", "member"); err != nil {
 		return err
 	}
 	var err error
@@ -295,6 +296,14 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("--peer: %w", err)
 		}
 		n.Peers = append(n.Peers, layout.Peer{Address: a, MachinePrefix: p})
+	}
+	for _, m := range members {
+		name, addr, ok := strings.Cut(m, "=")
+		a, err := netip.ParseAddr(addr)
+		if !ok || err != nil {
+			return fmt.Errorf("--member %q is not <name>=<address>", m)
+		}
+		n.Members = append(n.Members, layout.Member{Name: name, Address: a})
 	}
 	if extraNIC != "" {
 		mac, cidr, ok := strings.Cut(extraNIC, "=")
