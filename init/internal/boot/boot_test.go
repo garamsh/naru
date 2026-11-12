@@ -65,6 +65,8 @@ type recorder struct {
 	sealErr    error
 	issueErr   error
 	startErr   error
+	apiErr     error
+	api        *store.Stored
 
 	stored  *store.Stored
 	loadErr error
@@ -132,6 +134,15 @@ func (r *recorder) Start(s config.Service) error {
 	return r.startErr
 }
 
+// apiProbe is the Node API of a recorder: it records that it started, and with what.
+type apiProbe struct{ r *recorder }
+
+func (a apiProbe) Start(st store.Stored) error {
+	a.r.calls = append(a.r.calls, "api")
+	a.r.api = &st
+	return a.r.apiErr
+}
+
 func (r *recorder) Load() (store.Stored, error) {
 	r.calls = append(r.calls, "load")
 	if r.stored == nil {
@@ -155,7 +166,7 @@ func runStored(r *recorder) (store.Stored, error) {
 	if r.network == "" {
 		r.network = validNetwork
 	}
-	return boot.Run(r, r, r, r, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return boot.Run(r, r, r, r, apiProbe{r}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestRun_StartsServicesAfterTheMachineIsReady(t *testing.T) {
@@ -163,7 +174,7 @@ func TestRun_StartsServicesAfterTheMachineIsReady(t *testing.T) {
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "network", "mount", "load", "forward", "files", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "prepare", "seal", "start mvmd"}, r.calls)
 	assert.Equal(t, []config.Family{config.IPv4}, r.forwarded)
 	require.Len(t, r.applied.Interfaces, 1)
 	assert.Equal(t, "eth0", r.applied.Interfaces[0].Name)
@@ -176,7 +187,7 @@ func TestRun_StartsAControlPlaneServiceOnlyOnAControlPlaneNode(t *testing.T) {
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "network", "mount", "load", "forward", "files", "prepare", "seal", "start mvmd", "start gaon"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "prepare", "seal", "start mvmd", "start gaon"}, r.calls)
 }
 
 // withPKI adds a spec.pki that asks for one certificate to validConfig.
@@ -206,7 +217,7 @@ func TestRun_IssuesCertificatesAfterTheNetworkAndBeforeAnyServiceStarts(t *testi
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "network", "mount", "load", "forward", "files", "issue", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "issue", "prepare", "seal", "start mvmd"}, r.calls)
 	require.Len(t, r.issuedPKI.Certificates, 1)
 	assert.Equal(t, "server", r.issuedPKI.Certificates[0].Name)
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.78.0.1")}, r.issuedTo, "the Node's addresses come from the network-config")
@@ -219,7 +230,7 @@ func TestRun_StartsNothingWhenACertificateCannotBeIssued(t *testing.T) {
 	err := run(r)
 
 	assert.ErrorIs(t, err, r.issueErr)
-	assert.Equal(t, []string{"read", "network", "mount", "load", "forward", "files", "issue"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "issue"}, r.calls)
 }
 
 func TestRun_RefusesAnInvalidConfigurationAndStartsNothing(t *testing.T) {
@@ -253,10 +264,10 @@ func TestRun_StartsNothingWhenAStepBeforeTheServicesFails(t *testing.T) {
 		"configuration cannot be read": {&recorder{raw: validConfig, readErr: boom}, []string{"read"}},
 		"network cannot be applied":    {&recorder{raw: validConfig, networkErr: boom}, []string{"read", "network"}},
 		"data disk is refused":         {&recorder{raw: validConfig, diskErr: boom}, []string{"read", "network", "mount"}},
-		"forwarding cannot be set":     {&recorder{raw: validConfig, forwardErr: boom}, []string{"read", "network", "mount", "load", "forward"}},
-		"files cannot be written":      {&recorder{raw: validConfig, filesErr: boom}, []string{"read", "network", "mount", "load", "forward", "files"}},
-		"cgroups cannot be prepared":   {&recorder{raw: validConfig, prepareErr: boom}, []string{"read", "network", "mount", "load", "forward", "files", "prepare"}},
-		"root cannot be sealed":        {&recorder{raw: validConfig, sealErr: boom}, []string{"read", "network", "mount", "load", "forward", "files", "prepare", "seal"}},
+		"forwarding cannot be set":     {&recorder{raw: validConfig, forwardErr: boom}, []string{"read", "network", "mount", "load", "api", "forward"}},
+		"files cannot be written":      {&recorder{raw: validConfig, filesErr: boom}, []string{"read", "network", "mount", "load", "api", "forward", "files"}},
+		"cgroups cannot be prepared":   {&recorder{raw: validConfig, prepareErr: boom}, []string{"read", "network", "mount", "load", "api", "forward", "files", "prepare"}},
+		"root cannot be sealed":        {&recorder{raw: validConfig, sealErr: boom}, []string{"read", "network", "mount", "load", "api", "forward", "files", "prepare", "seal"}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -266,6 +277,29 @@ func TestRun_StartsNothingWhenAStepBeforeTheServicesFails(t *testing.T) {
 			assert.Equal(t, tt.want, tt.r.calls)
 		})
 	}
+}
+
+func TestRun_StartsTheNodeAPIWithTheChosenConfigurationBeforeAnythingElseCanRefuse(t *testing.T) {
+	boom := errors.New("boom")
+	r := &recorder{raw: validConfig, forwardErr: boom}
+
+	err := run(r)
+
+	require.ErrorIs(t, err, boom)
+	require.NotNil(t, r.api, "the API started although a later step refused")
+	assert.Equal(t, "node-1", r.api.Config.Metadata.Name)
+	assert.Equal(t, 0, r.api.Revision)
+}
+
+func TestRun_RefusesWhenTheNodeAPICannotStart(t *testing.T) {
+	boom := errors.New("boom")
+	r := &recorder{raw: validConfig, apiErr: boom}
+
+	err := run(r)
+
+	assert.ErrorIs(t, err, boom)
+	assert.ErrorContains(t, err, "start the Node API")
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api"}, r.calls)
 }
 
 func TestRun_ReportsAServiceThatCannotStart(t *testing.T) {
