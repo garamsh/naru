@@ -36,8 +36,9 @@ type ClusterSpec struct {
 	Gaon bool
 	// Naructl is the naructl binary, which Gaon requires.
 	Naructl naructl.Tool
-	// BootPKI, with Gaon, has Node 1 issue its certificates from the CA its spec.pki carries; the
-	// other Nodes carry their agent's pair as files (ADR 0013).
+	// BootPKI, with Gaon, has Node 1 issue its certificates from the CA its spec.pki carries and sign
+	// the agents' requests with it, and every Node's agent get its pair through a bootstrap token
+	// (ADR 0013, ADR 0016). Without it every pair of every Node is an operator's file.
 	BootPKI bool
 	// Disable names services left out of every Node's configuration; naructl refuses a name it
 	// does not know.
@@ -150,6 +151,14 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 	if g.client, err = spec.Naructl.GenClient(g.caDir, "naru-test-host", clientDir); err != nil {
 		return nil, err
 	}
+	if spec.BootPKI {
+		// Node 1's user-data, written first, lists the token of every Node.
+		for i := 1; i <= spec.N; i++ {
+			if err := spec.Naructl.GenToken(g.caDir, fmt.Sprintf("node-%d", i)); err != nil {
+				return nil, err
+			}
+		}
+	}
 	// The CA's directory is removed once the last Node's user-data is written, key and all, so the
 	// client keeps its own copy of the certificate.
 	cert, err := os.ReadFile(g.client.CA)
@@ -177,7 +186,7 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 		return nil, nil, err
 	}
 	a := naructl.Node{
-		CA: g.caDir, Name: c.Name, ControlPlane: c.ControlPlane, PairsAsFiles: c.ControlPlane && !spec.BootPKI,
+		CA: g.caDir, Name: c.Name, ControlPlane: c.ControlPlane, PairsAsFiles: !spec.BootPKI,
 		Address: n.IP + "/" + strconv.Itoa(ones), MAC: n.MAC, Gateway: n.Gateway, Nameservers: n.Nameservers, Search: n.Search,
 		APIServer: QEMUNetwork(1, spec.N).IP, MachinePrefix: n.MachinePrefix.String(),
 		Guest: g.guest, Firecracker: spec.Inputs.FirecrackerSHA256,

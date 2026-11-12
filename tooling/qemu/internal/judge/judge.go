@@ -119,8 +119,9 @@ func Issuance(certificates ...string) []Expect {
 }
 
 // GaonIssued are the certificates the control-plane Node of the QEMU tests' spec.pki test has init
-// issue: the API server's, the scheduler's, the controllers' and its own agent's.
-var GaonIssued = []string{"apiserver", "scheduler", "controllers", "agent"}
+// issue: the API server's, the scheduler's and the controllers'. The agent's pair is issued by gaon
+// through a signing request, not by init (ADR 0016).
+var GaonIssued = []string{"apiserver", "scheduler", "controllers"}
 
 // Probe is what the console of the Node that runs the probe shows: every check ok, no check
 // failed, the probe finished, and init restarted mvmd.

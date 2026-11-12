@@ -61,7 +61,7 @@ func run() error {
 	gaonBin := flag.String("gaon-bin", "", "directory of gaon binaries (gaon-apiserver, gaon-scheduler, gaon-controllers, gaon-node-agent) the services run in place of the image's")
 	extra := flag.String("inputs", "", "directory copied to /var/lib/naru/inputs/extra/ on every Node")
 	disable := flag.String("disable", "", "comma-separated services left out of every Node's configuration: "+strings.Join(disableNames, ", "))
-	bootPKI := flag.Bool("boot-pki", true, "node-1 issues its certificates at boot from spec.pki (false: every Node carries its pairs as files)")
+	bootPKI := flag.Bool("boot-pki", true, "node-1 issues its certificates at boot from spec.pki and signs the agents' requests, each agent presents a bootstrap token (false: every Node carries its pairs as files)")
 	timeout := flag.Duration("timeout", 5*time.Minute, "how long the Nodes have to come up")
 	flag.Parse()
 	if *release == "" || *dir == "" {

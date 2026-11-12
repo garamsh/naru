@@ -43,6 +43,13 @@ func (t Tool) run(args ...string) error {
 // GenCA has naructl write the cluster's CA, ca.pem and ca.key, into dir.
 func (t Tool) GenCA(dir string) error { return t.run("gen", "ca", "--out", dir) }
 
+// GenToken has naructl write the bootstrap token of the Node of that name next to the CA in caDir,
+// if there is none. The control-plane Node's user-data lists the tokens there are when it is written,
+// so every Node's token is made before the first gen node.
+func (t Tool) GenToken(caDir, name string) error {
+	return t.run("gen", "token", "--ca", caDir, "--name", name)
+}
+
 // Client is the files of a client pair and the CA that signed it.
 type Client struct {
 	CA, Cert, Key string
@@ -58,8 +65,10 @@ func (t Tool) GenClient(caDir, cn, out string) (Client, error) {
 
 // Node is the arguments of gen node; empty ones are left to naructl's default or refusal.
 type Node struct {
-	CA, Name                      string
-	ControlPlane, PairsAsFiles    bool
+	CA, Name     string
+	ControlPlane bool
+	// PairsAsFiles carries operator-issued pairs as files in place of a bootstrap token.
+	PairsAsFiles                  bool
 	Address, MAC, Gateway, Search string
 	Nameservers                   []string
 	ExtraNIC                      string

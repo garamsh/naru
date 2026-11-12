@@ -57,10 +57,10 @@ func UserDataName(index int) string { return fmt.Sprintf("naru-node-%d.test.yaml
 
 // UserData has the naructl binary write the user-data files by name (UserDataName), each running
 // gaon: mvmd, the registry, etcd and gaon's control plane on node-1, and gaon's Node Agent on both.
-// The certificates of the cluster are new at each call, from a CA that lives in a directory removed
-// before UserData returns, so its private key is dropped: every pair is a file of spec.files
-// (--pairs-as-files), since a spec.pki would carry the CA's key into a public asset, and no file
-// carries a client pair for an operator.
+// The CA is new at each call and is a test authority: node-1's user-data carries it, private key
+// included, in spec.pki, so that its controllers sign the agents' requests (ADR 0016), and every
+// Node carries a bootstrap token. The CA's directory is removed before UserData returns, so the key
+// is in no file but node-1's user-data, and no file carries a client pair for an operator.
 // guest is the guest manifest's path, and firecracker the digest of the Firecracker binary.
 func UserData(tool naructl.Tool, guest, firecracker string) (map[string][]byte, error) {
 	work, err := os.MkdirTemp("", "naru15-userdata-")
@@ -72,13 +72,19 @@ func UserData(tool naructl.Tool, guest, firecracker string) (map[string][]byte, 
 	if err := tool.GenCA(ca); err != nil {
 		return nil, fmt.Errorf("make the CA: %w", err)
 	}
+	for i := 1; i <= Nodes; i++ {
+		// node-1's user-data, written first, lists the token of every Node.
+		if err := tool.GenToken(ca, Deployment(i).Name); err != nil {
+			return nil, err
+		}
+	}
 	out := map[string][]byte{}
 	for i := 1; i <= Nodes; i++ {
 		d := Deployment(i)
 		p := filepath.Join(work, UserDataName(i))
 		if err := tool.GenNode(naructl.Node{
 			CA: ca, Name: d.Name, ControlPlane: i == 1, Address: d.Address, APIServer: APIServer, MachinePrefix: d.MachinePrefix,
-			Guest: guest, Firecracker: firecracker, PairsAsFiles: i == 1, Out: p,
+			Guest: guest, Firecracker: firecracker, Out: p,
 		}); err != nil {
 			return nil, err
 		}

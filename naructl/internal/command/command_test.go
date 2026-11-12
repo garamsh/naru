@@ -133,7 +133,10 @@ type userData struct {
 		}
 		Files []struct{ Path, Mode, Content string }
 		PKI   *struct {
-			Authorities  []struct{ Name, Certificate, Key, CertificatePath string }
+			Authorities []struct {
+				Name, Certificate, Key, CertificatePath string
+				KeyPath                                 string `yaml:"keyPath"`
+			}
 			Certificates []struct {
 				Name, Usage   string
 				CommonName    string   `yaml:"commonName"`
@@ -252,16 +255,85 @@ func TestGenNode_ControlPlaneIssuesFromSpecPKIAndCarriesTheCAKeyOnlyThere(t *tes
 		}
 	}
 	assert.Equal(t, map[string][]string{
-		"apiserver": {"gaon-apiserver"}, "scheduler": {"gaon-scheduler"}, "controllers": {"gaon-controllers"}, "agent": {"gaon-node-agent"},
-	}, issued)
+		"apiserver": {"gaon-apiserver"}, "scheduler": {"gaon-scheduler"}, "controllers": {"gaon-controllers"},
+	}, issued, "the agent's pair is not issued here: it comes through a signing request")
+	assert.Equal(t, "/run/gaon/ca.key", u.Spec.PKI.Authorities[0].KeyPath, "the controllers sign with the key init writes")
+	var files []string
 	for _, f := range u.Spec.Files {
-		assert.NotContains(t, f.Path, "/run/gaon/", "no pair is carried as a file")
+		files = append(files, f.Path)
+	}
+	assert.ElementsMatch(t, []string{"/run/mvmd/config.json", "/run/gaon/bootstrap-token", "/run/gaon/bootstrap-tokens"}, files, "no pair is carried as a file")
+}
+
+func TestGenNode_TheControlPlaneListsTheTokenOfEveryNodeThatHasOneAndEachNodeHoldsItsOwn(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "token", "--ca", dep.ca, "--name", "node-2")
+	first := parse(t, dep.node(t, "node-1", "--control-plane"))
+	second := parse(t, dep.node(t, "node-2"))
+
+	own1, _ := first.file("/run/gaon/bootstrap-token")
+	own2, _ := second.file("/run/gaon/bootstrap-token")
+	list, _ := first.file("/run/gaon/bootstrap-tokens")
+	assert.Regexp(t, `^[a-z0-9]{6}\.[a-z0-9]{16}\n$`, own1)
+	assert.NotEqual(t, own1, own2)
+	assert.Equal(t, strings.Join([]string{own1, own2}, ""), list, "node-1, then node-2, one per line")
+	for _, f := range append(first.Spec.Files, second.Spec.Files...) {
+		if strings.Contains(f.Path, "bootstrap-token") {
+			assert.Equal(t, "0600", f.Mode, f.Path)
+		}
+	}
+	_, ok := second.file("/run/gaon/bootstrap-tokens")
+	assert.False(t, ok, "a worker holds no list")
+
+	again := parse(t, dep.node(t, "node-2"))
+	own2again, _ := again.file("/run/gaon/bootstrap-token")
+	assert.Equal(t, own2, own2again, "a second gen node reads the token it made")
+}
+
+func TestGenNode_TheServicesTakeTheTokensAndTheSigner(t *testing.T) {
+	dep := newDeployment(t)
+	args := func(u userData, name string) string {
+		for _, s := range u.Spec.Services {
+			if s.Name == name {
+				return strings.Join(s.Args, " ")
+			}
+		}
+		return ""
+	}
+	first, second := parse(t, dep.node(t, "node-1", "--control-plane")), parse(t, dep.node(t, "node-2"))
+
+	assert.Contains(t, args(first, "gaon-apiserver"), "--bootstrap-token-file /run/gaon/bootstrap-tokens")
+	assert.Contains(t, args(first, "gaon-controllers"), "--signing-cert /run/gaon/ca.pem --signing-key /run/gaon/ca.key")
+	assert.NotContains(t, args(first, "gaon-scheduler"), "--signing")
+	for _, u := range []userData{first, second} {
+		agent := args(u, "gaon-node-agent")
+		assert.Contains(t, agent, "--tls-ca /run/gaon/ca.pem --bootstrap-token-file /run/gaon/bootstrap-token --cert-dir /var/lib/naru/gaon-node-agent")
+		assert.NotContains(t, agent, "--tls-cert")
+		assert.NotContains(t, agent, "--tls-key")
 	}
 }
 
-func TestGenNode_WorkerCarriesTheCACertificateAndItsOwnAgentPairAndNeverTheCAKey(t *testing.T) {
+func TestGenToken_NeedsTheAuthorityAndANameAndKeepsTheTokenItWrote(t *testing.T) {
 	dep := newDeployment(t)
-	path := dep.node(t, "node-2")
+	_, err := run(t, "gen", "token", "--ca", dep.ca)
+	assert.Error(t, err, "a name is required")
+	_, err = run(t, "gen", "token", "--ca", t.TempDir(), "--name", "node-2")
+	assert.Error(t, err, "a directory with no authority is refused")
+	_, err = run(t, "gen", "token", "--ca", dep.ca, "--name", "Node_2")
+	assert.Error(t, err, "the name is a DNS label")
+
+	mustRun(t, "gen", "token", "--ca", dep.ca, "--name", "node-2")
+	before, err := os.ReadFile(filepath.Join(dep.ca, "tokens", "node-2"))
+	require.NoError(t, err)
+	mustRun(t, "gen", "token", "--ca", dep.ca, "--name", "node-2")
+	after, err := os.ReadFile(filepath.Join(dep.ca, "tokens", "node-2"))
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "a second run does not replace the token")
+}
+
+func TestGenNode_WorkerWithPairsAsFilesCarriesTheCACertificateAndItsOwnAgentPairAndNeverTheCAKey(t *testing.T) {
+	dep := newDeployment(t)
+	path := dep.node(t, "node-2", "--pairs-as-files")
 
 	assert.Contains(t, validate(t, path), "valid; node=naru-node-2")
 	u := parse(t, path)
@@ -295,6 +367,26 @@ func TestGenNode_WorkerCarriesTheCACertificateAndItsOwnAgentPairAndNeverTheCAKey
 		}
 	}
 	assert.Contains(t, agentArgs, "--api-server https://192.168.0.10:6443/apis/compute.gaon.garam.sh/v1alpha1 --node-name node-2")
+	assert.Contains(t, agentArgs, "--tls-cert /run/gaon/agent.pem --tls-key /run/gaon/agent.key")
+	assert.NotContains(t, agentArgs, "--bootstrap-token-file", "an operator's pair and a token are two ways in")
+	_, ok = u.file("/run/gaon/bootstrap-token")
+	assert.False(t, ok)
+	_, err = os.Stat(filepath.Join(dep.ca, "tokens"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "no token is made for a Node that has none")
+}
+
+func TestGenNode_WorkerWithATokenCarriesTheCACertificateAndTheTokenAndNoKey(t *testing.T) {
+	dep := newDeployment(t)
+	path := dep.node(t, "node-2")
+
+	assert.Contains(t, validate(t, path), "valid; node=naru-node-2")
+	u := parse(t, path)
+	assert.Nil(t, u.Spec.PKI)
+	var files []string
+	for _, f := range u.Spec.Files {
+		files = append(files, f.Path)
+	}
+	assert.ElementsMatch(t, []string{"/run/mvmd/config.json", "/run/gaon/ca.pem", "/run/gaon/bootstrap-token"}, files, "a worker holds no key")
 }
 
 func TestGenNode_PairsAsFilesGivesTheControlPlaneItsPairsAndNoSpecPKI(t *testing.T) {
@@ -353,15 +445,15 @@ func TestGenNode_ServingAddressIsNamedByTheCertificateInitIssues(t *testing.T) {
 
 func TestGenNode_DisableLeavesAServiceOutOfTheListAndOfTheRestartListsAndNaruInitAccepts(t *testing.T) {
 	dep := newDeployment(t)
-	path := dep.node(t, "node-1", "--control-plane", "--disable", "gaon-controllers", "--disable", "registry")
+	path := dep.node(t, "node-1", "--control-plane", "--disable", "gaon-scheduler", "--disable", "registry")
 
 	validate(t, path)
 	u := parse(t, path)
-	assert.NotContains(t, u.names(), "gaon-controllers")
+	assert.NotContains(t, u.names(), "gaon-scheduler")
 	assert.NotContains(t, u.names(), "registry")
-	assert.Contains(t, u.names(), "gaon-scheduler")
+	assert.Contains(t, u.names(), "gaon-controllers")
 	for _, c := range u.Spec.PKI.Certificates {
-		assert.NotContains(t, c.Restart, "gaon-controllers", c.Name)
+		assert.NotContains(t, c.Restart, "gaon-scheduler", c.Name)
 	}
 	out, err := run(t, "gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"), "--disable", "mvmd")
@@ -476,7 +568,7 @@ func TestGenNode_ABrokenDescriptionIsRefusedAndAFileInitRejectsIsNotMistakenForV
 
 func TestGenNode_UserDataIsPrivateAndTwoRunsDifferOnlyInTheirKeysAndCertificates(t *testing.T) {
 	dep := newDeployment(t)
-	one, two := dep.node(t, "node-2"), dep.node(t, "node-2")
+	one, two := dep.node(t, "node-2", "--pairs-as-files"), dep.node(t, "node-2", "--pairs-as-files")
 
 	info, err := os.Stat(one)
 	require.NoError(t, err)
@@ -487,6 +579,7 @@ func TestGenNode_UserDataIsPrivateAndTwoRunsDifferOnlyInTheirKeysAndCertificates
 	mvmdB, _ := b.file("/run/mvmd/config.json")
 	assert.Equal(t, mvmdA, mvmdB)
 	agentA, _ := a.file("/run/gaon/agent.key")
+	assert.NotEmpty(t, agentA)
 	agentB, _ := b.file("/run/gaon/agent.key")
 	assert.NotEqual(t, agentA, agentB, "each run issues a new pair")
 }
@@ -536,7 +629,6 @@ func TestGenNode_AFlagGivenWithoutWhatMakesItApplyIsRefused(t *testing.T) {
 		{"--search", "naru.test", "--network-config"},
 		{"--extra-nic", "02:00:00:00:00:02=10.0.2.15/24", "--network-config"},
 		{"--serving-address", "127.0.0.1", "--control-plane"},
-		{"--pairs-as-files", "", "--control-plane"},
 	} {
 		args := []string{
 			"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",

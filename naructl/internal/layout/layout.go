@@ -40,6 +40,12 @@ const (
 
 	// GaonCertDir holds the certificate files init writes; the services name them.
 	GaonCertDir = "/run/gaon"
+	// AgentCertDir is where the Node Agent keeps the pair it was issued, on the data disk so that it
+	// survives a reboot; BootstrapTokenFile is the Node's own token, and BootstrapTokensFile the
+	// control-plane Node's list of every Node's token.
+	AgentCertDir        = DataMount + "/gaon-node-agent"
+	BootstrapTokenFile  = GaonCertDir + "/bootstrap-token"
+	BootstrapTokensFile = GaonCertDir + "/bootstrap-tokens"
 	// APIPort is the TCP port gaon-apiserver serves mutual TLS on.
 	APIPort = "6443"
 	// EtcdDir is etcd's data directory, on the data disk beside mvmd's state directory.
@@ -94,11 +100,16 @@ type Node struct {
 	Guest             Manifest
 	FirecrackerSHA256 string
 
-	// PairsAsFiles has the control-plane Node carry its pairs as files, as a worker carries its
-	// agent's, in place of issuing them at boot from the CA that spec.pki carries.
+	// PairsAsFiles has every pair of the Node an operator's file, issued here from CA: the agent's,
+	// and on a control-plane Node the API server's, the scheduler's and the controllers', with no
+	// token, no spec.pki and no signing key on the Node.
 	PairsAsFiles bool
-	// CA is the cluster's authority. Only the control-plane Node carries its key, and only when it
-	// issues its pairs at boot.
+	// Token is the Node's bootstrap token, which its agent presents for a certificate signing
+	// request. Tokens, on a control-plane Node, is every Node's token, its own included: the API
+	// server's token file. Neither is set with PairsAsFiles.
+	Token  string
+	Tokens []string
+	// CA is the cluster's authority. Only a control-plane Node that issues carries its key.
 	CA *pki.CA
 }
 
@@ -127,6 +138,7 @@ type pkiAuthority struct {
 	Certificate     string `yaml:"certificate"`
 	Key             string `yaml:"key,omitempty"`
 	CertificatePath string `yaml:"certificatePath"`
+	KeyPath         string `yaml:"keyPath,omitempty"`
 }
 
 type pkiCertificate struct {
@@ -178,6 +190,9 @@ func (n Node) Check() error {
 	case n.CA == nil:
 		return errors.New("the cluster's authority is not set")
 	}
+	if err := n.checkTokens(); err != nil {
+		return err
+	}
 	if err := n.Guest.Check(); err != nil {
 		return err
 	}
@@ -192,6 +207,35 @@ func (n Node) Check() error {
 		}
 		if !path.IsAbs(bin) {
 			return fmt.Errorf("the binary of %s, %q, is not an absolute path", name, bin)
+		}
+	}
+	return nil
+}
+
+// checkTokens refuses a token the Node cannot use: one missing, one that is not in the form gaon
+// reads, a list on a worker, or a token with the pairs as files.
+func (n Node) checkTokens() error {
+	if n.PairsAsFiles {
+		if n.Token != "" || len(n.Tokens) > 0 {
+			return errors.New("a Node whose pairs are files has no use for a bootstrap token")
+		}
+		return nil
+	}
+	switch {
+	case n.Token == "":
+		return errors.New("the Node has no bootstrap token (and its pairs are not files)")
+	case !pki.ValidToken(n.Token):
+		return errors.New("the bootstrap token is not <id>.<secret>, [a-z0-9]{6}.[a-z0-9]{16}")
+	case !n.ControlPlane && len(n.Tokens) > 0:
+		return errors.New("only the control-plane Node lists tokens: its API server reads them")
+	case n.ControlPlane && !slices.Contains(n.Tokens, n.Token):
+		return errors.New("the control-plane Node's token list does not hold its own token")
+	case n.ControlPlane && slices.Contains(n.Disable, "gaon-controllers"):
+		return errors.New("gaon-controllers signs the agents' requests: a control-plane Node that is not left to operator pairs (--pairs-as-files) cannot disable it")
+	}
+	for _, t := range n.Tokens {
+		if !pki.ValidToken(t) {
+			return errors.New("a token in the list is not <id>.<secret>, [a-z0-9]{6}.[a-z0-9]{16}")
 		}
 	}
 	return nil
@@ -240,6 +284,7 @@ func (n Node) UserData() ([]byte, error) {
 		return nil, err
 	}
 	c.Spec.Files = append(c.Spec.Files, certFiles...)
+	c.Spec.Files = append(c.Spec.Files, n.tokenFiles()...)
 	if n.issues() {
 		c.Spec.PKI = n.pkiSpec()
 	}
@@ -271,9 +316,22 @@ func (n Node) withoutDisabled(c *nodeConfig) {
 	}
 }
 
-// certFiles are the certificate files of the Node: the CA's certificate and the agent's pair on
-// every Node, and, on a control-plane Node that does not issue, the pairs of the API server, the
-// scheduler and the controllers. The keys are 0600 and the certificates 0644. None carries the CA's key.
+// tokenFiles are the Node's token, and the list of every token on a control-plane Node, 0600.
+func (n Node) tokenFiles() []file {
+	if n.PairsAsFiles {
+		return nil
+	}
+	files := []file{{Path: BootstrapTokenFile, Mode: "0600", Content: n.Token + "\n"}}
+	if n.ControlPlane {
+		files = append(files, file{Path: BootstrapTokensFile, Mode: "0600", Content: strings.Join(n.Tokens, "\n") + "\n"})
+	}
+	return files
+}
+
+// certFiles are the certificate files of the Node: the CA's certificate on every Node, the agent's
+// pair when the pairs are files, and, on a control-plane Node that does not issue, the pairs of the
+// API server, the scheduler and the controllers. The keys are 0600 and the certificates 0644. None
+// carries the CA's key.
 func (n Node) certFiles() ([]file, error) {
 	if n.issues() {
 		return nil, nil // init writes the CA and every pair from spec.pki
@@ -289,7 +347,10 @@ func (n Node) certFiles() ([]file, error) {
 		return n.CA.Client(cn)
 	}
 	files := []file{{Path: gaonPath("ca.pem"), Mode: "0644", Content: string(n.CA.CertPEM)}}
-	issued := []struct{ name, cn string }{{"agent", n.Name}}
+	var issued []struct{ name, cn string }
+	if n.PairsAsFiles {
+		issued = append(issued, struct{ name, cn string }{"agent", n.Name})
+	}
 	if n.ControlPlane {
 		issued = append(issued, []struct{ name, cn string }{
 			{"apiserver", "gaon-apiserver"}, {"scheduler", "gaon-scheduler"}, {"controllers", "gaon-controllers"},
@@ -309,8 +370,9 @@ func (n Node) certFiles() ([]file, error) {
 }
 
 // pkiSpec is the control-plane Node's spec.pki: the cluster's CA with its key, written where the
-// services name it, and the four pairs the Node's services take, each restarting its service when
-// init renews it. The paths are those the files take otherwise, so services() is the same either way.
+// services name it (the controllers sign agents' requests with it), and the three pairs the Node's
+// services take, each restarting its service when init renews it. The agent's pair is not among
+// them: the agent is issued its own through the API server. The paths are those the files take otherwise, so services() is the same either way.
 // The serving certificate names the Node's addresses and the loopback (nodeAddresses), APIServer and
 // ServingAddresses.
 func (n Node) pkiSpec() *pkiSpec {
@@ -332,13 +394,12 @@ func (n Node) pkiSpec() *pkiSpec {
 	}
 	return &pkiSpec{
 		Authorities: []pkiAuthority{{
-			Name: "gaon", Certificate: string(n.CA.CertPEM), Key: string(n.CA.KeyPEM), CertificatePath: gaonPath("ca.pem"),
+			Name: "gaon", Certificate: string(n.CA.CertPEM), Key: string(n.CA.KeyPEM), CertificatePath: gaonPath("ca.pem"), KeyPath: gaonPath("ca.key"),
 		}},
 		Certificates: []pkiCertificate{
 			apiserver,
 			cert("scheduler", "gaon-scheduler", "client", "gaon-scheduler"),
 			cert("controllers", "gaon-controllers", "client", "gaon-controllers"),
-			cert("agent", n.Name, "client", "gaon-node-agent"),
 		},
 	}
 }
@@ -351,6 +412,17 @@ func (n Node) pkiSpec() *pkiSpec {
 func (n Node) services() []service {
 	client := func(name string) []string {
 		return []string{"--tls-ca", gaonPath("ca.pem"), "--tls-cert", gaonPath(name + ".pem"), "--tls-key", gaonPath(name + ".key")}
+	}
+	// The agent presents its token and keeps the pair it is issued in AgentCertDir, or carries a pair
+	// as a file. The controllers sign with the CA the Node carries, when it carries one.
+	agentCredentials := client("agent")
+	if !n.PairsAsFiles {
+		agentCredentials = []string{"--tls-ca", gaonPath("ca.pem"), "--bootstrap-token-file", BootstrapTokenFile, "--cert-dir", AgentCertDir}
+	}
+	var apiserverTokens, signer []string
+	if n.issues() {
+		apiserverTokens = []string{"--bootstrap-token-file", BootstrapTokensFile}
+		signer = []string{"--signing-cert", gaonPath("ca.pem"), "--signing-key", gaonPath("ca.key")}
 	}
 	return []service{
 		{
@@ -372,10 +444,10 @@ func (n Node) services() []service {
 		},
 		{
 			Name: "gaon-apiserver", Binary: n.binary("gaon-apiserver"), ControlPlane: true,
-			Args: []string{
+			Args: append([]string{
 				"--listen", "0.0.0.0:" + APIPort, "--etcd-endpoints", EtcdClientURL,
 				"--tls-client-ca", gaonPath("ca.pem"), "--tls-cert", gaonPath("apiserver.pem"), "--tls-key", gaonPath("apiserver.key"),
-			},
+			}, apiserverTokens...),
 		},
 		{
 			Name: "gaon-scheduler", Binary: n.binary("gaon-scheduler"), ControlPlane: true,
@@ -383,11 +455,11 @@ func (n Node) services() []service {
 		},
 		{
 			Name: "gaon-controllers", Binary: n.binary("gaon-controllers"), ControlPlane: true,
-			Args: append([]string{"--api", n.apiRoot()}, client("controllers")...),
+			Args: append(append([]string{"--api", n.apiRoot()}, client("controllers")...), signer...),
 		},
 		{
 			Name: "gaon-node-agent", Binary: n.binary("gaon-node-agent"),
-			Args: append([]string{"--api-server", n.apiRoot(), "--node-name", n.Name, "--mvmd-socket", MvmdSocket}, client("agent")...),
+			Args: append([]string{"--api-server", n.apiRoot(), "--node-name", n.Name, "--mvmd-socket", MvmdSocket}, agentCredentials...),
 		},
 	}
 }
