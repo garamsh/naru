@@ -235,8 +235,6 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	if n.CA, err = pki.Load(caDir); err != nil {
 		return err
 	}
-	// The Node's own token is made if there is none. A control-plane Node's API server lists the
-	// token of every Node whose file is in the directory now: run gen token for the others first.
 	if _, err := os.Stat(filepath.Join(caDir, pki.APIDir)); err == nil {
 		if n.API, err = pki.Load(filepath.Join(caDir, pki.APIDir)); err != nil {
 			return fmt.Errorf("the Node API authority: %w", err)
@@ -245,6 +243,8 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	n.Mode = layout.ModeOf(controlPlane, pairsAsFiles)
+	// The Node's own token is made if there is none. A control-plane Node's API server lists the
+	// token of every Node whose file is in the directory now: run gen token for the others first.
 	if n.Token, n.Tokens, err = n.Mode.LoadTokens(caDir, n.Name); err != nil {
 		return err
 	}
