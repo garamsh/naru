@@ -48,4 +48,5 @@ CONFIG_IP_PNP=y
 CONFIG_EFI=y
 CONFIG_EFI_STUB=y
 CONFIG_CMDLINE_BOOL=y
-CONFIG_CMDLINE="console=ttyS0 panic=-1 loglevel=4 initrd=/INITRD\.GZ"
+CONFIG_EFIVAR_FS=y
+CONFIG_CMDLINE="console=ttyS0 panic=-1 loglevel=4"

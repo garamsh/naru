@@ -3,6 +3,8 @@
 # Every entry is owned by 0:0; the archive's mtimes are fixed by gen_init_cpio's -t.
 dir /bin 0755 0 0
 dir /dev 0755 0 0
+# The kernel's built-in initramfs, whose list has this node, is used only when none is embedded.
+nod /dev/console 0600 0 0 c 5 1
 dir /etc 0755 0 0
 dir /proc 0755 0 0
 dir /run 0755 0 0

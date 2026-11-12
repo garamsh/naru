@@ -30,6 +30,9 @@ type Spec struct {
 	// Disk is the image's naru.img, which the Node boots under OVMF: no -kernel, -initrd or
 	// -append, and the kernel's built-in command line is the only one.
 	Disk string
+	// WritableDisk lets the Node write to Disk, which is then the Node's own copy and not the
+	// image's: the boot disk is read-only otherwise. The test of A/B boot writes the ESP.
+	WritableDisk bool
 	// Dir receives the disks and the console log.
 	Dir string
 	// Mcast is the multicast address and port, "230.78.0.1:5000", of the network the
@@ -189,7 +192,7 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		"-drive", "if=pflash,format=raw,unit=0,readonly=on,file=" + OVMFCode,
 		"-drive", "if=pflash,format=raw,unit=1,file=" + vars,
 		"-device", "virtio-scsi-pci,id=scsihw0",
-		"-drive", "if=none,id=boot,format=raw,readonly=on,file=" + spec.Disk,
+		"-drive", "if=none,id=boot,format=raw," + bootDiskAccess(spec) + "file=" + spec.Disk,
 		"-device", "scsi-hd,bus=scsihw0.0,drive=boot,bootindex=0",
 		"-drive", "if=none,id=data,format=raw,file=" + dataDisk,
 		"-device", "scsi-hd,bus=scsihw0.0,drive=data",
@@ -220,6 +223,15 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		args = append(args, "-rtc", "base="+spec.RTCBase+",clock=vm")
 	}
 	return append(args, "-display", "none", "-monitor", "none", "-serial", "file:"+console, "-no-reboot"), nil
+}
+
+// bootDiskAccess is the drive options that make the boot disk read-only, unless the Spec says the
+// Node may write it.
+func bootDiskAccess(spec Spec) string {
+	if spec.WritableDisk {
+		return ""
+	}
+	return "readonly=on,"
 }
 
 // Console is what the Node has written to its serial console so far.
