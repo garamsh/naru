@@ -18,6 +18,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
+
+	"github.com/garamsh/naru/naructl/internal/client"
 )
 
 // apiAuthority makes the Node API authority of a deployment and returns the cluster's directory.
@@ -126,7 +128,11 @@ func TestGenNode_WithAnAPIAuthorityCarriesSpecAPIOfAPairItIssuedAndNeverTheAutho
 			require.NoError(t, err)
 			b, err := os.ReadFile(out)
 			require.NoError(t, err)
-			assert.NotContains(t, string(b), strings.TrimSpace(string(key)), "no Node carries the authority's key")
+			for _, line := range strings.Split(strings.TrimSpace(string(key)), "\n") {
+				if !strings.HasPrefix(line, "-----") {
+					assert.NotContains(t, string(b), line, "no Node carries the authority's key")
+				}
+			}
 			assert.NotContains(t, string(b), "listen:", "init's default listen")
 			validate(t, out)
 		})
@@ -603,4 +609,28 @@ func TestClientCommands_ANodeThatStopsAtTLS12IsRefused(t *testing.T) {
 
 	require.Error(t, err, out)
 	assert.Empty(t, old.requests, "no request crossed a TLS 1.2 connection")
+}
+
+func TestClientCommands_ANodeWhoseCertificateTheFilesAuthorityDidNotIssueIsRefused(t *testing.T) {
+	dep := newDeployment(t)
+	apiAuthority(t, dep)
+	node := newFakeNode(t, dep)
+	good := node.clientFile(t, dep, "reader")
+
+	_, err := run(t, "version", "--config", good)
+	require.NoError(t, err, "control: the file whose CA issued the Node's certificate is served")
+	before := len(node.requests)
+
+	f, err := client.LoadFile(good)
+	require.NoError(t, err)
+	gaon, err := os.ReadFile(filepath.Join(dep.ca, "ca.pem"))
+	require.NoError(t, err)
+	f.CA = string(gaon)
+	path := filepath.Join(t.TempDir(), "wrong.yaml")
+	require.NoError(t, f.Write(path))
+
+	out, err := run(t, "version", "--config", path)
+	require.Error(t, err, out)
+	assert.Contains(t, err.Error(), "certificate")
+	assert.Len(t, node.requests, before, "no request crossed a connection to an unverified Node")
 }
