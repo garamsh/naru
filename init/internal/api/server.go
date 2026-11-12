@@ -21,6 +21,7 @@ import (
 	"github.com/garamsh/naru/init/internal/config"
 	"github.com/garamsh/naru/init/internal/service"
 	"github.com/garamsh/naru/init/internal/store"
+	"github.com/garamsh/naru/init/internal/timesync"
 )
 
 // Engine is the configuration the Node holds and the means to change it.
@@ -65,9 +66,11 @@ type Server struct {
 	mu     sync.Mutex
 	chosen store.Stored // what GET /v1/config reports until an engine is attached
 	engine Engine
-	srv    *http.Server
-	addr   net.Addr
-	done   chan struct{} // closed when the serving goroutine ends
+	// timeStatus reports the clock; nil until UseTime.
+	timeStatus func() timesync.Status
+	srv        *http.Server
+	addr       net.Addr
+	done       chan struct{} // closed when the serving goroutine ends
 }
 
 // New returns a Server that reads the Node through deps.

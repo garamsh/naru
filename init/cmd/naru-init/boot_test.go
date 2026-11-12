@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/garamsh/naru/init/internal/pki"
 	"github.com/garamsh/naru/init/internal/pkitest"
 	"github.com/garamsh/naru/init/internal/store"
+	"github.com/garamsh/naru/init/internal/timesync"
 )
 
 const nodeNetwork = `version: 1
@@ -72,8 +74,13 @@ func (n *node) EnableForwarding([]config.Family) error {
 }
 func (n *node) WriteFiles([]config.File) error { return nil }
 func (n *node) SealRoot() error                { return nil }
-func (n *node) Prepare() error                 { return nil }
-func (n *node) Restart(name string)            { n.restarts <- name }
+func (n *node) SyncTime([]string) (timesync.Result, error) {
+	return timesync.Result{}, nil
+}
+func (n *node) RunTime(ctx context.Context, _ *slog.Logger) { <-ctx.Done() }
+func (n *node) TimeStatus() timesync.Status                 { return timesync.Status{} }
+func (n *node) Prepare() error                              { return nil }
+func (n *node) Restart(name string)                         { n.restarts <- name }
 func (n *node) Start(svc config.Service) error {
 	if svc.Name == "b" {
 		return errors.New("b cannot start")
@@ -138,3 +145,5 @@ spec:
 type noAPI struct{}
 
 func (noAPI) Start(store.Stored) error { return nil }
+
+func (noAPI) UseTime(func() timesync.Status) {}

@@ -53,6 +53,8 @@ type Spec struct {
 	Network      Network   `yaml:"network"`
 	Files        []File    `yaml:"files"`
 	PKI          PKI       `yaml:"pki"`
+	// Time is how the Node keeps its clock. It is nil when init keeps none.
+	Time *Time `yaml:"time,omitempty"`
 	// API is the Node API's listener. It is nil when the Node serves none.
 	API *API `yaml:"api,omitempty"`
 }

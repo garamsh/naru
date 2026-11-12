@@ -31,7 +31,7 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client> [flag
   gen token   --ca <dir> --name <name>              write the Node's bootstrap token to <dir>/tokens/<name>, if none is there
   gen node    --ca <dir> --name <name> --address <cidr> --mac <mac> --gateway <ip> --nameserver <ip>
               --api-server <ip> --machine-prefix <cidr> --guest <guest.json> --firecracker-sha256 <hex>
-              --out <file> [--control-plane] [more flags: naructl gen node -h]
+              --out <file> [--control-plane] [--time-server <host[:port]>] [more flags: naructl gen node -h]
 `
 
 // Run runs naructl with args, the command line without the program's name.
@@ -193,12 +193,12 @@ func genToken(args []string, stdout, stderr io.Writer) error {
 func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen node", stderr)
 	var (
-		nameservers, serving, binaries, disable list
-		n                                       layout.Node
-		caDir, address, gateway, apiServer      string
-		machinePrefix, guest, extraNIC          string
-		out, networkConfig                      string
-		controlPlane, pairsAsFiles              bool
+		nameservers, serving, binaries, disable, timeServers list
+		n                                                    layout.Node
+		caDir, address, gateway, apiServer                   string
+		machinePrefix, guest, extraNIC                       string
+		out, networkConfig                                   string
+		controlPlane, pairsAsFiles                           bool
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")
@@ -213,6 +213,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.Var(&serving, "serving-address", "another address the API server's certificate and the Node API's certificate name, repeatable")
 	fs.Var(&binaries, "binary", "<service>=<absolute path>, the executable of a service in place of the image's, repeatable")
 	fs.Var(&disable, "disable", "a service to leave out ("+strings.Join(layout.Gaon.Names(), ", ")+"), repeatable")
+	fs.Var(&timeServers, "time-server", "an SNTP server init sets the clock from, host or host:port, repeatable and asked in order (none: the clock is not set)")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.StringVar(&guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
 	fs.StringVar(&n.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
@@ -296,6 +297,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 		n.Binaries[name] = bin
 	}
 	n.Disable = disable
+	n.TimeServers = timeServers
 	if n.Guest, err = layout.ReadManifest(guest); err != nil {
 		return err
 	}

@@ -29,7 +29,8 @@ func TestGenNode_PassesEveryFieldAsItsFlagAndTheBinariesInNameOrder(t *testing.T
 		CA: "/ca", Name: "node-1", ControlPlane: true, Address: "10.78.0.1/24", APIServer: "10.78.0.1",
 		MachinePrefix: "10.200.1.0/24", Guest: "/g.json", Firecracker: "ab", Out: "/o.yaml",
 		ServingAddresses: []string{"127.0.0.1"}, ExtraNIC: "02:00:00:01:00:01=10.0.2.15/24",
-		Binaries: map[string]string{"registry": "/r", "etcd": "/e"}, Disable: []string{"gaon-scheduler"},
+		TimeServers: []string{"10.0.2.2:5123", "pool.example"},
+		Binaries:    map[string]string{"registry": "/r", "etcd": "/e"}, Disable: []string{"gaon-scheduler"},
 	}))
 
 	b, err := os.ReadFile(out)
@@ -37,7 +38,7 @@ func TestGenNode_PassesEveryFieldAsItsFlagAndTheBinariesInNameOrder(t *testing.T
 	got := strings.Split(strings.TrimSpace(string(b)), "\n")
 	assert.Equal(t, []string{"gen", "node", "--ca", "/ca", "--name", "node-1", "--address", "10.78.0.1/24"}, got[:8])
 	line := strings.Join(got, " ")
-	for _, want := range []string{"--control-plane", "--serving-address 127.0.0.1", "--extra-nic 02:00:00:01:00:01=10.0.2.15/24", "--disable gaon-scheduler", "--binary etcd=/e --binary registry=/r"} {
+	for _, want := range []string{"--control-plane", "--serving-address 127.0.0.1", "--extra-nic 02:00:00:01:00:01=10.0.2.15/24", "--time-server 10.0.2.2:5123 --time-server pool.example", "--disable gaon-scheduler", "--binary etcd=/e --binary registry=/r"} {
 		assert.Contains(t, line, want)
 	}
 	assert.NotContains(t, line, "--network-config", "no network-config unless one is asked for")

@@ -38,7 +38,8 @@ type Request struct {
 }
 
 // Action is one thing an apply does: store, start, stop, restart,
-// write-file, issue-certificate or reload-api.
+// write-file, issue-certificate, forget-certificate, reload-api, sync-time or
+// stop-time-sync.
 type Action struct {
 	Action string
 	// Target is the service, the path, the certificate name, spec.api, or
@@ -72,6 +73,13 @@ type Files interface {
 	ReplaceFile(config.File) error
 }
 
+// Time points the clock at the time servers.
+type Time interface {
+	// ConfigureTime has the clock follow servers, each a host:port, and
+	// synchronise at once in the background, or follow none when servers is empty.
+	ConfigureTime(servers []string)
+}
+
 // Certificates issues the named certificates of spec again and keeps renewing
 // the certificates of spec.
 type Certificates interface {
@@ -89,6 +97,7 @@ type Deps struct {
 	Store        Store
 	Services     Services
 	Files        Files
+	Time         Time
 	Certificates Certificates
 	API          API
 }

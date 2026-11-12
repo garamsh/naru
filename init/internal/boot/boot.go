@@ -13,6 +13,7 @@ import (
 	"github.com/garamsh/naru/init/internal/config"
 	"github.com/garamsh/naru/init/internal/netcfg"
 	"github.com/garamsh/naru/init/internal/store"
+	"github.com/garamsh/naru/init/internal/timesync"
 )
 
 // Host is the machine as the sequence needs it.
@@ -28,6 +29,9 @@ type Host interface {
 	EnableForwarding([]config.Family) error
 	// WriteFiles writes the files the configuration carries.
 	WriteFiles([]config.File) error
+	// SyncTime synchronises the clock with the servers, each a host:port, and returns the
+	// result, or an error when none answers within the bound.
+	SyncTime(servers []string) (timesync.Result, error)
 	// SealRoot remounts the root file system read-only. Every mount point
 	// the machine needs exists by then.
 	SealRoot() error
@@ -68,8 +72,8 @@ type API interface {
 // the network-config is invalid, the network cannot be brought up, the data
 // disk is refused, the Node API cannot listen, the kernel cannot be set up or
 // a certificate cannot be issued: a refusal is the same whichever service it would have kept from
-// starting. On success it returns the effective configuration and its
-// revision.
+// starting. A clock that no time server could set is not one: it is logged, and the boot goes on.
+// On success it returns the effective configuration and its revision.
 func Run(host Host, issuer Issuer, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
 	userData, networkConfig, err := host.ReadSeed()
 	if err != nil {
@@ -106,6 +110,7 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	if err := host.WriteFiles(cfg.Spec.Files); err != nil {
 		return store.Stored{}, err
 	}
+	syncTime(host, cfg.Spec.Time, log)
 	if pki := cfg.Spec.PKI; len(pki.Authorities) > 0 || len(pki.Certificates) > 0 {
 		var addrs []netip.Addr
 		for _, iface := range network.Interfaces {
@@ -134,6 +139,22 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 		}
 	}
 	return effective, nil
+}
+
+// syncTime sets the clock from spec.time once, before certificates are issued. It never refuses
+// the boot: a clock that no server could set is logged and the boot goes on, and the Node keeps
+// trying (timesync.Syncer.Run).
+func syncTime(host Host, spec *config.Time, log *slog.Logger) {
+	if spec == nil {
+		log.Info("time is not synchronised: the configuration has no spec.time")
+		return
+	}
+	res, err := host.SyncTime(spec.Addrs())
+	if err != nil {
+		log.Warn("time not synchronised; the boot goes on and init keeps trying", "err", err)
+		return
+	}
+	log.Info("time synchronised", "sync", res)
 }
 
 // choose returns the effective configuration: the stored one when its base is
