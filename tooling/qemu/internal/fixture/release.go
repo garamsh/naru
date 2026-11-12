@@ -41,12 +41,12 @@ type Release struct {
 // naru.img, the boot disk as a raw file, and inputs/, the tree of the data disk. It needs
 // qemu-img and /sbin/debugfs, which the Nodes need as well.
 func ReadRelease(dir, work string) (Release, error) {
-	guests, err := filepath.Glob(filepath.Join(dir, "naru-guest-*.json"))
-	if err != nil || len(guests) != 1 {
-		return Release{}, fmt.Errorf("%s holds %d naru-guest-<version>.json files, not one", dir, len(guests))
+	guestFile, version, err := releaseVersion(dir)
+	if err != nil {
+		return Release{}, err
 	}
-	r := Release{Version: strings.TrimSuffix(strings.TrimPrefix(filepath.Base(guests[0]), "naru-guest-"), ".json")}
-	m, err := guest.Read(guests[0])
+	r := Release{Version: version}
+	m, err := guest.Read(guestFile)
 	if err != nil {
 		return Release{}, err
 	}
@@ -80,11 +80,37 @@ func ReadRelease(dir, work string) (Release, error) {
 		Dir: filepath.Join(work, "inputs"), FirecrackerSHA256: ri.FirecrackerSHA256, Guest: m,
 		Image: Image{Repository: ri.ImageRepository, Digest: ri.ImageDigest},
 	}
-	r.Naructl = filepath.Join(work, "naructl")
-	if err := copyExecutable(filepath.Join(dir, "naructl-"+r.Version+"-linux-amd64"), r.Naructl); err != nil {
-		return Release{}, fmt.Errorf("the release's naructl asset: %w", err)
+	if r.Naructl, err = StageNaructl(dir, work); err != nil {
+		return Release{}, err
 	}
 	return r, nil
+}
+
+// releaseVersion is the release's guest manifest and version, from the one naru-guest-<v>.json in dir.
+func releaseVersion(dir string) (guestFile, version string, err error) {
+	guests, err := filepath.Glob(filepath.Join(dir, "naru-guest-*.json"))
+	if err != nil || len(guests) != 1 {
+		return "", "", fmt.Errorf("%s holds %d naru-guest-<version>.json files, not one", dir, len(guests))
+	}
+	return guests[0], strings.TrimSuffix(strings.TrimPrefix(filepath.Base(guests[0]), "naru-guest-"), ".json"), nil
+}
+
+// StageNaructl copies the release's naructl asset into work as an executable and returns its path.
+// It reads nothing else of the release, so naructl can be asked what the release's layout is before
+// the disks are converted.
+func StageNaructl(dir, work string) (string, error) {
+	_, version, err := releaseVersion(dir)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		return "", err
+	}
+	bin := filepath.Join(work, "naructl")
+	if err := copyExecutable(filepath.Join(dir, "naructl-"+version+"-linux-amd64"), bin); err != nil {
+		return "", fmt.Errorf("the release's naructl asset: %w", err)
+	}
+	return bin, nil
 }
 
 // copyExecutable copies the file from to to, mode 0755: a downloaded asset need not be executable.

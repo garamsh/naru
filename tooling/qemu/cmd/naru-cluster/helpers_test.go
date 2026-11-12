@@ -13,7 +13,19 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
+
+// topo is the topology of the gaon Node as naructl prints it, for the tests that are handed one.
+var topo = naructl.Topology{
+	Services: []naructl.Service{
+		{Name: "registry"}, {Name: "etcd", ControlPlane: true},
+		{Name: "gaon-apiserver", ControlPlane: true, Gaon: true}, {Name: "gaon-scheduler", ControlPlane: true, Gaon: true},
+		{Name: "gaon-controllers", ControlPlane: true, Gaon: true}, {Name: "gaon-node-agent", Gaon: true},
+	},
+	Signer: "gaon-controllers", APIServer: "gaon-apiserver", Agent: "gaon-node-agent",
+}
 
 func write(t *testing.T, path, content string, mode os.FileMode) {
 	t.Helper()
@@ -27,7 +39,7 @@ func TestStageGaonBinaries_CopiesTheOnesFoundExecutableAndNamesThem(t *testing.T
 	write(t, filepath.Join(from, "gaon-node-agent"), "agent", 0o644)
 	write(t, filepath.Join(from, "unrelated"), "x", 0o644)
 
-	found, err := stageGaonBinaries(from, inputs)
+	found, err := stageGaonBinaries(topo, from, inputs)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"gaon-apiserver", "gaon-node-agent"}, found, "a binary the directory lacks is not an error")
@@ -42,14 +54,14 @@ func TestStageGaonBinaries_ADirectoryHoldingNoneOfTheFourIsAnError(t *testing.T)
 	from := t.TempDir()
 	write(t, filepath.Join(from, "unrelated"), "x", 0o644)
 
-	_, err := stageGaonBinaries(from, t.TempDir())
+	_, err := stageGaonBinaries(topo, from, t.TempDir())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "holds none of")
 }
 
 func TestStageGaonBinaries_NoDirectoryStagesNothing(t *testing.T) {
-	found, err := stageGaonBinaries("", t.TempDir())
+	found, err := stageGaonBinaries(topo, "", t.TempDir())
 
 	require.NoError(t, err)
 	assert.Empty(t, found)
@@ -131,12 +143,20 @@ func TestTail_KeepsTheLastLinesOnly(t *testing.T) {
 	assert.False(t, strings.HasSuffix(tail("a\nb\n", 5), "\n"))
 }
 
-func TestCheckDisable_ControllersNeedBootPKIFalseAndNothingElseDoes(t *testing.T) {
-	err := checkDisable([]string{"registry", "gaon-controllers"}, true)
+func TestCheckDisable_TheSignerNeedsBootPKIFalseAndNothingElseDoes(t *testing.T) {
+	err := checkDisable(topo, []string{"registry", "gaon-controllers"}, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "-boot-pki=false")
 
-	assert.NoError(t, checkDisable([]string{"gaon-controllers"}, false))
-	assert.NoError(t, checkDisable([]string{"gaon-scheduler", "registry"}, true))
-	assert.ErrorContains(t, checkDisable([]string{"nothing"}, true), "is not a service")
+	assert.NoError(t, checkDisable(topo, []string{"gaon-controllers"}, false))
+	assert.NoError(t, checkDisable(topo, []string{"gaon-scheduler", "registry"}, true))
+	assert.ErrorContains(t, checkDisable(topo, []string{"nothing"}, true), "is not a service")
+}
+
+func TestCheckDisable_FollowsTheTopologyItIsGivenAndNamesNoServiceOfItsOwn(t *testing.T) {
+	renamed := naructl.Topology{Services: []naructl.Service{{Name: "alpha"}, {Name: "sign", ControlPlane: true}}, Signer: "sign", APIServer: "sign", Agent: "alpha"}
+
+	assert.NoError(t, checkDisable(renamed, []string{"alpha"}, true))
+	assert.ErrorContains(t, checkDisable(renamed, []string{"gaon-controllers"}, true), "is not a service")
+	assert.ErrorContains(t, checkDisable(renamed, []string{"sign"}, true), "-boot-pki=false")
 }

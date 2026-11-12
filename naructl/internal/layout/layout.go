@@ -55,10 +55,6 @@ const (
 	EtcdPeerURL   = "http://127.0.0.1:2380"
 )
 
-// ServiceNames are the services a Node's configuration can leave out (Node.Disable) or give another
-// binary (Node.Binaries). mvmd is not among them: a Node cannot do without it.
-var ServiceNames = []string{"registry", "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
-
 // NIC is a network card besides the first, with a static address and no gateway.
 type NIC struct {
 	MAC     string
@@ -69,8 +65,9 @@ type NIC struct {
 type Node struct {
 	// Name is the Node's name, such as "node-1".
 	Name string
-	// ControlPlane sets spec.controlPlane: the Node runs etcd and gaon's control plane.
-	ControlPlane bool
+	// Mode is the Node's role and how it comes by its certificates. A control-plane Mode sets
+	// spec.controlPlane: the Node runs etcd and gaon's control plane.
+	Mode Mode
 
 	// Address is the Node's address and its network's prefix, MAC its card's, and Gateway,
 	// Nameservers and Search what its network-config names. Search may be empty.
@@ -100,13 +97,9 @@ type Node struct {
 	Guest             Manifest
 	FirecrackerSHA256 string
 
-	// PairsAsFiles has every pair of the Node an operator's file, issued here from CA: the agent's,
-	// and on a control-plane Node the API server's, the scheduler's and the controllers', with no
-	// token, no spec.pki and no signing key on the Node.
-	PairsAsFiles bool
 	// Token is the Node's bootstrap token, which its agent presents for a certificate signing
 	// request. Tokens, on a control-plane Node, is every Node's token, its own included: the API
-	// server's token file. Neither is set with PairsAsFiles.
+	// server's token file. Neither is set when Mode has the pairs as files.
 	Token  string
 	Tokens []string
 	// CA is the cluster's authority. Only a control-plane Node that issues carries its key.
@@ -190,20 +183,20 @@ func (n Node) Check() error {
 	case n.CA == nil:
 		return errors.New("the cluster's authority is not set")
 	}
-	if err := n.checkTokens(); err != nil {
+	if err := n.Mode.check(n.Token, n.Tokens, n.Disable); err != nil {
 		return err
 	}
 	if err := n.Guest.Check(); err != nil {
 		return err
 	}
 	for _, name := range n.Disable {
-		if !slices.Contains(ServiceNames, name) {
-			return fmt.Errorf("cannot disable %q: the services that can be left out are %s", name, strings.Join(ServiceNames, ", "))
+		if !Gaon.Has(name) {
+			return fmt.Errorf("cannot disable %q: the services that can be left out are %s", name, strings.Join(Gaon.Names(), ", "))
 		}
 	}
 	for name, bin := range n.Binaries {
-		if !slices.Contains(ServiceNames, name) {
-			return fmt.Errorf("cannot give %q a binary: the services that can have one are %s", name, strings.Join(ServiceNames, ", "))
+		if !Gaon.Has(name) {
+			return fmt.Errorf("cannot give %q a binary: the services that can have one are %s", name, strings.Join(Gaon.Names(), ", "))
 		}
 		if !path.IsAbs(bin) {
 			return fmt.Errorf("the binary of %s, %q, is not an absolute path", name, bin)
@@ -212,51 +205,19 @@ func (n Node) Check() error {
 	return nil
 }
 
-// checkTokens refuses a token the Node cannot use: one missing, one that is not in the form gaon
-// reads, a list on a worker, or a token with the pairs as files.
-func (n Node) checkTokens() error {
-	if n.PairsAsFiles {
-		if n.Token != "" || len(n.Tokens) > 0 {
-			return errors.New("a Node whose pairs are files has no use for a bootstrap token")
-		}
-		return nil
-	}
-	switch {
-	case n.Token == "":
-		return errors.New("the Node has no bootstrap token (and its pairs are not files)")
-	case !pki.ValidToken(n.Token):
-		return errors.New("the bootstrap token is not <id>.<secret>, [a-z0-9]{6}.[a-z0-9]{16}")
-	case !n.ControlPlane && len(n.Tokens) > 0:
-		return errors.New("only the control-plane Node lists tokens: its API server reads them")
-	case n.ControlPlane && !slices.Contains(n.Tokens, n.Token):
-		return errors.New("the control-plane Node's token list does not hold its own token")
-	case n.ControlPlane && slices.Contains(n.Disable, "gaon-controllers"):
-		return errors.New("gaon-controllers signs the agents' requests: a control-plane Node that is not left to operator pairs (--pairs-as-files) cannot disable it")
-	}
-	for _, t := range n.Tokens {
-		if !pki.ValidToken(t) {
-			return errors.New("a token in the list is not <id>.<secret>, [a-z0-9]{6}.[a-z0-9]{16}")
-		}
-	}
-	return nil
-}
-
 func gaonPath(name string) string { return path.Join(GaonCertDir, name) }
 
-func (n Node) binary(name string) string {
+// binary is the executable of a service: the one Binaries names, or fallback.
+func (n Node) binary(name, fallback string) string {
 	if b, ok := n.Binaries[name]; ok {
 		return b
 	}
-	return "/bin/" + name
+	return fallback
 }
 
 func (n Node) apiRoot() string {
 	return "https://" + net.JoinHostPort(n.APIServer.String(), APIPort) + "/apis/compute.gaon.garam.sh/v1alpha1"
 }
-
-// issues reports whether the Node's certificates come from spec.pki: the control-plane Node's, unless
-// it carries its pairs as files.
-func (n Node) issues() bool { return n.ControlPlane && !n.PairsAsFiles }
 
 // UserData is the Node's naru.yaml, its NoCloud user-data. It carries mvmd's configuration as a
 // file for init to write under /run; its services, in the order init starts them, are mvmd, the
@@ -274,7 +235,7 @@ func (n Node) UserData() ([]byte, error) {
 	c.APIVersion = "naru.garam.sh/v1alpha1"
 	c.Kind = "NodeConfig"
 	c.Metadata.Name = "naru-" + n.Name
-	c.Spec.ControlPlane = n.ControlPlane
+	c.Spec.ControlPlane = n.Mode.ControlPlane()
 	c.Spec.DataDisk.Label = DataLabel
 	c.Spec.DataDisk.MountPoint = DataMount
 	c.Spec.Network.Forwarding = []string{"ipv4"}
@@ -285,7 +246,7 @@ func (n Node) UserData() ([]byte, error) {
 	}
 	c.Spec.Files = append(c.Spec.Files, certFiles...)
 	c.Spec.Files = append(c.Spec.Files, n.tokenFiles()...)
-	if n.issues() {
+	if n.Mode.plan(n.Name).specPKI {
 		c.Spec.PKI = n.pkiSpec()
 	}
 	c.Spec.Services = n.services()
@@ -318,11 +279,12 @@ func (n Node) withoutDisabled(c *nodeConfig) {
 
 // tokenFiles are the Node's token, and the list of every token on a control-plane Node, 0600.
 func (n Node) tokenFiles() []file {
-	if n.PairsAsFiles {
+	p := n.Mode.plan(n.Name)
+	if !p.token {
 		return nil
 	}
 	files := []file{{Path: BootstrapTokenFile, Mode: "0600", Content: n.Token + "\n"}}
-	if n.ControlPlane {
+	if p.tokenList {
 		files = append(files, file{Path: BootstrapTokensFile, Mode: "0600", Content: strings.Join(n.Tokens, "\n") + "\n"})
 	}
 	return files
@@ -333,7 +295,8 @@ func (n Node) tokenFiles() []file {
 // API server, the scheduler and the controllers. The keys are 0600 and the certificates 0644. None
 // carries the CA's key.
 func (n Node) certFiles() ([]file, error) {
-	if n.issues() {
+	p := n.Mode.plan(n.Name)
+	if !p.caFile {
 		return nil, nil // init writes the CA and every pair from spec.pki
 	}
 	pair := func(name, cn string) (pki.Pair, error) {
@@ -347,23 +310,14 @@ func (n Node) certFiles() ([]file, error) {
 		return n.CA.Client(cn)
 	}
 	files := []file{{Path: gaonPath("ca.pem"), Mode: "0644", Content: string(n.CA.CertPEM)}}
-	var issued []struct{ name, cn string }
-	if n.PairsAsFiles {
-		issued = append(issued, struct{ name, cn string }{"agent", n.Name})
-	}
-	if n.ControlPlane {
-		issued = append(issued, []struct{ name, cn string }{
-			{"apiserver", "gaon-apiserver"}, {"scheduler", "gaon-scheduler"}, {"controllers", "gaon-controllers"},
-		}...)
-	}
-	for _, p := range issued {
-		pr, err := pair(p.name, p.cn)
+	for _, ps := range p.pairs {
+		pr, err := pair(ps.name, ps.cn)
 		if err != nil {
-			return nil, fmt.Errorf("issue %s: %w", p.name, err)
+			return nil, fmt.Errorf("issue %s: %w", ps.name, err)
 		}
 		files = append(files,
-			file{Path: gaonPath(p.name + ".pem"), Mode: "0644", Content: string(pr.CertPEM)},
-			file{Path: gaonPath(p.name + ".key"), Mode: "0600", Content: string(pr.KeyPEM)},
+			file{Path: gaonPath(ps.name + ".pem"), Mode: "0644", Content: string(pr.CertPEM)},
+			file{Path: gaonPath(ps.name + ".key"), Mode: "0600", Content: string(pr.KeyPEM)},
 		)
 	}
 	return files, nil
@@ -410,31 +364,18 @@ func (n Node) pkiSpec() *pkiSpec {
 // the API server, last. Each dials what is before it and retries or is restarted by init, so the
 // order is a courtesy and no service depends on it for correctness (docs/architecture/image.md).
 func (n Node) services() []service {
-	client := func(name string) []string {
-		return []string{"--tls-ca", gaonPath("ca.pem"), "--tls-cert", gaonPath(name + ".pem"), "--tls-key", gaonPath(name + ".key")}
-	}
-	// The agent presents its token and keeps the pair it is issued in AgentCertDir, or carries a pair
-	// as a file. The controllers sign with the CA the Node carries, when it carries one.
-	agentCredentials := client("agent")
-	if !n.PairsAsFiles {
-		agentCredentials = []string{"--tls-ca", gaonPath("ca.pem"), "--bootstrap-token-file", BootstrapTokenFile, "--cert-dir", AgentCertDir}
-	}
-	var apiserverTokens, signer []string
-	if n.issues() {
-		apiserverTokens = []string{"--bootstrap-token-file", BootstrapTokensFile}
-		signer = []string{"--signing-cert", gaonPath("ca.pem"), "--signing-key", gaonPath("ca.key")}
-	}
-	return []service{
+	creds := n.Mode.plan(n.Name)
+	list := []service{
 		{
 			Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", MvmdConfig},
 			Env: map[string]string{"SSL_CERT_FILE": path.Join(InputsDir, "registry/ca.pem")},
 		},
 		{
-			Name: "registry", Binary: n.binaryOr("registry", path.Join(InputsDir, "bin/naru-registry")),
+			Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")),
 			Args: []string{"-listen", RegistryAddr, "-dir", path.Join(InputsDir, "registry")},
 		},
 		{
-			Name: "etcd", Binary: n.binary("etcd"), ControlPlane: true,
+			Name: "etcd", Binary: n.binary("etcd", "/bin/etcd"),
 			Args: []string{
 				"--name", n.Name, "--data-dir", EtcdDir,
 				"--listen-client-urls", EtcdClientURL, "--advertise-client-urls", EtcdClientURL,
@@ -443,30 +384,28 @@ func (n Node) services() []service {
 			},
 		},
 		{
-			Name: "gaon-apiserver", Binary: n.binary("gaon-apiserver"), ControlPlane: true,
+			Name: "gaon-apiserver", Binary: n.binary("gaon-apiserver", "/bin/gaon-apiserver"),
 			Args: append([]string{
 				"--listen", "0.0.0.0:" + APIPort, "--etcd-endpoints", EtcdClientURL,
 				"--tls-client-ca", gaonPath("ca.pem"), "--tls-cert", gaonPath("apiserver.pem"), "--tls-key", gaonPath("apiserver.key"),
-			}, apiserverTokens...),
+			}, creds.apiserverTokens...),
 		},
 		{
-			Name: "gaon-scheduler", Binary: n.binary("gaon-scheduler"), ControlPlane: true,
-			Args: append([]string{"--api", n.apiRoot()}, client("scheduler")...),
+			Name: "gaon-scheduler", Binary: n.binary("gaon-scheduler", "/bin/gaon-scheduler"),
+			Args: append([]string{"--api", n.apiRoot()}, tlsClient("scheduler")...),
 		},
 		{
-			Name: "gaon-controllers", Binary: n.binary("gaon-controllers"), ControlPlane: true,
-			Args: append(append([]string{"--api", n.apiRoot()}, client("controllers")...), signer...),
+			Name: "gaon-controllers", Binary: n.binary("gaon-controllers", "/bin/gaon-controllers"),
+			Args: append(append([]string{"--api", n.apiRoot()}, tlsClient("controllers")...), creds.signer...),
 		},
 		{
-			Name: "gaon-node-agent", Binary: n.binary("gaon-node-agent"),
-			Args: append([]string{"--api-server", n.apiRoot(), "--node-name", n.Name, "--mvmd-socket", MvmdSocket}, agentCredentials...),
+			Name: "gaon-node-agent", Binary: n.binary("gaon-node-agent", "/bin/gaon-node-agent"),
+			Args: append([]string{"--api-server", n.apiRoot(), "--node-name", n.Name, "--mvmd-socket", MvmdSocket}, creds.agent...),
 		},
 	}
-}
-
-func (n Node) binaryOr(name, fallback string) string {
-	if b, ok := n.Binaries[name]; ok {
-		return b
+	// Which services only the control-plane Node runs is the topology's.
+	for i := range list {
+		list[i].ControlPlane = Gaon.OnlyControlPlane(list[i].Name)
 	}
-	return fallback
+	return list
 }

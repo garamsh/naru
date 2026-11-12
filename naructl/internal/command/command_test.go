@@ -18,6 +18,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/naructl/internal/command"
+	"github.com/garamsh/naru/naructl/internal/layout"
 )
 
 var (
@@ -668,4 +669,19 @@ func TestRun_AnUnknownCommandIsRefused(t *testing.T) {
 	assert.Error(t, err)
 	_, err = run(t, "gen", "node", "--ca", "/nonexistent")
 	assert.Error(t, err, "the required flags are checked first")
+}
+
+func TestTopology_PrintsTheLayoutsServicesAsJSON(t *testing.T) {
+	out, err := run(t, "topology")
+	require.NoError(t, err, out)
+
+	var got layout.Topology
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	assert.Equal(t, layout.Gaon, got)
+}
+
+func TestTopology_TakesNoArguments(t *testing.T) {
+	_, err := run(t, "topology", "extra")
+
+	require.Error(t, err)
 }

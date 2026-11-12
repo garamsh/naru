@@ -6,7 +6,18 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
+
+// topo is the topology of the gaon Node as naructl prints it.
+var topo = naructl.Topology{
+	Services: []naructl.Service{
+		{Name: "registry"}, {Name: "etcd", ControlPlane: true},
+		{Name: "gaon-apiserver", ControlPlane: true, Gaon: true}, {Name: "gaon-scheduler", ControlPlane: true, Gaon: true},
+		{Name: "gaon-controllers", ControlPlane: true, Gaon: true}, {Name: "gaon-node-agent", Gaon: true},
+	},
+	Signer: "gaon-controllers", APIServer: "gaon-apiserver", Agent: "gaon-node-agent",
+}
 
 // workerLog is the console of node-2 of a QEMU cluster running gaon, as captured: init logs
 // nothing of the data disk's mount, and the stand-in, which logs it, is not in the Node's services.
@@ -23,7 +34,7 @@ time=2026-11-12T02:27:07.060Z level=INFO msg=started service=gaon-node-agent cgr
 `
 
 func TestGaon_ACapturedWorkerConsoleMeetsEveryExpectation(t *testing.T) {
-	assert.Empty(t, judge.Check("node-2", judge.Log{Text: workerLog}, judge.Gaon("node-2", false, 1)))
+	assert.Empty(t, judge.Check("node-2", judge.Log{Text: workerLog}, judge.Gaon(topo, "node-2", false, 1)))
 }
 
 func TestBoot_TheStandinsDataDiskLineIsExpectedOfNodesThatRunTheStandin(t *testing.T) {
