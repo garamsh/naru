@@ -139,10 +139,12 @@ nodes: disk
 # which run gaon's services in place of the stand-ins and the probe. With JUDGE_GAON=1, JUDGE_PKI=1
 # also requires node-1's log to show init issuing its pairs from spec.pki, and
 # JUDGE_NODE1_INTERFACES=<n> sets the interfaces node-1's network-config gives it (1 when unset;
-# the QEMU tests' control-plane Node has 2).
+# the QEMU tests' control-plane Node has 2). JUDGE_GAON=1 also needs JUDGE_NARUCTL=<a naructl
+# binary, the release's naructl-<version>-linux-amd64>: the services to expect are the ones its
+# `topology` command prints (ADR 0019).
 judge-serial:
 	@test -n "$(NODE1)" -a -n "$(NODE2)" || { echo "judge-serial: usage: make judge-serial NODE1=<log> NODE2=<log>" >&2; exit 2; }
-	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_GAON),-gaon) $(if $(JUDGE_PKI),-pki) $(if $(JUDGE_NODE1_INTERFACES),-node1-interfaces $(JUDGE_NODE1_INTERFACES)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
+	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_GAON),-gaon) $(if $(JUDGE_NARUCTL),-naructl "$(abspath $(JUDGE_NARUCTL))") $(if $(JUDGE_PKI),-pki) $(if $(JUDGE_NODE1_INTERFACES),-node1-interfaces $(JUDGE_NODE1_INTERFACES)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
 
 # release writes the assets of a deployment into $(RELEASE): naru-<version>.qcow2 (the boot disk),
 # naru-data-<version>.qcow2 (the one data disk both Nodes attach), naru-guest-<version>.json,

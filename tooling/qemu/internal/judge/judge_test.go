@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
 
 // consoleOf is a console that shows every expectation: a line holding each of the fragments of
@@ -165,11 +166,11 @@ func TestGaon_ANodeShowsTheRegistryAndTheNodeAgentAndTheControlPlaneOnlyOnNodeOn
 		name         string
 		controlPlane bool
 	}{{"node-1", true}, {"node-2", false}} {
-		want := judge.Gaon(tc.name, tc.controlPlane, 1)
+		want := judge.Gaon(topo, tc.name, tc.controlPlane, 1)
 		assert.Empty(t, judge.Check(tc.name, judge.Clean([]byte(consoleOf(want))), want), tc.name)
 	}
 
-	second := judge.Gaon("node-2", false, 1)
+	second := judge.Gaon(topo, "node-2", false, 1)
 	console := consoleOf(second) + "time=x msg=started service=gaon-apiserver\n"
 	failures := judge.Check("node-2", judge.Clean([]byte(console)), second)
 	require.Len(t, failures, 1)
@@ -180,21 +181,48 @@ func TestGaon_ANodeShowsTheRegistryAndTheNodeAgentAndTheControlPlaneOnlyOnNodeOn
 		name         string
 		controlPlane bool
 	}{{"node-1", true}, {"node-2", false}} {
-		want := judge.Gaon(tc.name, tc.controlPlane, 1)
+		want := judge.Gaon(topo, tc.name, tc.controlPlane, 1)
 		var without []judge.Expect
 		for _, e := range want {
-			if e.What != "init started the registry" {
+			if e.What != "init started registry" {
 				without = append(without, e)
 			}
 		}
 		require.Len(t, without, len(want)-1, "the expectation for the registry exists on "+tc.name)
 		failures := judge.Check(tc.name, judge.Clean([]byte(consoleOf(without))), want)
 		require.Len(t, failures, 1, tc.name)
-		assert.Equal(t, "init started the registry", failures[0].Expect.What)
+		assert.Equal(t, "init started registry", failures[0].Expect.What)
 	}
 
-	first := judge.Gaon("node-1", true, 1)
+	first := judge.Gaon(topo, "node-1", true, 1)
 	failures = judge.Check("node-1", judge.Clean([]byte(consoleOf(first[:len(first)-1]))), first)
 	require.Len(t, failures, 1)
-	assert.Equal(t, "init started gaon-controllers", failures[0].Expect.What)
+	assert.Equal(t, "init started gaon-node-agent", failures[0].Expect.What)
+}
+
+func TestGaon_JudgesEveryServiceTheTopologyNamesAndNoOtherAndDoesNotKnowTheNamesItself(t *testing.T) {
+	// A layout that renamed a service and added one: the judge follows it with no change of its own.
+	renamed := naructl.Topology{Services: []naructl.Service{
+		{Name: "alpha"}, {Name: "beta", ControlPlane: true}, {Name: "gamma"},
+	}, Signer: "beta", APIServer: "beta", Agent: "alpha"}
+	for _, tc := range []struct {
+		controlPlane bool
+		started      []string
+		skipped      []string
+	}{
+		{true, []string{"alpha", "beta", "gamma"}, nil},
+		{false, []string{"alpha", "gamma"}, []string{"beta"}},
+	} {
+		var started, skipped []string
+		for _, e := range judge.Gaon(renamed, "node-1", tc.controlPlane, 1) {
+			if name, ok := strings.CutPrefix(e.What, "init started "); ok && name != "mvmd" {
+				started = append(started, name)
+			}
+			if name, ok := strings.CutPrefix(e.What, "init skipped "); ok {
+				skipped = append(skipped, name)
+			}
+		}
+		assert.Equal(t, tc.started, started, "controlPlane=%v", tc.controlPlane)
+		assert.Equal(t, tc.skipped, skipped, "controlPlane=%v", tc.controlPlane)
+	}
 }

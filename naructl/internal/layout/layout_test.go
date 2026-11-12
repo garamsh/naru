@@ -42,17 +42,17 @@ func TestUserData_RefusesATokenTheNodeCannotUse(t *testing.T) {
 		"no token":                       {func(n *layout.Node) { n.Token = "" }, "no bootstrap token"},
 		"a token not in gaon's form":     {func(n *layout.Node) { n.Token = "short" }, "not <id>.<secret>"},
 		"a list on a worker":             {func(n *layout.Node) { n.Tokens = []string{tokenA} }, "only the control-plane Node lists tokens"},
-		"a control plane without a list": {func(n *layout.Node) { n.ControlPlane = true }, "does not hold its own token"},
+		"a control plane without a list": {func(n *layout.Node) { n.Mode = layout.ControlPlaneToken }, "does not hold its own token"},
 		"a control plane whose list lacks its token": {func(n *layout.Node) {
-			n.ControlPlane, n.Tokens = true, []string{tokenB}
+			n.Mode, n.Tokens = layout.ControlPlaneToken, []string{tokenB}
 		}, "does not hold its own token"},
 		"a malformed token in the list": {func(n *layout.Node) {
-			n.ControlPlane, n.Tokens = true, []string{tokenA, "nope"}
+			n.Mode, n.Tokens = layout.ControlPlaneToken, []string{tokenA, "nope"}
 		}, "a token in the list"},
 		"controllers disabled on a signer": {func(n *layout.Node) {
-			n.ControlPlane, n.Tokens, n.Disable = true, []string{tokenA}, []string{"gaon-controllers"}
+			n.Mode, n.Tokens, n.Disable = layout.ControlPlaneToken, []string{tokenA}, []string{"gaon-controllers"}
 		}, "signs the agents' requests"},
-		"a token with the pairs as files": {func(n *layout.Node) { n.PairsAsFiles = true }, "no use for a bootstrap token"},
+		"a token with the pairs as files": {func(n *layout.Node) { n.Mode = layout.WorkerFiles }, "no use for a bootstrap token"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := node(t, c.change).UserData()
@@ -62,7 +62,7 @@ func TestUserData_RefusesATokenTheNodeCannotUse(t *testing.T) {
 }
 
 func TestUserData_PairsAsFilesTakesNoTokenAndAControlPlaneWithOneTakesNoSigner(t *testing.T) {
-	data, err := node(t, func(n *layout.Node) { n.ControlPlane, n.PairsAsFiles, n.Token = true, true, "" }).UserData()
+	data, err := node(t, func(n *layout.Node) { n.Mode, n.Token = layout.ControlPlaneFiles, "" }).UserData()
 	require.NoError(t, err)
 
 	assert.NotContains(t, string(data), "bootstrap-token")

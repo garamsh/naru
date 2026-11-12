@@ -5,10 +5,13 @@
 package naructl
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -31,11 +34,95 @@ func Build(root, out string) error {
 }
 
 func (t Tool) run(args ...string) error {
+	_, err := t.output(args...)
+	return err
+}
+
+// output runs naructl and returns its standard output; a failure carries what it printed.
+func (t Tool) output(args ...string) ([]byte, error) {
 	if t.Bin == "" {
-		return fmt.Errorf("no naructl binary is named")
+		return nil, fmt.Errorf("no naructl binary is named")
 	}
-	if b, err := exec.Command(t.Bin, args...).CombinedOutput(); err != nil { //nolint:gosec // the binary the caller named
-		return fmt.Errorf("naructl %s: %w: %s", strings.Join(args[:2], " "), err, strings.TrimSpace(string(b)))
+	cmd := exec.Command(t.Bin, args...) //nolint:gosec // the binary the caller named
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("naructl %s: %w: %s", strings.Join(args[:min(len(args), 2)], " "), err, strings.TrimSpace(stderr.String()+stdout.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+// Service is one of the services a Node runs besides mvmd.
+type Service struct {
+	Name string `json:"name"`
+	// ControlPlane is set for a service only the control-plane Node runs.
+	ControlPlane bool `json:"controlPlane"`
+	// Gaon is set for a service that is one of gaon's binaries.
+	Gaon bool `json:"gaon"`
+}
+
+// Topology is what naructl says a Node runs, in the order init starts it, and which service signs the
+// agents' requests on a control-plane Node that issues its certificates (ADR 0019).
+type Topology struct {
+	Services []Service `json:"services"`
+	Signer   string    `json:"signer"`
+	// APIServer and Agent are the services a harness needs both of to ask the API whether the Nodes
+	// have registered.
+	APIServer string `json:"apiserver"`
+	Agent     string `json:"agent"`
+}
+
+// Topology asks naructl for its topology.
+func (t Tool) Topology() (Topology, error) {
+	b, err := t.output("topology")
+	if err != nil {
+		return Topology{}, fmt.Errorf("%w (a naructl made before ADR 0019 has no topology command)", err)
+	}
+	var top Topology
+	if err := json.Unmarshal(b, &top); err != nil {
+		return Topology{}, fmt.Errorf("naructl topology: %w", err)
+	}
+	if len(top.Services) == 0 || top.Signer == "" || top.APIServer == "" || top.Agent == "" {
+		return Topology{}, fmt.Errorf("naructl topology names no services or no signer, API server or agent: %s", strings.TrimSpace(string(b)))
+	}
+	return top, nil
+}
+
+// Names are the services' names, in order.
+func (t Topology) Names() []string {
+	names := make([]string, len(t.Services))
+	for i, s := range t.Services {
+		names[i] = s.Name
+	}
+	return names
+}
+
+// Has reports whether name is one of the services.
+func (t Topology) Has(name string) bool { return slices.Contains(t.Names(), name) }
+
+// GaonNames are the names of gaon's own binaries among the services.
+func (t Topology) GaonNames() []string {
+	var names []string
+	for _, s := range t.Services {
+		if s.Gaon {
+			names = append(names, s.Name)
+		}
+	}
+	return names
+}
+
+// Running are the services a Node runs, in order: all of them on the control-plane Node, and the
+// others elsewhere.
+func (t Topology) Running(controlPlane bool) []Service {
+	return slices.DeleteFunc(slices.Clone(t.Services), func(s Service) bool { return s.ControlPlane && !controlPlane })
+}
+
+// CheckNames refuses a name that is not one of the services.
+func (t Topology) CheckNames(names []string) error {
+	for _, n := range names {
+		if !t.Has(n) {
+			return fmt.Errorf("%q is not a service; the names are %s", n, strings.Join(t.Names(), ", "))
+		}
 	}
 	return nil
 }

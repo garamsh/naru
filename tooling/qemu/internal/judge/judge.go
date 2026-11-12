@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
 
 // Expect is one thing a console must show: one line holding every fragment, in order. With Absent
@@ -76,29 +78,23 @@ func ControlPlane(controlPlane bool) []Expect {
 	}
 }
 
-// controlPlaneServices are the gaon services that start only where spec.controlPlane is true, in
-// the order init starts them.
-var controlPlaneServices = []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers"}
-
 // Gaon is what the console of a Node that runs gaon shows, in place of what the stand-in and the
-// probe make a Node show: init's boot lines, the start of mvmd, the registry and gaon's Node Agent,
-// and, by spec.controlPlane, the start of etcd and gaon's control plane or init's skipping of them.
-// The registry runs on every Node because the scheduler may bind a Machine to any of them.
+// probe make a Node show: init's boot lines, the start of every service of the topology naructl
+// reports that the Node runs, and, for the services only the control-plane Node runs, init's
+// skipping of them on a Node that does not (spec.controlPlane). The services are the topology's
+// and the judge names none: a service added to the layout is judged here without a change.
 // interfaces is the number of interfaces the Node's network-config gives it: one on a Proxmox
 // Node, two on the QEMU tests' control-plane Node, which has a second NIC for the host forward.
-func Gaon(name string, controlPlane bool, interfaces int) []Expect {
-	out := append(boot(name, interfaces),
-		Expect{What: "init started the registry", Fragments: []string{"started", "service=registry"}},
-		Expect{What: "init started gaon's Node Agent", Fragments: []string{"started", "service=gaon-node-agent"}},
-	)
-	for _, s := range controlPlaneServices {
-		if controlPlane {
-			out = append(out, Expect{What: "init started " + s, Fragments: []string{"started", "service=" + s}})
+func Gaon(top naructl.Topology, name string, controlPlane bool, interfaces int) []Expect {
+	out := boot(name, interfaces)
+	for _, s := range top.Services {
+		if controlPlane || !s.ControlPlane {
+			out = append(out, Expect{What: "init started " + s.Name, Fragments: []string{"started", "service=" + s.Name}})
 			continue
 		}
 		out = append(out,
-			Expect{What: "init skipped " + s, Fragments: []string{"skipping a control-plane service", "service=" + s}},
-			Expect{What: "init never started " + s, Fragments: []string{"started", "service=" + s}, Absent: true},
+			Expect{What: "init skipped " + s.Name, Fragments: []string{"skipping a control-plane service", "service=" + s.Name}},
+			Expect{What: "init never started " + s.Name, Fragments: []string{"started", "service=" + s.Name}, Absent: true},
 		)
 	}
 	return out

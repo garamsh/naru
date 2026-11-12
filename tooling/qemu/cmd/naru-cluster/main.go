@@ -29,25 +29,18 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
-// gaonServices are the binaries -gaon-bin may supply, named as the services are.
-var gaonServices = []string{"gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
-
-// checkDisable refuses a name -disable may not carry, and gaon-controllers under -boot-pki: the
-// controllers sign the agents' requests there, so without them no agent gets a pair.
-func checkDisable(disabled []string, bootPKI bool) error {
-	for _, d := range disabled {
-		if !slices.Contains(disableNames, d) {
-			return fmt.Errorf("-disable: %q is not a service; the names are %s", d, strings.Join(disableNames, ", "))
-		}
+// checkDisable refuses a name -disable may not carry, and the service that signs under -boot-pki:
+// the controllers sign the agents' requests there, so without them no agent gets a pair. The names
+// and the signer are the release's naructl's (ADR 0019).
+func checkDisable(top naructl.Topology, disabled []string, bootPKI bool) error {
+	if err := top.CheckNames(disabled); err != nil {
+		return fmt.Errorf("-disable: %w", err)
 	}
-	if bootPKI && slices.Contains(disabled, "gaon-controllers") {
-		return errors.New("-disable gaon-controllers needs -boot-pki=false: the controllers sign the agents' certificate requests")
+	if bootPKI && slices.Contains(disabled, top.Signer) {
+		return fmt.Errorf("-disable %s needs -boot-pki=false: it signs the agents' certificate requests", top.Signer)
 	}
 	return nil
 }
-
-// disableNames are the services -disable may name; naructl refuses any other.
-var disableNames = []string{"registry", "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
 
 // exitSignalled is the status of a run that was signalled before cluster.json was written.
 const exitSignalled = 3
@@ -74,7 +67,7 @@ func run() error {
 	dir := flag.String("dir", "", "directory for the Nodes' disks and logs, and cluster.json")
 	gaonBin := flag.String("gaon-bin", "", "directory of gaon binaries (gaon-apiserver, gaon-scheduler, gaon-controllers, gaon-node-agent) the services run in place of the image's")
 	extra := flag.String("inputs", "", "directory copied to /var/lib/naru/inputs/extra/ on every Node")
-	disable := flag.String("disable", "", "comma-separated services left out of every Node's configuration: "+strings.Join(disableNames, ", "))
+	disable := flag.String("disable", "", "comma-separated services left out of every Node's configuration; the names are those the release's `naructl topology` lists")
 	bootPKI := flag.Bool("boot-pki", true, "node-1 issues its certificates at boot from spec.pki and signs the agents' requests, each agent presents a bootstrap token (false: every Node carries its pairs as files)")
 	timeout := flag.Duration("timeout", 5*time.Minute, "how long the Nodes have to come up")
 	flag.Parse()
@@ -87,9 +80,6 @@ func run() error {
 	var disabled []string
 	if *disable != "" {
 		disabled = strings.Split(*disable, ",")
-	}
-	if err := checkDisable(disabled, *bootPKI); err != nil {
-		return err
 	}
 	root, err := filepath.Abs(*dir)
 	if err != nil {
@@ -107,11 +97,24 @@ func run() error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
-	rel, err := fixture.ReadRelease(*release, filepath.Join(root, "release"))
+	// The release's naructl says which services there are, so it is asked before the disks are converted.
+	work := filepath.Join(root, "release")
+	bin, err := fixture.StageNaructl(*release, work)
 	if err != nil {
 		return fmt.Errorf("read the release: %w", err)
 	}
-	overrides, err := stageGaonBinaries(*gaonBin, rel.Inputs.Dir)
+	top, err := naructl.Tool{Bin: bin}.Topology()
+	if err != nil {
+		return fmt.Errorf("read the release: %w", err)
+	}
+	if err := checkDisable(top, disabled, *bootPKI); err != nil {
+		return err
+	}
+	rel, err := fixture.ReadRelease(*release, work)
+	if err != nil {
+		return fmt.Errorf("read the release: %w", err)
+	}
+	overrides, err := stageGaonBinaries(top, *gaonBin, rel.Inputs.Dir)
 	if err != nil {
 		return err
 	}
@@ -152,7 +155,7 @@ func run() error {
 		}()
 	}
 
-	if err := waitUp(ctx, c, disabled, deadline, log); err != nil {
+	if err := waitUp(ctx, c, top, disabled, deadline, log); err != nil {
 		if ctx.Err() != nil {
 			return errSignalled
 		}
@@ -173,12 +176,12 @@ func run() error {
 // stageGaonBinaries copies the gaon binaries found in from into the inputs tree under gaon/, and
 // returns the services they are for. A binary the directory lacks is not an error: the Nodes run
 // the image's.
-func stageGaonBinaries(from, inputs string) ([]string, error) {
+func stageGaonBinaries(top naructl.Topology, from, inputs string) ([]string, error) {
 	if from == "" {
 		return nil, nil
 	}
 	var found []string
-	for _, name := range gaonServices {
+	for _, name := range top.GaonNames() {
 		src := filepath.Join(from, name)
 		if _, err := os.Stat(src); err != nil {
 			if os.IsNotExist(err) {
@@ -192,7 +195,7 @@ func stageGaonBinaries(from, inputs string) ([]string, error) {
 		found = append(found, name)
 	}
 	if len(found) == 0 {
-		return nil, fmt.Errorf("-gaon-bin: %s holds none of %s", from, strings.Join(gaonServices, ", "))
+		return nil, fmt.Errorf("-gaon-bin: %s holds none of %s", from, strings.Join(top.GaonNames(), ", "))
 	}
 	return found, nil
 }
@@ -286,21 +289,22 @@ func tail(s string, n int) string {
 // waitUp waits until every Node's init has started the services its configuration names, and, where
 // the API server and the Node Agent both run, until every Node is registered and Ready, all before
 // the one deadline.
-func waitUp(ctx context.Context, c *node.Cluster, disabled []string, deadline time.Time, log *slog.Logger) error {
+func waitUp(ctx context.Context, c *node.Cluster, top naructl.Topology, disabled []string, deadline time.Time, log *slog.Logger) error {
 	on := func(s string) bool { return !slices.Contains(disabled, s) }
 	var waits []serviceWait
 	for i, nd := range c.Nodes {
-		services := []string{"registry", "gaon-node-agent"}
-		if i == 0 {
-			services = append(services, "etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers")
+		var services []string
+		for _, s := range top.Running(i == 0) {
+			if on(s.Name) {
+				services = append(services, s.Name)
+			}
 		}
-		services = slices.DeleteFunc(services, func(s string) bool { return !on(s) })
 		waits = append(waits, serviceWait{name: nd.Name, node: nd, services: services})
 	}
 	if err := waitServices(ctx, deadline, waits, log); err != nil {
 		return err
 	}
-	if !on("gaon-apiserver") || !on("gaon-node-agent") {
+	if !on(top.APIServer) || !on(top.Agent) {
 		return nil
 	}
 	api, err := hostapi.New(c.HostAddr, c.Client)

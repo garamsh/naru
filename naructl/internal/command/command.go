@@ -1,4 +1,4 @@
-// Package command is naructl's command line: gen ca, gen client, gen token and gen node.
+// Package command is naructl's command line: gen ca, gen client, gen token and gen node, and topology.
 package command
 
 import (
@@ -16,6 +16,7 @@ import (
 )
 
 const usage = `usage: naructl gen <ca|client|token|node> [flags]
+       naructl topology                              print the services a Node runs, and which signs, as JSON
 
   gen ca      --out <dir>                       write ca.pem and ca.key
   gen client  --ca <dir> --cn <name> --out <dir> write an operator's client.pem and client.key
@@ -27,6 +28,14 @@ const usage = `usage: naructl gen <ca|client|token|node> [flags]
 
 // Run runs naructl with args, the command line without the program's name.
 func Run(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 1 && args[0] == "topology" {
+		b, err := layout.Gaon.JSON()
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(stdout, "%s\n", b)
+		return err
+	}
 	if len(args) < 2 || args[0] != "gen" {
 		_, _ = fmt.Fprint(stderr, usage)
 		return errors.New("a command is required")
@@ -161,10 +170,11 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 		caDir, address, gateway, apiServer      string
 		machinePrefix, guest, extraNIC          string
 		out, networkConfig                      string
+		controlPlane, pairsAsFiles              bool
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")
-	fs.BoolVar(&n.ControlPlane, "control-plane", false, "the Node runs etcd and gaon's control plane, issues its certificates at boot and signs its agents' requests")
+	fs.BoolVar(&controlPlane, "control-plane", false, "the Node runs etcd and gaon's control plane, issues its certificates at boot and signs its agents' requests")
 	fs.StringVar(&address, "address", "", "the Node's address and prefix, such as 192.168.0.40/24")
 	fs.StringVar(&n.MAC, "mac", "", "the MAC address of the Node's card (with --network-config)")
 	fs.StringVar(&gateway, "gateway", "", "the default gateway (with --network-config)")
@@ -174,11 +184,11 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&apiServer, "api-server", "", "the control-plane Node's address, which every agent dials")
 	fs.Var(&serving, "serving-address", "another address the API server's certificate names, repeatable")
 	fs.Var(&binaries, "binary", "<service>=<absolute path>, the executable of a service in place of the image's, repeatable")
-	fs.Var(&disable, "disable", "a service to leave out ("+strings.Join(layout.ServiceNames, ", ")+"), repeatable")
+	fs.Var(&disable, "disable", "a service to leave out ("+strings.Join(layout.Gaon.Names(), ", ")+"), repeatable")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.StringVar(&guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
 	fs.StringVar(&n.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
-	fs.BoolVar(&n.PairsAsFiles, "pairs-as-files", false, "the Node carries operator-issued pairs as files, with no bootstrap token: on a control-plane Node every pair, and no signing key")
+	fs.BoolVar(&pairsAsFiles, "pairs-as-files", false, "the Node carries operator-issued pairs as files, with no bootstrap token: on a control-plane Node every pair, and no signing key")
 	fs.StringVar(&out, "out", "", "the user-data file to write (0600: it carries keys; a file already there is replaced)")
 	fs.StringVar(&networkConfig, "network-config", "", "also write the NoCloud network-config to this file")
 	if err := fs.Parse(args); err != nil {
@@ -197,17 +207,11 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	if n.CA, err = pki.Load(caDir); err != nil {
 		return err
 	}
-	if !n.PairsAsFiles {
-		// The Node's own token is made if there is none. A control-plane Node's API server lists the
-		// token of every Node whose file is in the directory now: run gen token for the others first.
-		if n.Token, err = pki.EnsureToken(caDir, n.Name); err != nil {
-			return err
-		}
-		if n.ControlPlane {
-			if n.Tokens, err = pki.ReadTokens(caDir); err != nil {
-				return err
-			}
-		}
+	// The Node's own token is made if there is none. A control-plane Node's API server lists the
+	// token of every Node whose file is in the directory now: run gen token for the others first.
+	n.Mode = layout.ModeOf(controlPlane, pairsAsFiles)
+	if n.Token, n.Tokens, err = n.Mode.LoadTokens(caDir, n.Name); err != nil {
+		return err
 	}
 	if n.Address, err = netip.ParsePrefix(address); err != nil {
 		return fmt.Errorf("--address: %w", err)
