@@ -5,6 +5,8 @@ package service
 import (
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,6 +32,31 @@ type Manager interface {
 	Restart(name string)
 	// StopAll stops every service concurrently.
 	StopAll()
+	// Status returns the state of every service that was started and not stopped, by name.
+	Status() []Status
+}
+
+// State is what a service is doing.
+type State string
+
+const (
+	// StateRunning means the service's process is alive.
+	StateRunning State = "running"
+	// StateBackoff means the service exited or could not start and waits to start again.
+	StateBackoff State = "backoff"
+)
+
+// Status is one supervised service as the Node API reports it.
+type Status struct {
+	Name  string
+	State State
+	// PID is the process ID, and 0 unless the state is Running.
+	PID int
+	// Restarts is how many times the manager tried to start the service again after it
+	// exited or failed to start, since the service was started.
+	Restarts int
+	// StartedAt is when the current process started, and the zero time before the first start.
+	StartedAt time.Time
 }
 
 // NewManager returns a Manager that runs services through launcher in leaves from cgroups.
@@ -53,6 +80,15 @@ type supervised struct {
 	stopOnce sync.Once
 	svc      config.Service
 	done     chan struct{}
+
+	mu     sync.Mutex
+	status Status
+}
+
+func (s *supervised) set(update func(*Status)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	update(&s.status)
 }
 
 func (m *manager) Prepare() error {
@@ -69,7 +105,7 @@ func (m *manager) Start(svc config.Service) error {
 	if err != nil {
 		return fmt.Errorf("cgroup of service %q: %w", svc.Name, err)
 	}
-	s := &supervised{svc: svc, stop: make(chan struct{}), done: make(chan struct{})}
+	s := &supervised{svc: svc, stop: make(chan struct{}), done: make(chan struct{}), status: Status{Name: svc.Name, State: StateBackoff}}
 	m.running[svc.Name] = s
 	go m.supervise(s, svc, leaf)
 	return nil
@@ -100,6 +136,23 @@ func (m *manager) Restart(name string) {
 	}
 }
 
+func (m *manager) Status() []Status {
+	m.mu.Lock()
+	all := make([]*supervised, 0, len(m.running))
+	for _, s := range m.running {
+		all = append(all, s)
+	}
+	m.mu.Unlock()
+	out := make([]Status, 0, len(all))
+	for _, s := range all {
+		s.mu.Lock()
+		out = append(out, s.status)
+		s.mu.Unlock()
+	}
+	slices.SortFunc(out, func(a, b Status) int { return strings.Compare(a.Name, b.Name) })
+	return out
+}
+
 func (m *manager) StopAll() {
 	m.mu.Lock()
 	names := make([]string, 0, len(m.running))
@@ -125,12 +178,16 @@ func (m *manager) supervise(s *supervised, svc config.Service, leaf Leaf) {
 	defer close(s.done)
 	log := m.log.With("service", svc.Name)
 	var backoff Backoff
-	for {
+	for launches := 0; ; launches++ {
+		if launches > 0 {
+			s.set(func(st *Status) { st.Restarts++ })
+		}
 		started := m.clock.Now()
 		proc, err := m.launcher.Launch(svc, leaf.Path())
 		if err != nil {
 			log.Error("start failed", "err", err)
 		} else {
+			s.set(func(st *Status) { st.State, st.PID, st.StartedAt = StateRunning, proc.PID(), started })
 			log.Info("started", "cgroup", leaf.Path())
 			exited := make(chan error, 1)
 			go func() { exited <- proc.Wait() }()
@@ -146,6 +203,7 @@ func (m *manager) supervise(s *supervised, svc config.Service, leaf Leaf) {
 		if err := leaf.Kill(); err != nil {
 			log.Error("kill leftovers failed", "err", err)
 		}
+		s.set(func(st *Status) { st.State, st.PID = StateBackoff, 0 })
 		delay := backoff.Next(m.clock.Now().Sub(started))
 		log.Info("restarting", "delay", delay)
 		select {

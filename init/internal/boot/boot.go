@@ -55,16 +55,22 @@ type Services interface {
 	Start(config.Service) error
 }
 
+// API serves the Node API.
+type API interface {
+	// Start serves the API for the chosen configuration, or logs that it is off.
+	Start(store.Stored) error
+}
+
 // Run starts the services of the effective configuration: the stored one,
 // when it was derived from the user-data on the NoCloud drive and validates,
 // and the user-data's otherwise. The steps before the data disk mounts use the
 // user-data. It starts none, and returns the reason, when the configuration or
 // the network-config is invalid, the network cannot be brought up, the data
-// disk is refused, the kernel cannot be set up or a certificate cannot be
-// issued: a refusal is the same whichever service it would have kept from
+// disk is refused, the Node API cannot listen, the kernel cannot be set up or
+// a certificate cannot be issued: a refusal is the same whichever service it would have kept from
 // starting. On success it returns the effective configuration and its
 // revision.
-func Run(host Host, issuer Issuer, services Services, configs Configs, log *slog.Logger) (store.Stored, error) {
+func Run(host Host, issuer Issuer, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
 	userData, networkConfig, err := host.ReadSeed()
 	if err != nil {
 		return store.Stored{}, fmt.Errorf("read the NoCloud drive: %w", err)
@@ -89,6 +95,11 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, log *slog
 	}
 	effective := choose(configs, store.Digest(userData), base, log)
 	cfg := effective.Config
+	// The API starts once the configuration is chosen, before anything else can refuse, so a
+	// Node that refuses after this still answers reads.
+	if err := api.Start(effective); err != nil {
+		return store.Stored{}, fmt.Errorf("start the Node API: %w", err)
+	}
 	if err := host.EnableForwarding(cfg.Spec.Network.Forwarding); err != nil {
 		return store.Stored{}, err
 	}

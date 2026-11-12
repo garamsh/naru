@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
+	"github.com/garamsh/naru/init/internal/api"
 	"github.com/garamsh/naru/init/internal/console"
 	"github.com/garamsh/naru/init/internal/linux"
 	"github.com/garamsh/naru/init/internal/pki"
@@ -61,11 +63,19 @@ func main() {
 
 	issuer := pki.New("", service.SystemClock{}, services, log)
 	configs := store.New(store.Dir)
-	stopRenewing, booted := bootAndRenew(host, issuer, services, configs, log)
+	started := time.Now()
+	server := api.New(api.Deps{
+		Services: services,
+		Logs:     con,
+		Version:  version(),
+		BootID:   func() (string, error) { return linux.ReadBootID(linux.BootIDPath) },
+		Uptime:   func() time.Duration { return time.Since(started) },
+		Log:      log,
+	})
+	stopRenewing, booted := bootAndRenew(host, issuer, services, configs, server, log)
 	if booted != nil {
-		engine := newEngine(*booted, configs, services, host, issuer)
-		revision, _ := engine.Config()
-		log.Info("the apply engine is ready", "revision", revision)
+		server.Attach(newEngine(*booted, configs, services, host, issuer, server))
+		log.Info("the apply engine is ready", "revision", booted.Revision)
 	}
 
 	sig := <-sigs
@@ -73,6 +83,9 @@ func main() {
 	stopRenewing()
 	log.Info("stopping services", "signal", sig.String())
 	services.StopAll()
+	if err := server.Close(); err != nil {
+		log.Error("close the Node API", "err", err)
+	}
 	switch sig {
 	case syscall.SIGINT:
 		err := host.Reboot()
@@ -82,4 +95,22 @@ func main() {
 		log.Error("power off", "err", err)
 	}
 	select {}
+}
+
+// version returns the version init reports on the Node API: the module version init was built
+// at, else the commit it was built from, else "devel".
+func version() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "devel"
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	for _, s := range info.Settings {
+		if s.Key == "vcs.revision" && s.Value != "" {
+			return s.Value
+		}
+	}
+	return "devel"
 }

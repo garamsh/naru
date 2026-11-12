@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/init/internal/config"
+	"github.com/garamsh/naru/init/internal/console"
 	"github.com/garamsh/naru/init/internal/linux"
 	"github.com/garamsh/naru/init/internal/service"
 )
@@ -44,7 +45,7 @@ func TestCgroups_ProcessMovedOutOfAServiceSurvivesItsStopAndRestart(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	go reaper.Run(ctx)
 	t.Cleanup(cancel)
-	mgr := service.NewManager(tree, linux.NewLauncher(reaper, io.Discard), service.SystemClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr := service.NewManager(tree, linux.NewLauncher(reaper, console.New(io.Discard, console.KeptBytes)), service.SystemClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, mgr.Prepare())
 
 	detached := filepath.Join(root, "naru", config.DetachedName)

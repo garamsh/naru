@@ -12,18 +12,24 @@ import (
 	"github.com/garamsh/naru/init/internal/service"
 )
 
+// Sources hands out the writer that tags what a service writes with its name.
+type Sources interface {
+	Source(name string) io.Writer
+}
+
 // Launcher starts services as children of the process, inside their cgroup,
-// with the console as output. Their exits are reported by the Reaper.
+// with a pipe as output that it copies to the console, tagged with the
+// service's name. Their exits are reported by the Reaper.
 type Launcher struct {
 	reaper  *Reaper
-	console io.Writer
+	console Sources
 }
 
 var _ service.Launcher = (*Launcher)(nil)
 
 // NewLauncher returns a Launcher whose children reaper collects and whose
 // children's output goes to console.
-func NewLauncher(reaper *Reaper, console io.Writer) *Launcher {
+func NewLauncher(reaper *Reaper, console Sources) *Launcher {
 	return &Launcher{reaper: reaper, console: console}
 }
 
@@ -37,7 +43,8 @@ func (l *Launcher) Launch(svc config.Service, cgroup string) (service.Process, e
 	}
 	defer dir.Close()
 
-	// The service writes to a pipe that init copies to the console, which keeps the lines.
+	// The service writes to a pipe that init copies to the console, which keeps the lines
+	// with the service's name.
 	out, in, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -60,9 +67,9 @@ func (l *Launcher) Launch(svc config.Service, cgroup string) (service.Process, e
 	}
 	go func() {
 		defer out.Close()
-		_, _ = io.Copy(l.console, out)
+		_, _ = io.Copy(l.console.Source(svc.Name), out)
 	}()
-	return &process{proc: cmd.Process, exited: exited}, nil
+	return &process{proc: cmd.Process, pid: cmd.Process.Pid, exited: exited}, nil
 }
 
 func environ(env map[string]string) []string {
@@ -76,6 +83,7 @@ func environ(env map[string]string) []string {
 
 type process struct {
 	proc   *os.Process
+	pid    int
 	exited <-chan syscall.WaitStatus
 }
 
@@ -92,6 +100,8 @@ func (p *process) Wait() error {
 		return fmt.Errorf("signal: %s", ws.Signal())
 	}
 }
+
+func (p *process) PID() int { return p.pid }
 
 func (p *process) Signal(sig syscall.Signal) error {
 	return p.proc.Signal(sig)

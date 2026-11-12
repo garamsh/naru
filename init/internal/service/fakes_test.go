@@ -3,6 +3,7 @@ package service_test
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -62,6 +63,7 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 // fakeProc is a process that exits when the test says so, or on SIGTERM.
 type fakeProc struct {
 	exitOnTerm bool
+	pid        int
 
 	mu      sync.Mutex
 	signals []syscall.Signal
@@ -73,6 +75,8 @@ type fakeProc struct {
 func (p *fakeProc) exit(err error) {
 	p.once.Do(func() { p.err = err; close(p.done) })
 }
+
+func (p *fakeProc) PID() int { return p.pid }
 
 func (p *fakeProc) Wait() error {
 	<-p.done
@@ -103,6 +107,7 @@ type launch struct {
 }
 
 type fakeLauncher struct {
+	pids       atomic.Int32
 	exitOnTerm bool
 	failures   chan error // a value queued here fails the next Launch
 	launched   chan launch
@@ -118,7 +123,7 @@ func (l *fakeLauncher) Launch(svc config.Service, cgroup string) (service.Proces
 		return nil, err
 	default:
 	}
-	p := &fakeProc{exitOnTerm: l.exitOnTerm, done: make(chan struct{})}
+	p := &fakeProc{exitOnTerm: l.exitOnTerm, pid: 100 + int(l.pids.Add(1)), done: make(chan struct{})}
 	l.launched <- launch{svc: svc, cgroup: cgroup, proc: p}
 	return p, nil
 }
