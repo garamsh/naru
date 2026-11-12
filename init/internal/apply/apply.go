@@ -21,6 +21,8 @@ const (
 	NoReboot Mode = "no-reboot"
 	// Staged stores the change for the next boot and takes no live action.
 	Staged Mode = "staged"
+	// Reboot stores the change, as Staged does, and has the caller reboot the Node.
+	Reboot Mode = "reboot"
 )
 
 // Request is one call to Apply.
@@ -38,12 +40,12 @@ type Request struct {
 }
 
 // Action is one thing an apply does: store, start, stop, restart,
-// write-file, issue-certificate, forget-certificate, reload-api, sync-time or
-// stop-time-sync.
+// write-file, issue-certificate, forget-certificate, reload-api, sync-time,
+// stop-time-sync or reboot.
 type Action struct {
 	Action string
 	// Target is the service, the path, the certificate name, spec.api, or
-	// config for the store.
+	// config for the store, node for the reboot.
 	Target string
 }
 
@@ -54,6 +56,9 @@ type Result struct {
 	Mode     Mode
 	DryRun   bool
 	Actions  []Action
+	// Reboot is true when the caller is to reboot the Node now: the mode is Reboot, the change is
+	// stored and the request is not a dry run.
+	Reboot bool
 }
 
 // Store writes the next revision.
@@ -134,8 +139,8 @@ func (e *Engine) Apply(req Request) (Result, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if req.Mode != NoReboot && req.Mode != Staged {
-		return Result{}, &InvalidError{Fields: []string{"mode"}, Message: `must be "no-reboot" or "staged"`}
+	if req.Mode != NoReboot && req.Mode != Staged && req.Mode != Reboot {
+		return Result{}, &InvalidError{Fields: []string{"mode"}, Message: `must be "no-reboot", "staged" or "reboot"`}
 	}
 	if (req.Patch == nil) == (req.Config == nil) {
 		return Result{}, &InvalidError{Fields: []string{"patch", "config"}, Message: "exactly one must be given"}
@@ -159,6 +164,9 @@ func (e *Engine) Apply(req Request) (Result, error) {
 	for _, s := range steps {
 		res.Actions = append(res.Actions, s.action)
 	}
+	if req.Mode == Reboot {
+		res.Actions = append(res.Actions, Action{"reboot", "node"})
+	}
 	if req.DryRun {
 		return res, nil
 	}
@@ -177,6 +185,7 @@ func (e *Engine) Apply(req Request) (Result, error) {
 	if req.Mode == NoReboot {
 		e.running = next
 	}
+	res.Reboot = req.Mode == Reboot
 	return res, nil
 }
 

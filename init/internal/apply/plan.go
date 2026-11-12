@@ -79,7 +79,7 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 		reboot = append(reboot, "spec.api.listen")
 	}
 	if len(reboot) > 0 {
-		return &InvalidError{Fields: reboot, Message: `these fields need a reboot; use mode "staged"`}
+		return &InvalidError{Fields: reboot, Message: `these fields need a reboot; use mode "staged" or "reboot"`}
 	}
 	return nil
 }

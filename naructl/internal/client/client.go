@@ -43,7 +43,7 @@ func Dial(f File, node string) (*Client, error) {
 	return &Client{base: "https://" + addr, http: &http.Client{Transport: tr}}, nil
 }
 
-// StatusError is a refusal or a failure the Node answered with, which is any status but 200.
+// StatusError is a refusal or a failure the Node answered with, which is any status but 2xx.
 type StatusError struct {
 	Status  int
 	Message string
@@ -83,7 +83,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}
-	if resp.StatusCode == http.StatusOK {
+	if resp.StatusCode/100 == 2 {
 		return resp, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -188,6 +188,7 @@ func (c *Client) Config(ctx context.Context) (Config, error) {
 const (
 	NoReboot = "no-reboot"
 	Staged   = "staged"
+	Reboot   = "reboot"
 )
 
 // Action is one thing an apply did, or with a dry run would do.
@@ -207,8 +208,8 @@ type Applied struct {
 // Apply merge-patches the Node's configuration at revision with patch. The Node refuses a revision
 // that is no longer its own with a 409 StatusError.
 func (c *Client) Apply(ctx context.Context, revision int, patch map[string]any, mode string, dryRun bool) (Applied, error) {
-	if mode != NoReboot && mode != Staged {
-		return Applied{}, fmt.Errorf("the mode %q is not %s or %s", mode, NoReboot, Staged)
+	if mode != NoReboot && mode != Staged && mode != Reboot {
+		return Applied{}, fmt.Errorf("the mode %q is not %s, %s or %s", mode, NoReboot, Staged, Reboot)
 	}
 	resp, err := c.do(ctx, http.MethodPost, "/v1/config", map[string]any{"revision": revision, "patch": patch, "mode": mode, "dryRun": dryRun})
 	if err != nil {
@@ -220,4 +221,21 @@ func (c *Client) Apply(ctx context.Context, revision int, patch map[string]any, 
 		return Applied{}, fmt.Errorf("POST /v1/config: the answer is not what the Node API sends: %w", err)
 	}
 	return a, nil
+}
+
+// Reboot asks the Node to stop its services and reboot, and returns the actions it accepted. The
+// Node answers before it reboots, and its connection then ends.
+func (c *Client) Reboot(ctx context.Context) ([]Action, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/v1/reboot", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body struct {
+		Actions []Action `json:"actions"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("POST /v1/reboot: the answer is not what the Node API sends: %w", err)
+	}
+	return body.Actions, nil
 }

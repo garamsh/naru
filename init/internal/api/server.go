@@ -54,6 +54,9 @@ type Deps struct {
 	BootID func() (string, error)
 	// Uptime returns how long the Node has been up.
 	Uptime func() time.Duration
+	// Reboot asks init to stop the services and reboot the Node. It returns at once, and is
+	// called after the reply that asked for the reboot has been sent.
+	Reboot func()
 	Log    *slog.Logger
 }
 
@@ -66,6 +69,8 @@ type Server struct {
 	mu     sync.Mutex
 	chosen store.Stored // what GET /v1/config reports until an engine is attached
 	engine Engine
+	// rebooting is set once a reboot is accepted; a request that changes the Node is refused after.
+	rebooting atomic.Bool
 	// timeStatus reports the clock; nil until UseTime.
 	timeStatus func() timesync.Status
 	srv        *http.Server

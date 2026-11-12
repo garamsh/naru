@@ -140,12 +140,12 @@ func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeApplyError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, struct {
+	s.reply(w, http.StatusOK, struct {
 		Revision int          `json:"revision"`
 		Mode     apply.Mode   `json:"mode"`
 		DryRun   bool         `json:"dryRun"`
 		Actions  []actionBody `json:"actions"`
-	}{res.Revision, res.Mode, res.DryRun, actionBodies(res.Actions)})
+	}{res.Revision, res.Mode, res.DryRun, actionBodies(res.Actions)}, res.Reboot)
 }
 
 // writeApplyError is the one place an apply's error becomes a status: 409 for a stale

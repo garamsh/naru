@@ -1,6 +1,7 @@
 // Command naru-init is PID 1 of a naru Node. It mounts the pseudo file
 // systems, reads the configuration, starts and supervises the services, reaps
-// every orphan, and powers the machine off or reboots it on a signal.
+// every orphan, powers the machine off on SIGTERM, and reboots it on SIGINT or
+// when the Node API accepts a reboot.
 package main
 
 import (
@@ -70,7 +71,14 @@ func main() {
 		Version:  version(),
 		BootID:   func() (string, error) { return linux.ReadBootID(linux.BootIDPath) },
 		Uptime:   func() time.Duration { return time.Since(started) },
-		Log:      log,
+		// A reboot asked for through the API stops the Node the way SIGINT does.
+		Reboot: func() {
+			select {
+			case sigs <- syscall.SIGINT:
+			default:
+			}
+		},
+		Log: log,
 	})
 	stopRenewing, booted := bootAndRenew(host, issuer, services, configs, server, log)
 	if booted != nil {
