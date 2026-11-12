@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -16,6 +17,8 @@ import (
 
 	"github.com/garamsh/naru/naructl/internal/pki"
 )
+
+var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
 // Where a Node's programs and files are, and the ports it serves.
 const (
@@ -164,6 +167,8 @@ func (n Node) Check() error {
 	switch {
 	case n.Name == "":
 		return errors.New("a Node needs a name")
+	case !dnsLabel.MatchString(n.Name):
+		return fmt.Errorf("the name %q is not a DNS label (lower-case letters, digits and '-', at most 63, starting and ending with a letter or digit); it is the Node's CN, its etcd name and its metadata name", n.Name)
 	case !n.Address.IsValid() || !n.Address.Addr().Is4():
 		return errors.New("the address is not an IPv4 address with a prefix length")
 	case !n.APIServer.IsValid():
@@ -250,6 +255,14 @@ func (n Node) withoutDisabled(c *nodeConfig) {
 		return
 	}
 	c.Spec.Services = slices.DeleteFunc(c.Spec.Services, func(s service) bool { return slices.Contains(n.Disable, s.Name) })
+	if slices.Contains(n.Disable, "registry") {
+		// mvmd trusts the registry's certificate through SSL_CERT_FILE; without the registry the file is not there.
+		for i := range c.Spec.Services {
+			if c.Spec.Services[i].Name == "mvmd" {
+				c.Spec.Services[i].Env = nil
+			}
+		}
+	}
 	if c.Spec.PKI != nil {
 		for i := range c.Spec.PKI.Certificates {
 			r := &c.Spec.PKI.Certificates[i].Restart
@@ -298,7 +311,7 @@ func (n Node) certFiles() ([]file, error) {
 // pkiSpec is the control-plane Node's spec.pki: the cluster's CA with its key, written where the
 // services name it, and the four pairs the Node's services take, each restarting its service when
 // init renews it. The paths are those the files take otherwise, so services() is the same either way.
-// The serving certificate names the Node's addresses and the loopback (nodeAddresses) and
+// The serving certificate names the Node's addresses and the loopback (nodeAddresses), APIServer and
 // ServingAddresses.
 func (n Node) pkiSpec() *pkiSpec {
 	cert := func(name, cn, usage, service string) pkiCertificate {
@@ -309,8 +322,13 @@ func (n Node) pkiSpec() *pkiSpec {
 	}
 	apiserver := cert("apiserver", "gaon-apiserver", "server", "gaon-apiserver")
 	apiserver.NodeAddresses = true
+	// The API server's address is named whether or not it is one of the Node's own: an operator's
+	// network-config, or an address behind a forward, would otherwise leave every agent unable to verify it.
+	apiserver.IPAddresses = []string{n.APIServer.String()}
 	for _, a := range n.ServingAddresses {
-		apiserver.IPAddresses = append(apiserver.IPAddresses, a.String())
+		if a != n.APIServer {
+			apiserver.IPAddresses = append(apiserver.IPAddresses, a.String())
+		}
 	}
 	return &pkiSpec{
 		Authorities: []pkiAuthority{{

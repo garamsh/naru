@@ -98,6 +98,9 @@ func load(certPEM, keyPEM []byte) (*CA, error) {
 	if !cert.IsCA {
 		return nil, errors.New("the certificate is not a certificate authority's")
 	}
+	if now := time.Now(); now.After(cert.NotAfter) {
+		return nil, fmt.Errorf("the authority's certificate expired at %s; every certificate it would sign is already invalid", cert.NotAfter.Format(time.RFC3339))
+	}
 	kb, _ := pem.Decode(keyPEM)
 	if kb == nil {
 		return nil, errors.New("the authority's key is not PEM")
@@ -129,10 +132,28 @@ func WritePair(dir, name string, p Pair) error {
 }
 
 func writePair(dir, name string, certPEM, keyPEM []byte) error {
-	if err := os.WriteFile(filepath.Join(dir, name+".pem"), certPEM, 0o644); err != nil { //nolint:gosec // a certificate
+	if err := WriteFile(filepath.Join(dir, name+".pem"), certPEM, 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, name+".key"), keyPEM, 0o600)
+	return WriteFile(filepath.Join(dir, name+".key"), keyPEM, 0o600)
+}
+
+// WriteFile writes data to path with mode perm, replacing a file already there. os.WriteFile applies
+// perm only to a file it creates, so a key written over an existing 0644 file would stay readable by
+// everyone; WriteFile removes the old file and creates a new one, which never exists with another mode.
+func WriteFile(path string, data []byte, perm os.FileMode) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm) //nolint:gosec // the caller names the path
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // Server issues a serving certificate with cn as its subject and each of ips as an IP SAN.

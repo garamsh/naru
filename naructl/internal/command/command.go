@@ -65,6 +65,22 @@ func require(fs *flag.FlagSet, names ...string) error {
 	return nil
 }
 
+// needs refuses each of the flags given without the flag that makes it apply, which would otherwise
+// be accepted and do nothing.
+func needs(fs *flag.FlagSet, with string, flags ...string) error {
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if set[with] {
+		return nil
+	}
+	for _, f := range flags {
+		if set[f] {
+			return fmt.Errorf("--%s has no effect without --%s", f, with)
+		}
+	}
+	return nil
+}
+
 func genCA(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("ca", stderr)
 	out := fs.String("out", "", "directory that receives ca.pem and ca.key (0600)")
@@ -140,12 +156,18 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
 	fs.StringVar(&n.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
 	fs.BoolVar(&n.PairsAsFiles, "pairs-as-files", false, "a control-plane Node carries its certificate pairs as files instead of issuing them")
-	fs.StringVar(&out, "out", "", "the user-data file to write (0600: it carries keys)")
+	fs.StringVar(&out, "out", "", "the user-data file to write (0600: it carries keys; a file already there is replaced)")
 	fs.StringVar(&networkConfig, "network-config", "", "also write the NoCloud network-config to this file")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := require(fs, "ca", "name", "address", "api-server", "machine-prefix", "guest", "firecracker-sha256", "out"); err != nil {
+		return err
+	}
+	if err := needs(fs, "network-config", "mac", "gateway", "nameserver", "search", "extra-nic"); err != nil {
+		return err
+	}
+	if err := needs(fs, "control-plane", "serving-address", "pairs-as-files"); err != nil {
 		return err
 	}
 	var err error
@@ -213,7 +235,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
-	if err := os.WriteFile(out, userData, 0o600); err != nil {
+	if err := pki.WriteFile(out, userData, 0o600); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: wrote %s", out)

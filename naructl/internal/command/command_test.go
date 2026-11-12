@@ -129,6 +129,7 @@ type userData struct {
 			Name   string
 			Binary string
 			Args   []string
+			Env    map[string]string
 		}
 		Files []struct{ Path, Mode, Content string }
 		PKI   *struct {
@@ -320,13 +321,30 @@ func TestGenNode_PairsAsFilesGivesTheControlPlaneItsPairsAndNoSpecPKI(t *testing
 	assert.NoError(t, err)
 }
 
+func TestGenNode_APIServerIsNamedByTheCertificateInitIssuesEvenWhenItIsNoAddressOfTheNode(t *testing.T) {
+	dep := newDeployment(t)
+	// The Node's own address is 192.168.0.20 and agents dial 192.168.0.10, a forward or a VIP.
+	out := filepath.Join(t.TempDir(), "n.yaml")
+	mustRun(t, "gen", "node", "--ca", dep.ca, "--name", "node-1", "--control-plane", "--address", "192.168.0.20/24", "--api-server", "192.168.0.10",
+		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out, "--serving-address", "192.168.0.10")
+
+	u := parse(t, out)
+	for _, c := range u.Spec.PKI.Certificates {
+		if c.Name == "apiserver" {
+			assert.Equal(t, []string{"192.168.0.10"}, c.IPAddresses, "named once although --serving-address repeats it")
+			return
+		}
+	}
+	require.Fail(t, "no apiserver certificate")
+}
+
 func TestGenNode_ServingAddressIsNamedByTheCertificateInitIssues(t *testing.T) {
 	dep := newDeployment(t)
 	u := parse(t, dep.node(t, "node-1", "--control-plane", "--serving-address", "127.0.0.1", "--serving-address", "10.1.1.1"))
 
 	for _, c := range u.Spec.PKI.Certificates {
 		if c.Name == "apiserver" {
-			assert.Equal(t, []string{"127.0.0.1", "10.1.1.1"}, c.IPAddresses)
+			assert.Equal(t, []string{"192.168.0.10", "127.0.0.1", "10.1.1.1"}, c.IPAddresses, "the API server's address first, then the extra ones")
 			return
 		}
 	}
@@ -471,6 +489,84 @@ func TestGenNode_UserDataIsPrivateAndTwoRunsDifferOnlyInTheirKeysAndCertificates
 	agentA, _ := a.file("/run/gaon/agent.key")
 	agentB, _ := b.file("/run/gaon/agent.key")
 	assert.NotEqual(t, agentA, agentB, "each run issues a new pair")
+}
+
+func TestGenNode_OverAnExistingWorldReadableFileTheUserDataIsStillPrivate(t *testing.T) {
+	dep := newDeployment(t)
+	out := filepath.Join(t.TempDir(), "node-1.yaml")
+	require.NoError(t, os.WriteFile(out, []byte("stale"), 0o644)) //nolint:gosec // the case under test
+
+	mustRun(t, "gen", "node", "--ca", dep.ca, "--name", "node-1", "--control-plane", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out)
+
+	info, err := os.Stat(out)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "the control-plane user-data carries the CA's key")
+	validate(t, out)
+}
+
+func TestGenClient_OverAnExistingWorldReadableKeyTheKeyIsStillPrivate(t *testing.T) {
+	dep := newDeployment(t)
+	out := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(out, "client.key"), []byte("stale"), 0o644)) //nolint:gosec // the case under test
+
+	mustRun(t, "gen", "client", "--ca", dep.ca, "--cn", "alice", "--out", out)
+
+	info, err := os.Stat(filepath.Join(out, "client.key"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
+func TestGenNode_ANameThatIsNoDNSLabelIsRefused(t *testing.T) {
+	dep := newDeployment(t)
+	for _, name := range []string{"Node_1", "node 1", "-node", "node-", "a.b", strings.Repeat("a", 64)} {
+		out, err := run(t, "gen", "node", "--ca", dep.ca, "--name", name, "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"))
+		require.Error(t, err, name)
+		assert.Contains(t, out, "not a DNS label", name)
+	}
+}
+
+func TestGenNode_AFlagGivenWithoutWhatMakesItApplyIsRefused(t *testing.T) {
+	dep := newDeployment(t)
+	for _, c := range []struct{ flag, value, needs string }{
+		{"--mac", "02:00:00:00:00:01", "--network-config"},
+		{"--gateway", "192.168.0.1", "--network-config"},
+		{"--nameserver", "1.1.1.1", "--network-config"},
+		{"--search", "naru.test", "--network-config"},
+		{"--extra-nic", "02:00:00:00:00:02=10.0.2.15/24", "--network-config"},
+		{"--serving-address", "127.0.0.1", "--control-plane"},
+		{"--pairs-as-files", "", "--control-plane"},
+	} {
+		args := []string{
+			"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
+			c.flag,
+		}
+		if c.value != "" {
+			args = append(args, c.value)
+		}
+		out, err := run(t, args...)
+		require.Error(t, err, c.flag)
+		assert.Contains(t, out, c.flag+" has no effect without "+c.needs)
+	}
+}
+
+func TestGenNode_DisablingTheRegistryDropsMvmdsCertificateFile(t *testing.T) {
+	dep := newDeployment(t)
+	with := parse(t, dep.node(t, "node-2"))
+	without := parse(t, dep.node(t, "node-2", "--disable", "registry"))
+
+	env := func(u userData) map[string]string {
+		for _, s := range u.Spec.Services {
+			if s.Name == "mvmd" {
+				return s.Env
+			}
+		}
+		return nil
+	}
+	assert.Contains(t, env(with), "SSL_CERT_FILE")
+	assert.NotContains(t, env(without), "SSL_CERT_FILE", "the registry's certificate is not there")
 }
 
 func TestRun_AnUnknownCommandIsRefused(t *testing.T) {
