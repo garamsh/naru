@@ -239,8 +239,14 @@ func (c Config) NaruYAML() ([]byte, error) {
 // network of its own per Node.
 func (c Config) MvmdJSON() ([]byte, error) {
 	g := c.Inputs.Guest
-	// The kernel and the initrds are the image's own; their paths and digests are guest.json's.
+	// The kernels and the initrds are the image's own; their paths and digests are guest.json's.
+	// The Driver takes every declared kernel and the default's name; the converter has one
+	// kernel of its own, which is the default.
 	kernel := g.Default()
+	kernels := make(map[string]any, len(g.Kernels))
+	for name, k := range g.Kernels {
+		kernels[name] = map[string]any{"path": k.Path, "sha256": k.SHA256}
+	}
 	prefix := c.net().MachinePrefix
 	first := prefix.Masked().Addr().Next().String()
 	return json.MarshalIndent(map[string]any{
@@ -250,7 +256,7 @@ func (c Config) MvmdJSON() ([]byte, error) {
 		"disk":      map[string]any{"mkfs": MkfsPath},
 		"firecracker": map[string]any{
 			"binary": "/bin/firecracker", "binary_sha256": c.Inputs.FirecrackerSHA256,
-			"kernel": kernel.Path, "kernel_sha256": kernel.SHA256,
+			"kernels": kernels, "default_kernel": g.DefaultKernel,
 			"initrd": g.GuestInitrd.Path, "initrd_sha256": g.GuestInitrd.SHA256,
 		},
 		"conversion": map[string]any{

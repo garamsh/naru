@@ -2,7 +2,7 @@
 
 What naru owns, what it leaves to gaon and to mvmd, and the obligations mvmd's deployment puts on it.
 
-In this repository `Machine` names the microVM and `Node` the physical machine. Claims about garamsh/mvmd hold at commit `3b37892f303a4d4dbd8e5360906d0f9c036b562e`, and claims about garamsh/gaon at `cd05f7ed59b62c43279e13d0cb3b3821c93abcc2`; they promise nothing about later versions. Each claim below was read again at those commits when they replaced `cfe57fb9f9bfbd7ec8e24b54915656030f1e2b64` and `bf4ed9e716440b33d9b0a701354b05f451727cec`: the mvmd documents the table names, and gaon's `structure.md`, `deployment.md` and ADR 0002.
+In this repository `Machine` names the microVM and `Node` the physical machine. Claims about garamsh/mvmd hold at commit `b68db37c093b764d40a3930618f47041178253f7`, and claims about garamsh/gaon at `cd05f7ed59b62c43279e13d0cb3b3821c93abcc2`; they promise nothing about later versions. The gaon claims were read at `cd05f7ed59b62c43279e13d0cb3b3821c93abcc2` when it replaced `bf4ed9e716440b33d9b0a701354b05f451727cec`: gaon's `structure.md`, `deployment.md` and ADR 0002. The mvmd claims were read again at `b68db37c093b764d40a3930618f47041178253f7` when it replaced `3b37892f303a4d4dbd8e5360906d0f9c036b562e`: the table's mvmd ADRs 0003, 0008, 0011, 0012, 0015 and 0021 have no change between the two commits (`git diff --stat` over them is empty), and `runtime.md` §Fencing, §State and stability and §Network and `guest.md` §Kernel conditions were read at the new commit.
 
 ## Current decisions
 
