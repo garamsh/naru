@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // ESPGUID is the fixed partition GUID of the EFI system partition of the image's disk
@@ -112,12 +114,23 @@ func (u *Upgrader) withESP(p esp, fn func(dir string) error) (err error) {
 		return fmt.Errorf("mount the ESP %s: %w", p.device, err)
 	}
 	defer func() {
-		syscall.Sync()
+		if serr := u.cfg.Sync(u.cfg.ESPMount); serr != nil {
+			err = errors.Join(err, fmt.Errorf("flush the ESP: %w", serr))
+		}
 		if uerr := u.cfg.Unmount(u.cfg.ESPMount, 0); uerr != nil {
 			err = errors.Join(err, fmt.Errorf("unmount the ESP: %w", uerr))
 		}
 	}()
 	return fn(filepath.Join(u.cfg.ESPMount, filepath.FromSlash(slotDir)))
+}
+
+// syncFS flushes the file system mounted at dir, and no other.
+func syncFS(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(unix.Syncfs(int(d.Fd())), d.Close())
 }
 
 // syncDir fsyncs a directory so that a rename or a removal in it is durable.

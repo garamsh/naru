@@ -58,9 +58,11 @@ type Config struct {
 	// Settle and Bound are the health bounds of a trial boot, measured from Started.
 	Settle, Bound time.Duration
 	Started       time.Time
-	// Mount and Unmount are syscall.Mount and syscall.Unmount.
+	// Mount and Unmount are syscall.Mount and syscall.Unmount. Sync flushes the file system mounted
+	// at dir, as syncfs(2) does, before the ESP is unmounted.
 	Mount   func(source, target, fstype string, flags uintptr, data string) error
 	Unmount func(target string, flags int) error
+	Sync    func(dir string) error
 	// Now and After are the clock and a timer.
 	Now   func() time.Time
 	After func(time.Duration) <-chan time.Time
@@ -109,6 +111,9 @@ func NewWith(cfg Config) *Upgrader {
 	}
 	if cfg.Unmount == nil {
 		cfg.Unmount = syscall.Unmount
+	}
+	if cfg.Sync == nil {
+		cfg.Sync = syncFS
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now

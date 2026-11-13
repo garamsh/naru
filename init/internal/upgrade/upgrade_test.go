@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -73,6 +74,11 @@ type node struct {
 	logs    *safeBuffer
 	mounted bool
 	mounts  int
+	// flushes are the directories Sync was called on, and unflushed counts the unmounts that came
+	// with no flush since the ESP was mounted.
+	flushes   []string
+	flushed   bool
+	unflushed int
 }
 
 func newNode(t *testing.T) *node {
@@ -120,12 +126,21 @@ func (n *node) upgrader(version string, mut ...func(*upgrade.Config)) *upgrade.U
 			if fstype == "vfat" {
 				require.False(n.t, n.mounted, "the ESP is mounted once at a time")
 				n.mounted = true
+				n.flushed = false
 				n.mounts++
 			}
 			return nil
 		},
 		Unmount: func(string, int) error {
+			if !n.flushed {
+				n.unflushed++
+			}
 			n.mounted = false
+			return nil
+		},
+		Sync: func(dir string) error {
+			n.flushes = append(n.flushes, dir)
+			n.flushed = true
 			return nil
 		},
 	}
@@ -235,6 +250,32 @@ func TestUpgrader_InstallStagesTheKernelInTheTrialSlotAndArmsTheFirmwareToBootIt
 	assert.Equal(t, 1, n.mounts)
 	_, ok = u.Last()
 	assert.False(t, ok, "staging is not an outcome")
+}
+
+func TestUpgrader_InstallFlushesTheESPOnceBeforeItUnmountsIt(t *testing.T) {
+	n := newNode(t)
+	u := n.upgrader("v1")
+	b, sum := bundle(t, "v2", "kernel-B")
+
+	_, err := u.Install(bytes.NewReader(b), sum)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.Join(n.root, "esp")}, n.flushes, "one flush, of the ESP's mount point")
+	assert.Equal(t, 0, n.unflushed, "the ESP was flushed before it was unmounted")
+}
+
+func TestUpgrader_InstallReportsAFailedFlushOfTheESPAndStillUnmountsIt(t *testing.T) {
+	n := newNode(t)
+	boom := errors.New("boom")
+	u := n.upgrader("v1", func(c *upgrade.Config) {
+		c.Sync = func(string) error { return boom }
+	})
+	b, sum := bundle(t, "v2", "kernel-B")
+
+	_, err := u.Install(bytes.NewReader(b), sum)
+
+	require.ErrorIs(t, err, boom)
+	assert.False(t, n.mounted, "the ESP is unmounted after a failed flush")
 }
 
 func TestUpgrader_InstallRefusesABodyThatIsNotTheBundleItWasToldAboutAndTouchesNothing(t *testing.T) {
