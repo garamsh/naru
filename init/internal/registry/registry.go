@@ -1,5 +1,5 @@
 // Package registry writes the files mvmd and the credential helpers read for the registries of a
-// Node (docs/architecture/adr/0026-registry-credentials-and-trust-are-configuration-and-an-ecr-credential-is-renewed-through-iam-roles-anywhere.md):
+// Node (docs/architecture/adr/0026-a-node-takes-registry-credentials-and-trust-as-configuration-an-ecr-credential-comes-from-iam-roles-anywhere-and-an-agent-pair-without-the-required-organization-is-set-aside.md):
 // the credentials file, the CA bundle and the AWS profile.
 package registry
 

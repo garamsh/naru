@@ -10,7 +10,7 @@ import (
 )
 
 // Registry is how the Node reaches one container registry: the authority it trusts and the
-// credential it presents (docs/architecture/adr/0026-registry-credentials-and-trust-are-configuration-and-an-ecr-credential-is-renewed-through-iam-roles-anywhere.md).
+// credential it presents (docs/architecture/adr/0026-a-node-takes-registry-credentials-and-trust-as-configuration-an-ecr-credential-comes-from-iam-roles-anywhere-and-an-agent-pair-without-the-required-organization-is-set-aside.md).
 type Registry struct {
 	// Host is the registry's name as an image reference spells it, with a port after a colon
 	// when it is not the default.

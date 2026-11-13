@@ -524,7 +524,7 @@ func TestApply_REDACTEDPasswordIsRefusedWhereNoneWasStored(t *testing.T) {
 	assert.Equal(t, []string{"spec.registries[0].credential.password"}, invalid.Fields)
 }
 
-func TestApply_REDACTEDPasswordKeepsTheStoredOne(t *testing.T) {
+func TestApply_AnOmittedPasswordKeepsTheStoredOne(t *testing.T) {
 	r := newRig(t)
 	_, err := r.engine.Apply(apply.Request{Patch: patch(registryPatch("r.example", "s3cret")), Mode: apply.Staged})
 	require.NoError(t, err)
@@ -535,4 +535,18 @@ func TestApply_REDACTEDPasswordKeepsTheStoredOne(t *testing.T) {
 	got := r.saved[len(r.saved)-1].Config.Spec.Registries[0].Credential
 	assert.Equal(t, "v", got.Username)
 	assert.Equal(t, "s3cret", got.Password, "a patch that omits the password keeps the stored one")
+}
+
+func TestApply_REDACTEDPasswordOverAStoredOneIsRefused(t *testing.T) {
+	r := newRig(t)
+	_, err := r.engine.Apply(apply.Request{Patch: patch(registryPatch("r.example", "s3cret")), Mode: apply.Staged})
+	require.NoError(t, err)
+	stored := len(r.saved)
+
+	_, err = r.engine.Apply(apply.Request{Revision: 1, Patch: patch(registryPatch("r.example", "REDACTED")), Mode: apply.Staged})
+
+	var invalid *apply.InvalidError
+	require.ErrorAs(t, err, &invalid)
+	assert.Equal(t, []string{"spec.registries[0].credential.password"}, invalid.Fields)
+	assert.Len(t, r.saved, stored, "nothing was stored")
 }
