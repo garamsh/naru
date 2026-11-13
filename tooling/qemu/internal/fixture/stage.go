@@ -48,6 +48,7 @@ type Sources struct {
 //	bin/naru-bootnext                  (ADR 0020)
 //	bin/naru-netecho                   sends, receives and reports routes
 //	bin/naru-etcdprobe                 (ADR 0024)
+//	bin/naru-credstub                  the interpreter of a stand-in credential helper (ADR 0026)
 //	registry/                          see WriteRegistry
 //
 // The guest kernel, the initrds and mkfs.ext4 are not staged: the image carries them (ADR 0010,
@@ -81,6 +82,7 @@ func Stage(src Sources, out string) (Inputs, error) {
 		{"tooling/qemu", "./cmd/naru-registry", filepath.Join(bin, "naru-registry")},
 		{"tooling/qemu", "./cmd/naru-bootnext", filepath.Join(bin, "naru-bootnext")},
 		{"tooling/qemu", "./cmd/naru-netecho", filepath.Join(bin, "naru-netecho")},
+		{"tooling/qemu", "./cmd/naru-credstub", filepath.Join(bin, "naru-credstub")},
 		{"tooling/qemu", "./cmd/naru-entry", filepath.Join(entryDir, "entry")},
 		{"tooling/qemu", "./cmd/naru-etcdprobe", filepath.Join(bin, "naru-etcdprobe")},
 		{"tooling/probe", "./cmd/naru-probe", filepath.Join(bin, "naru-probe")},

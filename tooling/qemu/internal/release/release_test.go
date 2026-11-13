@@ -159,7 +159,7 @@ type userData struct {
 			Routes []struct{ To, Via string }
 		}
 		Registries []struct{ Host, CA string }
-		PKI *struct {
+		PKI        *struct {
 			Authorities []struct {
 				Certificate, Key string
 				KeyPath          string `yaml:"keyPath"`

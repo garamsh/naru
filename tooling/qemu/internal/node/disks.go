@@ -28,7 +28,9 @@ const (
 // directory inputsDir (hard-linked into the build, so it costs no copy when
 // both are on one file system). It has nothing of the Node in it: what differs
 // between Nodes is on the NoCloud drive.
-func BuildDataDisk(dir, inputsDir string) (string, error) { return BuildDataDiskWith(dir, inputsDir, "") }
+func BuildDataDisk(dir, inputsDir string) (string, error) {
+	return BuildDataDiskWith(dir, inputsDir, "")
+}
 
 // BuildDataDiskWith is BuildDataDisk with the directory agentPair, when it is not empty, at
 // gaon-node-agent: a Node's data disk that already keeps an agent pair.
