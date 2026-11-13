@@ -55,8 +55,8 @@ func growFS(dir string, blocks uint64, imaxPct uint8) error {
 
 // PrepareStorage finds the disk of s, formats it as XFS when it is blank, mounts it hardened and
 // grows the file system to the size of the device. It never formats a disk that holds anything,
-// leaves a disk that holds something other than XFS alone, and mounts nothing over a directory
-// that already holds files. It logs what it did.
+// leaves a disk that holds something other than XFS alone, so the data disk is never taken, and
+// mounts nothing over a directory that already holds files. It logs what it did.
 func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	dev, err := h.findStorage(s)
 	if err != nil {
@@ -92,6 +92,11 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 		}
 	default:
 		return fmt.Errorf("storage %q: %w", s.Name, err)
+	}
+	// An entry given by device finds its XFS by the label init gave it, so an XFS at the device
+	// is another disk's.
+	if s.Device != "" && sb.Label != s.Name {
+		return fmt.Errorf("storage %q: %s holds an XFS file system labelled %q, not %q; it is left alone", s.Name, dev, sb.Label, s.Name)
 	}
 
 	if err := os.MkdirAll(mnt, 0o755); err != nil {
@@ -129,30 +134,36 @@ func isBlank(r io.ReaderAt) (bool, error) {
 	return len(bytes.Trim(buf[:n], "\x00")) == 0, nil
 }
 
-// findStorage returns the device of s, waiting up to diskWait for it to appear. A device path is
-// taken as it is; a label matches a GPT partition name or the label of an XFS file system.
+// findStorage returns the device of s, waiting up to diskWait for it to appear. A label matches a
+// GPT partition name or the label of an XFS file system. An entry given by device is found first
+// as the XFS that init labelled with its name, wherever the kernel put it, and only when there is
+// none is the device taken, for a blank disk.
 func (h *Host) findStorage(s config.Storage) (string, error) {
-	if s.Device != "" {
-		return h.wait(func() (string, error) {
-			if _, err := os.Stat(s.Device); err != nil {
-				return "", fmt.Errorf("%s: %w", s.Device, errNoDisk)
-			}
-			return s.Device, nil
-		})
+	if s.Device == "" {
+		return h.wait(func() (string, error) { return h.scanStorage(s.Label, true) })
 	}
-	return h.wait(func() (string, error) { return h.scanStorage(s.Label) })
+	return h.wait(func() (string, error) {
+		dev, err := h.scanStorage(s.Name, false)
+		if err == nil || !errors.Is(err, errNoDisk) {
+			return dev, err
+		}
+		if _, err := os.Stat(s.Device); err != nil {
+			return "", fmt.Errorf("%s: %w", s.Device, errNoDisk)
+		}
+		return s.Device, nil
+	})
 }
 
-// scanStorage returns the first device in /sys/class/block that is a partition named label or
-// holds an XFS file system labelled label.
-func (h *Host) scanStorage(label string) (string, error) {
+// scanStorage returns the first device in /sys/class/block that holds an XFS file system labelled
+// label or, when partitions is set, is a partition named label.
+func (h *Host) scanStorage(label string, partitions bool) (string, error) {
 	entries, err := os.ReadDir(h.sysClassBlock)
 	if err != nil {
 		return "", err
 	}
 	for _, e := range entries {
 		dev := filepath.Join(h.devDir, e.Name())
-		if partName(filepath.Join(h.sysClassBlock, e.Name(), "uevent")) == label {
+		if partitions && partName(filepath.Join(h.sysClassBlock, e.Name(), "uevent")) == label {
 			return dev, nil
 		}
 		f, err := os.Open(dev)

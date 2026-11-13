@@ -70,8 +70,11 @@ type Config struct {
 	// so that a Node boots with a kept agent pair that init may set aside (ADR 0026).
 	AgentPair string
 	// ExtraDisk, when not 0, is the size in bytes of a blank sparse disk the Node has besides its
-	// boot and data disks, which a Node boots with at /dev/sdc.
+	// boot and data disks, which a Node boots with at /dev/sdc unless VirtioDisks says otherwise.
 	ExtraDisk int64
+	// VirtioDisks attaches the data disk and the extra disk as virtio-blk disks, which the kernel
+	// names /dev/vda and /dev/vdb in the order they are attached, so that a test knows which is which.
+	VirtioDisks bool
 	// Storage is spec.storage, and StorageProbe the directory a naru-storageprobe service reports
 	// on, when not empty.
 	Storage      []Storage

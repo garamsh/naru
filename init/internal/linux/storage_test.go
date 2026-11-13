@@ -230,3 +230,65 @@ func TestHost_PrepareStorageFindsADiskByXFSLabelOrByPartitionName(t *testing.T) 
 		require.ErrorIs(t, err, errNoDisk)
 	})
 }
+
+func TestHost_PrepareStorageFindsAnEntryGivenByDeviceByItsLabelWhereverTheKernelPutIt(t *testing.T) {
+	xfsDisk := func() string { return disk(t, 64<<20, xfsSuperblock("vmdisks", 64<<20/4096)) }
+
+	t.Run("the disk moved to another name and its old name is the data disk", func(t *testing.T) {
+		r := newStorageRig(t, map[string]string{"sdb": ext4test.Image(t, "naru-data", "", nil), "sdc": xfsDisk()})
+
+		require.NoError(t, r.prepare(config.Storage{Name: "vmdisks", Device: filepath.Join(r.host.devDir, "sdb")}))
+
+		assert.Equal(t, []mountCall{{filepath.Join(r.host.devDir, "sdc"), r.mnt, "xfs"}}, *r.mounts)
+		assert.Empty(t, r.mkfs)
+	})
+	t.Run("the disk moved to a name before the one given", func(t *testing.T) {
+		r := newStorageRig(t, map[string]string{"sdb": xfsDisk(), "sdc": disk(t, 64<<20, nil)})
+
+		require.NoError(t, r.prepare(config.Storage{Name: "vmdisks", Device: filepath.Join(r.host.devDir, "sdc")}))
+
+		assert.Equal(t, filepath.Join(r.host.devDir, "sdb"), (*r.mounts)[0].source)
+		assert.Empty(t, r.mkfs, "the blank disk at the given name is not formatted while an XFS carries the name")
+	})
+	t.Run("a swapped name that points at the data disk is not used", func(t *testing.T) {
+		data := ext4test.Image(t, "naru-data", "", nil)
+		before, err := os.ReadFile(data)
+		require.NoError(t, err)
+		r := newStorageRig(t, map[string]string{"sdb": data})
+
+		err = r.prepare(config.Storage{Name: "vmdisks", Device: filepath.Join(r.host.devDir, "sdb")})
+
+		require.Error(t, err)
+		assert.Empty(t, r.mkfs)
+		assert.Empty(t, *r.mounts)
+		after, rerr := os.ReadFile(data)
+		require.NoError(t, rerr)
+		assert.True(t, bytes.Equal(before, after), "the data disk is untouched")
+	})
+	t.Run("a blank disk at the given name is formatted when no XFS carries the name", func(t *testing.T) {
+		other := disk(t, 64<<20, xfsSuperblock("elsewhere", 64<<20/4096))
+		r := newStorageRig(t, map[string]string{"sdb": disk(t, 64<<20, nil), "sdc": other})
+
+		require.NoError(t, r.prepare(config.Storage{Name: "vmdisks", Device: filepath.Join(r.host.devDir, "sdb")}))
+
+		assert.Len(t, r.mkfs, 1)
+		assert.Equal(t, filepath.Join(r.host.devDir, "sdb"), (*r.mounts)[0].source)
+	})
+}
+
+func TestHost_PrepareStorageLeavesAnXFSLabelledWithAnotherNameAloneAtTheGivenDevice(t *testing.T) {
+	dev := disk(t, 64<<20, xfsSuperblock("elsewhere", 64<<20/4096))
+	before, err := os.ReadFile(dev)
+	require.NoError(t, err)
+	r := newStorageRig(t, map[string]string{"sdb": dev})
+
+	err = r.prepare(config.Storage{Name: "vmdisks", Device: filepath.Join(r.host.devDir, "sdb")})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `labelled "elsewhere"`)
+	assert.Empty(t, r.mkfs)
+	assert.Empty(t, *r.mounts)
+	after, rerr := os.ReadFile(dev)
+	require.NoError(t, rerr)
+	assert.True(t, bytes.Equal(before, after), "the disk is untouched")
+}
