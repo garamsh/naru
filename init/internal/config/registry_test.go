@@ -86,6 +86,30 @@ func TestParse_ServiceKeptPair(t *testing.T) {
 	assert.Equal(t, &config.KeptPair{File: "/x.pem", Organization: "o"}, cfg.Spec.Services[0].KeptPair)
 }
 
+func TestParse_ServiceWatchedFiles(t *testing.T) {
+	tests := []struct {
+		name, key, paths, field string
+	}{
+		{"a relative restartOnChange file", "restartOnChange", "[x.pem]", "spec.services[0].restartOnChange[0]"},
+		{"an unclean logFiles file", "logFiles", "[/a, /b/../c]", "spec.services[0].logFiles[1]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := replaceFirst(valid, "      binary: /usr/bin/mvmd\n", "      binary: /usr/bin/mvmd\n      "+tt.key+": "+tt.paths+"\n")
+
+			_, err := config.Parse([]byte(doc))
+
+			require.Error(t, err)
+			assert.Contains(t, fields(t, err), tt.field)
+		})
+	}
+	cfg, err := config.Parse([]byte(replaceFirst(valid, "      binary: /usr/bin/mvmd\n", "      binary: /usr/bin/mvmd\n      restartOnChange: [/x.pem]\n      logFiles: [/l.log]\n")))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/x.pem"}, cfg.Spec.Services[0].RestartOnChange)
+	assert.Equal(t, []string{"/l.log"}, cfg.Spec.Services[0].LogFiles)
+	assert.False(t, cfg.Spec.Services[0].Equal(config.Service{Name: cfg.Spec.Services[0].Name, Binary: cfg.Spec.Services[0].Binary}))
+}
+
 func replaceFirst(s, from, to string) string {
 	for i := 0; i+len(from) <= len(s); i++ {
 		if s[i:i+len(from)] == from {

@@ -149,6 +149,14 @@ type Service struct {
 	// KeptPair names a certificate pair the service keeps, which init checks before it starts the
 	// service. It is nil for a service that keeps none.
 	KeptPair *KeptPair `yaml:"keptPair,omitempty"`
+	// RestartOnChange lists files, each a clean absolute path, that something other than init
+	// writes and the service reads once at start. init restarts the service when the content of
+	// one changes, or the file appears or goes missing (docs/architecture/adr/0029-aws-credentials-is-a-service-serving-the-instance-metadata-endpoint-to-mvmd.md).
+	RestartOnChange []string `yaml:"restartOnChange,omitempty"`
+	// LogFiles lists files, each a clean absolute path, that the service or a program it runs
+	// writes its log to. init keeps the lines appended to one while the service runs as lines of
+	// the service, so `naructl logs` shows them.
+	LogFiles []string `yaml:"logFiles,omitempty"`
 }
 
 // KeptPair is a certificate pair file a service keeps across boots. A pair whose certificate's
@@ -165,6 +173,7 @@ type KeptPair struct {
 func (s Service) Equal(o Service) bool {
 	return s.Name == o.Name && s.Binary == o.Binary && s.ControlPlane == o.ControlPlane &&
 		slices.Equal(s.Args, o.Args) && maps.Equal(s.Env, o.Env) &&
+		slices.Equal(s.RestartOnChange, o.RestartOnChange) && slices.Equal(s.LogFiles, o.LogFiles) &&
 		(s.KeptPair == nil) == (o.KeptPair == nil) && (s.KeptPair == nil || *s.KeptPair == *o.KeptPair)
 }
 

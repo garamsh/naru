@@ -117,6 +117,25 @@ func withArgs(name string, args ...string) userDataEdit {
 	}
 }
 
+// withService replaces the binary and the arguments of the service named name.
+func withService(name, binary string, args ...string) userDataEdit {
+	return func(doc *yaml.Node) error {
+		for _, s := range field(field(doc.Content[0], "spec"), "services").Content {
+			if field(s, "name").Value != name {
+				continue
+			}
+			field(s, "binary").Value = binary
+			list := field(s, "args")
+			list.Content = nil
+			for _, a := range args {
+				list.Content = append(list.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: a})
+			}
+			return nil
+		}
+		return fmt.Errorf("the user-data has no service %q", name)
+	}
+}
+
 // registryEntry is a gen node --registry value for the registry service, trusting its authority.
 func registryEntry(extra ...string) []string {
 	ca := filepath.Join(inputs.Dir, "registry", "ca.pem")
@@ -135,6 +154,13 @@ func passwordFile(t *testing.T, password string) string {
 // pullMachine boots one Node that runs gaon with spec, admits it, and applies the Machine, whose
 // image is on the Node's registry service. It returns the Node and the cluster's host API.
 func pullMachine(t *testing.T, spec node.ClusterSpec) (*node.Node, *hostapi.Client, *gaoncli.Client) {
+	t.Helper()
+	_, nd, api, cli := pullMachineOn(t, spec)
+	return nd, api, cli
+}
+
+// pullMachineOn is pullMachine that also returns the cluster, for a test that reads the Node API.
+func pullMachineOn(t *testing.T, spec node.ClusterSpec) (*node.Cluster, *node.Node, *hostapi.Client, *gaoncli.Client) {
 	t.Helper()
 	cliBin := filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "gaon", "gaon")
 	require.FileExists(t, cliBin, "make image builds gaon's CLI from the pin")
@@ -159,7 +185,7 @@ func pullMachine(t *testing.T, spec node.ClusterSpec) (*node.Node, *hostapi.Clie
 	})
 	_, err = cli.Apply(ctx, t.TempDir(), fmt.Sprintf(machineManifest, inputs.Image.Repository, inputs.Image.Digest))
 	require.NoError(t, err)
-	return nd, api, cli
+	return c, nd, api, cli
 }
 
 // served waits for the registry service to log the image's manifest as served: mvmd pulled it.
@@ -349,7 +375,7 @@ func TestNode_ANodeThatKeepsAnAgentPairWithoutTheOrganizationEndsWithOneThatHasI
 
 // TestNode_AwsSigningHelperAcceptsTheAgentPairAsCertificateAndKey checks, with the helper the image
 // carries, that one node-agent.pem serves as both --certificate and --private-key, which is how
-// init's AWS profile uses it. It stops before any network call: read-certificate-data and
+// aws-credentials uses it (ADR 0029). It stops before any network call: read-certificate-data and
 // sign-string only read the files.
 func TestNode_AwsSigningHelperAcceptsTheAgentPairAsCertificateAndKey(t *testing.T) {
 	helper := filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "regtools", "aws_signing_helper")
@@ -380,4 +406,115 @@ func TestNode_AwsSigningHelperAcceptsTheAgentPairAsCertificateAndKey(t *testing.
 	_, err = run("sign-string", "--certificate", pairFile, "--private-key", filepath.Join(dir, "missing.pem"))
 	var exit *exec.ExitError
 	assert.True(t, errors.As(err, &exit), "control: with no key the helper refuses")
+}
+
+// The tests below boot a Node whose spec.aws names ARNs that do not exist, so that the
+// aws-credentials service (ADR 0029) runs, and fails the way a Node with no route to AWS does.
+const (
+	fakeRegion = "ap-northeast-2"
+	fakeTA     = "arn:aws:rolesanywhere:ap-northeast-2:111111111111:trust-anchor/00000000-0000-0000-0000-000000000000"
+	fakeProf   = "arn:aws:rolesanywhere:ap-northeast-2:111111111111:profile/00000000-0000-0000-0000-000000000001"
+	fakeRole   = "arn:aws:iam::111111111111:role/naru84-fake"
+)
+
+func fakeAWS(spec node.ClusterSpec) node.ClusterSpec {
+	spec.AWSRegion, spec.AWSTrustAnchor, spec.AWSProfile, spec.AWSRole = fakeRegion, fakeTA, fakeProf, fakeRole
+	return spec
+}
+
+// kept is what `naructl logs name` prints for the Node API's reader.
+func kept(c *node.Cluster, name string) string { return ctl(c.API.Reader, "logs", name).Stdout }
+
+// TestNode_AnEcrLoginPullLogsWhereTheOperatorReadsItAndAWSCredentialsLogsItsOwnFailure gives the
+// Node spec.aws with fake ARNs and the ecr-login helper for the registry service's host, and has
+// mvmd pull from it. The host is no ECR registry's, and the helper logs that to its own file under
+// mvmd's HOME, which init keeps as lines of mvmd. aws-credentials runs the helper's serve, and the
+// line the operator reads is that program's own failure, not the exec error of a shell the image
+// lacks.
+func TestNode_AnEcrLoginPullLogsWhereTheOperatorReadsItAndAWSCredentialsLogsItsOwnFailure(t *testing.T) {
+	c, nd, _, _ := pullMachineOn(t, fakeAWS(node.ClusterSpec{
+		NodeAPI:      true,
+		Registries:   registryEntry("helper=ecr-login"),
+		EditUserData: editUserData(authArgs),
+	}))
+
+	eventually(t, "naructl logs mvmd shows the line ecr-login wrote to its log file", func() bool {
+		return strings.Contains(kept(c, "mvmd"), "Error parsing the serverURL")
+	})
+	eventually(t, "naructl logs aws-credentials shows the helper's own failure", func() bool {
+		return strings.Contains(kept(c, "aws-credentials"), "failed to generate initial credentials")
+	})
+	out := kept(c, "aws-credentials")
+	for _, execError := range []string{"executable file not found", "exec:", "sh:", "no such file or directory"} {
+		assert.NotContains(t, out, execError)
+	}
+	notServed(t, nd)
+}
+
+// TestNode_AWSCredentialsRestartsWhenTheAgentReplacesItsPair boots a Node whose data disk keeps an
+// agent pair without the organization, so that init sets it aside and the agent writes another.
+// aws-credentials runs the image's stand-in, which stays up, so that what restarts it is the file
+// it reads changing and not an exit: init logs that the watched file changed.
+func TestNode_AWSCredentialsRestartsWhenTheAgentReplacesItsPair(t *testing.T) {
+	pair := t.TempDir()
+	agentPair(t, pair, "")
+	c := start(t, fakeAWS(node.ClusterSpec{
+		N: 1, Gaon: true, BootPKI: true,
+		Configure:    func(c *node.Config) { c.AgentPair = pair },
+		EditUserData: editUserData(withService("aws-credentials", "/bin/naru-standin", "-timeout", "10m")),
+	}))
+	nd := c.Nodes[0]
+
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "a watched file changed", "service=aws-credentials"))
+}
+
+// dev6Form turns the user-data into what a v0.1.0-dev.6 naructl wrote for a spec.aws Node: no
+// aws-credentials service, no restartOnChange or logFiles, and mvmd's environment naming a
+// credential_process profile that nothing writes any more.
+func dev6Form(doc *yaml.Node) error {
+	services := field(field(doc.Content[0], "spec"), "services")
+	var keep []*yaml.Node
+	for _, s := range services.Content {
+		if field(s, "name").Value == "aws-credentials" {
+			continue
+		}
+		for _, key := range []string{"restartOnChange", "logFiles"} {
+			for i := 0; i+1 < len(s.Content); i += 2 {
+				if s.Content[i].Value == key {
+					s.Content = append(s.Content[:i], s.Content[i+2:]...)
+					break
+				}
+			}
+		}
+		if field(s, "name").Value == "mvmd" {
+			env := field(s, "env")
+			env.Content = nil
+			for _, kv := range [][2]string{{"PATH", "/bin:/run/bin"}, {"AWS_CONFIG_FILE", "/run/naru/aws/config"}, {"AWS_REGION", fakeRegion}} {
+				env.Content = append(env.Content,
+					&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: kv[0]},
+					&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: kv[1]})
+			}
+		}
+		keep = append(keep, s)
+	}
+	services.Content = keep
+	return nil
+}
+
+// TestNode_UserDataOfDev6FormWithSpecAWSBootsWithoutAWSCredentials checks that user-data written
+// before aws-credentials existed still boots: init accepts it, starts its services, the Node is
+// Ready, and no aws-credentials runs.
+func TestNode_UserDataOfDev6FormWithSpecAWSBootsWithoutAWSCredentials(t *testing.T) {
+	c := start(t, fakeAWS(node.ClusterSpec{N: 1, Gaon: true, BootPKI: true, NodeAPI: true, EditUserData: editUserData(dev6Form)}))
+	nd := c.Nodes[0]
+	api, err := hostapi.New(c.HostAddr, c.Client)
+	require.NoError(t, err)
+
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "started", "service=gaon-node-agent"))
+	eventually(t, nd.Name+" is registered and Ready", func() bool {
+		n, err := api.Node(context.Background(), nd.Name)
+		return err == nil && n.Ready()
+	})
+	assert.NotContains(t, pids(t, c.API.Reader), "aws-credentials")
+	assert.NotContains(t, nd.Console(), "service=aws-credentials")
 }

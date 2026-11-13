@@ -3,6 +3,8 @@ package service_test
 import (
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -190,4 +192,61 @@ func TestManager_StopAllStopsEveryService(t *testing.T) {
 		_, removes := r.cgroups.leaf(name).counts()
 		assert.Equal(t, 1, removes, name)
 	}
+}
+
+func TestManager_RestartsAServiceWhenAWatchedFileChanges(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "pair.pem")
+	tests := []struct {
+		name, before, after string
+		missing             bool
+	}{
+		{"the content changes", "first", "second", false},
+		{"the file appears", "", "first", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, os.RemoveAll(file))
+			if !tt.missing {
+				require.NoError(t, os.WriteFile(file, []byte(tt.before), 0o600))
+			}
+			r := newRig()
+			t.Cleanup(r.manager.StopAll)
+			svc := config.Service{Name: "aws-credentials", Binary: "/bin/aws_signing_helper", RestartOnChange: []string{file}}
+			require.NoError(t, r.manager.Start(svc))
+			first := recv(t, r.launcher.launched)
+			tick := recv(t, r.clock.timers)
+			assert.Equal(t, 5*time.Second, tick.d)
+
+			// A tick that finds the file as it was starts nothing.
+			tick.fire()
+			tick = recv(t, r.clock.timers)
+			assert.Empty(t, r.launcher.launched)
+
+			require.NoError(t, os.WriteFile(file, []byte(tt.after), 0o600))
+			tick.fire()
+
+			second := recv(t, r.launcher.launched)
+			assert.Equal(t, []syscall.Signal{syscall.SIGTERM}, first.proc.received())
+			assert.NotEqual(t, first.proc.PID(), second.proc.PID())
+			// The next timer is the watch again, not a backoff before the start.
+			assert.Equal(t, 5*time.Second, recv(t, r.clock.timers).d)
+			kills, _ := r.cgroups.leaf("aws-credentials").counts()
+			assert.Equal(t, 1, kills, "what the first process left in its cgroup is killed")
+		})
+	}
+}
+
+func TestManager_RestartsAServiceWhenAWatchedFileGoesMissing(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "pair.pem")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+	r := newRig()
+	t.Cleanup(r.manager.StopAll)
+	require.NoError(t, r.manager.Start(config.Service{Name: "aws-credentials", Binary: "/bin/h", RestartOnChange: []string{file}}))
+	recv(t, r.launcher.launched)
+	tick := recv(t, r.clock.timers)
+
+	require.NoError(t, os.Remove(file))
+	tick.fire()
+
+	recv(t, r.launcher.launched)
 }

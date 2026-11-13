@@ -68,6 +68,9 @@ type ClusterSpec struct {
 	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
 	// Node trusts the registry service's authority for RegistryAddr through its configuration.
 	Registries []string
+	// AWSRegion, AWSTrustAnchor, AWSProfile and AWSRole, with Gaon, are every Node's gen node --aws-*
+	// flags, all or none: the ARNs of a Roles Anywhere profile (fake ones, in a test).
+	AWSRegion, AWSTrustAnchor, AWSProfile, AWSRole string
 	// EditUserData, when set, changes the user-data naructl wrote for a Gaon Node before the Node
 	// starts: the test adds files, such as a credential helper, or a service's arguments.
 	EditUserData func(c Config, file string) error
@@ -303,6 +306,7 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	for _, name := range spec.GaonBinaries {
 		a.Binaries[name] = path.Join(OverrideDir, name)
 	}
+	a.AWSRegion, a.AWSTrustAnchor, a.AWSProfile, a.AWSRole = spec.AWSRegion, spec.AWSTrustAnchor, spec.AWSProfile, spec.AWSRole
 	a.Registries = spec.Registries
 	if a.Registries == nil {
 		a.Registries = []string{"host=" + fixture.RegistryAddr + ",ca=" + filepath.Join(spec.Inputs.Dir, "registry", "ca.pem")}

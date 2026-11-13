@@ -152,6 +152,7 @@ func TestNode_NodeAPIAnswersVersionServicesAndLogsAndRefusesAForeignClientAndARe
 		return true
 	})
 
+	assert.NotContains(t, pids(t, c.API.Reader), "aws-credentials", "a Node without spec.aws runs no aws-credentials")
 	logs := ctl(c.API.Reader, "logs", "etcd")
 	require.NoError(t, logs.Err, logs.refusal())
 	assert.NotEmpty(t, strings.TrimSpace(logs.Stdout), "etcd has logged by the time it is running")

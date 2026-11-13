@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"sync"
 	"syscall"
 
 	"github.com/garamsh/naru/init/internal/config"
@@ -19,7 +20,8 @@ type Sources interface {
 
 // Launcher starts services as children of the process, inside their cgroup,
 // with a pipe as output that it copies to the console, tagged with the
-// service's name. Their exits are reported by the Reaper.
+// service's name, and the lines appended to the files the service names as LogFiles. Their exits
+// are reported by the Reaper.
 type Launcher struct {
 	reaper  *Reaper
 	console Sources
@@ -55,6 +57,12 @@ func (l *Launcher) Launch(svc config.Service, cgroup string) (service.Process, e
 	cmd.Stdout, cmd.Stderr = in, in
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, UseCgroupFD: true, CgroupFD: int(dir.Fd())}
 
+	// A log file is followed from where it ends now, so a restart does not repeat what it kept.
+	offsets := map[string]int64{}
+	for _, path := range svc.LogFiles {
+		offsets[path] = size(path)
+	}
+
 	exited, err := l.reaper.Spawn(func() (int, error) {
 		if err := cmd.Start(); err != nil {
 			return 0, err
@@ -65,9 +73,20 @@ func (l *Launcher) Launch(svc config.Service, cgroup string) (service.Process, e
 		out.Close()
 		return nil, err
 	}
+	stop := make(chan struct{})
+	var tails sync.WaitGroup
+	for path, offset := range offsets {
+		tails.Add(1)
+		go func() {
+			defer tails.Done()
+			follow(path, offset, l.console.Source(svc.Name), stop)
+		}()
+	}
 	go func() {
 		defer out.Close()
 		_, _ = io.Copy(l.console.Source(svc.Name), out)
+		close(stop)
+		tails.Wait()
 	}()
 	return &process{proc: cmd.Process, pid: cmd.Process.Pid, exited: exited}, nil
 }
