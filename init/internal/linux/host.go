@@ -13,7 +13,9 @@ import (
 	"github.com/garamsh/naru/init/internal/config"
 	"github.com/garamsh/naru/init/internal/ext4"
 	"github.com/garamsh/naru/init/internal/iso9660"
+	"github.com/garamsh/naru/init/internal/keptpair"
 	"github.com/garamsh/naru/init/internal/netcfg"
+	"github.com/garamsh/naru/init/internal/registry"
 	"github.com/garamsh/naru/init/internal/timesync"
 )
 
@@ -121,6 +123,14 @@ func (h *Host) checkVerity(dev string) error {
 	defer f.Close()
 	return ext4.CheckVerity(f)
 }
+
+// WriteRegistries writes the files of spec.registries and spec.aws under init's directory.
+func (h *Host) WriteRegistries(spec config.Spec) error {
+	return registry.Writer{Dir: registry.Dir}.Write(spec)
+}
+
+// SetAsidePair sets the pair file of p aside when its certificate lacks the Organization p names.
+func (h *Host) SetAsidePair(p config.KeptPair) (bool, error) { return keptpair.SetAside(p) }
 
 // EnableForwarding turns forwarding on for each family named.
 func (h *Host) EnableForwarding(families []config.Family) error {

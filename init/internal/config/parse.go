@@ -108,6 +108,8 @@ func validate(cfg NodeConfig) error {
 	v.api(cfg.Spec.API)
 	v.time(cfg.Spec.Time)
 	v.pki(cfg.Spec.PKI, cfg.Spec.Files, cfg.Spec.Services)
+	v.registries(cfg.Spec.Registries)
+	v.aws(cfg.Spec.AWS)
 	return errors.Join(v.errs...)
 }
 
@@ -132,6 +134,14 @@ func (v *validation) services(services []Service) {
 		seen[s.Name] = true
 		if !isCleanAbs(s.Binary) {
 			v.fail(field+".binary", "must be a clean absolute path, got %q", s.Binary)
+		}
+		if p := s.KeptPair; p != nil {
+			if !isCleanAbs(p.File) {
+				v.fail(field+".keptPair.file", "must be a clean absolute path, got %q", p.File)
+			}
+			if p.Organization == "" {
+				v.fail(field+".keptPair.organization", "must be given")
+			}
 		}
 		for k := range s.Env {
 			if k == "" || strings.ContainsAny(k, "=\x00") {

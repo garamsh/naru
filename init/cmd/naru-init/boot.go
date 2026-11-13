@@ -66,10 +66,11 @@ type hostParts interface {
 	apply.Files
 	apply.Time
 	apply.Routes
+	apply.Registries
 }
 
 // newEngine returns the engine that applies changes to the Node that booted
 // stored, acting through the Node's own parts.
 func newEngine(stored store.Stored, configs apply.Store, services apply.Services, host hostParts, certificates apply.Certificates, api apply.API) *apply.Engine {
-	return apply.New(apply.Deps{Store: configs, Services: services, Files: host, Time: host, Routes: host, Certificates: certificates, API: api}, stored)
+	return apply.New(apply.Deps{Store: configs, Services: services, Files: host, Time: host, Routes: host, Registries: host, Certificates: certificates, API: api}, stored)
 }
