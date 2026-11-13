@@ -67,6 +67,7 @@ type recorder struct {
 	issueErr   error
 	timeErr    error
 	routeErr   error
+	storageErr error
 	startErr   error
 	apiErr     error
 	api        *store.Stored
@@ -90,6 +91,7 @@ type recorder struct {
 	setAside      bool
 	setAsideErr   error
 	registriesErr error
+	storage       []config.Storage
 }
 
 func (r *recorder) ReadSeed() ([]byte, []byte, error) {
@@ -136,6 +138,12 @@ func (r *recorder) WriteRegistries(spec config.Spec) error {
 func (r *recorder) SetAsidePair(p config.KeptPair) (bool, error) {
 	r.calls = append(r.calls, "pair "+p.File)
 	return r.setAside, r.setAsideErr
+}
+
+func (r *recorder) PrepareStorage(s config.Storage, _ *slog.Logger) error {
+	r.calls = append(r.calls, "storage "+s.Name)
+	r.storage = append(r.storage, s)
+	return r.storageErr
 }
 
 func (r *recorder) SyncTime(servers []string) (timesync.Result, error) {
@@ -301,6 +309,33 @@ func TestRun_GoesOnWhenARouteCannotBeInstalled(t *testing.T) {
 	require.NoError(t, run(r))
 
 	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "route 10.200.2.0/24", "route 10.200.3.0/24", "files", "registries", "prepare", "seal", "start mvmd"}, r.calls, "the second route is tried and the services start")
+}
+
+func withStorage(t *testing.T, doc string) string {
+	t.Helper()
+	return replace(t, doc, "  controlPlane: false\n", "  controlPlane: false\n  storage:\n    - {name: vmdisks, label: vmdisks}\n    - {name: scratch, device: /dev/sdc}\n")
+}
+
+func TestRun_PreparesTheStorageDisksAfterTheFilesAndBeforeAnyService(t *testing.T) {
+	r := &recorder{raw: withStorage(t, validConfig)}
+
+	require.NoError(t, run(r))
+
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "storage vmdisks", "storage scratch", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, "/dev/sdc", r.storage[1].Device)
+}
+
+func TestRun_GoesOnWhenAStorageDiskCannotBePrepared(t *testing.T) {
+	// The control is the test above: with the same configuration every disk is prepared.
+	var out strings.Builder
+	r := &recorder{raw: withStorage(t, validConfig), network: validNetwork, storageErr: errors.New("no disk with that label")}
+
+	_, err := boot.Run(r, r, r, r, apiProbe{r}, slog.New(slog.NewTextHandler(&out, nil)))
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "storage vmdisks", "storage scratch", "prepare", "seal", "start mvmd"}, r.calls, "the second disk is tried and the services start")
+	assert.Contains(t, out.String(), "level=ERROR")
+	assert.Contains(t, out.String(), "no disk with that label")
 }
 
 func TestRun_SetsNoClockWithoutSpecTime(t *testing.T) {

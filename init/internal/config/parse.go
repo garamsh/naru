@@ -105,6 +105,7 @@ func validate(cfg NodeConfig) error {
 	v.dataDisk(cfg.Spec.DataDisk)
 	v.network(cfg.Spec.Network)
 	v.files(cfg.Spec.Files, cfg.Spec.Services)
+	v.storage(cfg.Spec.Storage, cfg.Spec.DataDisk)
 	v.api(cfg.Spec.API)
 	v.time(cfg.Spec.Time)
 	v.pki(cfg.Spec.PKI, cfg.Spec.Files, cfg.Spec.Services)
@@ -148,6 +149,47 @@ func (v *validation) services(services []Service) {
 				v.fail(field+".env", "has the invalid variable name %q", k)
 			}
 		}
+	}
+}
+
+// maxStorageNameLen is the length of an XFS label, which init sets to the entry's name.
+const maxStorageNameLen = 12
+
+// maxPartLabelLen is the length of a GPT partition name, in characters of UTF-16.
+const maxPartLabelLen = 36
+
+func (v *validation) storage(storage []Storage, data DataDisk) {
+	names := map[string]bool{}
+	mounts := map[string]bool{data.MountPoint: true}
+	for i, s := range storage {
+		field := fmt.Sprintf("spec.storage[%d]", i)
+		switch {
+		case !nameRE.MatchString(s.Name) || len(s.Name) > maxStorageNameLen:
+			v.fail(field+".name", "must be lowercase letters, digits and '-', at most %d characters, got %q", maxStorageNameLen, s.Name)
+		case names[s.Name]:
+			v.fail(field+".name", "%q is used by an earlier entry", s.Name)
+		}
+		names[s.Name] = true
+		switch {
+		case s.Device == "" && s.Label == "":
+			v.fail(field, "must name the disk by device or by label")
+		case s.Device != "" && s.Label != "":
+			v.fail(field, "names the disk by both device and label; give one")
+		case s.Device != "" && !isCleanAbs(s.Device):
+			v.fail(field+".device", "must be a clean absolute path, got %q", s.Device)
+		case len(s.Label) > maxPartLabelLen:
+			v.fail(field+".label", "must be at most %d bytes, got %d", maxPartLabelLen, len(s.Label))
+		}
+		if s.Form != "" && s.Form != StorageFormXFS {
+			v.fail(field+".form", "must be %q, got %q", StorageFormXFS, s.Form)
+		}
+		if s.MountPoint != "" && !isCleanAbs(s.MountPoint) {
+			v.fail(field+".mountPoint", "must be a clean absolute path, got %q", s.MountPoint)
+		}
+		if mounts[s.Mount()] {
+			v.fail(field+".mountPoint", "%q is the mount point of the data disk or of an earlier entry", s.Mount())
+		}
+		mounts[s.Mount()] = true
 	}
 }
 

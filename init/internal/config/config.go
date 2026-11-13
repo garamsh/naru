@@ -62,6 +62,37 @@ type Spec struct {
 	Registries []Registry `yaml:"registries,omitempty"`
 	// AWS is the identity the credential helpers use. It is nil when the Node has none.
 	AWS *AWS `yaml:"aws,omitempty"`
+	// Storage lists the extra disks init prepares and mounts for mvmd's disks
+	// (docs/architecture/adr/0027-a-node-offers-an-extra-disk-as-xfs-storage-for-mvmds-disks-formatted-when-blank-mounted-hardened-and-grown-at-boot.md).
+	Storage []Storage `yaml:"storage,omitempty"`
+}
+
+// StorageRoot is the directory a storage disk is mounted under, as StorageRoot/<name>, unless it names a mount point.
+const StorageRoot = "/var/lib/naru/storage"
+
+// StorageFormXFS is the one file system form a storage disk takes.
+const StorageFormXFS = "xfs"
+
+// Storage is one extra disk, found by Label or by Device, exactly one of them.
+type Storage struct {
+	// Name keys the entry and is the file system's label when init formats the disk.
+	Name string `yaml:"name"`
+	// Label is a GPT partition label or a file system label.
+	Label string `yaml:"label,omitempty"`
+	// Device is a device path such as /dev/sdb.
+	Device string `yaml:"device,omitempty"`
+	// Form is the file system, "xfs", which is also what an empty Form means.
+	Form string `yaml:"form,omitempty"`
+	// MountPoint is where the disk is mounted. It is StorageRoot/<Name> when empty.
+	MountPoint string `yaml:"mountPoint,omitempty"`
+}
+
+// Mount returns the directory the disk is mounted at.
+func (s Storage) Mount() string {
+	if s.MountPoint != "" {
+		return s.MountPoint
+	}
+	return StorageRoot + "/" + s.Name
 }
 
 // DefaultAPIListen is where the Node API listens when spec.api names no address.

@@ -56,6 +56,7 @@ type Node struct {
 	// from it.
 	argv    func(console string) []string
 	dir     string
+	extra   string
 	boots   int
 	console string
 	cmd     *exec.Cmd
@@ -91,6 +92,15 @@ func Start(spec Spec) (*Node, error) {
 	}
 	name := "naru15-" + spec.Config.Name
 	n := &Node{Name: spec.Config.Name, dir: spec.Dir}
+	if size := spec.Config.ExtraDisk; size > 0 {
+		n.extra = filepath.Join(spec.Dir, "extra.img")
+		if err := os.WriteFile(n.extra, nil, 0o644); err != nil { //nolint:gosec // a test disk
+			return nil, err
+		}
+		if err := os.Truncate(n.extra, size); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := qemuArgs(spec, name, cidata, dataDisk, ""); err != nil {
 		return nil, err
 	}
@@ -154,6 +164,9 @@ func startOnLockedThread(cmd *exec.Cmd) error {
 	return <-res
 }
 
+// ExtraDisk is the path of the Node's extra disk, which is empty when it has none.
+func (n *Node) ExtraDisk() string { return n.extra }
+
 // Reboot kills the Node's QEMU process, as a power cut does, and starts it again on the same boot
 // disk, data disk, NoCloud drive and firmware variables. Its Console is then the new boot's. It must
 // not be called while a WaitFor is in progress.
@@ -200,6 +213,12 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		"-device", "ide-cd,bus=ide.1,drive=cidata",
 		"-netdev", "socket,id=net0,mcast=" + spec.Mcast + ",localaddr=127.0.0.1",
 		"-device", "virtio-net-pci,netdev=net0,mac=" + spec.Config.MAC(),
+	}
+	if spec.Config.ExtraDisk > 0 {
+		args = append(args,
+			"-drive", "if=none,id=extra,format=raw,file="+filepath.Join(spec.Dir, "extra.img"),
+			"-device", "scsi-hd,bus=scsihw0.0,drive=extra",
+		)
 	}
 	// The control-plane Node of a gaon cluster has a second NIC on QEMU's user-mode network,
 	// whose forward from 127.0.0.1 is how the test host reaches the API server without
