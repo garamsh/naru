@@ -1,8 +1,8 @@
 // Package disk builds naru's UEFI disk image: a raw GPT disk with one EFI system partition that
 // holds the kernel, with its initramfs inside it, as \EFI\BOOT\BOOTX64.EFI, the default boot slot,
-// and room for a second kernel of that size, the trial slot \EFI\BOOT\TRIAL.EFI that an upgrade
-// writes (ADR 0020). The same inputs give the same bytes: every GUID, the volume id and every
-// timestamp are arguments.
+// and room for a second kernel, the trial slot \EFI\BOOT\TRIAL.EFI that an upgrade writes
+// (ADR 0020), each slot up to twice the size of the kernel the disk was built with (ADR 0037). The
+// same inputs give the same bytes: every GUID, the volume id and every timestamp are arguments.
 package disk
 
 import (
@@ -46,9 +46,17 @@ const (
 	espTypeGUID  = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
 	espLabel     = "NARUESP"
 	espPartName  = "naru-esp"
-	minESPBytes  = 64 * mib
+	minESPBytes  = 1024 * mib
 	espSlackByte = 8 * mib
+	// slotGrowth is how many times the built kernel's size a slot is meant to hold.
+	slotGrowth = 2
 )
+
+// ESPBytes is the size of the ESP of a disk built with a kernel of kernelSize bytes: the larger of
+// 1 GiB and Slots slots of slotGrowth kernels each with slack, a whole number of MiB (ADR 0037).
+func ESPBytes(kernelSize int64) int64 {
+	return max(minESPBytes, roundUp(Slots*slotGrowth*kernelSize+espSlackByte, mib))
+}
 
 // Spec says what to build.
 type Spec struct {
@@ -72,7 +80,7 @@ func Build(s Spec) error {
 		return err
 	}
 
-	espBytes := max(minESPBytes, roundUp(Slots*kernelSize+espSlackByte, mib))
+	espBytes := ESPBytes(kernelSize)
 	tmp, err := os.MkdirTemp(filepath.Dir(s.Out), "naru-disk-")
 	if err != nil {
 		return err

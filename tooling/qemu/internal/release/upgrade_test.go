@@ -47,7 +47,7 @@ func TestWriteBundle_HoldsTheKernelAndAManifestThatNamesItsDigest(t *testing.T) 
 	kernel := "the kernel with its initramfs"
 	out := filepath.Join(t.TempDir(), BundleName("v1.2.3"))
 
-	require.NoError(t, WriteBundle(out, "v1.2.3", writeKernel(t, kernel)))
+	require.NoError(t, WriteBundle(out, "v1.2.3", writeKernel(t, kernel), 1<<30))
 
 	names, bodies := members(t, out)
 	assert.Equal(t, []string{BundleKernel, BundleManifest}, names)
@@ -58,14 +58,15 @@ func TestWriteBundle_HoldsTheKernelAndAManifestThatNamesItsDigest(t *testing.T) 
 	assert.Equal(t, BundleKernel, m.Kernel.Name)
 	assert.EqualValues(t, len(kernel), m.Kernel.Bytes)
 	assert.Equal(t, fmt.Sprintf("%x", sha256.Sum256([]byte(kernel))), m.Kernel.SHA256)
+	assert.EqualValues(t, 1<<30, m.ESP.Bytes, "the manifest records the ESP of the image the release was built with")
 }
 
 func TestWriteBundle_TheSameInputsGiveTheSameBytes(t *testing.T) {
 	k := writeKernel(t, "kernel")
 	a, b := filepath.Join(t.TempDir(), "a.tar"), filepath.Join(t.TempDir(), "b.tar")
 
-	require.NoError(t, WriteBundle(a, "v1", k))
-	require.NoError(t, WriteBundle(b, "v1", k))
+	require.NoError(t, WriteBundle(a, "v1", k, 1<<30))
+	require.NoError(t, WriteBundle(b, "v1", k, 1<<30))
 
 	x, err := os.ReadFile(a)
 	require.NoError(t, err)
@@ -75,13 +76,13 @@ func TestWriteBundle_TheSameInputsGiveTheSameBytes(t *testing.T) {
 }
 
 func TestWriteBundle_RefusesAnEmptyKernel(t *testing.T) {
-	err := WriteBundle(filepath.Join(t.TempDir(), "x.tar"), "v1", writeKernel(t, ""))
+	err := WriteBundle(filepath.Join(t.TempDir(), "x.tar"), "v1", writeKernel(t, ""), 1<<30)
 
 	assert.ErrorContains(t, err, "is empty")
 }
 
 func TestWriteBundle_FailsWhenTheKernelIsMissing(t *testing.T) {
-	err := WriteBundle(filepath.Join(t.TempDir(), "x.tar"), "v1", filepath.Join(t.TempDir(), "absent"))
+	err := WriteBundle(filepath.Join(t.TempDir(), "x.tar"), "v1", filepath.Join(t.TempDir(), "absent"), 1<<30)
 
 	assert.Error(t, err)
 }

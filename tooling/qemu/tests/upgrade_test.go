@@ -3,7 +3,6 @@
 package tests_test
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
-	"github.com/garamsh/naru/tooling/qemu/internal/release"
 )
 
 // The tests of the in-place upgrade (ADR 0025) run one Node on the boot disk the build made, with
@@ -96,14 +94,7 @@ func freeLoopbackPort(t *testing.T) int {
 // as the release would, and its SHA256SUMS, and returns their paths.
 func bundleFor(t *testing.T, kind, version string) (bundle, sums string) {
 	t.Helper()
-	dir := t.TempDir()
-	bundle = filepath.Join(dir, release.BundleName(version))
-	require.NoError(t, release.WriteBundle(bundle, version, filepath.Join(os.Getenv("NARU_UPGRADE_DIR"), kind, "bzImage")))
-	b, err := os.ReadFile(bundle)
-	require.NoError(t, err)
-	sums = filepath.Join(dir, "SHA256SUMS")
-	require.NoError(t, os.WriteFile(sums, []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(b), filepath.Base(bundle))), 0o600))
-	return bundle, sums
+	return bundleOf(t, filepath.Join(os.Getenv("NARU_UPGRADE_DIR"), kind, "bzImage"), version)
 }
 
 // upgradeState is what `naructl upgrade --status` prints.

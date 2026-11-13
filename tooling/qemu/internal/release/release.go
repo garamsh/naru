@@ -164,6 +164,12 @@ type Options struct {
 	// Naructl is the naructl binary, built static for linux/amd64: it is an asset, and it writes the
 	// user-data.
 	Naructl string
+	// PrevManifest is the path of the manifest.json of the previous release's upgrade bundle, or
+	// empty when there is none to check against. Build refuses a kernel that would not fit the
+	// trial slot of a Node installed from that release, unless RequiresRecreation is set, which
+	// says the release's notes tell those Nodes to be recreated (ADR 0037).
+	PrevManifest       string
+	RequiresRecreation bool
 }
 
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
@@ -179,6 +185,15 @@ type Asset struct {
 func Build(o Options) ([]Asset, error) {
 	if !versionPattern.MatchString(o.Version) {
 		return nil, fmt.Errorf("version %q is not a name to put in a file name", o.Version)
+	}
+	// The refusal comes before the long steps: it needs only the kernel and the disk.
+	kernel := filepath.Join(o.ImageDir, "bzImage")
+	esp, err := ESPBytes(filepath.Join(o.DiskDir, "naru.img"))
+	if err != nil {
+		return nil, fmt.Errorf("the boot disk's ESP (make disk): %w", err)
+	}
+	if err := checkPrevious(o, kernel); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(o.Out, 0o755); err != nil {
 		return nil, err
@@ -211,7 +226,7 @@ func Build(o Options) ([]Asset, error) {
 	// The upgrade bundle is the kernel, initramfs inside, that the boot disk's default slot holds:
 	// what an A/B upgrade writes to the trial slot (ADR 0020).
 	bundle := BundleName(o.Version)
-	if err := WriteBundle(filepath.Join(o.Out, bundle), o.Version, filepath.Join(o.ImageDir, "bzImage")); err != nil {
+	if err := WriteBundle(filepath.Join(o.Out, bundle), o.Version, kernel, esp); err != nil {
 		return nil, fmt.Errorf("the upgrade bundle (make image): %w", err)
 	}
 	names = append(names, bundle)

@@ -1,7 +1,9 @@
 package release_test
 
 import (
+	"archive/tar"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"os"
@@ -384,6 +386,11 @@ func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
 	require.NoError(t, os.WriteFile(filepath.Join(imageDir, "inputs.env"), []byte("MVMD_FIRECRACKER_SHA256="+firecracker+"\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(imageDir, "bzImage"), []byte("kernel"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(diskDir, "naru.qcow2"), []byte("boot"), 0o600))
+	// naru.img is a GPT whose first partition entry spans 2 GiB: sectors 2048 to 2048+4 Mi-1.
+	img := make([]byte, 4096)
+	binary.LittleEndian.PutUint64(img[1024+32:], 2048)
+	binary.LittleEndian.PutUint64(img[1024+40:], 2048+4*1024*1024-1)
+	require.NoError(t, os.WriteFile(filepath.Join(diskDir, "naru.img"), img, 0o600))
 	d := strings.Repeat("a", 64)
 	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "guest.json"), []byte(`{"kernels":{"naru":{"path":"/k","sha256":"`+d+`"}},"default_kernel":"naru",
 "guest_initrd":{"path":"/g","sha256":"`+d+`"},"converter_initrd":{"path":"/c","sha256":"`+d+`"}}`), 0o600))
@@ -452,6 +459,52 @@ func TestBuild_ShipsTheUpgradeBundleListedInSHA256SUMS(t *testing.T) {
 	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
 	require.NoError(t, err)
 	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists it")
+}
+
+func TestBuild_TheBundleManifestRecordsTheESPOfTheBootDisk(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+
+	_, err := release.Build(o)
+
+	require.NoError(t, err)
+	f, err := os.Open(filepath.Join(o.Out, release.BundleName("v9")))
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		require.NoError(t, err, "the bundle holds a manifest")
+		if h.Name != release.BundleManifest {
+			continue
+		}
+		var m release.BundleManifestJSON
+		require.NoError(t, json.NewDecoder(tr).Decode(&m))
+		assert.EqualValues(t, 2<<30, m.ESP.Bytes, "the partition of the disk's GPT")
+		return
+	}
+}
+
+func TestBuild_RefusesAKernelThePreviousReleasesNodesCannotTakeUnlessRecreationIsRequired(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+	var prev release.BundleManifestJSON
+	prev.Version = "v8"
+	prev.Kernel.Bytes = 1 // the formula's ESP is 64 MiB, so the 64 MiB kernel below does not fit its trial slot
+	b, err := json.Marshal(prev)
+	require.NoError(t, err)
+	o.PrevManifest = filepath.Join(t.TempDir(), "manifest.json")
+	require.NoError(t, os.WriteFile(o.PrevManifest, b, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(o.ImageDir, "bzImage"), make([]byte, 64<<20), 0o600))
+
+	_, err = release.Build(o)
+
+	require.ErrorContains(t, err, "does not fit the trial slot of a Node installed from v8")
+	_, statErr := os.Stat(filepath.Join(o.Out, release.BundleName("v9")))
+	assert.True(t, os.IsNotExist(statErr), "nothing is written for a refused release")
+
+	o.RequiresRecreation = true
+	_, err = release.Build(o)
+
+	assert.NoError(t, err, "the same release marked as requiring recreation is built")
 }
 
 func TestUserData_EveryNodeTrustsTheRegistryServiceThroughSpecRegistries(t *testing.T) {
