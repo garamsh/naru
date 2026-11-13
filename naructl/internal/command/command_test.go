@@ -131,7 +131,19 @@ type userData struct {
 			Binary string
 			Args   []string
 			Env    map[string]string
+			// KeptPair is the pair init sets aside when its subject lacks the Organization.
+			KeptPair *struct{ File, Organization string } `yaml:"keptPair"`
 		}
+		Registries []struct {
+			Host, CA   string
+			Credential *struct{ Username, Password, Helper string }
+		}
+		AWS *struct {
+			Region, Certificate, Key string
+			TrustAnchorArn           string `yaml:"trustAnchorArn"`
+			ProfileArn               string `yaml:"profileArn"`
+			RoleArn                  string `yaml:"roleArn"`
+		} `yaml:"aws"`
 		Files []struct{ Path, Mode, Content string }
 		PKI   *struct {
 			Authorities []struct {
@@ -670,21 +682,100 @@ func TestGenNode_AFlagGivenWithoutWhatMakesItApplyIsRefused(t *testing.T) {
 	}
 }
 
-func TestGenNode_DisablingTheRegistryDropsMvmdsCertificateFile(t *testing.T) {
-	dep := newDeployment(t)
-	with := parse(t, dep.node(t, "node-2"))
-	without := parse(t, dep.node(t, "node-2", "--disable", "registry"))
-
-	env := func(u userData) map[string]string {
-		for _, s := range u.Spec.Services {
-			if s.Name == "mvmd" {
-				return s.Env
-			}
+func mvmdOf(t *testing.T, u userData) (env map[string]string) {
+	t.Helper()
+	for _, s := range u.Spec.Services {
+		if s.Name == "mvmd" {
+			return s.Env
 		}
-		return nil
 	}
-	assert.Contains(t, env(with), "SSL_CERT_FILE")
-	assert.NotContains(t, env(without), "SSL_CERT_FILE", "the registry's certificate is not there")
+	t.Fatal("no mvmd service")
+	return nil
+}
+
+func TestGenNode_RegistryFlagsBecomeSpecRegistriesAndMvmdsRegistrySection(t *testing.T) {
+	dep := newDeployment(t)
+	dir := t.TempDir()
+	caFile, pwFile := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "pw")
+	require.NoError(t, os.WriteFile(caFile, []byte("CA-PEM\n"), 0o600))
+	require.NoError(t, os.WriteFile(pwFile, []byte("hunter2\n"), 0o600))
+
+	path := dep.node(t, "node-2",
+		"--registry", "host=r.example:5000,ca="+caFile+",username=alice,password-file="+pwFile,
+		"--registry", "host=1.dkr.ecr.ap-northeast-2.amazonaws.com,helper=ecr-login")
+	u := parse(t, path)
+
+	require.Len(t, u.Spec.Registries, 2)
+	assert.Equal(t, "CA-PEM\n", u.Spec.Registries[0].CA)
+	assert.Equal(t, "alice", u.Spec.Registries[0].Credential.Username)
+	assert.Equal(t, "hunter2", u.Spec.Registries[0].Credential.Password, "the trailing newline of the file is not part of the password")
+	assert.Equal(t, "ecr-login", u.Spec.Registries[1].Credential.Helper)
+	cfg, ok := u.file("/run/mvmd/config.json")
+	require.True(t, ok)
+	var m struct{ Registry map[string]any }
+	require.NoError(t, json.Unmarshal([]byte(cfg), &m))
+	assert.Equal(t, "/run/naru/registry/credentials.json", m.Registry["credentials_file"])
+	assert.Equal(t, "/run/naru/registry/ca.pem", m.Registry["ca_file"])
+	assert.Equal(t, map[string]any{"1.dkr.ecr.ap-northeast-2.amazonaws.com": "ecr-login"}, m.Registry["credential_helpers"])
+	assert.NotContains(t, mvmdOf(t, u), "SSL_CERT_FILE")
+	assert.Equal(t, "/bin:/run/bin", mvmdOf(t, u)["PATH"])
+}
+
+func TestGenNode_WithoutARegistryCAMvmdNamesNoCAFile(t *testing.T) {
+	u := parse(t, newDeployment(t).node(t, "node-2"))
+
+	cfg, _ := u.file("/run/mvmd/config.json")
+	assert.NotContains(t, cfg, "ca_file")
+	assert.Contains(t, cfg, "credentials_file", "init always writes the credentials file")
+	assert.Empty(t, u.Spec.Registries)
+	assert.Nil(t, u.Spec.AWS)
+	assert.NotContains(t, mvmdOf(t, u), "AWS_CONFIG_FILE")
+}
+
+func TestGenNode_AWSFlagsGiveTheAgentsPairAndMvmdsEnvironment(t *testing.T) {
+	u := parse(t, newDeployment(t).node(t, "node-2",
+		"--aws-region", "ap-northeast-2", "--aws-trust-anchor", "arn:ta", "--aws-profile", "arn:pr", "--aws-role", "arn:ro"))
+
+	require.NotNil(t, u.Spec.AWS)
+	assert.Equal(t, "/var/lib/naru/gaon-node-agent/node-agent.pem", u.Spec.AWS.Certificate)
+	assert.Equal(t, u.Spec.AWS.Certificate, u.Spec.AWS.Key, "one file holds both")
+	assert.Equal(t, "arn:ro", u.Spec.AWS.RoleArn)
+	env := mvmdOf(t, u)
+	assert.Equal(t, "/run/naru/aws/config", env["AWS_CONFIG_FILE"])
+	assert.Equal(t, "ap-northeast-2", env["AWS_REGION"])
+}
+
+func TestGenNode_TheNodeAgentsKeptPairMustCarryTheOrganizationItsSignerRequires(t *testing.T) {
+	u := parse(t, newDeployment(t).node(t, "node-2"))
+
+	for _, s := range u.Spec.Services {
+		if s.Name == "gaon-node-agent" {
+			require.NotNil(t, s.KeptPair)
+			assert.Equal(t, "/var/lib/naru/gaon-node-agent/node-agent.pem", s.KeptPair.File)
+			assert.Equal(t, "gaon:nodes", s.KeptPair.Organization)
+			return
+		}
+	}
+	t.Fatal("no gaon-node-agent")
+}
+
+func TestGenNode_RefusesARegistryOrAWSFlagThatIsWrong(t *testing.T) {
+	dep := newDeployment(t)
+	base := []string{"gen", "node", "--ca", dep.ca, "--name", "node-2", "--address", "192.168.0.20/24",
+		"--api-server", "192.168.0.10", "--machine-prefix", "10.200.2.0/24", "--guest", dep.guest,
+		"--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "o.yaml")}
+	for name, extra := range map[string][]string{
+		"a helper and a username":     {"--registry", "host=r.example,helper=h,username=u"},
+		"a username without password": {"--registry", "host=r.example,username=u"},
+		"an unknown key":              {"--registry", "host=r.example,colour=red"},
+		"a ca that is not there":      {"--registry", "host=r.example,ca=/nonexistent"},
+		"some of the aws flags":       {"--aws-region", "r"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := run(t, append(append([]string{}, base...), extra...)...)
+			assert.Error(t, err)
+		})
+	}
 }
 
 func TestRun_AnUnknownCommandIsRefused(t *testing.T) {

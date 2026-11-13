@@ -43,7 +43,17 @@ const (
 	// AgentCertDir is where the Node Agent keeps the pair it was issued, on the data disk so that it
 	// survives a reboot; BootstrapTokenFile is the Node's own token, and BootstrapTokensFile the
 	// control-plane Node's list of every Node's token.
-	AgentCertDir        = DataMount + "/gaon-node-agent"
+	AgentCertDir = DataMount + "/gaon-node-agent"
+	// AgentPair is the file of AgentCertDir that holds the Node Agent's certificate and key, and
+	// AgentOrganization the Organization its signer requires of the certificate's subject.
+	AgentPair         = "node-agent.pem"
+	AgentOrganization = "gaon:nodes"
+	// RegistryFilesDir is where init writes what mvmd and the credential helpers read for spec.registries
+	// and spec.aws.
+	RegistryFilesDir = "/run/naru"
+	// HelperPath is mvmd's PATH: the image's programs and /run/bin, where a file in spec.files may
+	// add a credential helper.
+	HelperPath          = "/bin:/run/bin"
 	BootstrapTokenFile  = GaonCertDir + "/bootstrap-token"
 	BootstrapTokensFile = GaonCertDir + "/bootstrap-tokens"
 	// APIPort is the TCP port gaon-apiserver serves mutual TLS on.
@@ -123,6 +133,24 @@ type Node struct {
 	// TimeServers are the SNTP servers init sets the clock from, each a host or host:port, in the
 	// order they are asked. With none, spec.time is left out and the Node's clock is not set.
 	TimeServers []string
+
+	// Registries are the registries mvmd pulls from besides what the image trusts: spec.registries.
+	// Each one's CA is the PEM, not a path. The registry service of the Node is one of them, by
+	// the host RegistryAddr, when the Node is given its CA.
+	Registries []Registry
+	// AWS is the IAM Roles Anywhere profile the credential helpers use, spec.aws. The Node's
+	// certificate and key are the Node Agent's pair, AgentCertDir/AgentPair.
+	AWS *AWS
+}
+
+// Registry is one entry of spec.registries. At most one of Helper and Username with Password is set.
+type Registry struct {
+	Host, CA, Username, Password, Helper string
+}
+
+// AWS is spec.aws without the paths of the pair.
+type AWS struct {
+	Region, TrustAnchorArn, ProfileArn, RoleArn string
 }
 
 type service struct {
@@ -131,6 +159,35 @@ type service struct {
 	Args         []string          `yaml:"args,omitempty"`
 	Env          map[string]string `yaml:"env,omitempty"`
 	ControlPlane bool              `yaml:"controlPlane,omitempty"`
+	KeptPair     *keptPair         `yaml:"keptPair,omitempty"`
+}
+
+// keptPair is the pair a service keeps on the data disk, which init sets aside when its
+// certificate's subject lacks the Organization the service's signer requires.
+type keptPair struct {
+	File         string `yaml:"file"`
+	Organization string `yaml:"organization"`
+}
+
+type registryEntry struct {
+	Host       string      `yaml:"host"`
+	CA         string      `yaml:"ca,omitempty"`
+	Credential *credential `yaml:"credential,omitempty"`
+}
+
+type credential struct {
+	Username string `yaml:"username,omitempty"`
+	Password string `yaml:"password,omitempty"`
+	Helper   string `yaml:"helper,omitempty"`
+}
+
+type awsSpec struct {
+	Region         string `yaml:"region"`
+	TrustAnchorArn string `yaml:"trustAnchorArn"`
+	ProfileArn     string `yaml:"profileArn"`
+	RoleArn        string `yaml:"roleArn"`
+	Certificate    string `yaml:"certificate"`
+	Key            string `yaml:"key"`
 }
 
 type file struct {
@@ -197,6 +254,9 @@ type nodeConfig struct {
 		PKI      *pkiSpec  `yaml:"pki,omitempty"`
 		API      *apiSpec  `yaml:"api,omitempty"`
 		Time     *timeSpec `yaml:"time,omitempty"`
+		// Registries and AWS are spec.registries and spec.aws.
+		Registries []registryEntry `yaml:"registries,omitempty"`
+		AWS        *awsSpec        `yaml:"aws,omitempty"`
 	} `yaml:"spec"`
 }
 
@@ -334,6 +394,11 @@ func (n Node) UserData() ([]byte, error) {
 	if len(n.TimeServers) > 0 {
 		c.Spec.Time = &timeSpec{Servers: n.TimeServers}
 	}
+	c.Spec.Registries = n.registryEntries()
+	if a := n.AWS; a != nil {
+		pair := path.Join(AgentCertDir, AgentPair)
+		c.Spec.AWS = &awsSpec{Region: a.Region, TrustAnchorArn: a.TrustAnchorArn, ProfileArn: a.ProfileArn, RoleArn: a.RoleArn, Certificate: pair, Key: pair}
+	}
 	c.Spec.Services = n.services()
 	n.withoutDisabled(&c)
 	return yaml.Marshal(c)
@@ -346,14 +411,6 @@ func (n Node) withoutDisabled(c *nodeConfig) {
 		return
 	}
 	c.Spec.Services = slices.DeleteFunc(c.Spec.Services, func(s service) bool { return slices.Contains(n.Disable, s.Name) })
-	if slices.Contains(n.Disable, "registry") {
-		// mvmd trusts the registry's certificate through SSL_CERT_FILE; without the registry the file is not there.
-		for i := range c.Spec.Services {
-			if c.Spec.Services[i].Name == "mvmd" {
-				c.Spec.Services[i].Env = nil
-			}
-		}
-	}
 	if c.Spec.PKI != nil {
 		for i := range c.Spec.PKI.Certificates {
 			r := &c.Spec.PKI.Certificates[i].Restart
@@ -465,7 +522,7 @@ func (n Node) services() []service {
 	list := []service{
 		{
 			Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", MvmdConfig},
-			Env: map[string]string{"SSL_CERT_FILE": path.Join(InputsDir, "registry/ca.pem")},
+			Env: n.mvmdEnv(),
 		},
 		{
 			Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")),
@@ -491,6 +548,9 @@ func (n Node) services() []service {
 		{
 			Name: "gaon-node-agent", Binary: n.binary("gaon-node-agent", "/bin/gaon-node-agent"),
 			Args: append([]string{"--api-server", n.apiRoot(), "--node-name", n.Name, "--mvmd-socket", MvmdSocket}, creds.agent...),
+			// A pair issued without the Organization the signer requires is set aside, and the
+			// agent asks again (ADR 0026).
+			KeptPair: &keptPair{File: path.Join(AgentCertDir, AgentPair), Organization: AgentOrganization},
 		},
 	}
 	if n.HA() {
@@ -504,4 +564,31 @@ func (n Node) services() []service {
 		list[i].ControlPlane = Gaon.OnlyControlPlane(list[i].Name)
 	}
 	return list
+}
+
+// mvmdEnv is mvmd's environment: PATH, for the credential helpers it runs, and with spec.aws the
+// AWS profile the helpers read (ADR 0026).
+func (n Node) mvmdEnv() map[string]string {
+	env := map[string]string{"PATH": HelperPath}
+	if a := n.AWS; a != nil {
+		env["AWS_CONFIG_FILE"] = path.Join(RegistryFilesDir, "aws/config")
+		env["AWS_REGION"] = a.Region
+	}
+	return env
+}
+
+// registryEntries is spec.registries.
+func (n Node) registryEntries() []registryEntry {
+	var out []registryEntry
+	for _, r := range n.Registries {
+		e := registryEntry{Host: r.Host, CA: r.CA}
+		switch {
+		case r.Helper != "":
+			e.Credential = &credential{Helper: r.Helper}
+		case r.Username != "" || r.Password != "":
+			e.Credential = &credential{Username: r.Username, Password: r.Password}
+		}
+		out = append(out, e)
+	}
+	return out
 }
