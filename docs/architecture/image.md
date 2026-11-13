@@ -2,7 +2,7 @@
 
 What the P0 image holds, where its inputs come from, and how a Node boots it.
 
-Claims about garamsh/mvmd hold at commit `d189133bba8d842d2bcb20046f39fe03161efeb1`, and claims about garamsh/gaon at `c2b42f91724cae39a4f6824517c278150cf4695f`; they promise nothing about later versions. Claims about etcd hold for etcd-io/etcd v3.6.16, commit `0b065e61c679ea81f6862bb24c9815f7fc673966`. The claims about the QEMU tests, the release's user-data and the keys it publishes were checked against the code and the runs of this branch, not against the pinned commits alone.
+Claims about garamsh/mvmd hold at commit `d189133bba8d842d2bcb20046f39fe03161efeb1`, and claims about garamsh/gaon at `c2b42f91724cae39a4f6824517c278150cf4695f`; they promise nothing about later versions, except that the gaon flags of the control plane (`--etcd-*-file`, the `https://` endpoints) were read at `f431811565beb905ac859a78b126a47a734fdb27`, an ancestor of the pin `d69c5b0fdf05d5d8905fadbe78437890b22e69a7` ([ADR 0024](./adr/0024-the-control-plane-is-three-etcd-members-with-tls-on-both-ports-and-a-virtual-address-held-by-naru-vip-behind-a-fence-on-etcds-ports.md)). Claims about etcd hold for etcd-io/etcd v3.6.16, commit `0b065e61c679ea81f6862bb24c9815f7fc673966`. The claims about the QEMU tests, the release's user-data and the keys it publishes were checked against the code and the runs of this branch, not against the pinned commits alone.
 
 ## Current decisions
 
