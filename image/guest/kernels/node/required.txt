@@ -2,6 +2,7 @@
 ## The conditions are what a VMM that boots a kernel directly needs (mvmd ADR 0058 and 0059), what
 ## init needs of a Node (ADR 0006's table, as far as a guest uses it), and what Kubernetes needs.
 CONFIG_PVH=y
+CONFIG_VIRT_DRIVERS=y
 CONFIG_VMGENID=y
 CONFIG_ACPI=y
 CONFIG_ACPI_BUTTON=y
@@ -37,5 +38,4 @@ CONFIG_CGROUP_PIDS=y
 CONFIG_MEMCG=y
 # CONFIG_MODULES is not set
 # CONFIG_EFI is not set
-# CONFIG_EFI_STUB is not set
 # CONFIG_CMDLINE_BOOL is not set
