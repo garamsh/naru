@@ -137,7 +137,8 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 }
 
 // provision pulls the image, makes the disks and the Machine, and starts it. A failure before the
-// Machine exists removes the disks made for it.
+// Machine exists removes the disks this request's own CreateDisk calls made, and no other: a disk
+// whose CreateDisk was refused belongs to another request.
 func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[string]uint64, error) {
 	rt := s.deps.Runtime
 	if p.repository != "" {
@@ -146,17 +147,19 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 		}
 	}
 	sizes := map[string]uint64{}
+	var made []string
 	for _, d := range p.disks {
 		id := diskID(p.create.ID, d.Name)
 		if err := rt.CreateDisk(ctx, id, d.SizeBytes); err != nil {
-			s.dropDisks(p.create.Disks)
+			s.dropDisks(made)
 			return mvmd.Machine{}, nil, err
 		}
+		made = append(made, id)
 		sizes[id] = d.SizeBytes
 	}
 	m, err := rt.CreateMachine(ctx, p.create)
 	if err != nil {
-		s.dropDisks(p.create.Disks)
+		s.dropDisks(made)
 		return mvmd.Machine{}, nil, err
 	}
 	started, err := rt.StartMachine(ctx, m.ID)
@@ -170,14 +173,14 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 	return started, sizes, nil
 }
 
-// dropDisks deletes the disks made for a Machine that was not created. It uses a context of its
-// own, since the request's may be what ended.
-func (s *Server) dropDisks(disks []mvmd.Attachment) {
+// dropDisks deletes the disks, by ID, that a request made for a Machine it did not create. It uses
+// a context of its own, since the request's may be what ended.
+func (s *Server) dropDisks(ids []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for _, d := range disks {
-		if err := s.deps.Runtime.DeleteDisk(ctx, d.ID); err != nil && !errors.Is(err, mvmd.ErrNotFound) {
-			s.deps.Log.Error("cannot remove a disk of a microVM that was not created", "disk", d.ID, "err", err.Error())
+	for _, id := range ids {
+		if err := s.deps.Runtime.DeleteDisk(ctx, id); err != nil && !errors.Is(err, mvmd.ErrNotFound) {
+			s.deps.Log.Error("cannot remove a disk of a microVM that was not created", "disk", id, "err", err.Error())
 		}
 	}
 }

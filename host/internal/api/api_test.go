@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/garamsh/naru/host/internal/mvmd"
 )
 
 const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -216,6 +218,21 @@ func TestCreate_IsIdempotentAndAnotherBodyConflicts(t *testing.T) {
 	bigger["disks"] = []map[string]any{{"name": "data", "sizeBytes": 1 << 21}}
 	code, _ = e.do(t, c, "POST", "/v1/microvms", bigger)
 	assert.Equal(t, 409, code, "a disk of another size is another body")
+}
+
+func TestCreate_AFailedCreateRemovesTheDisksItMadeAndNotThoseAnotherRequestMade(t *testing.T) {
+	e := start(t)
+	c := e.as(t, ProvisionerOrganization)
+	// Another request has made web.data; this one's CreateDisk for it conflicts, after web.a was made.
+	e.rt.disks["web.data"] = mvmd.Disk{ID: "web.data", SizeBytes: 1 << 21}
+	body := createBody()
+	body["disks"] = []map[string]any{{"name": "a", "sizeBytes": 1 << 20}, {"name": "data", "sizeBytes": 1 << 20}}
+	code, _ := e.do(t, c, "POST", "/v1/microvms", body)
+	assert.Equal(t, 409, code)
+	assert.Contains(t, e.rt.disks, "web.data", "the other request's disk was deleted")
+	assert.Equal(t, uint64(1<<21), e.rt.disks["web.data"].SizeBytes)
+	assert.NotContains(t, e.rt.disks, "web.a", "the control: the disk this request made is removed")
+	assert.Empty(t, e.rt.machines)
 }
 
 func TestCreate_StartsAMachineAnEarlierAttemptLeftCreated(t *testing.T) {
