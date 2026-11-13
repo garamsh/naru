@@ -106,6 +106,8 @@ func (n Node) hostService() service {
 			"--cert", path.Join(HostDir, "tls.crt"), "--key", path.Join(HostDir, "tls.key"),
 			"--client-ca", path.Join(HostDir, "client-ca.crt"),
 			"--host-file", path.Join(HostDir, "host.json"), "--mvmd-socket", MvmdSocket,
+			// The first address of the Machines' prefix, which mvmd gives its Machines as gateway.
+			"--machine-gateway", n.MachinePrefix.Masked().Addr().Next().String(),
 		},
 	}
 }

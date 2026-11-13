@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/garamsh/naru/tooling/qemu/internal/iso9660"
+	"github.com/garamsh/naru/lib/iso9660"
 )
 
 const sector = 2048

@@ -75,6 +75,11 @@ type Machine struct {
 	RootDiskBytes uint64
 	Disks         []Attachment
 	Policy        Policy
+	// BootSet, Cmdline and RoutedPrefixes are the OS form's: the boot set the Machine boots, the
+	// kernel command line added to it, and the prefixes mvmd routes to the Machine.
+	BootSet        string
+	Cmdline        string
+	RoutedPrefixes []string
 }
 
 // Create is what CreateMachine takes.
@@ -86,6 +91,11 @@ type Create struct {
 	RootDiskBytes uint64
 	Disks         []Attachment
 	Policy        Policy
+	// BootSet, Cmdline and RoutedPrefixes make an OS-form Machine: it has no image and no root
+	// disk, and boots the boot set the node offers.
+	BootSet        string
+	Cmdline        string
+	RoutedPrefixes []string
 }
 
 // Kernel is a guest kernel the node offers.
@@ -105,6 +115,8 @@ type Info struct {
 	MemoryBytes                          uint64
 	StateTotalBytes, StateAvailableBytes uint64
 	Kernels                              []Kernel
+	// MachinePrefixes are the prefixes mvmd gives the addresses of Machines from.
+	MachinePrefixes []string
 }
 
 // Deadline is mvmd's fencing deadline.
@@ -120,11 +132,17 @@ type Runtime interface {
 	// Pull pulls the image repository@digest, which mvmd keeps by digest.
 	Pull(ctx context.Context, repository, digest string) error
 	CreateDisk(ctx context.Context, id string, sizeBytes uint64) error
+	// CreateRawDisk creates a disk with no filesystem holding contents (at most 1 MiB), of the
+	// contents' length rounded up to 512 when sizeBytes is 0. The same contents under the same ID
+	// is the original outcome; other contents are ErrConflict.
+	CreateRawDisk(ctx context.Context, id string, sizeBytes uint64, contents []byte) error
 	DeleteDisk(ctx context.Context, id string) error
 	ListDisks(ctx context.Context) ([]Disk, error)
 	// CreateMachine creates the Machine under a request ID of its own, so a repeat of the same
 	// parameters is mvmd's original outcome and other parameters are ErrConflict.
 	CreateMachine(ctx context.Context, c Create) (Machine, error)
+	// AttachDisk attaches a disk to a Created or Stopped Machine; it appears at the next boot.
+	AttachDisk(ctx context.Context, machineID string, a Attachment) (Machine, error)
 	StartMachine(ctx context.Context, id string) (Machine, error)
 	StopMachine(ctx context.Context, id string) error
 	// DeleteMachine deletes a Created, Stopped or Faulted Machine. An absent one is success.

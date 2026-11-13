@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"reflect"
 	"slices"
 	"strings"
@@ -18,8 +19,9 @@ import (
 // shorter than this), and a delete.
 const callTimeout = 5 * time.Minute
 
-// maxBody bounds a request body.
-const maxBody = 1 << 20
+// maxBody bounds a request body. An OS-form body carries the seed's user-data in base64, and the
+// seed volume may be as large as mvmd takes (1 MiB), which is more than a quarter larger here.
+const maxBody = 4 << 20
 
 // MicroVM is a microVM as the host API shows it.
 type MicroVM struct {
@@ -35,13 +37,20 @@ type MicroVM struct {
 	RootDiskBytes uint64      `json:"rootDiskBytes"`
 	Disks         []DiskSpec  `json:"disks"`
 	NetworkPolicy mvmd.Policy `json:"networkPolicy"`
+	// BootSet, Cmdline and PodPrefix are an OS-form microVM's.
+	BootSet   string `json:"bootSet,omitempty"`
+	Cmdline   string `json:"cmdline,omitempty"`
+	PodPrefix string `json:"podPrefix,omitempty"`
 }
 
 func view(m mvmd.Machine, sizes map[string]uint64) MicroVM {
 	v := MicroVM{
 		Name: m.ID, MachineID: m.ID, State: m.State, Failure: m.Failure, Addresses: m.Addresses,
 		ImageDigest: m.ImageDigest, CPU: m.CPU, Memory: m.MemoryBytes, RootDiskBytes: m.RootDiskBytes,
-		Disks: []DiskSpec{}, NetworkPolicy: m.Policy,
+		Disks: []DiskSpec{}, NetworkPolicy: m.Policy, BootSet: m.BootSet, Cmdline: m.Cmdline,
+	}
+	if len(m.RoutedPrefixes) > 0 {
+		v.PodPrefix = m.RoutedPrefixes[0]
 	}
 	if v.Addresses == nil {
 		v.Addresses = []string{}
@@ -98,6 +107,10 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: msg, Fields: fields})
 		return
 	}
+	if p.create.BootSet != "" && !s.deps.MachineGateway.IsValid() {
+		writeJSON(w, http.StatusNotImplemented, errorBody{Error: "this host was started with no --machine-gateway, so it cannot write the network-config of an OS-form microVM"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), callTimeout)
 	defer cancel()
 	rt := s.deps.Runtime
@@ -136,11 +149,14 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, view(m, sizes))
 }
 
-// provision pulls the image, makes the disks and the Machine, and starts it. A failure before the
-// Machine exists removes the disks this request's own CreateDisk calls made, and no other: a disk
-// whose CreateDisk was refused belongs to another request.
+// provision makes what the plan describes and starts the Machine. The image form pulls the image,
+// makes the disks, then the Machine. The OS form makes the data disk, then the Machine, then the
+// seed, whose network-config needs the address mvmd gave the Machine, and attaches the seed
+// read-only before the start. A failure before the start removes what this request made, and no
+// more: a disk or Machine whose creation was refused belongs to another request.
 func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[string]uint64, error) {
 	rt := s.deps.Runtime
+	osForm := p.create.BootSet != ""
 	if p.repository != "" {
 		if err := rt.Pull(ctx, p.repository, p.create.ImageDigest); err != nil {
 			return mvmd.Machine{}, nil, err
@@ -151,7 +167,7 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 	for _, d := range p.disks {
 		id := diskID(p.create.ID, d.Name)
 		if err := rt.CreateDisk(ctx, id, d.SizeBytes); err != nil {
-			s.dropDisks(made)
+			s.dropMade("", made)
 			return mvmd.Machine{}, nil, err
 		}
 		made = append(made, id)
@@ -159,8 +175,16 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 	}
 	m, err := rt.CreateMachine(ctx, p.create)
 	if err != nil {
-		s.dropDisks(made)
+		s.dropMade("", made)
 		return mvmd.Machine{}, nil, err
+	}
+	if osForm {
+		seedID, seedSize, err := s.makeSeed(ctx, p, m, &made)
+		if err != nil {
+			s.dropMade(m.ID, made)
+			return mvmd.Machine{}, nil, err
+		}
+		sizes[seedID] = seedSize
 	}
 	started, err := rt.StartMachine(ctx, m.ID)
 	if errors.Is(err, mvmd.ErrPrecondition) {
@@ -173,12 +197,57 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 	return started, sizes, nil
 }
 
-// dropDisks deletes the disks, by ID, that a request made for a Machine it did not create. It uses
-// a context of its own, since the request's may be what ended.
-func (s *Server) dropDisks(ids []string) {
+// makeSeed creates the seed disk of an OS-form Machine from the address mvmd gave it, and attaches
+// it read-only. made gains the disk once its creation succeeded.
+func (s *Server) makeSeed(ctx context.Context, p plan, m mvmd.Machine, made *[]string) (string, uint64, error) {
+	rt := s.deps.Runtime
+	if len(m.Addresses) == 0 {
+		return "", 0, errors.New("mvmd gave the Machine no address")
+	}
+	addr, err := netip.ParseAddr(m.Addresses[0])
+	if err != nil {
+		return "", 0, err
+	}
+	info, err := rt.Info(ctx)
+	if err != nil {
+		return "", 0, err
+	}
+	var prefix netip.Prefix
+	for _, c := range info.MachinePrefixes {
+		if pf, err := netip.ParsePrefix(c); err == nil && pf.Contains(addr) {
+			prefix = netip.PrefixFrom(addr, pf.Bits())
+		}
+	}
+	if !prefix.IsValid() {
+		return "", 0, errors.New("the Machine's address is in none of the prefixes mvmd reports")
+	}
+	vol, err := seedVolume(m.ID, p.userData, prefix, s.deps.MachineGateway)
+	if err != nil {
+		return "", 0, err
+	}
+	id := diskID(m.ID, seedDiskName)
+	if err := rt.CreateRawDisk(ctx, id, 0, vol); err != nil {
+		return "", 0, err
+	}
+	*made = append(*made, id)
+	if _, err := rt.AttachDisk(ctx, m.ID, mvmd.Attachment{ID: id, ReadOnly: true}); err != nil {
+		return "", 0, err
+	}
+	return id, uint64(len(vol)), nil
+}
+
+// dropMade deletes what a request made that did not end in a started Machine: the Machine, when
+// this request made it, and then the disks by ID. It uses a context of its own, since the
+// request's may be what ended.
+func (s *Server) dropMade(machine string, disks []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for _, id := range ids {
+	if machine != "" {
+		if err := s.deps.Runtime.DeleteMachine(ctx, machine); err != nil {
+			s.deps.Log.Error("cannot remove a microVM that was not started", "machine", machine, "err", err.Error())
+		}
+	}
+	for _, id := range disks {
 		if err := s.deps.Runtime.DeleteDisk(ctx, id); err != nil && !errors.Is(err, mvmd.ErrNotFound) {
 			s.deps.Log.Error("cannot remove a disk of a microVM that was not created", "disk", id, "err", err.Error())
 		}
@@ -186,17 +255,24 @@ func (s *Server) dropDisks(ids []string) {
 }
 
 // matches reports whether the Machine mvmd holds is the one the plan would create: the same
-// image, resources, root disk, network policy and disks, each disk of the same size.
+// image or boot set, resources, root disk, network policy, routed prefixes and disks, each disk of
+// the same size. An OS-form Machine also has its seed attached read-only; the seed's contents are
+// not compared, since they hold the address mvmd chose.
 func matches(m mvmd.Machine, sizes map[string]uint64, p plan) bool {
 	c := p.create
 	if m.ImageDigest != c.ImageDigest || m.CPU != c.CPU || m.MemoryBytes != c.MemoryBytes || m.RootDiskBytes != c.RootDiskBytes {
 		return false
 	}
-	if !samePolicy(m.Policy, c.Policy) {
+	if !samePolicy(m.Policy, c.Policy) || m.BootSet != c.BootSet || m.Cmdline != c.Cmdline ||
+		!slices.Equal(m.RoutedPrefixes, c.RoutedPrefixes) {
 		return false
 	}
+	wantDisks := slices.Clone(c.Disks)
+	if c.BootSet != "" {
+		wantDisks = append(wantDisks, mvmd.Attachment{ID: diskID(c.ID, seedDiskName), ReadOnly: true})
+	}
 	byID := func(a, b mvmd.Attachment) int { return strings.Compare(a.ID, b.ID) }
-	have, want := slices.SortedFunc(slices.Values(m.Disks), byID), slices.SortedFunc(slices.Values(c.Disks), byID)
+	have, want := slices.SortedFunc(slices.Values(m.Disks), byID), slices.SortedFunc(slices.Values(wantDisks), byID)
 	if !slices.Equal(have, want) {
 		return false
 	}

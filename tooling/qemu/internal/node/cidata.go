@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/garamsh/naru/tooling/qemu/internal/iso9660"
+	"github.com/garamsh/naru/lib/iso9660"
 )
 
 // Label and size of the NoCloud drive: the volume Proxmox writes into 4 MiB with genisoimage and
