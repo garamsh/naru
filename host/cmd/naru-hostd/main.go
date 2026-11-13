@@ -1,0 +1,57 @@
+// Command naru-hostd is the host API of a Node (docs/architecture/host.md): it creates, reads and
+// destroys microVMs through mvmd's local runtime API, and keeps mvmd's fencing deadline armed.
+package main
+
+import (
+	"context"
+	"flag"
+	"log/slog"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/garamsh/naru/host/internal/api"
+	"github.com/garamsh/naru/host/internal/fence"
+	"github.com/garamsh/naru/host/internal/mvmd"
+)
+
+func main() {
+	var (
+		listen   = flag.String("listen", "0.0.0.0:7443", "address of the host API")
+		cert     = flag.String("cert", "/run/naru-hostd/tls.crt", "serving certificate")
+		key      = flag.String("key", "/run/naru-hostd/tls.key", "serving key")
+		clients  = flag.String("client-ca", "/run/naru-hostd/client-ca.crt", "CA of the clients' certificates")
+		hostFile = flag.String("host-file", "/run/naru-hostd/host.json", "region and labels, written by init from spec.host")
+		socket   = flag.String("mvmd-socket", "/run/mvmd.sock", "mvmd's runtime API socket")
+		length   = flag.Duration("fence-length", 10*time.Minute, "how long each renewal arms mvmd's fencing deadline")
+		interval = flag.Duration("fence-interval", time.Minute, "how often the deadline is renewed")
+	)
+	flag.Parse()
+	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+	conf, err := api.TLSConfig(*cert, *key, *clients)
+	if err != nil {
+		log.Error("cannot load the serving pair or the client CA", "err", err.Error())
+		os.Exit(1)
+	}
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		log.Error("cannot listen", "addr", *listen, "err", err.Error())
+		os.Exit(1)
+	}
+	rt := mvmd.New(*socket)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	r := &fence.Renewer{Runtime: rt, Length: *length, Interval: *interval, Retry: 5 * time.Second, Log: log}
+	go r.Run(ctx)
+	go func() { <-ctx.Done(); _ = ln.Close() }()
+
+	log.Info("naru-hostd serving", "addr", *listen)
+	if err := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, Log: log}).Serve(ln, conf); err != nil && ctx.Err() == nil {
+		log.Error("the host API stopped", "err", err.Error())
+		os.Exit(1)
+	}
+}

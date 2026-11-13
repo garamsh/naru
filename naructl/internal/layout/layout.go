@@ -141,6 +141,9 @@ type Node struct {
 	// API is the Node API authority, separate from CA. When set, spec.api carries its certificate
 	// and a serving pair it issued, and never its key.
 	API *pki.CA
+	// Host, when set, makes the Node serve the host API: naru-hostd runs, with a serving pair
+	// issued from Host's authority, and spec.host carries its region and labels.
+	Host *Host
 
 	// TimeServers are the SNTP servers init sets the clock from, each a host or host:port, in the
 	// order they are asked. With none, spec.time is left out and the Node's clock is not set.
@@ -290,6 +293,7 @@ type nodeConfig struct {
 		Registries []registryEntry `yaml:"registries,omitempty"`
 		AWS        *awsSpec        `yaml:"aws,omitempty"`
 		Storage    []storage       `yaml:"storage,omitempty"`
+		Host       *hostSpec       `yaml:"host,omitempty"`
 	} `yaml:"spec"`
 }
 
@@ -323,6 +327,11 @@ func (n Node) Check() error {
 	}
 	if err := n.Guest.Check(); err != nil {
 		return err
+	}
+	if n.Host != nil {
+		if err := n.Host.check(); err != nil {
+			return err
+		}
 	}
 	for _, name := range n.Disable {
 		if !Gaon.Has(name) {
@@ -439,6 +448,14 @@ func (n Node) UserData() ([]byte, error) {
 	}
 	c.Spec.Files = append(c.Spec.Files, certFiles...)
 	c.Spec.Files = append(c.Spec.Files, n.tokenFiles()...)
+	if n.Host != nil {
+		hostFiles, err := n.hostFiles()
+		if err != nil {
+			return nil, err
+		}
+		c.Spec.Files = append(c.Spec.Files, hostFiles...)
+		c.Spec.Host = &hostSpec{Region: n.Host.Region, Labels: n.Host.Labels}
+	}
 	if n.Mode.plan(n.Name).specPKI {
 		c.Spec.PKI = n.pkiSpec()
 	}
@@ -461,6 +478,11 @@ func (n Node) UserData() ([]byte, error) {
 		c.Spec.Storage = append(c.Spec.Storage, e)
 	}
 	c.Spec.Services = n.services()
+	if n.Host != nil {
+		// After mvmd, which it dials; it is no service of the topology, so no Node leaves it out by
+		// --disable and only a Node given a host authority runs it.
+		c.Spec.Services = slices.Insert(c.Spec.Services, 1, n.hostService())
+	}
 	n.withoutDisabled(&c)
 	return yaml.Marshal(c)
 }

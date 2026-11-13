@@ -33,3 +33,4 @@ file /etc/ssl/certs/ca-certificates.crt @OUT@/ca-certificates.crt 0644 0 0
 file /bin/naru-standin @OUT@/naru-standin 0755 0 0
 file /bin/naru-vip @OUT@/naru-vip 0755 0 0
 file /bin/naru-fence @OUT@/naru-fence 0755 0 0
+file /bin/naru-hostd @OUT@/naru-hostd 0755 0 0

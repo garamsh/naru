@@ -34,6 +34,9 @@ const (
 	// APIDir is the directory under a cluster's directory that holds the Node API authority, which
 	// is not the cluster's CA.
 	APIDir = "api"
+	// HostDir is the directory under a cluster's directory that holds the host API authority,
+	// which signs naru-hostd's serving pair and its clients' certificates.
+	HostDir = "host"
 )
 
 // Pair is a certificate and its private key, both PEM.

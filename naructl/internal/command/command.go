@@ -15,13 +15,19 @@ import (
 	"github.com/garamsh/naru/naructl/internal/pki"
 )
 
-const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client> [flags]
+const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-ca|host-client> [flags]
        naructl <version|services|logs|get config|apply|reboot|upgrade> --config <client file> [--node <ip[:port]>] [flags]
        naructl topology                              print the services a Node runs, and which signs, as JSON
 
   gen api-ca  --ca-dir <dir>                    write the Node API authority, <dir>/api/ca.pem and ca.key
   gen api-client --ca-dir <dir> --role admin|reader --endpoint <ip[:port]> --out <file>
               write a client file for the Node API
+  gen host-ca --ca-dir <dir>                    write the host API authority, <dir>/host/ca.pem and ca.key
+  gen host-client --ca-dir <dir> --role provisioner|reader --endpoint <ip[:port]> --out <file>
+              write a client file for the host API (naru-hostd, port 7443)
+  host | microvm list | microvm get <name> --config <host client file> [--host <ip[:port]>]
+  microvm create (--name <name> --image <repository@sha256:digest> [--cpu n] [--memory bytes] [--root-disk bytes] [--disk <name>=<bytes>[,ro]] | -f <request.json>) | microvm delete <name>
+              the same flags; create and delete need the provisioner role
   version | services | get config               read a Node
   logs <service> [-f]                           print a service's kept log, and with -f each new line
   apply -f <patch> [--mode no-reboot|staged|reboot] [--dry-run]
@@ -63,6 +69,10 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			return reboot(args[1:], stdout, stderr)
 		case "upgrade":
 			return upgradeCmd(args[1:], stdout, stderr)
+		case "host":
+			return hostCmd(args[1:], stdout, stderr)
+		case "microvm":
+			return microvm(args[1:], stdout, stderr)
 		case "get":
 			if len(args) > 1 && args[1] == "config" {
 				return getConfig(args[2:], stdout, stderr)
@@ -78,6 +88,10 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return genAPICA(args[2:], stdout, stderr)
 	case "api-client":
 		return genAPIClient(args[2:], stdout, stderr)
+	case "host-ca":
+		return genHostCA(args[2:], stdout, stderr)
+	case "host-client":
+		return genHostClient(args[2:], stdout, stderr)
 	case "ca":
 		return genCA(args[2:], stdout, stderr)
 	case "client":
@@ -246,7 +260,8 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen node", stderr)
 	var (
 		nameservers, serving, binaries, disable, timeServers, peers, members, registries, storage list
-		awsRegion, awsTrustAnchor, awsProfile, awsRole                                            string
+		awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion                                string
+		hostLabels                                                                                list
 		n                                                                                         layout.Node
 		caDir, address, gateway, apiServer                                                        string
 		machinePrefix, guest, extraNIC                                                            string
@@ -273,6 +288,8 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&awsTrustAnchor, "aws-trust-anchor", "", "the ARN of the IAM Roles Anywhere trust anchor")
 	fs.StringVar(&awsProfile, "aws-profile", "", "the ARN of the IAM Roles Anywhere profile")
 	fs.StringVar(&awsRole, "aws-role", "", "the ARN of the IAM role; the certificate and key are the Node Agent's pair")
+	fs.StringVar(&hostRegion, "host-region", "", "the Node serves the host API (naru-hostd) and reports this region, a DNS label; needs the host authority, gen host-ca")
+	fs.Var(&hostLabels, "host-label", "a label of the host, <key>=<value>, repeatable (with --host-region)")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.Var(&peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
 	fs.Var(&storage, "storage", "<name>=<label or /dev/path>, an extra disk the Node offers as XFS, found by its partition or file system label, or by its device when the value starts with /dev/ (a blank disk has no label), repeatable: the first is mounted where mvmd keeps its disks")
@@ -296,6 +313,9 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	if err := awsTogether(fs); err != nil {
 		return err
 	}
+	if err := needs(fs, "host-region", "host-label"); err != nil {
+		return err
+	}
 	var err error
 	if n.CA, err = pki.Load(caDir); err != nil {
 		return err
@@ -306,6 +326,11 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	if hostRegion != "" {
+		if n.Host, err = loadHost(caDir, hostRegion, hostLabels); err != nil {
+			return err
+		}
 	}
 	n.Mode = layout.ModeOf(controlPlane, pairsAsFiles)
 	// The Node's own token is made if there is none. A control-plane Node's API server lists the

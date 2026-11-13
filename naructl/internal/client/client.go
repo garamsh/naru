@@ -23,11 +23,14 @@ type Client struct {
 // Dial returns a Client for the Node at node, an IP address with or without a port; when node is
 // empty it is the file's first endpoint. It speaks TLS 1.3 only, trusts the file's authority and
 // presents the file's pair. Nothing is sent until a call.
-func Dial(f File, node string) (*Client, error) {
+func Dial(f File, node string) (*Client, error) { return DialPort(f, node, DefaultPort) }
+
+// DialPort is Dial for a server whose port is port when node names none: the host API's.
+func DialPort(f File, node, port string) (*Client, error) {
 	if node == "" {
 		node = f.Endpoints[0]
 	}
-	addr, err := Address(node)
+	addr, err := AddressPort(node, port)
 	if err != nil {
 		return nil, err
 	}

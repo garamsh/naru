@@ -65,6 +65,8 @@ type Spec struct {
 	// Storage lists the extra disks init prepares and mounts for mvmd's disks
 	// (docs/architecture/adr/0027-a-node-offers-an-extra-disk-as-xfs-storage-for-mvmds-disks-formatted-when-blank-mounted-hardened-and-grown-at-boot.md).
 	Storage []Storage `yaml:"storage,omitempty"`
+	// Host is the region and labels naru-hostd reports. It is nil when the Node serves no host API.
+	Host *Host `yaml:"host,omitempty"`
 }
 
 // StorageRoot is the directory a storage disk is mounted under, as StorageRoot/<name>, unless it names a mount point.

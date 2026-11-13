@@ -4,6 +4,7 @@ toolchain go1.26.11
 
 use (
 	./controlplane
+	./host
 	./init
 	./naructl
 	./tooling/disk

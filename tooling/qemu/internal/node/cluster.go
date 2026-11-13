@@ -51,6 +51,11 @@ type ClusterSpec struct {
 	// NodeAPI, with Gaon, has `naructl gen api-ca` write the Node API's authority, so that every Node's
 	// user-data carries spec.api, and node-1's API is reachable from the host through a forward.
 	NodeAPI bool
+	// Host, with Gaon, has `naructl gen host-ca` write the host API's authority, so that node-1's
+	// user-data carries spec.host (region HostRegion, labels HostLabels) and runs naru-hostd, and
+	// node-1's host API is reachable from the host through a forward. node-1 also runs naru-mvmdlist,
+	// which prints the Machines its mvmd holds (ADR 0028).
+	Host bool
 	// TimeServers, with Gaon, is node-1's spec.time.servers. The servers are on the test host, which
 	// node-1 reaches at 10.0.2.2 over its second NIC, left unrestricted for it (Config.HostReach).
 	TimeServers []string
@@ -91,6 +96,25 @@ type Cluster struct {
 	HostAddrs map[string]string
 	// API is set when the cluster has NodeAPI.
 	API *NodeAPI
+	// Host is set when the cluster has Host.
+	Host *HostAPI
+}
+
+// HostRegion and HostLabels are what a cluster with Host configures node-1's spec.host with.
+const HostRegion = "eu-1"
+
+// HostLabels are the labels of node-1's spec.host before a test changes them.
+var HostLabels = []string{"disk=ssd"}
+
+// HostAPI is how the test host reaches node-1's host API: the address of the forward and naructl
+// client files, each naructl's own format (ADR 0028).
+type HostAPI struct {
+	// Addr is "127.0.0.1:port", the host side of the forward to node-1's host API.
+	Addr string
+	// Provisioner and Reader are client files with the certificate of that role from the cluster's
+	// host authority. Foreign is Provisioner's file with the certificate and key of a provisioner of
+	// another authority: the server's certificate is still trusted, and the client's is not.
+	Provisioner, Reader, Foreign string
 }
 
 // NodeAPI is how the test host reaches node-1's Node API: the address of the forward and naructl
@@ -113,6 +137,9 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 	if spec.ControlPlanes > spec.N || spec.ControlPlanes > 1 && !spec.Gaon {
 		return nil, errors.New("ControlPlanes needs Gaon and no more Nodes than the cluster has")
 	}
+	if spec.Host && !spec.Gaon {
+		return nil, errors.New("Host needs Gaon: the user-data with spec.host is naructl's")
+	}
 	if spec.NodeAPI && !spec.Gaon {
 		return nil, errors.New("NodeAPI needs Gaon: the user-data with spec.api is naructl's")
 	}
@@ -126,7 +153,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		if gen, err = newGaonFiles(spec); err != nil {
 			return nil, err
 		}
-		c.Client, c.HostAddr, c.API = gen.client, "127.0.0.1:"+strconv.Itoa(gen.ports[1]), gen.api
+		c.Client, c.HostAddr, c.API, c.Host = gen.client, "127.0.0.1:"+strconv.Itoa(gen.ports[1]), gen.api, gen.host
 		c.HostAddrs = map[string]string{}
 		for i, p := range gen.ports {
 			c.HostAddrs[fmt.Sprintf("node-%d", i)] = "127.0.0.1:" + strconv.Itoa(p)
@@ -155,6 +182,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 				start.Config.HostPort = gen.ports[i] // only a control-plane Node has the second NIC
 				if i == 1 {
 					start.Config.APIHostPort = gen.apiPort
+					start.Config.HostAPIHostPort = gen.hostPort
 					start.Config.HostReach = len(spec.TimeServers) > 0
 				}
 			}
@@ -210,6 +238,9 @@ type gaonFiles struct {
 	// api and apiPort are set when the cluster has a Node API.
 	api     *NodeAPI
 	apiPort int
+	// host and hostPort are set when the cluster has a host API.
+	host     *HostAPI
+	hostPort int
 }
 
 func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
@@ -254,6 +285,11 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 	}
 	if spec.NodeAPI {
 		if err := g.nodeAPIFiles(spec); err != nil {
+			return nil, err
+		}
+	}
+	if spec.Host {
+		if err := g.hostAPIFiles(spec); err != nil {
 			return nil, err
 		}
 	}
@@ -307,6 +343,9 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 		a.Binaries[name] = path.Join(OverrideDir, name)
 	}
 	a.AWSRegion, a.AWSTrustAnchor, a.AWSProfile, a.AWSRole = spec.AWSRegion, spec.AWSTrustAnchor, spec.AWSProfile, spec.AWSRole
+	if spec.Host && c.Index == 1 {
+		a.HostRegion, a.HostLabels = HostRegion, HostLabels
+	}
 	a.Registries = spec.Registries
 	if a.Registries == nil {
 		a.Registries = []string{"host=" + fixture.RegistryAddr + ",ca=" + filepath.Join(spec.Inputs.Dir, "registry", "ca.pem")}
@@ -316,6 +355,13 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	}
 	if spec.EditUserData != nil {
 		if err := spec.EditUserData(c, a.Out); err != nil {
+			return nil, nil, err
+		}
+	}
+	if spec.Host && c.Index == 1 {
+		if err := appendService(a.Out, map[string]any{
+			"name": "naru88-mvmdlist", "binary": path.Join(fixture.GuestRoot, "bin/naru-mvmdlist"),
+		}); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -477,4 +523,77 @@ func yamlField(m *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
+}
+
+// hostAPIFiles has naructl write the host API's authority into the CA directory, so that node-1's
+// user-data carries spec.host, and the client files of the host: a provisioner's, a reader's, and a
+// provisioner's whose certificate is from another authority. The other authority lives only in its
+// own directory, removed here.
+func (g *gaonFiles) hostAPIFiles(spec ClusterSpec) error {
+	port, err := freePort()
+	if err != nil {
+		return fmt.Errorf("pick a host port for the host API: %w", err)
+	}
+	g.hostPort = port
+	addr := "127.0.0.1:" + strconv.Itoa(port)
+	dir := filepath.Join(spec.Dir, "host-client")
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
+		return err
+	}
+	h := &HostAPI{Addr: addr, Provisioner: filepath.Join(dir, "provisioner.yaml"), Reader: filepath.Join(dir, "reader.yaml"), Foreign: filepath.Join(dir, "foreign.yaml")}
+	if err := spec.Naructl.GenHostCA(g.caDir); err != nil {
+		return err
+	}
+	for role, out := range map[string]string{"provisioner": h.Provisioner, "reader": h.Reader} {
+		if err := spec.Naructl.GenHostClient(g.caDir, role, addr, out); err != nil {
+			return err
+		}
+	}
+	other := filepath.Join(spec.Dir, "host-ca-foreign")
+	defer func() { _ = os.RemoveAll(other) }()
+	foreign := filepath.Join(dir, "foreign-own.yaml")
+	if err := spec.Naructl.GenHostCA(other); err != nil {
+		return err
+	}
+	if err := spec.Naructl.GenHostClient(other, "provisioner", addr, foreign); err != nil {
+		return err
+	}
+	if err := swapPair(h.Provisioner, foreign, h.Foreign); err != nil {
+		return err
+	}
+	if err := os.Remove(foreign); err != nil {
+		return err
+	}
+	g.host = h
+	return nil
+}
+
+// appendService appends svc to the services of the user-data in file, the last to start.
+func appendService(file string, svc map[string]any) error {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return err
+	}
+	var extra yaml.Node
+	enc, err := yaml.Marshal(svc)
+	if err != nil {
+		return err
+	}
+	if err := yaml.Unmarshal(enc, &extra); err != nil {
+		return err
+	}
+	services := yamlField(yamlField(doc.Content[0], "spec"), "services")
+	if services == nil {
+		return errors.New("the user-data has no spec.services")
+	}
+	services.Content = append(services.Content, extra.Content[0])
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(file, out, 0o600)
 }

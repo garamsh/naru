@@ -17,6 +17,8 @@ const (
 	// NodeAPIPort is the port init's Node API listens on by default (ADR 0017), which the second
 	// forward of a cluster that has spec.api reaches.
 	NodeAPIPort = "50000"
+	// HostAPIPort is the port naru-hostd serves the host API on, which naructl's layout fixes (ADR 0028).
+	HostAPIPort = "7443"
 )
 
 // HostMAC is the address of the second NIC: the form of the first, in the next block of the

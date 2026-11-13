@@ -63,12 +63,15 @@ func Issue(authority *pki.CA, role, cn string, endpoints []string) (File, error)
 
 // Address returns a Node's address as host:port: an IP address, with DefaultPort when it has no
 // port. The Node's serving certificate names IP addresses, so a name is refused.
-func Address(s string) (string, error) {
+func Address(s string) (string, error) { return AddressPort(s, DefaultPort) }
+
+// AddressPort is Address with port in place of DefaultPort.
+func AddressPort(s, port string) (string, error) {
 	if ap, err := netip.ParseAddrPort(s); err == nil {
 		return ap.String(), nil
 	}
 	if a, err := netip.ParseAddr(s); err == nil {
-		return net.JoinHostPort(a.String(), DefaultPort), nil
+		return net.JoinHostPort(a.String(), port), nil
 	}
 	return "", fmt.Errorf("%q is not an IP address, with or without a port", s)
 }

@@ -166,6 +166,17 @@ func (t Tool) GenAPIClient(caDir, role, endpoint, out string) error {
 	return t.run("gen", "api-client", "--ca-dir", caDir, "--role", role, "--endpoint", endpoint, "--out", out)
 }
 
+// GenHostCA has naructl write the host API's authority, host/ca.pem and host/ca.key, under dir. A
+// Node's user-data written with a region from dir afterwards carries spec.host (ADR 0028).
+func (t Tool) GenHostCA(dir string) error { return t.run("gen", "host-ca", "--ca-dir", dir) }
+
+// GenHostClient has naructl write the host API client file out, with the certificate of role
+// (provisioner or reader) from the authority under caDir, for the host at endpoint (an IP address
+// with a port).
+func (t Tool) GenHostClient(caDir, role, endpoint, out string) error {
+	return t.run("gen", "host-client", "--ca-dir", caDir, "--role", role, "--endpoint", endpoint, "--out", out)
+}
+
 // Result is what a run of naructl printed and how it ended.
 type Result struct {
 	Stdout, Stderr string
@@ -207,6 +218,9 @@ type Node struct {
 	Registries []string
 	// AWSRegion, AWSTrustAnchor, AWSProfile and AWSRole are gen node's --aws-* flags, all or none.
 	AWSRegion, AWSTrustAnchor, AWSProfile, AWSRole string
+	// HostRegion and HostLabels (key=value) are gen node's --host-region and --host-label.
+	HostRegion string
+	HostLabels []string
 	// Binaries maps a service's name to its executable's path on the Node.
 	Binaries                          map[string]string
 	Disable                           []string
@@ -263,5 +277,9 @@ func (t Tool) GenNode(n Node) error {
 		flag("binary", name+"="+n.Binaries[name])
 	}
 	flag("disable", n.Disable...)
+	if n.HostRegion != "" {
+		flag("host-region", n.HostRegion)
+		flag("host-label", n.HostLabels...)
+	}
 	return t.run(args...)
 }
