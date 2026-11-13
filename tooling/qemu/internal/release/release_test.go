@@ -146,8 +146,11 @@ type userData struct {
 			Name string
 			Args []string
 		}
-		Files []struct{ Path, Content string }
-		PKI   *struct {
+		Files   []struct{ Path, Content string }
+		Network struct {
+			Routes []struct{ To, Via string }
+		}
+		PKI *struct {
 			Authorities []struct {
 				Certificate, Key string
 				KeyPath          string `yaml:"keyPath"`
@@ -205,6 +208,30 @@ func TestUserData_CarriesTheDeploymentsAddressesAndRoles(t *testing.T) {
 		assert.Equal(t, tc.prefix, mvmd.Network.Prefix, tc.file)
 		assert.Equal(t, tc.gateway, mvmd.Network.Gateway, tc.file)
 		assert.Equal(t, []string{tc.gateway}, mvmd.Network.Resolver, tc.file)
+	}
+}
+
+func TestUserData_RoutesToTheOtherNodesMachinePrefixAndKeepsTheSourceAddress(t *testing.T) {
+	files, err := userDataFiles(t)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		file, to, via string
+	}{
+		{"naru-node-1.test.yaml", "10.200.2.0/24", "192.168.0.61"},
+		{"naru-node-2.test.yaml", "10.200.1.0/24", "192.168.0.40"},
+	} {
+		n := parseUserData(t, files[tc.file])
+		require.Len(t, n.Spec.Network.Routes, 1, tc.file)
+		assert.Equal(t, tc.to, n.Spec.Network.Routes[0].To, tc.file)
+		assert.Equal(t, tc.via, n.Spec.Network.Routes[0].Via, tc.file)
+		var mvmd struct {
+			Network struct {
+				NoMasquerade []string `json:"no_masquerade"`
+			}
+		}
+		require.NoError(t, json.Unmarshal([]byte(n.file("/run/mvmd/config.json")), &mvmd), tc.file)
+		assert.Equal(t, []string{tc.to}, mvmd.Network.NoMasquerade, tc.file)
 	}
 }
 

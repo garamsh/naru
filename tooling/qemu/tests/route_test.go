@@ -77,7 +77,7 @@ func TestNode_ARouteAppliedWithoutARebootIsInTheKernelsTableChangesItsNextHopAnd
 	_, bootID := versionOf(t, admin)
 	watcher := ctl(admin, "apply", "-f", patchFile(t, netechoRoutes), "--mode", "no-reboot")
 	require.NoError(t, watcher.Err, watcher.refusal())
-	require.NoError(t, n.WaitFor(ctx, bootTimeout, "naru64-routes", "running"), "the route watcher runs")
+	require.NoError(t, n.WaitFor(ctx, bootTimeout, "running", "service=naru-netecho"), "the route watcher runs")
 	assert.False(t, n.Has("route added", "10.77.2.0/24"), "the control: before the apply, the kernel has no such route")
 
 	added := ctl(admin, "apply", "-f", patchFile(t, routePatch("10.78.0.2")), "--mode", "no-reboot")
