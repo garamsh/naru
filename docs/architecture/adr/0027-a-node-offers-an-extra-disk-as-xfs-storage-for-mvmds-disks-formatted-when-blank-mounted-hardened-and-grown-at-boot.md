@@ -25,7 +25,7 @@ Drafted for garamsh/naru#66, part of garamsh/naru#62 (E5) and garamsh/aurora#749
    - If the mount point already holds files, init mounts nothing over them, logs an error naming how many entries it holds, formats nothing, and the boot goes on.
    - If the disk holds an XFS file system, init does not format it, whatever its label.
    - If the first 1 MiB of the disk is all zero, init formats it as `mkfs.xfs -m reflink=1,crc=1 -L <name>` and logs `storage disk formatted as XFS`.
-   - If it holds anything else, another file system or data, init logs an error, leaves the disk untouched, and the boot goes on.
+   - If its first MiB holds anything else, another file system included, init logs an error, leaves the disk untouched, and the boot goes on.
    - Init mounts it at the mount point with `nodev,nosuid,noexec`, makes the mount point mode `0700`, and logs `storage disk mounted`.
    A failure to prepare a disk is therefore not a refusal of the boot, as a route the kernel refuses is not ([ADR 0023](./0023-spec-network-routes-are-static-ipv4-routes-init-applies-live.md)): a Node whose extra disk is gone still runs its other services, and the log says what is missing.
 5. **Init grows the file system at the boot that follows the disk's growth.** After mounting, init compares the device's size with the file system's, and when the device is larger it issues `XFS_IOC_FSGROWFSDATA` on the mount point for the whole device, and logs `storage file system grown`. The image carries no `xfs_growfs`. Growth without a reboot is not provided: a disk enlarged under a running Node is used at its next boot. Shrinking is not offered, and a disk that is now smaller than its file system is mounted as it is.
@@ -37,7 +37,7 @@ Drafted for garamsh/naru#66, part of garamsh/naru#62 (E5) and garamsh/aurora#749
 ## Consequences
 
 - A Node with a second disk and one `--storage` flag keeps its Machines' disks on XFS with reflinks, at the size of that disk. A Node without the extra disk, and a Node whose user-data has no `spec.storage`, boot as they did: the field is optional, and no code path of init runs without it.
-- The first boot with a blank disk formats it, and a boot that finds the same disk again never does. A disk that holds another file system, or data after its first MiB, is never formatted: the cost is that a disk with a damaged superblock is left alone and reported, not repaired.
+- The first boot with a blank disk formats it, and a boot that finds the same disk again never does. A disk whose first MiB holds anything, another file system's superblock included, is never formatted; data only past the first MiB is not seen, and such a disk is formatted. The cost is that a disk with a damaged superblock is left alone and reported, not repaired.
 - A disk that is not blank and not XFS is the operator's to wipe. Init does not offer a force.
 - The mount over `mvmd/disks` hides what the data disk holds there. A Node that had Machines before the storage disk was added keeps their disks on the data disk, out of mvmd's sight, until the operator moves them.
 - A disk's growth shows at the next boot. A Node that must grow its storage without stopping waits for a decision this one leaves out.
