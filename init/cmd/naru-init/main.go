@@ -108,6 +108,11 @@ func main() {
 	if err := server.Close(); err != nil {
 		log.Error("close the Node API", "err", err)
 	}
+	// The console writes in the background; give it a moment to take the last lines, but never
+	// wait on a device that does not.
+	flushing, stopFlushing := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = con.Flush(flushing)
+	stopFlushing()
 	switch sig {
 	case syscall.SIGINT:
 		err := host.Reboot()
