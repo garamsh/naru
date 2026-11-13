@@ -310,7 +310,7 @@ func TestServer_VersionReportsTheVersionTheBootIDAndTheUptime(t *testing.T) {
 	status, body := r.do(t, r.admin(t), http.MethodGet, "/v1/version", "")
 
 	assert.Equal(t, http.StatusOK, status)
-	assert.Equal(t, map[string]any{"version": "v1.2.3", "bootId": "boot-1", "uptimeSeconds": float64(90)}, decode(t, body))
+	assert.Equal(t, map[string]any{"version": "v1.2.3", "bootId": "boot-1", "uptimeSeconds": float64(90), "slot": "default"}, decode(t, body))
 }
 
 func TestServer_VersionIs500WhenTheBootIDCannotBeRead(t *testing.T) {

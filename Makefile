@@ -1,4 +1,4 @@
-.PHONY: lint format format-apply test test-cgroup test-qemu test-harness nodes judge-serial release build image disk image-repro ci
+.PHONY: lint format format-apply test test-cgroup test-qemu test-harness nodes judge-serial release build image image-upgrade disk image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -98,6 +98,24 @@ image:
 	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD)
 	image/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
 
+# image-upgrade builds the two kernels the upgrade tests (ADR 0025) put on a running Node, from the
+# programs and the kernel image built: next/bzImage is the same tree with the version $(VERSION)-next
+# stamped in, and refuse/bzImage a naru-init that cannot find its configuration drive, so a trial
+# boot of it refuses and rolls back by itself. The second kernel's version carries an extra linker
+# flag, which build.sh passes to the linker as part of -X main.buildVersion=.
+UPGRADE := $(BUILD)/upgrade
+REFUSE_FLAG := -X github.com/garamsh/naru/init/internal/linux.seedLabel=naru67-absent
+image-upgrade: image
+	@set -e; \
+	for v in next refuse; do \
+	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
+	  cp $(IMAGE)/bzImage.bare $(IMAGE)/kernel.stamp $(UPGRADE)/$$v/; \
+	done; \
+	NARU_VERSION='$(VERSION)-next' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD); \
+	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/next $(UPGRADE)/next/initramfs.cpio.gz; \
+	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD); \
+	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
+
 # disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
 # disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and has room for a second one, and
 # naru.qcow2, the same disk for Proxmox's import_from. It needs mkfs.fat,
@@ -172,10 +190,10 @@ release: disk
 # test-qemu boots two Nodes of the image under QEMU, as the user, and reads
 # their consoles. It needs /dev/kvm with nested virtualization and the host's
 # mkfs.ext4 (for the data disk), and fails, never skips, when no test ran.
-test-qemu: disk
+test-qemu: disk image-upgrade
 	@set -e; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
-	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) go test -tags qemu_real -count=1 -v -timeout 30m -run '^Test(Node|ControlPlane)_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) NARU_UPGRADE_DIR=$(UPGRADE) go test -tags qemu_real -count=1 -v -timeout 40m -run '^Test(Node|ControlPlane)_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
 	n=$$(grep -Ec '^--- PASS: Test(Node|ControlPlane)_' "$$log" || true); \
 	echo "$@: $$n test(s) passed, selected by -run '^Test(Node|ControlPlane)_' with -tags qemu_real"; \

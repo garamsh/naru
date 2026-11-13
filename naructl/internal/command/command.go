@@ -16,7 +16,7 @@ import (
 )
 
 const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client> [flags]
-       naructl <version|services|logs|get config|apply|reboot> --config <client file> [--node <ip[:port]>] [flags]
+       naructl <version|services|logs|get config|apply|reboot|upgrade> --config <client file> [--node <ip[:port]>] [flags]
        naructl topology                              print the services a Node runs, and which signs, as JSON
 
   gen api-ca  --ca-dir <dir>                    write the Node API authority, <dir>/api/ca.pem and ca.key
@@ -27,6 +27,9 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client> [flag
   apply -f <patch> [--mode no-reboot|staged|reboot] [--dry-run]
               merge a patch into the Node's configuration
   reboot      stop the Node's services and reboot it
+  upgrade --bundle <naru-upgrade-<version>.tar> --sums <SHA256SUMS>
+              check the bundle against the sums file, then send it: the Node reboots into it once, and keeps it when healthy
+  upgrade --status                              print the Node's boot slot and how its last upgrade ended
   gen ca      --out <dir>                       write ca.pem and ca.key
   gen client  --ca <dir> --cn <name> --out <dir> write an operator's client.pem and client.key
   gen etcd-client --ca <dir> --out <dir>      write ca.crt, tls.crt and tls.key, a client pair etcd's members accept
@@ -58,6 +61,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			return apply(args[1:], stdout, stderr)
 		case "reboot":
 			return reboot(args[1:], stdout, stderr)
+		case "upgrade":
+			return upgradeCmd(args[1:], stdout, stderr)
 		case "get":
 			if len(args) > 1 && args[1] == "config" {
 				return getConfig(args[2:], stdout, stderr)

@@ -20,6 +20,7 @@ import (
 	"github.com/garamsh/naru/init/internal/pki"
 	"github.com/garamsh/naru/init/internal/service"
 	"github.com/garamsh/naru/init/internal/store"
+	"github.com/garamsh/naru/init/internal/upgrade"
 )
 
 const (
@@ -65,28 +66,41 @@ func main() {
 	issuer := pki.New("", service.SystemClock{}, services, log)
 	configs := store.New(store.Dir)
 	started := time.Now()
+	// A reboot asked for through the API, and a trial boot that gives up, stop the Node the way
+	// SIGINT does.
+	reboot := func() {
+		select {
+		case sigs <- syscall.SIGINT:
+		default:
+		}
+	}
+	upgrades := upgrade.New(version(), started, log)
+	upgrades.Detect()
 	server := api.New(api.Deps{
 		Services: services,
 		Logs:     con,
 		Version:  version(),
 		BootID:   func() (string, error) { return linux.ReadBootID(linux.BootIDPath) },
 		Uptime:   func() time.Duration { return time.Since(started) },
-		// A reboot asked for through the API stops the Node the way SIGINT does.
-		Reboot: func() {
-			select {
-			case sigs <- syscall.SIGINT:
-			default:
-			}
-		},
-		Log: log,
+		Reboot:   reboot,
+		Upgrades: upgrades,
+		Log:      log,
 	})
 	stopRenewing, booted := bootAndRenew(host, issuer, services, configs, server, log)
 	if booted != nil {
 		server.Attach(newEngine(*booted, configs, services, host, issuer, server))
 		log.Info("the apply engine is ready", "revision", booted.Revision)
 	}
+	// A trial boot of an upgrade is judged, and a default boot settles an upgrade left unfinished.
+	judging, stopJudging := context.WithCancel(context.Background())
+	if upgrades.Slot() == upgrade.SlotTrial {
+		go upgrades.Watch(judging, booted != nil, services, reboot)
+	} else {
+		upgrades.Reconcile()
+	}
 
 	sig := <-sigs
+	stopJudging()
 	// A renewal in flight must not restart a service after it is stopped.
 	stopRenewing()
 	log.Info("stopping services", "signal", sig.String())

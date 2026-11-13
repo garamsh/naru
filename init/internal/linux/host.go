@@ -19,9 +19,13 @@ import (
 
 const (
 	seedMountPoint   = "/run/naru/cidata"
-	seedLabel        = "cidata"
 	diskPollInterval = 100 * time.Millisecond
 )
+
+// seedLabel is the NoCloud drive's label. It is a variable so that the build can stamp it with
+// -ldflags -X: the QEMU test of an upgrade that has to roll back builds a naru-init that cannot
+// find its configuration drive. No other build changes it.
+var seedLabel = "cidata"
 
 // errNoDisk is returned when no block device carries the label.
 var errNoDisk = errors.New("no disk with that label")

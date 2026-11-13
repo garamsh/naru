@@ -1,6 +1,6 @@
 // Command naru-bootnext is the service the QEMU test of A/B boot configures (ADR 0020). On a boot
-// where the ESP has no trial slot it copies the running kernel there, creates the firmware boot
-// entry for it, sets BootNext and says so. On every boot it says which entry the firmware booted
+// where the ESP has no trial slot and no marker it copies the running kernel there, creates the firmware boot
+// entry for it, sets BootNext and says so, once: it leaves a marker on the ESP. On every boot it says which entry the firmware booted
 // (BootCurrent), whether BootNext is still set, and whether the trial slot exists, and then waits.
 // The test reads those lines from the console of each boot.
 package main
@@ -49,8 +49,15 @@ func run(disk string) error {
 	defer func() { _ = syscall.Unmount(esp, 0) }()
 
 	trial := filepath.Join(esp, "EFI/BOOT/TRIAL.EFI")
-	if _, err := os.Stat(trial); errors.Is(err, os.ErrNotExist) {
+	// naru-init removes a trial slot a default boot finds (ADR 0025), so the slot's absence is not
+	// the sign that the service has not armed yet: a marker on the ESP is.
+	marker := filepath.Join(esp, "NARU56.ARMED")
+	_, markErr := os.Stat(marker)
+	if _, err := os.Stat(trial); errors.Is(err, os.ErrNotExist) && errors.Is(markErr, os.ErrNotExist) {
 		if err := arm(disk, esp, trial); err != nil {
+			return err
+		}
+		if err := os.WriteFile(marker, nil, 0o644); err != nil {
 			return err
 		}
 		fmt.Printf("naru56-efi: armed %s and BootNext=%04X\n", efivar.Boot(trialEntry), trialEntry)
