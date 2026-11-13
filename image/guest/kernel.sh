@@ -1,6 +1,7 @@
 #!/bin/bash
 # Builds one guest kernel from the host kernel's pinned tarball (ADR 0010): merges
-# kernels/<name>/naru.config over x86_64 tinyconfig, fails unless every line of
+# kernels/<name>/naru.config over x86_64 tinyconfig, or, when kernels/<name>/base holds `host`, over
+# x86_64 defconfig with the host kernel's own naru.config merged first (the Node's kernel, ADR 0034), fails unless every line of
 # kernels/<name>/required.txt matches the final .config, and builds the uncompressed ELF vmlinux,
 # which has a PVH entry because CONFIG_PVH is required. The source is unpacked and the object
 # directory emptied before each build (image/build.env fixes what the kernel stamps into it).
@@ -34,7 +35,21 @@ out=$(cd "$4" && pwd)
 # shellcheck source=../build.env
 . "$here/../build.env"
 
-stamp=$(cat "$here/../kernel/pin.env" "$kdir/naru.config" "$kdir/required.txt" "$here/kernel.sh" "$here/../build.env" | sha256sum | cut -d' ' -f1)
+# base is tinyconfig unless the kernel's directory says `host`.
+base=tinyconfig
+if [ -f "$kdir/base" ]; then
+  base=$(cat "$kdir/base")
+fi
+case "$base" in
+  tinyconfig) bases=() ;;
+  host) bases=("$here/../kernel/naru.config") ;;
+  *)
+    echo "guest kernel: $kdir/base is $base, not tinyconfig or host" >&2
+    exit 1
+    ;;
+esac
+
+stamp=$(cat "$here/../kernel/pin.env" "${bases[@]}" "$kdir/naru.config" "$kdir/required.txt" "$here/kernel.sh" "$here/../build.env" | sha256sum | cut -d' ' -f1)
 if [ -f "$out/vmlinux" ] && [ -f "$out/kernel.stamp" ] && [ "$(cat "$out/kernel.stamp")" = "$stamp" ]; then
   echo "guest kernel $name: $out/vmlinux is up to date with its inputs"
   exit 0
@@ -52,8 +67,12 @@ rm -rf "$src" "$obj"
 mkdir -p "$obj"
 tar -xf "$tarball" -C "$build"
 
-make -C "$src" O="$obj" ARCH=x86_64 tinyconfig >/dev/null
-(cd "$src" && scripts/kconfig/merge_config.sh -m -O "$obj" "$obj/.config" "$kdir/naru.config" >/dev/null)
+if [ "$base" = host ]; then
+  make -C "$src" O="$obj" ARCH=x86_64 defconfig >/dev/null
+else
+  make -C "$src" O="$obj" ARCH=x86_64 tinyconfig >/dev/null
+fi
+(cd "$src" && scripts/kconfig/merge_config.sh -m -O "$obj" "$obj/.config" "${bases[@]}" "$kdir/naru.config" >/dev/null)
 make -C "$src" O="$obj" ARCH=x86_64 olddefconfig >/dev/null
 
 # kconfig drops an option whose dependencies are unmet and exits zero, so what the build needs is
