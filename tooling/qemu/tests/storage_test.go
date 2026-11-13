@@ -15,9 +15,10 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
-// The tests of the storage disk (ADR 0027) give one Node a blank sparse disk besides its boot and
-// data disks, which it sees as /dev/sdc, and spec.storage naming it. The disk is mounted where mvmd
-// keeps its disks, and naru-storageprobe reports on it from the Node.
+// The tests of the storage disk (ADR 0027, ADR 0032) give one Node a blank sparse disk besides its
+// boot and data disks, the data and extra disks both virtio-blk so that the kernel names them
+// /dev/vda and /dev/vdb in the order attached, and spec.storage naming the extra one. The disk is
+// mounted where mvmd keeps its disks, and naru-storageprobe reports on it from the Node.
 const (
 	storageDir  = "/var/lib/naru/mvmd/disks"
 	extraSize   = 512 << 20
@@ -28,7 +29,8 @@ const (
 
 func withStorageDisk(c *node.Config) {
 	c.ExtraDisk = extraSize
-	c.Storage = []node.Storage{{Name: "vmdisks", Device: "/dev/sdc", MountPoint: storageDir}}
+	c.VirtioDisks = true
+	c.Storage = []node.Storage{{Name: "vmdisks", Device: "/dev/vdb", MountPoint: storageDir}}
 	c.StorageProbe = storageDir
 }
 
@@ -58,7 +60,7 @@ func TestNode_ABlankExtraDiskIsFormattedAsXFSMountedAndReflinksAFile(t *testing.
 
 	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "storageprobe", "fs=xfs", "reflink=ok", "marker=written"))
 
-	assert.True(t, nd.Has(formatted, "device=/dev/sdc"), "init formatted the blank disk")
+	assert.True(t, nd.Has(formatted, "device=/dev/vdb"), "init formatted the blank disk")
 	assert.True(t, nd.Has(storageMark, "mount="+storageDir), "init mounted it where mvmd keeps its disks")
 	assert.False(t, nd.Has("storage file system grown"), "a file system made to fit the disk needs no growth")
 	assert.Greater(t, probedSize(t, nd), uint64(extraSize*8/10), "the file system fills the disk, less its log")
@@ -93,4 +95,21 @@ func TestNode_ADiskGrownBetweenBootsGrowsItsFileSystemAtTheNextBoot(t *testing.T
 	after := probedSize(t, nd)
 	assert.Greater(t, after, before, "the file system is larger")
 	assert.Greater(t, after, uint64(grownSize*9/10), "and fills the larger disk")
+}
+
+func TestNode_AStorageDiskIsFoundByItsLabelWhenTheDisksSwapNamesBetweenBoots(t *testing.T) {
+	c := start(t, node.ClusterSpec{N: 1, Configure: withStorageDisk})
+	nd := c.Nodes[0]
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "storageprobe", "fs=xfs", "marker=written"))
+	require.True(t, nd.Has(formatted, "device=/dev/vdb"), "the control: the first boot formatted the extra disk at the name the entry gives")
+	require.True(t, nd.Has(storageMark, "device=/dev/vdb"))
+	nd.Stop()
+	nd.SwapDisks()
+
+	require.NoError(t, nd.Reboot())
+
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "storageprobe", "fs=xfs", "marker=kept"))
+	assert.True(t, nd.Has(storageMark, "device=/dev/vda"), "init mounted the extra disk where the kernel now names it")
+	assert.False(t, nd.Has(formatted), "and formatted nothing, the data disk now at /dev/vdb included")
+	assert.False(t, nd.Has("storage disk not prepared"), "and did not refuse the entry")
 }

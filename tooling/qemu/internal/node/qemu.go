@@ -46,6 +46,9 @@ type Spec struct {
 	// ("2021-03-04T05:06:07"), so that the Node boots with a wrong clock. The Node has no kvmclock
 	// (-cpu host,-kvmclock), which would otherwise give it the host's time.
 	RTCBase string
+	// ExtraDiskFirst attaches the extra disk before the data disk, so that the kernel names them in
+	// the other order.
+	ExtraDiskFirst bool
 }
 
 // Node is one running QEMU machine.
@@ -54,15 +57,17 @@ type Node struct {
 	Name string
 	// argv builds the QEMU command line for a console file; Reboot starts the same machine again
 	// from it.
-	argv    func(console string) []string
-	dir     string
-	extra   string
-	boots   int
-	console string
-	cmd     *exec.Cmd
-	done    chan struct{}
-	waitErr error
-	once    sync.Once
+	argv  func(console string) []string
+	dir   string
+	extra string
+	// extraFirst attaches the extra disk before the data disk at the next boot.
+	extraFirst bool
+	boots      int
+	console    string
+	cmd        *exec.Cmd
+	done       chan struct{}
+	waitErr    error
+	once       sync.Once
 }
 
 // Start builds the Node's disks and boots it with its serial console written
@@ -104,8 +109,11 @@ func Start(spec Spec) (*Node, error) {
 	if _, err := qemuArgs(spec, name, cidata, dataDisk, ""); err != nil {
 		return nil, err
 	}
+	n.extraFirst = spec.ExtraDiskFirst
 	n.argv = func(console string) []string {
-		args, _ := qemuArgs(spec, name, cidata, dataDisk, console)
+		s := spec
+		s.ExtraDiskFirst = n.extraFirst
+		args, _ := qemuArgs(s, name, cidata, dataDisk, console)
 		return args
 	}
 	if err := n.launch(); err != nil {
@@ -167,6 +175,9 @@ func startOnLockedThread(cmd *exec.Cmd) error {
 // ExtraDisk is the path of the Node's extra disk, which is empty when it has none.
 func (n *Node) ExtraDisk() string { return n.extra }
 
+// SwapDisks makes the Node's next boot attach its extra disk and data disk in the other order.
+func (n *Node) SwapDisks() { n.extraFirst = !n.extraFirst }
+
 // Reboot kills the Node's QEMU process, as a power cut does, and starts it again on the same boot
 // disk, data disk, NoCloud drive and firmware variables. Its Console is then the new boot's. It must
 // not be called while a WaitFor is in progress.
@@ -207,19 +218,14 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		"-device", "virtio-scsi-pci,id=scsihw0",
 		"-drive", "if=none,id=boot,format=raw," + bootDiskAccess(spec) + "file=" + spec.Disk,
 		"-device", "scsi-hd,bus=scsihw0.0,drive=boot,bootindex=0",
-		"-drive", "if=none,id=data,format=raw,file=" + dataDisk,
-		"-device", "scsi-hd,bus=scsihw0.0,drive=data",
-		"-drive", "if=none,id=cidata,format=raw,media=cdrom,readonly=on,file=" + cidata,
+	}
+	args = append(args, dataAndExtraDisks(spec, dataDisk)...)
+	args = append(args,
+		"-drive", "if=none,id=cidata,format=raw,media=cdrom,readonly=on,file="+cidata,
 		"-device", "ide-cd,bus=ide.1,drive=cidata",
-		"-netdev", "socket,id=net0,mcast=" + spec.Mcast + ",localaddr=127.0.0.1",
-		"-device", "virtio-net-pci,netdev=net0,mac=" + spec.Config.MAC(),
-	}
-	if spec.Config.ExtraDisk > 0 {
-		args = append(args,
-			"-drive", "if=none,id=extra,format=raw,file="+filepath.Join(spec.Dir, "extra.img"),
-			"-device", "scsi-hd,bus=scsihw0.0,drive=extra",
-		)
-	}
+		"-netdev", "socket,id=net0,mcast="+spec.Mcast+",localaddr=127.0.0.1",
+		"-device", "virtio-net-pci,netdev=net0,mac="+spec.Config.MAC(),
+	)
 	// The control-plane Node of a gaon cluster has a second NIC on QEMU's user-mode network,
 	// whose forward from 127.0.0.1 is how the test host reaches the API server without
 	// privilege (ADR 0012). The network has no route off the host and the Nodes' network is
@@ -245,6 +251,28 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		args = append(args, "-rtc", "base="+spec.RTCBase+",clock=vm")
 	}
 	return append(args, "-display", "none", "-monitor", "none", "-serial", "file:"+console, "-no-reboot"), nil
+}
+
+// dataAndExtraDisks is the drives and devices of the data disk and, when the Node has one, the extra
+// disk, in the order the kernel finds them: the extra disk first when the Spec says so. Both are
+// virtio-blk disks when the Config says so, which the kernel names vda and vdb in that order
+// without the race its SCSI scan has.
+func dataAndExtraDisks(spec Spec, dataDisk string) []string {
+	device := func(id string) []string {
+		if spec.Config.VirtioDisks {
+			return []string{"-device", "virtio-blk-pci,drive=" + id}
+		}
+		return []string{"-device", "scsi-hd,bus=scsihw0.0,drive=" + id}
+	}
+	data := append([]string{"-drive", "if=none,id=data,format=raw,file=" + dataDisk}, device("data")...)
+	if spec.Config.ExtraDisk <= 0 {
+		return data
+	}
+	extra := append([]string{"-drive", "if=none,id=extra,format=raw,file=" + filepath.Join(spec.Dir, "extra.img")}, device("extra")...)
+	if spec.ExtraDiskFirst {
+		return append(extra, data...)
+	}
+	return append(data, extra...)
 }
 
 // bootDiskAccess is the drive options that make the boot disk read-only, unless the Spec says the
