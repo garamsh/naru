@@ -33,6 +33,12 @@ func (l *lockedBuffer) Reset() {
 	l.b.Reset()
 }
 
+func (l *lockedBuffer) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Len()
+}
+
 func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -124,6 +130,26 @@ func TestConsole_PastTheBoundTheOldestLinesAreDroppedAndCounted(t *testing.T) {
 	reprint(t, c)
 
 	assert.Equal(t, "NARU-LOG-BEGIN seq=1 lines=4 dropped=2\nline 3\nline 4\nline 5\nline 6\nNARU-LOG-END seq=1\n", out.String())
+}
+
+func TestConsole_AReprintCarriesOnlyTheNewestLinesThatFitInReprintBytesAndCountsTheRest(t *testing.T) {
+	out := &lockedBuffer{}
+	c := console.New(out, console.KeptBytes)
+	line := strings.Repeat("x", 99) + "\n" // 100 bytes with its newline
+	total := 2*console.ReprintBytes/len(line) + 1
+	for i := 0; i < total; i++ {
+		_, _ = c.Write([]byte(line))
+	}
+	flush(t, c)
+	out.Reset()
+
+	reprint(t, c)
+
+	fit := console.ReprintBytes / len(line)
+	want := fmt.Sprintf("NARU-LOG-BEGIN seq=1 lines=%d dropped=%d\n", fit, total-fit)
+	assert.True(t, strings.HasPrefix(out.String(), want), "the begin marker counts what the block lacks: %q", out.String()[:60])
+	assert.LessOrEqual(t, out.Len(), console.ReprintBytes+100, "the block is bounded, not the whole kept log")
+	assert.True(t, strings.HasSuffix(out.String(), line+"NARU-LOG-END seq=1\n"))
 }
 
 func TestConsole_ALongLineIsKeptInPiecesNoLongerThanTheBound(t *testing.T) {

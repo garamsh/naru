@@ -19,6 +19,10 @@ const (
 	// KeptBytes bounds the bytes of lines kept. Past it the oldest lines are dropped, and the
 	// begin marker of each re-print says how many.
 	KeptBytes = 1 << 20
+	// ReprintBytes bounds the bytes of lines in one re-print: the newest lines that fit. The
+	// serial console costs the guest time for every byte written to it (ADR 0036), so a
+	// re-print of everything kept would stall the Node for as long as it takes to write it.
+	ReprintBytes = 16 << 10
 	// MaxLine is the longest line kept; a longer one is kept as several.
 	MaxLine = 4096
 	// QueueBytes bounds the live output waiting for the device. A write that would pass it is
@@ -30,7 +34,8 @@ const (
 // The markers that open and close a re-print.
 const (
 	// BeginFormat takes the sequence number, the number of lines in the block and the number
-	// of lines dropped since boot.
+	// of lines since boot that the block does not carry: dropped from the kept lines, or older
+	// than the newest ReprintBytes.
 	BeginFormat = "NARU-LOG-BEGIN seq=%d lines=%d dropped=%d\n"
 	// EndFormat takes the sequence number.
 	EndFormat = "NARU-LOG-END seq=%d\n"
@@ -225,7 +230,8 @@ func (c *Console) add(source string, line []byte) {
 	}
 }
 
-// Reprint queues one block for the output: the begin marker, every kept line, the end marker.
+// Reprint queues one block for the output: the begin marker, the newest kept lines that fit in
+// ReprintBytes, the end marker.
 // It copies the kept lines and returns without waiting for the output. While the previous
 // block is still queued or being written it queues nothing and counts the skip, and the
 // sequence number is not used.
@@ -237,9 +243,14 @@ func (c *Console) Reprint() {
 		return
 	}
 	c.sequence++
+	first, size := len(c.lines), 0
+	for first > 0 && size+len(c.lines[first-1].text)+1 <= ReprintBytes {
+		first--
+		size += len(c.lines[first].text) + 1
+	}
 	var block bytes.Buffer
-	fmt.Fprintf(&block, BeginFormat, c.sequence, len(c.lines), c.dropped)
-	for _, l := range c.lines {
+	fmt.Fprintf(&block, BeginFormat, c.sequence, len(c.lines)-first, c.dropped+first)
+	for _, l := range c.lines[first:] {
 		block.Write(l.text)
 		block.WriteByte('\n')
 	}

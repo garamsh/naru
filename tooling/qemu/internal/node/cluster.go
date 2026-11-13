@@ -68,6 +68,8 @@ type ClusterSpec struct {
 	// which prints what a client of the control plane sees from a member's address and from one that
 	// is no member's, or 0 for none.
 	EtcdProbeOn int
+	// SerialSocket gives every Node's serial port a socket nothing reads (Spec.SerialSocket).
+	SerialSocket bool
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
 	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
@@ -176,7 +178,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		if spec.Configure != nil {
 			spec.Configure(&cfg)
 		}
-		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase}
+		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase, SerialSocket: spec.SerialSocket}
 		if gen != nil {
 			if spec.controlPlane(i) {
 				start.Config.HostPort = gen.ports[i] // only a control-plane Node has the second NIC
