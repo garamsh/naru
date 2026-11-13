@@ -1,13 +1,11 @@
 package console_test
 
 import (
-	"bytes"
 	"io"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/init/internal/console"
 )
@@ -73,13 +71,14 @@ func TestConsole_LinesChannelClosesWhenALineIsKept(t *testing.T) {
 }
 
 func TestConsole_ReprintKeepsTheBlockFormatWithTaggedLines(t *testing.T) {
-	var out bytes.Buffer
-	c := console.New(&out, console.KeptBytes)
+	out := &lockedBuffer{}
+	c := console.New(out, console.KeptBytes)
 	_, _ = c.Source("a").Write([]byte("from a\n"))
 	_, _ = c.Write([]byte("from init\n"))
+	flush(t, c)
 	out.Reset()
 
-	require.NoError(t, c.Reprint())
+	reprint(t, c)
 
 	assert.Equal(t, "NARU-LOG-BEGIN seq=1 lines=2 dropped=0\nfrom a\nfrom init\nNARU-LOG-END seq=1\n", out.String())
 }

@@ -27,32 +27,55 @@ func (l *lockedBuffer) Write(p []byte) (int, error) {
 	return l.b.Write(p)
 }
 
+func (l *lockedBuffer) Reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.b.Reset()
+}
+
 func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.String()
 }
 
+// flush waits until everything queued for the device has been written.
+func flush(t *testing.T, c *console.Console) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, c.Flush(ctx))
+}
+
+// reprint queues a block and waits until the device has it.
+func reprint(t *testing.T, c *console.Console) {
+	t.Helper()
+	c.Reprint()
+	flush(t, c)
+}
+
 func TestConsole_PassesWritesThroughAtOnce(t *testing.T) {
-	var out bytes.Buffer
-	c := console.New(&out, console.KeptBytes)
+	out := &lockedBuffer{}
+	c := console.New(out, console.KeptBytes)
 
 	n, err := c.Write([]byte("one\ntwo"))
 
 	require.NoError(t, err)
 	assert.Equal(t, 7, n)
+	flush(t, c)
 	assert.Equal(t, "one\ntwo", out.String(), "a partial line is written when it arrives")
 }
 
 func TestConsole_ReprintWritesEveryLineSinceBootBetweenNumberedMarkers(t *testing.T) {
-	var out bytes.Buffer
-	c := console.New(&out, console.KeptBytes)
+	out := &lockedBuffer{}
+	c := console.New(out, console.KeptBytes)
 	_, _ = c.Write([]byte("boot line\nservice says\n"))
+	flush(t, c)
 	out.Reset()
 
-	require.NoError(t, c.Reprint())
+	reprint(t, c)
 	_, _ = c.Write([]byte("late line\n"))
-	require.NoError(t, c.Reprint())
+	reprint(t, c)
 
 	assert.Equal(t, "NARU-LOG-BEGIN seq=1 lines=2 dropped=0\nboot line\nservice says\nNARU-LOG-END seq=1\n"+
 		"late line\n"+
@@ -60,52 +83,57 @@ func TestConsole_ReprintWritesEveryLineSinceBootBetweenNumberedMarkers(t *testin
 }
 
 func TestConsole_KeepsTheLinesOfSeveralWritersAndSplitsAcrossWrites(t *testing.T) {
-	var out bytes.Buffer
-	c := console.New(&out, console.KeptBytes)
+	out := &lockedBuffer{}
+	c := console.New(out, console.KeptBytes)
 	for _, chunk := range []string{"par", "tial one\nsec", "ond\n\nthird\n"} {
 		_, _ = c.Write([]byte(chunk))
 	}
+	flush(t, c)
 	out.Reset()
 
-	require.NoError(t, c.Reprint())
+	reprint(t, c)
 
 	assert.Equal(t, "NARU-LOG-BEGIN seq=1 lines=4 dropped=0\npartial one\nsecond\n\nthird\nNARU-LOG-END seq=1\n", out.String())
 }
 
 func TestConsole_ReprintLeavesTheLineThatIsStillOpenAndStartsOnANewLine(t *testing.T) {
-	var out bytes.Buffer
-	c := console.New(&out, console.KeptBytes)
+	out := &lockedBuffer{}
+	c := console.New(out, console.KeptBytes)
 	_, _ = c.Write([]byte("done\nunfinished"))
+	flush(t, c)
 	out.Reset()
 
-	require.NoError(t, c.Reprint())
+	reprint(t, c)
 	_, _ = c.Write([]byte(" now finished\n"))
+	flush(t, c)
 	out.Reset()
-	require.NoError(t, c.Reprint())
+	reprint(t, c)
 
 	assert.Contains(t, out.String(), "unfinished now finished\nNARU-LOG-END seq=2\n", "the line is kept whole once it ends")
 }
 
 func TestConsole_PastTheBoundTheOldestLinesAreDroppedAndCounted(t *testing.T) {
-	var out bytes.Buffer
-	c := console.New(&out, 30) // each "line N\n" costs 7 bytes, so four lines fit
+	out := &lockedBuffer{}
+	c := console.New(out, 30) // each "line N\n" costs 7 bytes, so four lines fit
 	for i := 1; i <= 6; i++ {
 		_, _ = fmt.Fprintf(c, "line %d\n", i)
 	}
+	flush(t, c)
 	out.Reset()
 
-	require.NoError(t, c.Reprint())
+	reprint(t, c)
 
 	assert.Equal(t, "NARU-LOG-BEGIN seq=1 lines=4 dropped=2\nline 3\nline 4\nline 5\nline 6\nNARU-LOG-END seq=1\n", out.String())
 }
 
 func TestConsole_ALongLineIsKeptInPiecesNoLongerThanTheBound(t *testing.T) {
-	var out bytes.Buffer
-	c := console.New(&out, console.KeptBytes)
+	out := &lockedBuffer{}
+	c := console.New(out, console.KeptBytes)
 	_, _ = c.Write([]byte(strings.Repeat("x", console.MaxLine*2+10) + "\n"))
+	flush(t, c)
 	out.Reset()
 
-	require.NoError(t, c.Reprint())
+	reprint(t, c)
 
 	lines := strings.Split(out.String(), "\n")
 	require.Len(t, lines, 6, "begin, three pieces, end and the empty string after the last newline")
@@ -127,9 +155,11 @@ func TestConsole_RunReprintsOnEveryTickAndStopsWithItsContext(t *testing.T) {
 	}()
 
 	tick <- time.Time{}
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "NARU-LOG-END seq=1\n") }, 5*time.Second, time.Millisecond)
 	tick <- time.Time{}
 	cancel()
 	<-done
+	flush(t, c)
 
 	assert.Equal(t, 1, strings.Count(out.String(), "NARU-LOG-END seq=1\n"))
 	assert.Equal(t, 1, strings.Count(out.String(), "NARU-LOG-END seq=2\n"))
@@ -142,10 +172,11 @@ func TestConsole_ALateReaderSeesTheWholeLogInOneBlock(t *testing.T) {
 	for i := 1; i <= 50; i++ {
 		_, _ = fmt.Fprintf(c, "event %d\n", i)
 	}
+	flush(t, c)
 	attached := len(out.String()) // the reader attaches here: it has seen none of the lines above
 	_, _ = c.Write([]byte("event 51\n"))
 
-	require.NoError(t, c.Reprint())
+	reprint(t, c)
 
 	seen := out.String()[attached:]
 	for i := 1; i <= 51; i++ {

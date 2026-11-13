@@ -1,6 +1,7 @@
 // Package console is the Node's serial console as init writes it: a writer that passes every
 // line through and keeps the lines, and re-prints all of them at a fixed interval, so a reader
-// that attaches after boot still sees the whole log.
+// that attaches after boot still sees the whole log. No writer waits on the device: one
+// goroutine writes it from a bounded queue.
 package console
 
 import (
@@ -20,6 +21,10 @@ const (
 	KeptBytes = 1 << 20
 	// MaxLine is the longest line kept; a longer one is kept as several.
 	MaxLine = 4096
+	// QueueBytes bounds the live output waiting for the device. A write that would pass it is
+	// not written to the device, though it is kept. A re-print block is not counted: at most
+	// one is queued or being written at a time.
+	QueueBytes = 256 << 10
 )
 
 // The markers that open and close a re-print.
@@ -29,11 +34,16 @@ const (
 	BeginFormat = "NARU-LOG-BEGIN seq=%d lines=%d dropped=%d\n"
 	// EndFormat takes the sequence number.
 	EndFormat = "NARU-LOG-END seq=%d\n"
+	// ReportFormat takes the bytes of live output not written to the device and the number of
+	// re-prints skipped since the last report. It is a line of its own, written between writes
+	// and never inside a block, once the device has taken a write after the loss.
+	ReportFormat = "NARU-CONSOLE dropped=%d skipped=%d\n"
 )
 
 // Console passes writes to out and keeps the complete lines written, each with the source
-// that wrote it. It is safe for concurrent use; a re-print holds off writes until it is done,
-// so its block is contiguous.
+// that wrote it. It is safe for concurrent use. Writes reach out in order through one
+// goroutine, and a re-print block is one write, so it is contiguous. Nothing that calls
+// Console waits on out; the mutex is never held while out is written.
 type Console struct {
 	out   io.Writer
 	limit int
@@ -43,10 +53,25 @@ type Console struct {
 	kept     int
 	dropped  int
 	own      stream // what Write receives
-	midLine  bool   // the last byte written to out was not a newline
 	sequence int
 	last     uint64        // the number of the last line kept
 	changed  chan struct{} // closed when the next line is kept; nil while nobody waits
+
+	queue   []item
+	queued  int           // bytes of live items in queue
+	block   bool          // a re-print block is in queue or being written
+	lost    int           // bytes of live output not queued since the last report
+	skipped int           // re-prints skipped since the last report
+	writing bool          // the writer goroutine is running
+	drained chan struct{} // closed when the writer goroutine ends; nil while nobody waits
+}
+
+// item is one write to out: live output, a re-print block, or a report. A block and a report
+// start on a line of their own.
+type item struct {
+	p       []byte
+	block   bool
+	ownLine bool
 }
 
 // entry is a kept line and the source that wrote it, which is empty for Write.
@@ -88,12 +113,71 @@ func (w *sourceWriter) Write(p []byte) (int, error) { return w.c.write(&w.s, p) 
 func (c *Console) write(s *stream, p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	n, err := c.out.Write(p)
-	if n > 0 {
-		c.midLine = p[n-1] != '\n'
-	}
 	c.keep(s, p)
-	return len(p), err
+	if c.queued+len(p) > QueueBytes {
+		c.lost += len(p)
+	} else {
+		c.queued += len(p)
+		c.enqueue(item{p: bytes.Clone(p)})
+	}
+	return len(p), nil
+}
+
+// enqueue adds it to the queue and starts the writer goroutine if it is not running. The caller
+// holds mu.
+func (c *Console) enqueue(it item) {
+	c.queue = append(c.queue, it)
+	if !c.writing {
+		c.writing = true
+		go c.drain()
+	}
+}
+
+// drain writes to out until nothing is queued and nothing is unreported, then ends. Only this
+// goroutine touches out. A loss is reported as soon as the write in flight returns, which is
+// when the device has room.
+func (c *Console) drain() {
+	midLine := false // the last byte written to out was not a newline
+	for {
+		c.mu.Lock()
+		var it item
+		switch {
+		case c.lost > 0 || c.skipped > 0:
+			it = item{p: []byte(fmt.Sprintf(ReportFormat, c.lost, c.skipped)), ownLine: true}
+			c.lost, c.skipped = 0, 0
+		case len(c.queue) > 0:
+			it = c.queue[0]
+			c.queue = c.queue[1:]
+			if !it.block {
+				c.queued -= len(it.p)
+			}
+		default:
+			c.writing = false
+			if c.drained != nil {
+				close(c.drained)
+				c.drained = nil
+			}
+			c.mu.Unlock()
+			return
+		}
+		c.mu.Unlock()
+
+		p := it.p
+		if midLine && it.ownLine {
+			p = append([]byte{'\n'}, p...)
+		}
+		if len(p) > 0 {
+			// A console that cannot be written to has nowhere to report it.
+			_, _ = c.out.Write(p)
+			midLine = p[len(p)-1] != '\n'
+		}
+
+		if it.block {
+			c.mu.Lock()
+			c.block = false
+			c.mu.Unlock()
+		}
+	}
 }
 
 // keep appends p to the stream's pending line and keeps each line it completes.
@@ -141,25 +225,47 @@ func (c *Console) add(source string, line []byte) {
 	}
 }
 
-// Reprint writes one block: the begin marker, every kept line, the end marker. It starts on a
-// fresh line when the console is mid-line.
-func (c *Console) Reprint() error {
+// Reprint queues one block for the output: the begin marker, every kept line, the end marker.
+// It copies the kept lines and returns without waiting for the output. While the previous
+// block is still queued or being written it queues nothing and counts the skip, and the
+// sequence number is not used.
+func (c *Console) Reprint() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.block {
+		c.skipped++
+		return
+	}
 	c.sequence++
 	var block bytes.Buffer
-	if c.midLine {
-		block.WriteByte('\n')
-	}
 	fmt.Fprintf(&block, BeginFormat, c.sequence, len(c.lines), c.dropped)
 	for _, l := range c.lines {
 		block.Write(l.text)
 		block.WriteByte('\n')
 	}
 	fmt.Fprintf(&block, EndFormat, c.sequence)
-	_, err := c.out.Write(block.Bytes())
-	c.midLine = false
-	return err
+	c.block = true
+	c.enqueue(item{p: block.Bytes(), block: true, ownLine: true})
+}
+
+// Flush returns when everything queued for the output has been written, or when ctx ends.
+func (c *Console) Flush(ctx context.Context) error {
+	c.mu.Lock()
+	if !c.writing {
+		c.mu.Unlock()
+		return nil
+	}
+	if c.drained == nil {
+		c.drained = make(chan struct{})
+	}
+	done := c.drained
+	c.mu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Lines returns the kept lines of source numbered after the given number, the number of the
@@ -187,8 +293,7 @@ func (c *Console) Run(ctx context.Context, tick <-chan time.Time) {
 		case <-ctx.Done():
 			return
 		case <-tick:
-			// A console that cannot be written to has nowhere to report it.
-			_ = c.Reprint()
+			c.Reprint()
 		}
 	}
 }
