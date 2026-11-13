@@ -50,9 +50,6 @@ const (
 	APIPort = "6443"
 	// EtcdDir is etcd's data directory, on the data disk beside mvmd's state directory.
 	EtcdDir = DataMount + "/etcd"
-	// EtcdClientURL and EtcdPeerURL are loopback only: gaon-apiserver is the one client of etcd.
-	EtcdClientURL = "http://127.0.0.1:2379"
-	EtcdPeerURL   = "http://127.0.0.1:2380"
 )
 
 // NIC is a network card besides the first, with a static address and no gateway.
@@ -90,6 +87,10 @@ type Node struct {
 	// serving certificate names it. ServingAddresses are more addresses it names.
 	APIServer        netip.Addr
 	ServingAddresses []netip.Addr
+	// Members are the control-plane Nodes of a control plane of several, in the priority order the
+	// holder of APIServer, then the virtual address, takes them in; the Node is one. Empty is a
+	// control plane of the Node alone (ADR 0024).
+	Members []Member
 
 	// Binaries maps a service's name to the executable that runs it, in place of the image's
 	// /bin/<name>.
@@ -219,6 +220,9 @@ func (n Node) Check() error {
 		return err
 	}
 	if err := n.Mode.check(n.Token, n.Tokens, n.Disable); err != nil {
+		return err
+	}
+	if err := n.checkMembers(); err != nil {
 		return err
 	}
 	if err := n.Guest.Check(); err != nil {
@@ -381,6 +385,12 @@ func (n Node) certFiles() ([]file, error) {
 		return nil, nil // init writes the CA and every pair from spec.pki
 	}
 	pair := func(name, cn string) (pki.Pair, error) {
+		switch name {
+		case etcdServer.name:
+			return n.CA.Server(cn, n.etcdServerIPs()...)
+		case etcdPeer.name:
+			return n.CA.ClientAt(cn, net.IP(n.Address.Addr().AsSlice()))
+		}
 		if name == "apiserver" {
 			ips := []net.IP{net.IP(n.APIServer.AsSlice())}
 			for _, a := range n.ServingAddresses {
@@ -427,6 +437,10 @@ func (n Node) pkiSpec() *pkiSpec {
 			apiserver.IPAddresses = append(apiserver.IPAddresses, a.String())
 		}
 	}
+	etcdSrv := cert(etcdServer.name, etcdServer.cn, "server", "etcd")
+	etcdSrv.NodeAddresses = true
+	etcdPeerCert := cert(etcdPeer.name, etcdPeer.cn, "client", "etcd")
+	etcdPeerCert.NodeAddresses = true
 	return &pkiSpec{
 		Authorities: []pkiAuthority{{
 			Name: "gaon", Certificate: string(n.CA.CertPEM), Key: string(n.CA.KeyPEM), CertificatePath: gaonPath("ca.pem"), KeyPath: gaonPath("ca.key"),
@@ -435,6 +449,8 @@ func (n Node) pkiSpec() *pkiSpec {
 			apiserver,
 			cert("scheduler", "gaon-scheduler", "client", "gaon-scheduler"),
 			cert("controllers", "gaon-controllers", "client", "gaon-controllers"),
+			etcdSrv, etcdPeerCert,
+			cert(apiserverTo.name, apiserverTo.cn, "client", "gaon-apiserver"),
 		},
 	}
 }
@@ -455,19 +471,12 @@ func (n Node) services() []service {
 			Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")),
 			Args: []string{"-listen", RegistryAddr, "-dir", path.Join(InputsDir, "registry")},
 		},
-		{
-			Name: "etcd", Binary: n.binary("etcd", "/bin/etcd"),
-			Args: []string{
-				"--name", n.Name, "--data-dir", EtcdDir,
-				"--listen-client-urls", EtcdClientURL, "--advertise-client-urls", EtcdClientURL,
-				"--listen-peer-urls", EtcdPeerURL, "--initial-advertise-peer-urls", EtcdPeerURL,
-				"--initial-cluster", n.Name + "=" + EtcdPeerURL,
-			},
-		},
+		{Name: "etcd", Binary: n.binary("etcd", "/bin/etcd"), Args: n.etcdArgs()},
 		{
 			Name: "gaon-apiserver", Binary: n.binary("gaon-apiserver", "/bin/gaon-apiserver"),
 			Args: append([]string{
-				"--listen", "0.0.0.0:" + APIPort, "--etcd-endpoints", EtcdClientURL,
+				"--listen", "0.0.0.0:" + APIPort, "--etcd-endpoints", n.etcdEndpoints(),
+				"--etcd-ca-file", gaonPath("ca.pem"), "--etcd-cert-file", gaonPath(apiserverTo.name + ".pem"), "--etcd-key-file", gaonPath(apiserverTo.name + ".key"),
 				"--tls-client-ca", gaonPath("ca.pem"), "--tls-cert", gaonPath("apiserver.pem"), "--tls-key", gaonPath("apiserver.key"),
 			}, creds.apiserverTokens...),
 		},
@@ -483,6 +492,12 @@ func (n Node) services() []service {
 			Name: "gaon-node-agent", Binary: n.binary("gaon-node-agent", "/bin/gaon-node-agent"),
 			Args: append([]string{"--api-server", n.apiRoot(), "--node-name", n.Name, "--mvmd-socket", MvmdSocket}, creds.agent...),
 		},
+	}
+	if n.HA() {
+		fence, vip := n.haServices()
+		// The rules are in place before etcd listens; the holder starts once the API server it watches has.
+		list = slices.Insert(list, slices.IndexFunc(list, func(s service) bool { return s.Name == "etcd" }), fence)
+		list = slices.Insert(list, slices.IndexFunc(list, func(s service) bool { return s.Name == "gaon-scheduler" }), vip)
 	}
 	// Which services only the control-plane Node runs is the topology's.
 	for i := range list {

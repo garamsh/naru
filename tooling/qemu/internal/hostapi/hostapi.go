@@ -156,7 +156,7 @@ func (c *Client) CSRs(ctx context.Context) ([]CSR, error) {
 // Machine reads the Machine of that name.
 func (c *Client) Machine(ctx context.Context, name string) (Machine, error) {
 	var m Machine
-	return m, c.do(ctx, http.MethodGet, "/machines/"+name, nil, &m)
+	return m, c.do(ctx, http.MethodGet, "/microvms/"+name, nil, &m)
 }
 
 // Node reads the Node of that name.

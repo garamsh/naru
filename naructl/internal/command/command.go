@@ -29,6 +29,7 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client> [flag
   reboot      stop the Node's services and reboot it
   gen ca      --out <dir>                       write ca.pem and ca.key
   gen client  --ca <dir> --cn <name> --out <dir> write an operator's client.pem and client.key
+  gen etcd-client --ca <dir> --out <dir>      write ca.crt, tls.crt and tls.key, a client pair etcd's members accept
   gen token   --ca <dir> --name <name>              write the Node's bootstrap token to <dir>/tokens/<name>, if none is there
   gen node    --ca <dir> --name <name> --address <cidr> --mac <mac> --gateway <ip> --nameserver <ip>
               --api-server <ip> --machine-prefix <cidr> --guest <guest.json> --firecracker-sha256 <hex>
@@ -76,6 +77,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return genCA(args[2:], stdout, stderr)
 	case "client":
 		return genClient(args[2:], stdout, stderr)
+	case "etcd-client":
+		return genEtcdClient(args[2:], stdout, stderr)
 	case "token":
 		return genToken(args[2:], stdout, stderr)
 	case "node":
@@ -173,6 +176,47 @@ func genClient(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// EtcdClientCN is the subject CN of the pair gen etcd-client issues: the caller of etcd's client
+// port that is gaon's snapshot writer (ADR 0024). etcd authorizes no CN, any pair the CA signed is
+// accepted, so the name is for whoever reads etcd's logs.
+const EtcdClientCN = "gaon-etcd-snapshot"
+
+func genEtcdClient(args []string, stdout, stderr io.Writer) error {
+	fs := newFlags("gen etcd-client", stderr)
+	caDir := fs.String("ca", "", "directory of ca.pem and ca.key")
+	out := fs.String("out", "", "directory that receives ca.crt, tls.crt and tls.key (0600), the keys of gaon's Secret etcd-snapshot-etcd-client")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := require(fs, "ca", "out"); err != nil {
+		return err
+	}
+	ca, err := pki.Load(*caDir)
+	if err != nil {
+		return err
+	}
+	pair, err := ca.Client(EtcdClientCN)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil { //nolint:gosec // holds a certificate
+		return err
+	}
+	if err := pki.WriteFile(filepath.Join(*out, "tls.crt"), pair.CertPEM, 0o644); err != nil { //nolint:gosec // a certificate
+		return err
+	}
+	if err := pki.WriteFile(filepath.Join(*out, "tls.key"), pair.KeyPEM, 0o600); err != nil {
+		return err
+	}
+	// etcd's members trust the CA and serve with certificates it signed: the one file is both the
+	// CA that signs their server certificates and the CA their client certificates are checked against.
+	if err := pki.WriteFile(filepath.Join(*out, "ca.crt"), ca.CertPEM, 0o644); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "naructl: wrote %s, %s and %s for CN %s\n", filepath.Join(*out, "ca.crt"), filepath.Join(*out, "tls.crt"), filepath.Join(*out, "tls.key"), EtcdClientCN)
+	return nil
+}
+
 func genToken(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen token", stderr)
 	caDir := fs.String("ca", "", "directory of the cluster's authority, which holds tokens/")
@@ -196,12 +240,12 @@ func genToken(args []string, stdout, stderr io.Writer) error {
 func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen node", stderr)
 	var (
-		nameservers, serving, binaries, disable, timeServers, peers list
-		n                                                           layout.Node
-		caDir, address, gateway, apiServer                          string
-		machinePrefix, guest, extraNIC                              string
-		out, networkConfig                                          string
-		controlPlane, pairsAsFiles                                  bool
+		nameservers, serving, binaries, disable, timeServers, peers, members list
+		n                                                                    layout.Node
+		caDir, address, gateway, apiServer                                   string
+		machinePrefix, guest, extraNIC                                       string
+		out, networkConfig                                                   string
+		controlPlane, pairsAsFiles                                           bool
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")
@@ -212,7 +256,8 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.Var(&nameservers, "nameserver", "a nameserver, repeatable (with --network-config)")
 	fs.StringVar(&n.Search, "search", "", "the search domain (with --network-config)")
 	fs.StringVar(&extraNIC, "extra-nic", "", "a second card, <mac>=<cidr>, with no gateway (with --network-config)")
-	fs.StringVar(&apiServer, "api-server", "", "the control-plane Node's address, which every agent dials")
+	fs.StringVar(&apiServer, "api-server", "", "the address every agent and naructl dial: the control-plane Node's, or the virtual address of several (--member)")
+	fs.Var(&members, "member", "<name>=<address>, a control-plane Node of a control plane of several, repeatable, in priority order and the same on every member, this Node among them (with --control-plane)")
 	fs.Var(&serving, "serving-address", "another address the API server's certificate and the Node API's certificate name, repeatable")
 	fs.Var(&binaries, "binary", "<service>=<absolute path>, the executable of a service in place of the image's, repeatable")
 	fs.Var(&disable, "disable", "a service to leave out ("+strings.Join(layout.Gaon.Names(), ", ")+"), repeatable")
@@ -233,7 +278,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	if err := needs(fs, "network-config", "mac", "gateway", "nameserver", "search", "extra-nic"); err != nil {
 		return err
 	}
-	if err := needs(fs, "control-plane", "serving-address"); err != nil {
+	if err := needs(fs, "control-plane", "serving-address", "member"); err != nil {
 		return err
 	}
 	var err error
@@ -295,6 +340,14 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("--peer: %w", err)
 		}
 		n.Peers = append(n.Peers, layout.Peer{Address: a, MachinePrefix: p})
+	}
+	for _, m := range members {
+		name, addr, ok := strings.Cut(m, "=")
+		a, err := netip.ParseAddr(addr)
+		if !ok || err != nil {
+			return fmt.Errorf("--member %q is not <name>=<address>", m)
+		}
+		n.Members = append(n.Members, layout.Member{Name: name, Address: a})
 	}
 	if extraNIC != "" {
 		mac, cidr, ok := strings.Cut(extraNIC, "=")

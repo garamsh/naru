@@ -60,6 +60,8 @@ gobuild() { # <module-dir> <output> <package> [<extra ldflags>]
 # same bytes: it is the only thing that enters the binary.
 gobuild "$root/init" "$bin/naru-init" ./cmd/naru-init "${NARU_VERSION:+-X main.buildVersion=$NARU_VERSION}"
 gobuild "$root/tooling/qemu" "$bin/naru-standin" ./cmd/naru-standin
+gobuild "$root/controlplane" "$bin/naru-vip" ./cmd/naru-vip
+gobuild "$root/controlplane" "$bin/naru-fence" ./cmd/naru-fence
 
 # mvmd is fetched at its pinned commit and nowhere else.
 src=$build/mvmd
@@ -79,7 +81,7 @@ done
 cp "$etcd/etcd" "$bin/etcd"
 sed "s#=$build/inputs/#=$out/#" "$build/inputs/inputs.env" >"$out/inputs.env"
 
-for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 naru-standin gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd; do
+for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 naru-standin naru-vip naru-fence gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd; do
   if ! file "$bin/$f" | grep -Eq 'statically linked|static-pie linked'; then
     echo "initramfs: $f is not a static executable: $(file "$bin/$f")" >&2
     exit 1

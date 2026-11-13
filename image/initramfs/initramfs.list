@@ -25,3 +25,5 @@ file /bin/gaon-scheduler @OUT@/gaon-scheduler 0755 0 0
 file /bin/gaon-controllers @OUT@/gaon-controllers 0755 0 0
 file /bin/etcd @OUT@/etcd 0755 0 0
 file /bin/naru-standin @OUT@/naru-standin 0755 0 0
+file /bin/naru-vip @OUT@/naru-vip 0755 0 0
+file /bin/naru-fence @OUT@/naru-fence 0755 0 0

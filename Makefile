@@ -175,10 +175,10 @@ release: disk
 test-qemu: disk
 	@set -e; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
-	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestNode_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) go test -tags qemu_real -count=1 -v -timeout 30m -run '^Test(Node|ControlPlane)_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
-	n=$$(grep -c '^--- PASS: TestNode_' "$$log" || true); \
-	echo "$@: $$n test(s) passed, selected by -run '^TestNode_' with -tags qemu_real"; \
+	n=$$(grep -Ec '^--- PASS: Test(Node|ControlPlane)_' "$$log" || true); \
+	echo "$@: $$n test(s) passed, selected by -run '^Test(Node|ControlPlane)_' with -tags qemu_real"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
 # test-harness drives naru-cluster as an external harness does (docs/architecture/harness.md): from

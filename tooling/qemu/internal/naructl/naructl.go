@@ -150,6 +150,12 @@ func (t Tool) GenClient(caDir, cn, out string) (Client, error) {
 	return Client{CA: filepath.Join(caDir, "ca.pem"), Cert: filepath.Join(out, "client.pem"), Key: filepath.Join(out, "client.key")}, nil
 }
 
+// GenEtcdClient has naructl write the etcd client pair of gaon's snapshot writer from the CA in
+// caDir: ca.crt, tls.crt and tls.key in out.
+func (t Tool) GenEtcdClient(caDir, out string) error {
+	return t.run("gen", "etcd-client", "--ca", caDir, "--out", out)
+}
+
 // GenAPICA has naructl write the Node API's authority, api/ca.pem and api/ca.key, under dir. A Node's
 // user-data written from dir afterwards carries spec.api (ADR 0017).
 func (t Tool) GenAPICA(dir string) error { return t.run("gen", "api-ca", "--ca-dir", dir) }
@@ -191,6 +197,8 @@ type Node struct {
 	ExtraNIC                      string
 	APIServer                     string
 	ServingAddresses              []string
+	// Members are the <name>=<address> of every control-plane Node of a control plane of several.
+	Members []string
 	// TimeServers are host[:port] entries of spec.time.servers (gen node --time-server).
 	TimeServers []string
 	// Peers are <address>=<machine-prefix> entries (gen node --peer).
@@ -232,6 +240,7 @@ func (t Tool) GenNode(n Node) error {
 		flag("extra-nic", n.ExtraNIC)
 	}
 	flag("serving-address", n.ServingAddresses...)
+	flag("member", n.Members...)
 	flag("time-server", n.TimeServers...)
 	flag("peer", n.Peers...)
 	names := make([]string, 0, len(n.Binaries))

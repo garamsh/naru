@@ -232,6 +232,30 @@ func TestGenClient_IssuesAClientPairTheCAVerifiesWithTheNamedCN(t *testing.T) {
 	assert.Error(t, err, "a client needs a CN")
 }
 
+func TestGenEtcdClient_WritesTheKeysOfGaonsSecretWithAPairTheClusterCASignsForClientAuth(t *testing.T) {
+	dep := newDeployment(t)
+	out := filepath.Join(t.TempDir(), "etcd")
+
+	mustRun(t, "gen", "etcd-client", "--ca", dep.ca, "--out", out)
+
+	b, err := os.ReadFile(filepath.Join(out, "tls.crt"))
+	require.NoError(t, err)
+	c := certOf(t, string(b))
+	assert.Equal(t, command.EtcdClientCN, c.Subject.CommonName)
+	_, err = c.Verify(x509.VerifyOptions{Roots: roots(t, filepath.Join(dep.ca, "ca.pem")), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
+	assert.NoError(t, err, "signed by the CA etcd's members trust, for client authentication")
+	ca, err := os.ReadFile(filepath.Join(out, "ca.crt"))
+	require.NoError(t, err)
+	want, err := os.ReadFile(filepath.Join(dep.ca, "ca.pem"))
+	require.NoError(t, err)
+	assert.Equal(t, string(want), string(ca), "ca.crt is the CA that signs the members' server certificates")
+	key, err := os.Stat(filepath.Join(out, "tls.key"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), key.Mode().Perm())
+	_, err = run(t, "gen", "etcd-client", "--ca", dep.ca)
+	assert.Error(t, err, "--out is required")
+}
+
 func TestGenNode_ControlPlaneIssuesFromSpecPKIAndCarriesTheCAKeyOnlyThere(t *testing.T) {
 	dep := newDeployment(t)
 	path := dep.node(t, "node-1", "--control-plane")
@@ -257,6 +281,7 @@ func TestGenNode_ControlPlaneIssuesFromSpecPKIAndCarriesTheCAKeyOnlyThere(t *tes
 	}
 	assert.Equal(t, map[string][]string{
 		"apiserver": {"gaon-apiserver"}, "scheduler": {"gaon-scheduler"}, "controllers": {"gaon-controllers"},
+		"etcd-server": {"etcd"}, "etcd-peer": {"etcd"}, "apiserver-etcd": {"gaon-apiserver"},
 	}, issued, "the agent's pair is not issued here: it comes through a signing request")
 	assert.Equal(t, "/run/gaon/ca.key", u.Spec.PKI.Authorities[0].KeyPath, "the controllers sign with the key init writes")
 	var files []string
@@ -684,4 +709,110 @@ func TestTopology_TakesNoArguments(t *testing.T) {
 	_, err := run(t, "topology", "extra")
 
 	require.Error(t, err)
+}
+
+// haMembers are the flags of a control plane of three at .10, .20 and .30 with the virtual address .100.
+var haMembers = []string{
+	"--control-plane", "--api-server", "192.168.0.100",
+	"--member", "node-1=192.168.0.10", "--member", "node-2=192.168.0.20", "--member", "node-3=192.168.0.30",
+}
+
+func (u userData) args(name string) string {
+	for _, s := range u.Spec.Services {
+		if s.Name == name {
+			return strings.Join(s.Args, " ")
+		}
+	}
+	return ""
+}
+
+func TestGenNode_ControlPlaneOfThreeRunsEtcdOnTheMembersWithTLSAndHoldsTheVirtualAddress(t *testing.T) {
+	dep := newDeployment(t)
+	for _, name := range []string{"node-1", "node-2", "node-3"} {
+		mustRun(t, "gen", "token", "--ca", dep.ca, "--name", name)
+	}
+	u := parse(t, dep.node(t, "node-2", haMembers...))
+
+	assert.Equal(t, []string{"mvmd", "registry", "fence", "etcd", "gaon-apiserver", "vip", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}, u.names())
+	etcd := u.args("etcd")
+	assert.Contains(t, etcd, "--listen-client-urls https://192.168.0.20:2379,https://127.0.0.1:2379 --advertise-client-urls https://192.168.0.20:2379")
+	assert.Contains(t, etcd, "--listen-peer-urls https://192.168.0.20:2380 --initial-advertise-peer-urls https://192.168.0.20:2380")
+	assert.Contains(t, etcd, "--initial-cluster node-1=https://192.168.0.10:2380,node-2=https://192.168.0.20:2380,node-3=https://192.168.0.30:2380")
+	assert.Contains(t, etcd, "--client-cert-auth --trusted-ca-file /run/gaon/ca.pem")
+	assert.Contains(t, etcd, "--peer-client-cert-auth --peer-trusted-ca-file /run/gaon/ca.pem")
+	assert.Contains(t, etcd, "--enable-grpc-gateway=false")
+	assert.Contains(t, etcd, "--peer-cert-file /run/gaon/etcd-server.pem --peer-key-file /run/gaon/etcd-server.key --peer-client-cert-file /run/gaon/etcd-peer.pem --peer-client-key-file /run/gaon/etcd-peer.key")
+	api := u.args("gaon-apiserver")
+	assert.Contains(t, api, "--etcd-endpoints https://192.168.0.10:2379,https://192.168.0.20:2379,https://192.168.0.30:2379 ", "every member, the same list on every Node")
+	assert.Contains(t, api, "--etcd-ca-file /run/gaon/ca.pem --etcd-cert-file /run/gaon/apiserver-etcd.pem --etcd-key-file /run/gaon/apiserver-etcd.key")
+	assert.Equal(t, "-allow 192.168.0.10,192.168.0.20,192.168.0.30,192.168.0.100 -allow-machines 10.200.2.0/24", u.args("fence"))
+	assert.Equal(t, "-address 192.168.0.100/24 -interface eth0 -self 192.168.0.20 -member 192.168.0.10,192.168.0.20,192.168.0.30 -port 6443 -etcd-ca-file /run/gaon/ca.pem -etcd-cert-file /run/gaon/apiserver-etcd.pem -etcd-key-file /run/gaon/apiserver-etcd.key", u.args("vip"))
+	assert.Contains(t, u.args("gaon-node-agent"), "--api-server https://192.168.0.100:6443/", "the agent dials the virtual address")
+	for _, c := range u.Spec.PKI.Certificates {
+		if c.Name == "etcd-server" {
+			assert.Equal(t, "server", c.Usage)
+			assert.True(t, c.NodeAddresses)
+		}
+		if c.Name == "etcd-peer" {
+			assert.Equal(t, "client", c.Usage)
+			assert.True(t, c.NodeAddresses, "etcd checks the dialling peer's address against the certificate")
+		}
+		if c.Name == "apiserver" {
+			assert.Contains(t, c.IPAddresses, "192.168.0.100", "the API server's certificate names the virtual address")
+		}
+	}
+}
+
+func TestGenNode_ALoneControlPlaneRunsEtcdOnTheLoopbackWithTLSAndNeitherFenceNorVIP(t *testing.T) {
+	dep := newDeployment(t)
+	u := parse(t, dep.node(t, "node-1", "--control-plane"))
+
+	assert.NotContains(t, u.names(), "fence")
+	assert.NotContains(t, u.names(), "vip")
+	assert.Contains(t, u.args("etcd"), "--listen-client-urls https://127.0.0.1:2379 --advertise-client-urls https://127.0.0.1:2379")
+	assert.Contains(t, u.args("etcd"), "--initial-cluster node-1=https://127.0.0.1:2380")
+	assert.Contains(t, u.args("gaon-apiserver"), "--etcd-endpoints https://127.0.0.1:2379 ")
+}
+
+func TestGenNode_MembersOfFilesIssueEtcdPairsNamingTheNodesAddresses(t *testing.T) {
+	dep := newDeployment(t)
+	u := parse(t, dep.node(t, "node-3", append(haMembers, "--pairs-as-files", "--serving-address", "127.0.0.1")...))
+
+	server, ok := u.file("/run/gaon/etcd-server.pem")
+	require.True(t, ok)
+	var ips []string
+	for _, ip := range certOf(t, server).IPAddresses {
+		ips = append(ips, ip.String())
+	}
+	assert.ElementsMatch(t, []string{"192.168.0.30", "127.0.0.1"}, ips)
+	peer, ok := u.file("/run/gaon/etcd-peer.pem")
+	require.True(t, ok)
+	assert.Equal(t, "192.168.0.30", certOf(t, peer).IPAddresses[0].String())
+	assert.Contains(t, certOf(t, peer).ExtKeyUsage, x509.ExtKeyUsageClientAuth)
+	for _, f := range []string{"etcd-server.key", "etcd-peer.key", "apiserver-etcd.key"} {
+		for _, file := range u.Spec.Files {
+			if file.Path == "/run/gaon/"+f {
+				assert.Equal(t, "0600", file.Mode)
+			}
+		}
+	}
+	_, ok = u.file("/run/gaon/apiserver-etcd.pem")
+	assert.True(t, ok)
+}
+
+func TestGenNode_RefusesMembersTheNodeCannotBeOneOf(t *testing.T) {
+	dep := newDeployment(t)
+	out := filepath.Join(t.TempDir(), "x.yaml")
+	gen := func(extra ...string) error {
+		_, err := run(t, append([]string{
+			"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--machine-prefix", "10.200.1.0/24",
+			"--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out,
+		}, extra...)...)
+		return err
+	}
+	assert.ErrorContains(t, gen("--api-server", "192.168.0.100", "--member", "node-1=192.168.0.10"), "has no effect without --control-plane")
+	assert.ErrorContains(t, gen("--control-plane", "--api-server", "192.168.0.100", "--member", "node-2=192.168.0.20", "--member", "node-3=192.168.0.30"), "not among its members")
+	assert.ErrorContains(t, gen("--control-plane", "--api-server", "192.168.0.20", "--member", "node-1=192.168.0.10", "--member", "node-2=192.168.0.20"), "virtual address")
+	assert.ErrorContains(t, gen("--control-plane", "--api-server", "192.168.0.100", "--member", "node-1=192.168.0.10", "--member", "node-1=192.168.0.20"), "repeats")
+	assert.Error(t, gen("--control-plane", "--api-server", "192.168.0.100", "--member", "node-1"), "a member is <name>=<address>")
 }

@@ -319,7 +319,7 @@ const rootMounted = "EXT4-fs (vdb): mounted filesystem"
 // the Always run strategy, a 256 MiB root disk (mvmd refuses a Machine with none) and the requests
 // the scheduler weighs.
 const machineManifest = `apiVersion: compute.gaon.garam.sh/v1alpha1
-kind: Machine
+kind: MicroVM
 metadata:
   name: hello
 spec:
@@ -381,7 +381,7 @@ func TestNode_AMachineAppliedWithTheGaonCLIIsBoundRunsOnTheGuestKernelFromTheTes
 		if !t.Failed() {
 			return
 		}
-		got, _ := cli.Run(ctx, "get", "machine", "hello")
+		got, _ := cli.Run(ctx, "get", "microvm", "hello")
 		t.Logf("gaon get machine hello:\n%s", got)
 		for _, nd := range c.Nodes {
 			sn, err := snapshot(nd)
