@@ -113,10 +113,8 @@ func addAlias(cidr, label string) error {
 }
 
 // probeSnapshot dials as gaon's snapshot writer does, with the pair naructl gen etcd-client wrote.
-// From this Node's own address every member serves it. From an address in this Node's MicroVM
-// prefix, this Node's own member serves it (local delivery keeps the MicroVM's own source); the
-// other members refuse it, since nothing here masquerades the source as a Node's address, and so
-// does the peer port.
+// From this Node's own address and from an address in this Node's MicroVM prefix, every member
+// serves it on 2379.
 func probeSnapshot(members []string, machine string, pool *x509.CertPool, snap tls.Certificate) {
 	for _, m := range members {
 		status, err := get("", m+":2379", "/version", pool, []tls.Certificate{snap})
@@ -126,8 +124,6 @@ func probeSnapshot(members []string, machine string, pool *x509.CertPool, snap t
 		}
 		status, err = get(machine, m+":2379", "/version", pool, []tls.Certificate{snap})
 		fmt.Printf("naru59-probe: etcd=%s source=machine client-cert=snapshot result=%s\n", m, classify(status, err))
-		status, err = get(machine, m+":2380", "/version", pool, []tls.Certificate{snap})
-		fmt.Printf("naru59-probe: etcd-peer=%s source=machine client-cert=snapshot result=%s\n", m, classify(status, err))
 	}
 }
 

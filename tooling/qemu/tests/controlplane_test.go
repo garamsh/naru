@@ -84,17 +84,11 @@ func TestControlPlane_ThreeMembersListTheirClusterAndAfterTheHolderStopsTheVirtu
 		require.NoError(t, third.WaitFor(ctx, bootTimeout, probeLine(addr, "member", "no", "refused-at-tls-handshake")), "a client without a certificate is refused by "+addr)
 		require.NoError(t, third.WaitFor(ctx, bootTimeout, probeLine(addr, "alias", "yes", "refused-by-tcp-reset")), "an address that is no member's is refused by "+addr)
 	}
-	// The pair `naructl gen etcd-client` wrote is accepted by every member. An address in node-3's
-	// MicroVM prefix is admitted to node-3's own member (local delivery keeps the MicroVM's source) and
-	// to no other member here, where nothing masquerades it; the peer port is closed to it everywhere.
+	// The pair `naructl gen etcd-client` wrote is accepted by every member, from node-3's own address
+	// and from an address in node-3's MicroVM prefix.
 	for _, addr := range []string{"10.78.0.1", "10.78.0.2", "10.78.0.3"} {
 		require.NoError(t, third.WaitFor(ctx, bootTimeout, probeLine(addr, "member", "snapshot", "connected")), "the etcd client pair is accepted by "+addr)
-		want := "refused-by-tcp-reset"
-		if addr == "10.78.0.3" {
-			want = "connected"
-		}
-		require.NoError(t, third.WaitFor(ctx, bootTimeout, probeLine(addr, "machine", "snapshot", want)), "a MicroVM's address to "+addr)
-		require.NoError(t, third.WaitFor(ctx, bootTimeout, "naru59-probe: etcd-peer="+addr+" source=machine client-cert=snapshot result=refused-by-tcp-reset"), "the peer port of "+addr)
+		require.NoError(t, third.WaitFor(ctx, bootTimeout, probeLine(addr, "machine", "snapshot", "connected")), "a MicroVM's address is served by "+addr)
 	}
 	assert.NotContains(t, third.Console(), "source=alias client-cert=yes result=connected", "no non-member connected")
 	assert.NotContains(t, third.Console(), "source=member client-cert=no result=connected", "no client without a certificate connected")
