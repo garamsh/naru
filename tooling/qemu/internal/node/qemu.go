@@ -233,6 +233,9 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		if spec.Config.APIHostPort != 0 {
 			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.APIHostPort, HostNICAddress, NodeAPIPort)
 		}
+		if spec.Config.HostAPIHostPort != 0 {
+			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.HostAPIHostPort, HostNICAddress, HostAPIPort)
+		}
 		args = append(args,
 			"-netdev", netdev,
 			"-device", "virtio-net-pci,netdev=net1,mac="+spec.Config.HostMAC(),

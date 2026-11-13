@@ -38,6 +38,7 @@ func Parse(data []byte) (NodeConfig, error) {
 	if err := validate(cfg); err != nil {
 		return NodeConfig{}, err
 	}
+	cfg.Spec.Files = withHostFile(cfg.Spec.Files, cfg.Spec.Host)
 	return cfg, nil
 }
 
@@ -111,6 +112,7 @@ func validate(cfg NodeConfig) error {
 	v.pki(cfg.Spec.PKI, cfg.Spec.Files, cfg.Spec.Services)
 	v.registries(cfg.Spec.Registries)
 	v.aws(cfg.Spec.AWS)
+	v.host(cfg.Spec.Host, cfg.Spec.Files)
 	return errors.Join(v.errs...)
 }
 
