@@ -86,8 +86,8 @@ func (f File) check(what string) error {
 }
 
 // mvmdJSON is mvmd's configuration for the Node: the Firecracker driver on the guest files of the
-// image and every declared kernel, the registry's authority reached through the service's
-// SSL_CERT_FILE, supervisors outside mvmd's cgroup, and a Machine network of its own per Node.
+// image and every declared kernel, the registry section for the files init writes from
+// spec.registries, supervisors outside mvmd's cgroup, and a Machine network of its own per Node.
 func (n Node) mvmdJSON() ([]byte, error) {
 	if !digestPattern.MatchString(n.FirecrackerSHA256) {
 		return nil, fmt.Errorf("the Firecracker digest %q is not 64 lowercase hex digits", n.FirecrackerSHA256)
@@ -115,7 +115,21 @@ func (n Node) mvmdJSON() ([]byte, error) {
 		}
 		network["no_masquerade"] = peers
 	}
+	registry := map[string]any{"credentials_file": RegistryFilesDir + "/registry/credentials.json"}
+	helpers := map[string]string{}
+	for _, r := range n.Registries {
+		if r.CA != "" {
+			registry["ca_file"] = RegistryFilesDir + "/registry/ca.pem"
+		}
+		if r.Helper != "" {
+			helpers[r.Host] = r.Helper
+		}
+	}
+	if len(helpers) > 0 {
+		registry["credential_helpers"] = helpers
+	}
 	return json.MarshalIndent(map[string]any{
+		"registry":  registry,
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
 		"state_dir": DataMount + "/mvmd",
 		"driver":    "firecracker",

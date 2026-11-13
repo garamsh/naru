@@ -40,7 +40,7 @@ type Request struct {
 }
 
 // Action is one thing an apply does: store, start, stop, restart,
-// write-file, issue-certificate, forget-certificate, reload-api, sync-time,
+// write-file, write-registries, issue-certificate, forget-certificate, reload-api, sync-time,
 // stop-time-sync or reboot.
 type Action struct {
 	Action string
@@ -91,6 +91,11 @@ type Routes interface {
 	DeleteRoute(config.Route) error
 }
 
+// Registries writes the files of spec.registries and spec.aws.
+type Registries interface {
+	WriteRegistries(config.Spec) error
+}
+
 // Certificates issues the named certificates of spec again and keeps renewing
 // the certificates of spec.
 type Certificates interface {
@@ -110,6 +115,7 @@ type Deps struct {
 	Files        Files
 	Time         Time
 	Routes       Routes
+	Registries   Registries
 	Certificates Certificates
 	API          API
 }

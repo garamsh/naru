@@ -57,6 +57,19 @@ func TestBuildDataDisk_CarriesTheInputsTree(t *testing.T) {
 	assert.Contains(t, string(b), "marker-inputs-9f3a")
 }
 
+func TestBuildDataDiskWith_CarriesAKeptAgentPairWhereTheAgentKeepsIt(t *testing.T) {
+	pair := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(pair, "node-agent.pem"), []byte("marker-pair-4c1e"), 0o600))
+
+	data, err := BuildDataDiskWith(t.TempDir(), "", pair)
+
+	require.NoError(t, err)
+	b, err := os.ReadFile(data)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "marker-pair-4c1e")
+	assert.Contains(t, string(b), "gaon-node-agent")
+}
+
 func TestBuildCidata_IsA4MiBVolumeLabelledCidataHoldingTheThreeFiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cidata.img")
 

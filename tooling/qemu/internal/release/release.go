@@ -62,8 +62,10 @@ func UserDataName(index int) string { return fmt.Sprintf("naru-node-%d.test.yaml
 // included, in spec.pki, so that its controllers sign the agents' requests (ADR 0016), and every
 // Node carries a bootstrap token. The CA's directory is removed before UserData returns, so the key
 // is in no file but node-1's user-data, and no file carries a client pair for an operator.
-// guest is the guest manifest's path, and firecracker the digest of the Firecracker binary.
-func UserData(tool naructl.Tool, guest, firecracker string) (map[string][]byte, error) {
+// guest is the guest manifest's path, firecracker the digest of the Firecracker binary, and
+// registryCA the path of the authority of the registry service, which every Node trusts for the
+// registry's address through spec.registries.
+func UserData(tool naructl.Tool, guest, firecracker, registryCA string) (map[string][]byte, error) {
 	work, err := os.MkdirTemp("", "naru15-userdata-")
 	if err != nil {
 		return nil, err
@@ -86,6 +88,7 @@ func UserData(tool naructl.Tool, guest, firecracker string) (map[string][]byte, 
 		if err := tool.GenNode(naructl.Node{
 			CA: ca, Name: d.Name, ControlPlane: i == 1, Address: d.Address, APIServer: APIServer, MachinePrefix: d.MachinePrefix,
 			Guest: guest, Firecracker: firecracker, Peers: peers(i), Out: p,
+			Registries: []string{"host=" + fixture.RegistryAddr + ",ca=" + registryCA},
 		}); err != nil {
 			return nil, err
 		}
@@ -252,7 +255,7 @@ func Build(o Options) ([]Asset, error) {
 	}
 	names = append(names, tool)
 
-	files, err := UserData(naructl.Tool{Bin: o.Naructl}, filepath.Join(o.GuestDir, "guest.json"), inputs.FirecrackerSHA256)
+	files, err := UserData(naructl.Tool{Bin: o.Naructl}, filepath.Join(o.GuestDir, "guest.json"), inputs.FirecrackerSHA256, filepath.Join(inputs.Dir, "registry", "ca.pem"))
 	if err != nil {
 		return nil, err
 	}

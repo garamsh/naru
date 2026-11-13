@@ -84,6 +84,11 @@ GUEST := $(IMAGE)/guest
 E2FS := $(IMAGE)/e2fsprogs
 GAON := $(IMAGE)/gaon
 ETCD := $(IMAGE)/etcd
+# REGTOOLS holds the credential helpers and the root bundle (ADR 0026). TEST_ROOT, empty for the
+# release, is the PEM file of a throwaway root appended to the bundle: the test image's, which
+# test-qemu builds and no release carries.
+REGTOOLS := $(IMAGE)/regtools
+TEST_ROOT ?=
 # VERSION is the version naru-init reports on the Node API and the release assets carry: `git describe
 # --tags --always`, or VERSION=.
 VERSION ?= $(shell git describe --tags --always)
@@ -93,9 +98,12 @@ image:
 	image/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
 	image/gaon/build.sh $(BUILD)/gaon $(GAON)
 	image/etcd/build.sh $(BUILD)/etcd $(ETCD)
+	image/ecr-login/build.sh $(BUILD)/ecr-login $(REGTOOLS)
+	image/rolesanywhere/build.sh $(BUILD)/rolesanywhere $(REGTOOLS)
+	image/cacert/build.sh $(BUILD)/cacert $(REGTOOLS) $(TEST_ROOT)
 	image/mvmd-checkout.sh $(BUILD)/initramfs/mvmd
 	image/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
-	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD)
+	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS)
 	image/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
 
 # image-upgrade builds the two kernels the upgrade tests (ADR 0025) put on a running Node, from the
@@ -111,9 +119,9 @@ image-upgrade: image
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
 	  cp $(IMAGE)/bzImage.bare $(IMAGE)/kernel.stamp $(UPGRADE)/$$v/; \
 	done; \
-	NARU_VERSION='$(VERSION)-next' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD); \
+	NARU_VERSION='$(VERSION)-next' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS); \
 	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/next $(UPGRADE)/next/initramfs.cpio.gz; \
-	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD); \
+	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS); \
 	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
 
 # disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
@@ -136,18 +144,21 @@ image-repro:
 	  image/e2fsprogs/build.sh $(BUILD)/repro/$$i/e2fsprogs $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
 	  image/gaon/build.sh $(BUILD)/repro/$$i/gaon $(BUILD)/repro/$$i/image/gaon >/dev/null; \
 	  image/etcd/build.sh $(BUILD)/repro/$$i/etcd $(BUILD)/repro/$$i/image/etcd >/dev/null; \
+	  image/ecr-login/build.sh $(BUILD)/repro/$$i/ecr-login $(BUILD)/repro/$$i/image/regtools >/dev/null; \
+	  image/rolesanywhere/build.sh $(BUILD)/repro/$$i/rolesanywhere $(BUILD)/repro/$$i/image/regtools >/dev/null; \
+	  image/cacert/build.sh $(BUILD)/repro/$$i/cacert $(BUILD)/repro/$$i/image/regtools >/dev/null; \
 	  image/mvmd-checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
 	  image/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
-	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd >/dev/null; \
+	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools >/dev/null; \
 	  image/kernel/embed.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/initramfs.cpio.gz >/dev/null; \
 	  image/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
 	done; \
-	for f in bzImage e2fsprogs/mke2fs etcd/etcd gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz guest/guest.json naru.img naru.qcow2; do \
+	for f in bzImage e2fsprogs/mke2fs etcd/etcd regtools/docker-credential-ecr-login regtools/aws_signing_helper regtools/ca-certificates.crt gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz guest/guest.json naru.img naru.qcow2; do \
 	  a=$$(sha256sum $(BUILD)/repro/1/image/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/$$f | cut -d' ' -f1); \
 	  echo "$@: $$f build 1 $$a"; echo "$@: $$f build 2 $$b"; \
 	  if [ "$$a" != "$$b" ]; then echo "$@: $$f differs between the builds" >&2; exit 1; fi; \
 	done; \
-	echo "$@: bzImage, mke2fs, etcd, the four gaon binaries, initramfs.cpio.gz, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
+	echo "$@: bzImage, mke2fs, etcd, the two credential helpers, the root bundle, the four gaon binaries, initramfs.cpio.gz, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
 
 # nodes boots N (default 2) Nodes of the image under QEMU on one network, as
 # the user, and keeps them up until interrupted. Their disks and consoles are
@@ -187,13 +198,19 @@ release: disk
 	cd naructl && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o $(BUILD)/naructl/naructl ./cmd/naructl
 	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -out $(RELEASE) -version $(VERSION)
 
-# test-qemu boots two Nodes of the image under QEMU, as the user, and reads
-# their consoles. It needs /dev/kvm with nested virtualization and the host's
-# mkfs.ext4 (for the data disk), and fails, never skips, when no test ran.
-test-qemu: disk image-upgrade
+# test-qemu boots Nodes of the image under QEMU, as the user, and reads their consoles. It needs
+# /dev/kvm with nested virtualization and the host's mkfs.ext4 (for the data disk), and fails,
+# never skips, when no test ran. It runs on a test image: the release's image with a throwaway
+# root appended to the bundle (TEST_ROOT, ADR 0026), made here and read by the test that has a
+# Node trust a root through the bundle. `make image` and `make release` build the image with no
+# such root.
+TESTROOT := $(BUILD)/testroot
+test-qemu:
 	@set -e; \
+	(cd tooling/qemu && go run ./cmd/naru-testroot -out $(TESTROOT)); \
+	$(MAKE) --no-print-directory disk image-upgrade TEST_ROOT=$(TESTROOT)/ca.pem; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
-	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) NARU_UPGRADE_DIR=$(UPGRADE) go test -tags qemu_real -count=1 -v -timeout 40m -run '^Test(Node|ControlPlane)_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) NARU_UPGRADE_DIR=$(UPGRADE) NARU_TESTROOT=$(TESTROOT) go test -tags qemu_real -count=1 -v -timeout 60m -run '^Test(Node|ControlPlane)_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
 	n=$$(grep -Ec '^--- PASS: Test(Node|ControlPlane)_' "$$log" || true); \
 	echo "$@: $$n test(s) passed, selected by -run '^Test(Node|ControlPlane)_' with -tags qemu_real"; \

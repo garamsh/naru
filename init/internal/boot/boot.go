@@ -31,6 +31,11 @@ type Host interface {
 	AddRoute(config.Route) error
 	// WriteFiles writes the files the configuration carries.
 	WriteFiles([]config.File) error
+	// WriteRegistries writes the files of spec.registries and spec.aws.
+	WriteRegistries(config.Spec) error
+	// SetAsidePair sets the pair file of p aside when its certificate lacks the Organization p
+	// names, and reports whether it did.
+	SetAsidePair(config.KeptPair) (bool, error)
 	// SyncTime synchronises the clock with the servers, each a host:port, and returns the
 	// result, or an error when none answers within the bound.
 	SyncTime(servers []string) (timesync.Result, error)
@@ -114,6 +119,9 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	if err := host.WriteFiles(cfg.Spec.Files); err != nil {
 		return store.Stored{}, err
 	}
+	if err := host.WriteRegistries(cfg.Spec); err != nil {
+		return store.Stored{}, fmt.Errorf("write the registry files: %w", err)
+	}
 	syncTime(host, cfg.Spec.Time, log)
 	if pki := cfg.Spec.PKI; len(pki.Authorities) > 0 || len(pki.Certificates) > 0 {
 		var addrs []netip.Addr
@@ -138,11 +146,28 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 			log.Info("skipping a control-plane service on a Node that is not one", "service", svc.Name)
 			continue
 		}
+		setAsidePair(host, svc, log)
 		if err := services.Start(svc); err != nil {
 			return store.Stored{}, fmt.Errorf("start %s: %w", svc.Name, err)
 		}
 	}
 	return effective, nil
+}
+
+// setAsidePair sets aside the pair svc kept when its certificate lacks the Organization svc needs
+// (config.KeptPair), so svc asks for a new one. It never refuses the boot: a pair that cannot be
+// set aside is logged at error level and svc starts, and reports what it cannot use.
+func setAsidePair(host Host, svc config.Service, log *slog.Logger) {
+	if svc.KeptPair == nil {
+		return
+	}
+	set, err := host.SetAsidePair(*svc.KeptPair)
+	switch {
+	case err != nil:
+		log.Error("kept pair not set aside; the boot goes on", "service", svc.Name, "file", svc.KeptPair.File, "err", err)
+	case set:
+		log.Warn("kept pair set aside: its certificate has no required Organization", "service", svc.Name, "file", svc.KeptPair.File, "organization", svc.KeptPair.Organization)
+	}
 }
 
 // addRoutes installs spec.network.routes. It never refuses the boot: a route the kernel refuses is

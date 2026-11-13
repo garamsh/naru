@@ -55,7 +55,8 @@ func (r *rig) Reissue(spec config.PKI, names []string) error {
 	r.specs = append(r.specs, spec)
 	return r.note(fmt.Sprintf("issue %v", names))
 }
-func (r *rig) Reload(config.API) error { return r.note("reload") }
+func (r *rig) WriteRegistries(config.Spec) error { return r.note("write-registries") }
+func (r *rig) Reload(config.API) error           { return r.note("reload") }
 func (r *rig) AddRoute(rt config.Route) error {
 	return r.note(fmt.Sprintf("add-route %s via %s", rt.To, rt.Via))
 }
@@ -71,7 +72,7 @@ func newRig(t *testing.T) *rig {
 	r := &rig{}
 	cfg, err := config.Parse([]byte(baseDoc(t)))
 	require.NoError(t, err)
-	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Certificates: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
+	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Certificates: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
 	return r
 }
 
@@ -486,4 +487,66 @@ func TestApply_AppliesAreSerialised(t *testing.T) {
 	assert.Equal(t, 1, ok, "one of the calls that named revision 0 won")
 	assert.Equal(t, n-1, stale)
 	assert.Equal(t, []string{"store", "stop a", "start a"}, r.calls())
+}
+
+func registryPatch(host, password string) map[string]any {
+	return obj{"registries": []any{obj{"host": host, "credential": obj{"username": "u", "password": password}}}}
+}
+
+func TestApply_RegistriesAreRewrittenLiveAndRestartNothing(t *testing.T) {
+	r := newRig(t)
+
+	res, err := r.engine.Apply(apply.Request{Patch: patch(registryPatch("r.example", "s3cret")), Mode: apply.NoReboot})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"store", "write-registries"}, r.calls(), "the files are rewritten and no service restarts")
+	assert.Equal(t, []apply.Action{{"store", "config"}, {"write-registries", "spec.registries"}}, res.Actions)
+}
+
+func TestApply_UnchangedRegistriesWriteNothing(t *testing.T) {
+	r := newRig(t)
+	_, err := r.engine.Apply(apply.Request{Patch: patch(registryPatch("r.example", "s3cret")), Mode: apply.NoReboot})
+	require.NoError(t, err)
+
+	_, err = r.engine.Apply(apply.Request{Revision: 1, Patch: patch(obj{"controlPlane": false}), Mode: apply.NoReboot})
+
+	require.NoError(t, err)
+	assert.NotContains(t, r.calls()[2:], "write-registries")
+}
+
+func TestApply_REDACTEDPasswordIsRefusedWhereNoneWasStored(t *testing.T) {
+	r := newRig(t)
+
+	_, err := r.engine.Apply(apply.Request{Patch: patch(registryPatch("r.example", "REDACTED")), Mode: apply.Staged})
+
+	var invalid *apply.InvalidError
+	require.ErrorAs(t, err, &invalid)
+	assert.Equal(t, []string{"spec.registries[0].credential.password"}, invalid.Fields)
+}
+
+func TestApply_AnOmittedPasswordKeepsTheStoredOne(t *testing.T) {
+	r := newRig(t)
+	_, err := r.engine.Apply(apply.Request{Patch: patch(registryPatch("r.example", "s3cret")), Mode: apply.Staged})
+	require.NoError(t, err)
+
+	_, err = r.engine.Apply(apply.Request{Revision: 1, Patch: patch(obj{"registries": []any{obj{"host": "r.example", "credential": obj{"username": "v"}}}}), Mode: apply.Staged})
+
+	require.NoError(t, err)
+	got := r.saved[len(r.saved)-1].Config.Spec.Registries[0].Credential
+	assert.Equal(t, "v", got.Username)
+	assert.Equal(t, "s3cret", got.Password, "a patch that omits the password keeps the stored one")
+}
+
+func TestApply_REDACTEDPasswordOverAStoredOneIsRefused(t *testing.T) {
+	r := newRig(t)
+	_, err := r.engine.Apply(apply.Request{Patch: patch(registryPatch("r.example", "s3cret")), Mode: apply.Staged})
+	require.NoError(t, err)
+	stored := len(r.saved)
+
+	_, err = r.engine.Apply(apply.Request{Revision: 1, Patch: patch(registryPatch("r.example", "REDACTED")), Mode: apply.Staged})
+
+	var invalid *apply.InvalidError
+	require.ErrorAs(t, err, &invalid)
+	assert.Equal(t, []string{"spec.registries[0].credential.password"}, invalid.Fields)
+	assert.Len(t, r.saved, stored, "nothing was stored")
 }

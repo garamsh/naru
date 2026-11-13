@@ -245,12 +245,13 @@ func genToken(args []string, stdout, stderr io.Writer) error {
 func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen node", stderr)
 	var (
-		nameservers, serving, binaries, disable, timeServers, peers, members list
-		n                                                                    layout.Node
-		caDir, address, gateway, apiServer                                   string
-		machinePrefix, guest, extraNIC                                       string
-		out, networkConfig                                                   string
-		controlPlane, pairsAsFiles                                           bool
+		nameservers, serving, binaries, disable, timeServers, peers, members, registries list
+		awsRegion, awsTrustAnchor, awsProfile, awsRole                                   string
+		n                                                                                layout.Node
+		caDir, address, gateway, apiServer                                               string
+		machinePrefix, guest, extraNIC                                                   string
+		out, networkConfig                                                               string
+		controlPlane, pairsAsFiles                                                       bool
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")
@@ -267,6 +268,11 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.Var(&binaries, "binary", "<service>=<absolute path>, the executable of a service in place of the image's, repeatable")
 	fs.Var(&disable, "disable", "a service to leave out ("+strings.Join(layout.Gaon.Names(), ", ")+"), repeatable")
 	fs.Var(&timeServers, "time-server", "an SNTP server init sets the clock from, host or host:port, repeatable and asked in order (none: the clock is not set)")
+	fs.Var(&registries, "registry", "a registry mvmd pulls from, host=<host[:port]> then any of ca=<PEM file>, username=<name> with password-file=<file>, or helper=<name> (a username with a helper is refused), comma-separated, repeatable")
+	fs.StringVar(&awsRegion, "aws-region", "", "the AWS region of the IAM Roles Anywhere profile the credential helpers use (with the other --aws flags: all four or none)")
+	fs.StringVar(&awsTrustAnchor, "aws-trust-anchor", "", "the ARN of the IAM Roles Anywhere trust anchor")
+	fs.StringVar(&awsProfile, "aws-profile", "", "the ARN of the IAM Roles Anywhere profile")
+	fs.StringVar(&awsRole, "aws-role", "", "the ARN of the IAM role; the certificate and key are the Node Agent's pair")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.Var(&peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
 	fs.StringVar(&guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
@@ -284,6 +290,9 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if err := needs(fs, "control-plane", "serving-address", "member"); err != nil {
+		return err
+	}
+	if err := awsTogether(fs); err != nil {
 		return err
 	}
 	var err error
@@ -375,6 +384,16 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	}
 	n.Disable = disable
 	n.TimeServers = timeServers
+	for _, r := range registries {
+		reg, err := parseRegistry(r)
+		if err != nil {
+			return fmt.Errorf("--registry: %w", err)
+		}
+		n.Registries = append(n.Registries, reg)
+	}
+	if awsRegion != "" {
+		n.AWS = &layout.AWS{Region: awsRegion, TrustAnchorArn: awsTrustAnchor, ProfileArn: awsProfile, RoleArn: awsRole}
+	}
 	if n.Guest, err = layout.ReadManifest(guest); err != nil {
 		return err
 	}
@@ -400,4 +419,73 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	}
 	_, _ = fmt.Fprintln(stdout)
 	return nil
+}
+
+// awsTogether refuses some of the four --aws flags without the others.
+func awsTogether(fs *flag.FlagSet) error {
+	names := []string{"aws-region", "aws-trust-anchor", "aws-profile", "aws-role"}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	n := 0
+	for _, f := range names {
+		if set[f] {
+			n++
+		}
+	}
+	if n != 0 && n != len(names) {
+		return fmt.Errorf("give all of --%s, or none", strings.Join(names, ", --"))
+	}
+	return nil
+}
+
+// parseRegistry reads one --registry value: host=<host> and the keys ca, username, password-file
+// and helper, comma-separated. The CA and the password are read from their files here, so the
+// user-data carries them and the Node reads no path of the operator's.
+func parseRegistry(v string) (layout.Registry, error) {
+	var r layout.Registry
+	var caFile, passwordFile string
+	for _, kv := range strings.Split(v, ",") {
+		k, val, ok := strings.Cut(kv, "=")
+		if !ok || val == "" {
+			return r, fmt.Errorf("%q is not key=value", kv)
+		}
+		switch k {
+		case "host":
+			r.Host = val
+		case "ca":
+			caFile = val
+		case "username":
+			r.Username = val
+		case "password-file":
+			passwordFile = val
+		case "helper":
+			r.Helper = val
+		default:
+			return r, fmt.Errorf("the key %q is not one of host, ca, username, password-file, helper", k)
+		}
+	}
+	if r.Host == "" {
+		return r, errors.New("host=<host> is required")
+	}
+	if r.Helper != "" && (r.Username != "" || passwordFile != "") {
+		return r, fmt.Errorf("%s gives both a helper and a username or password; give one", r.Host)
+	}
+	if (r.Username == "") != (passwordFile == "") {
+		return r, fmt.Errorf("%s needs both username and password-file", r.Host)
+	}
+	if caFile != "" {
+		b, err := os.ReadFile(caFile)
+		if err != nil {
+			return r, err
+		}
+		r.CA = string(b)
+	}
+	if passwordFile != "" {
+		b, err := os.ReadFile(passwordFile)
+		if err != nil {
+			return r, err
+		}
+		r.Password = strings.TrimRight(string(b), "\r\n")
+	}
+	return r, nil
 }

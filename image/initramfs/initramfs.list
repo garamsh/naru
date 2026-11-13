@@ -6,6 +6,8 @@ dir /dev 0755 0 0
 # The kernel's built-in initramfs, whose list has this node, is used only when none is embedded.
 nod /dev/console 0600 0 0 c 5 1
 dir /etc 0755 0 0
+dir /etc/ssl 0755 0 0
+dir /etc/ssl/certs 0755 0 0
 dir /proc 0755 0 0
 dir /run 0755 0 0
 dir /sys 0755 0 0
@@ -24,6 +26,9 @@ file /bin/gaon-apiserver @OUT@/gaon-apiserver 0755 0 0
 file /bin/gaon-scheduler @OUT@/gaon-scheduler 0755 0 0
 file /bin/gaon-controllers @OUT@/gaon-controllers 0755 0 0
 file /bin/etcd @OUT@/etcd 0755 0 0
+file /bin/docker-credential-ecr-login @OUT@/docker-credential-ecr-login 0755 0 0
+file /bin/aws_signing_helper @OUT@/aws_signing_helper 0755 0 0
+file /etc/ssl/certs/ca-certificates.crt @OUT@/ca-certificates.crt 0644 0 0
 file /bin/naru-standin @OUT@/naru-standin 0755 0 0
 file /bin/naru-vip @OUT@/naru-vip 0755 0 0
 file /bin/naru-fence @OUT@/naru-fence 0755 0 0

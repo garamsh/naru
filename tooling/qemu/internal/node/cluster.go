@@ -65,6 +65,12 @@ type ClusterSpec struct {
 	EtcdProbeOn int
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
+	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
+	// Node trusts the registry service's authority for RegistryAddr through its configuration.
+	Registries []string
+	// EditUserData, when set, changes the user-data naructl wrote for a Gaon Node before the Node
+	// starts: the test adds files, such as a credential helper, or a service's arguments.
+	EditUserData func(c Config, file string) error
 	// Configure, when set, changes each Node's Config before it starts, such as to give it routes.
 	// It does not apply to a Gaon cluster, whose user-data is naructl's.
 	Configure func(*Config)
@@ -129,6 +135,13 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		name := fmt.Sprintf("node-%d", i)
 		cfg := Config{
 			Name: name, Index: i, Total: spec.N, ControlPlane: spec.controlPlane(i), Probe: i == spec.ProbeOn, Inputs: spec.Inputs,
+		}
+		if !spec.Gaon {
+			ca, err := os.ReadFile(filepath.Join(spec.Inputs.Dir, "registry", "ca.pem"))
+			if err != nil {
+				return nil, fmt.Errorf("read the registry's authority: %w", err)
+			}
+			cfg.RegistryCA = string(ca)
 		}
 		if spec.Configure != nil {
 			spec.Configure(&cfg)
@@ -290,8 +303,17 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	for _, name := range spec.GaonBinaries {
 		a.Binaries[name] = path.Join(OverrideDir, name)
 	}
+	a.Registries = spec.Registries
+	if a.Registries == nil {
+		a.Registries = []string{"host=" + fixture.RegistryAddr + ",ca=" + filepath.Join(spec.Inputs.Dir, "registry", "ca.pem")}
+	}
 	if err := spec.Naructl.GenNode(a); err != nil {
 		return nil, nil, err
+	}
+	if spec.EditUserData != nil {
+		if err := spec.EditUserData(c, a.Out); err != nil {
+			return nil, nil, err
+		}
 	}
 	if spec.ha() && c.Index == spec.EtcdProbeOn {
 		if err := addEtcdProbe(a.Out, spec, g.etcdClient, c.Index); err != nil {

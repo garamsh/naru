@@ -85,7 +85,7 @@ func Start(spec Spec) (*Node, error) {
 	if err := BuildCidata(cidata, "naru15-"+spec.Config.Name, naruYAML, networkConfig); err != nil {
 		return nil, err
 	}
-	dataDisk, err := BuildDataDisk(spec.Dir, spec.Config.Inputs.Dir)
+	dataDisk, err := BuildDataDiskWith(spec.Dir, spec.Config.Inputs.Dir, spec.Config.AgentPair)
 	if err != nil {
 		return nil, err
 	}

@@ -441,6 +441,26 @@ func TestServer_ConfigReportsTheRevisionAndRedactsPrivateMaterial(t *testing.T) 
 	assert.Equal(t, "node-1", got["config"].(map[string]any)["metadata"].(map[string]any)["name"])
 }
 
+func TestServer_ConfigRedactsARegistryPasswordAndKeepsTheRest(t *testing.T) {
+	r := newRig(t)
+	r.engine.cfg.Spec.Registries = []config.Registry{
+		{Host: "r.example", Credential: &config.Credential{Username: "alice", Password: "registry-secret"}},
+		{Host: "h.example", Credential: &config.Credential{Helper: "ecr-login"}},
+	}
+	r.start(t)
+
+	status, body := r.do(t, r.admin(t), http.MethodGet, "/v1/config", "")
+
+	assert.Equal(t, http.StatusOK, status)
+	regs := decode(t, body)["config"].(map[string]any)["spec"].(map[string]any)["registries"].([]any)
+	first := regs[0].(map[string]any)["credential"].(map[string]any)
+	assert.Equal(t, "REDACTED", first["password"])
+	assert.Equal(t, "alice", first["username"], "a user name is not private")
+	assert.Equal(t, "ecr-login", regs[1].(map[string]any)["credential"].(map[string]any)["helper"])
+	assert.NotContains(t, string(body), "registry-secret")
+	assert.Equal(t, "registry-secret", r.engine.cfg.Spec.Registries[0].Credential.Password, "the held configuration is not changed")
+}
+
 func TestServer_ConfigRedactionLeavesTheEnginesConfigurationAlone(t *testing.T) {
 	r := newRig(t)
 	r.start(t)

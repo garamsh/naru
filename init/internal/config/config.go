@@ -58,6 +58,10 @@ type Spec struct {
 	Time *Time `yaml:"time,omitempty"`
 	// API is the Node API's listener. It is nil when the Node serves none.
 	API *API `yaml:"api,omitempty"`
+	// Registries are the container registries the Node trusts and presents a credential to.
+	Registries []Registry `yaml:"registries,omitempty"`
+	// AWS is the identity the credential helpers use. It is nil when the Node has none.
+	AWS *AWS `yaml:"aws,omitempty"`
 }
 
 // DefaultAPIListen is where the Node API listens when spec.api names no address.
@@ -111,12 +115,26 @@ type Service struct {
 	Env    map[string]string `yaml:"env"`
 	// ControlPlane marks a service started only on the node that runs the control plane.
 	ControlPlane bool `yaml:"controlPlane"`
+	// KeptPair names a certificate pair the service keeps, which init checks before it starts the
+	// service. It is nil for a service that keeps none.
+	KeptPair *KeptPair `yaml:"keptPair,omitempty"`
+}
+
+// KeptPair is a certificate pair file a service keeps across boots. A pair whose certificate's
+// subject has no Organization of the given value is set aside before the service starts, so the
+// service asks for a new one.
+type KeptPair struct {
+	// File is the pair file: the certificate, then its key, in PEM.
+	File string `yaml:"file"`
+	// Organization is the Organization the certificate's subject must carry.
+	Organization string `yaml:"organization"`
 }
 
 // Equal reports whether o is the same service. A nil list or map equals an empty one.
 func (s Service) Equal(o Service) bool {
 	return s.Name == o.Name && s.Binary == o.Binary && s.ControlPlane == o.ControlPlane &&
-		slices.Equal(s.Args, o.Args) && maps.Equal(s.Env, o.Env)
+		slices.Equal(s.Args, o.Args) && maps.Equal(s.Env, o.Env) &&
+		(s.KeptPair == nil) == (o.KeptPair == nil) && (s.KeptPair == nil || *s.KeptPair == *o.KeptPair)
 }
 
 // Runs reports whether init starts svc on this Node: a service marked controlPlane runs only on

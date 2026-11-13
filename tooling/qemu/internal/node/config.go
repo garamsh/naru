@@ -60,6 +60,12 @@ type Config struct {
 	NoMasquerade []string
 	// NetEcho is the arguments of a naru-netecho service, which the Node runs when it is not empty.
 	NetEcho []string
+	// RegistryCA is the PEM authority of the registry service, which the Node's spec.registries
+	// names for RegistryHost and mvmd's registry section trusts through ca_file.
+	RegistryCA string
+	// AgentPair, when not empty, is a host directory the data disk carries as gaon-node-agent/,
+	// so that a Node boots with a kept agent pair that init may set aside (ADR 0026).
+	AgentPair string
 }
 
 // Route is a spec.network.routes entry: a prefix and the address that reaches it.
@@ -110,6 +116,9 @@ func (c Config) net() Network {
 
 // IP is the Node's address on the shared network, which its network-config gives it.
 func (c Config) IP() string { return c.net().IP }
+
+// RegistryFilesDir is where init writes the registry files (ADR 0026).
+const RegistryFilesDir = "/run/naru"
 
 // Gateway is the default gateway and the resolver the QEMU Nodes' network-config names. No machine
 // has this address; the Nodes only check that init installs the route and writes the resolver.
@@ -176,9 +185,15 @@ type nodeConfig struct {
 			Forwarding []string `yaml:"forwarding"`
 			Routes     []route  `yaml:"routes,omitempty"`
 		} `yaml:"network"`
-		Services []service `yaml:"services"`
-		Files    []file    `yaml:"files"`
+		Services   []service  `yaml:"services"`
+		Files      []file     `yaml:"files"`
+		Registries []registry `yaml:"registries,omitempty"`
 	} `yaml:"spec"`
+}
+
+type registry struct {
+	Host string `yaml:"host"`
+	CA   string `yaml:"ca"`
 }
 
 type file struct {
@@ -211,10 +226,10 @@ func (c Config) NaruYAML() ([]byte, error) {
 		n.Spec.Network.Routes = append(n.Spec.Network.Routes, route(r))
 	}
 	root := fixture.GuestRoot
-	mvmd := service{
-		Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", mvmdConfig},
-		Env: map[string]string{"SSL_CERT_FILE": path.Join(root, "registry/ca.pem")},
+	if c.RegistryCA != "" {
+		n.Spec.Registries = []registry{{Host: fixture.RegistryAddr, CA: c.RegistryCA}}
 	}
+	mvmd := service{Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", mvmdConfig}}
 	registry := service{Name: "registry", Binary: path.Join(root, "bin/naru-registry"), Args: []string{"-listen", fixture.RegistryAddr, "-dir", path.Join(root, "registry")}}
 	n.Spec.Services = []service{
 		mvmd,
@@ -241,8 +256,8 @@ func (c Config) NaruYAML() ([]byte, error) {
 }
 
 // MvmdJSON is mvmd's configuration for the Node: the Firecracker driver on
-// the guest files of the image, the registry's authority reached through the
-// service's SSL_CERT_FILE, supervisors outside mvmd's cgroup, and a Machine
+// the guest files of the image, the registry's authority named by its registry
+// section, supervisors outside mvmd's cgroup, and a Machine
 // network of its own per Node.
 func (c Config) MvmdJSON() ([]byte, error) {
 	g := c.Inputs.Guest
@@ -264,7 +279,12 @@ func (c Config) MvmdJSON() ([]byte, error) {
 	if len(c.NoMasquerade) > 0 {
 		network["no_masquerade"] = c.NoMasquerade
 	}
+	registry := map[string]any{"credentials_file": RegistryFilesDir + "/registry/credentials.json"}
+	if c.RegistryCA != "" {
+		registry["ca_file"] = RegistryFilesDir + "/registry/ca.pem"
+	}
 	return json.MarshalIndent(map[string]any{
+		"registry":  registry,
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
 		"state_dir": DataMount + "/mvmd",
 		"driver":    "firecracker",

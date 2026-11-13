@@ -41,6 +41,14 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 			placeholders = append(placeholders, fmt.Sprintf("spec.files[%d].content", i))
 		}
 	}
+	for i, r := range next.Spec.Registries {
+		if r.Credential == nil || r.Credential.Password != redacted {
+			continue
+		}
+		if old, ok := stored.Spec.Registry(r.Host); !ok || old.Credential == nil || old.Credential.Password != redacted {
+			placeholders = append(placeholders, fmt.Sprintf("spec.registries[%d].credential.password", i))
+		}
+	}
 	if len(placeholders) > 0 {
 		return &InvalidError{Fields: placeholders, Message: fmt.Sprintf("carries %s, which stands for private material the API never returns; give the material or leave the field out of the patch", redacted)}
 	}
@@ -129,6 +137,9 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 		steps = append(steps, step{Action{"write-file", f.Path}, func() error { return e.deps.Files.ReplaceFile(f) }})
 		name(f.Restart)
 	}
+	if !registryFilesEqual(running.Spec, next.Spec) {
+		steps = append(steps, step{Action{"write-registries", "spec.registries"}, func() error { return e.deps.Registries.WriteRegistries(next.Spec) }})
+	}
 	for _, c := range next.Spec.PKI.Certificates {
 		if old, ok := certificateAt(running.Spec.PKI.Certificates, c.Name); ok && old.Equal(c) {
 			continue
@@ -189,6 +200,21 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 		steps = append(steps, step{Action{"restart", n}, func() error { e.deps.Services.Restart(n); return nil }})
 	}
 	return steps
+}
+
+// registryFilesEqual reports whether a and b give the same registry files: the same hosts,
+// authorities and credentials, and the same spec.aws.
+func registryFilesEqual(a, b config.Spec) bool {
+	if len(a.Registries) != len(b.Registries) || (a.AWS == nil) != (b.AWS == nil) || (a.AWS != nil && *a.AWS != *b.AWS) {
+		return false
+	}
+	for i, r := range a.Registries {
+		o := b.Registries[i]
+		if r.Host != o.Host || r.CA != o.CA || (r.Credential == nil) != (o.Credential == nil) || (r.Credential != nil && *r.Credential != *o.Credential) {
+			return false
+		}
+	}
+	return true
 }
 
 func routeAt(routes []config.Route, to netip.Prefix) (config.Route, bool) {

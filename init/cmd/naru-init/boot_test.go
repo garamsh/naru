@@ -72,10 +72,12 @@ func (n *node) MountDataDisk(config.DataDisk) error { return nil }
 func (n *node) EnableForwarding([]config.Family) error {
 	return nil
 }
-func (n *node) AddRoute(config.Route) error    { return nil }
-func (n *node) DeleteRoute(config.Route) error { return nil }
-func (n *node) WriteFiles([]config.File) error { return nil }
-func (n *node) SealRoot() error                { return nil }
+func (n *node) AddRoute(config.Route) error                { return nil }
+func (n *node) DeleteRoute(config.Route) error             { return nil }
+func (n *node) WriteFiles([]config.File) error             { return nil }
+func (n *node) WriteRegistries(config.Spec) error          { return nil }
+func (n *node) SetAsidePair(config.KeptPair) (bool, error) { return false, nil }
+func (n *node) SealRoot() error                            { return nil }
 func (n *node) SyncTime([]string) (timesync.Result, error) {
 	return timesync.Result{}, nil
 }

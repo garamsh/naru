@@ -74,3 +74,32 @@ func TestHandler_IsReadOnly(t *testing.T) {
 
 	assert.Equal(t, http.StatusMethodNotAllowed, res.StatusCode)
 }
+
+func TestBasic_RefusesARequestWithoutTheCredentialAndServesOneWithIt(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "abc123"), []byte("blob"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, Index), []byte(`{"`+digest+`":"application/x-test"}`), 0o644))
+	h, err := Handler(dir)
+	require.NoError(t, err)
+	s := httptest.NewServer(Basic{User: "u", Password: "p"}.wrap(h))
+	t.Cleanup(s.Close)
+	url := s.URL + "/v2/test/entry/manifests/" + digest
+
+	res, _ := get(t, url)
+	assert.Equal(t, http.StatusUnauthorized, res.StatusCode, "no credential")
+	assert.NotEmpty(t, res.Header.Get("Www-Authenticate"))
+
+	for _, pass := range []string{"wrong", "p"} {
+		req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx // a test server on the loopback
+		require.NoError(t, err)
+		req.SetBasicAuth("u", pass)
+		got, err := http.DefaultClient.Do(req) //nolint:gosec // a test server on the loopback
+		require.NoError(t, err)
+		_ = got.Body.Close()
+		if pass == "p" {
+			assert.Equal(t, http.StatusOK, got.StatusCode)
+		} else {
+			assert.Equal(t, http.StatusUnauthorized, got.StatusCode, "the wrong password")
+		}
+	}
+}

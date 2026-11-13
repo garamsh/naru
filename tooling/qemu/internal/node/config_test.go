@@ -90,10 +90,22 @@ func TestNaruYAML_ProbeRunsOnlyWhereAsked(t *testing.T) {
 	assert.Equal(t, []string{"mvmd", "registry", "standin", "control"}, names(parse(t, cfg(2, 2, false, false))))
 }
 
-func TestNaruYAML_MvmdTrustsTheRegistryAuthorityAndForwardsIPv4(t *testing.T) {
-	n := parse(t, cfg(1, 2, true, false))
+func TestNaruYAML_MvmdTrustsTheRegistryAuthorityThroughSpecRegistriesAndForwardsIPv4(t *testing.T) {
+	c := cfg(1, 2, true, false)
+	c.RegistryCA = "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n"
+	n := parse(t, c)
 
-	assert.Equal(t, "/var/lib/naru/inputs/registry/ca.pem", n.Spec.Services[0].Env["SSL_CERT_FILE"])
+	assert.Empty(t, n.Spec.Services[0].Env, "no SSL_CERT_FILE: the authority goes through spec.registries")
+	assert.Equal(t, []registry{{Host: fixture.RegistryAddr, CA: c.RegistryCA}}, n.Spec.Registries)
+	var m struct {
+		Registry map[string]string `json:"registry"`
+	}
+	b, err := c.MvmdJSON()
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(b, &m))
+	assert.Equal(t, map[string]string{
+		"credentials_file": "/run/naru/registry/credentials.json", "ca_file": "/run/naru/registry/ca.pem",
+	}, m.Registry)
 	assert.Equal(t, []string{"ipv4"}, n.Spec.Network.Forwarding)
 	assert.Equal(t, DataLabel, n.Spec.DataDisk.Label)
 }

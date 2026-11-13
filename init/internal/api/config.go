@@ -48,7 +48,7 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 // redact returns cfg with private material replaced by REDACTED: spec.api.key, each
-// spec.pki.authorities[].key, and the content of each spec.files entry that gives group and
+// spec.pki.authorities[].key, each spec.registries[].credential.password, and the content of each spec.files entry that gives group and
 // other no read. A field that is empty holds no material and is left empty.
 func redact(cfg config.NodeConfig) config.NodeConfig {
 	if a := cfg.Spec.API; a != nil {
@@ -62,6 +62,14 @@ func redact(cfg config.NodeConfig) config.NodeConfig {
 	for i := range cfg.Spec.PKI.Authorities {
 		if a := &cfg.Spec.PKI.Authorities[i]; a.Key != "" {
 			a.Key = redacted
+		}
+	}
+	cfg.Spec.Registries = slices.Clone(cfg.Spec.Registries)
+	for i := range cfg.Spec.Registries {
+		if c := cfg.Spec.Registries[i].Credential; c != nil && c.Password != "" {
+			c := *c
+			c.Password = redacted
+			cfg.Spec.Registries[i].Credential = &c
 		}
 	}
 	cfg.Spec.Files = slices.Clone(cfg.Spec.Files)

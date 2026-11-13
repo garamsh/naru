@@ -37,7 +37,7 @@ func TestRun_UsesTheStoredConfigurationWhenItWasDerivedFromTheCurrentBase(t *tes
 	assert.Equal(t, "stored", got.Config.Spec.Services[0].Name)
 	assert.Equal(t, "NARUDATA", r.mounted.Label, "the data disk is mounted from the base, before the store can be read")
 	assert.Empty(t, r.saved, "nothing is stored over a store that is used")
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "prepare", "seal", "start stored"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "prepare", "seal", "start stored"}, r.calls)
 }
 
 func TestRun_DiscardsAStoredConfigurationWhoseBaseChangedAndStoresTheBaseAsRevisionZero(t *testing.T) {
