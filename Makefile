@@ -84,6 +84,10 @@ GUEST := $(IMAGE)/guest
 E2FS := $(IMAGE)/e2fsprogs
 GAON := $(IMAGE)/gaon
 ETCD := $(IMAGE)/etcd
+# K8S holds Kubernetes, containerd, runc, the CNI plugins, nft, mount and umount, which five
+# build scripts write into the one directory.
+K8S := $(IMAGE)/k8s
+K8S_FILES := kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy containerd containerd-shim-runc-v2 runc bridge host-local loopback nft mount umount
 # REGTOOLS holds the credential helpers and the root bundle (ADR 0026). TEST_ROOT, empty for the
 # release, is the PEM file of a throwaway root appended to the bundle: the test image's, which
 # test-qemu builds and no release carries.
@@ -100,12 +104,17 @@ image:
 	image/xfsprogs/build.sh $(BUILD)/xfsprogs $(XFS)
 	image/gaon/build.sh $(BUILD)/gaon $(GAON)
 	image/etcd/build.sh $(BUILD)/etcd $(ETCD)
+	image/kubernetes/build.sh $(BUILD)/kubernetes $(K8S)
+	image/containerd/build.sh $(BUILD)/containerd $(K8S)
+	image/cni/build.sh $(BUILD)/cni $(K8S)
+	image/nftables/build.sh $(BUILD)/nftables $(K8S)
+	image/util-linux/build.sh $(BUILD)/util-linux $(K8S)
 	image/ecr-login/build.sh $(BUILD)/ecr-login $(REGTOOLS)
 	image/rolesanywhere/build.sh $(BUILD)/rolesanywhere $(REGTOOLS)
 	image/cacert/build.sh $(BUILD)/cacert $(REGTOOLS) $(TEST_ROOT)
 	image/mvmd-checkout.sh $(BUILD)/initramfs/mvmd
 	image/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
-	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS)
+	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S)
 	image/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
 
 # image-upgrade builds the two kernels the upgrade tests (ADR 0025) put on a running Node, from the
@@ -121,9 +130,9 @@ image-upgrade: image
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
 	  cp $(IMAGE)/bzImage.bare $(IMAGE)/kernel.stamp $(UPGRADE)/$$v/; \
 	done; \
-	NARU_VERSION='$(VERSION)-next' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS); \
+	NARU_VERSION='$(VERSION)-next' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
 	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/next $(UPGRADE)/next/initramfs.cpio.gz; \
-	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS); \
+	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
 	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
 
 # disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
@@ -147,12 +156,17 @@ image-repro:
 	  image/xfsprogs/build.sh $(BUILD)/repro/$$i/xfsprogs $(BUILD)/repro/$$i/image/xfsprogs >/dev/null; \
 	  image/gaon/build.sh $(BUILD)/repro/$$i/gaon $(BUILD)/repro/$$i/image/gaon >/dev/null; \
 	  image/etcd/build.sh $(BUILD)/repro/$$i/etcd $(BUILD)/repro/$$i/image/etcd >/dev/null; \
+	  image/kubernetes/build.sh $(BUILD)/repro/$$i/kubernetes $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/containerd/build.sh $(BUILD)/repro/$$i/containerd $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/cni/build.sh $(BUILD)/repro/$$i/cni $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/nftables/build.sh $(BUILD)/repro/$$i/nftables $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/util-linux/build.sh $(BUILD)/repro/$$i/util-linux $(BUILD)/repro/$$i/image/k8s >/dev/null; \
 	  image/ecr-login/build.sh $(BUILD)/repro/$$i/ecr-login $(BUILD)/repro/$$i/image/regtools >/dev/null; \
 	  image/rolesanywhere/build.sh $(BUILD)/repro/$$i/rolesanywhere $(BUILD)/repro/$$i/image/regtools >/dev/null; \
 	  image/cacert/build.sh $(BUILD)/repro/$$i/cacert $(BUILD)/repro/$$i/image/regtools >/dev/null; \
 	  image/mvmd-checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
 	  image/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
-	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs >/dev/null; \
+	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs $(BUILD)/repro/$$i/image/k8s >/dev/null; \
 	  image/kernel/embed.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/initramfs.cpio.gz >/dev/null; \
 	  image/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
 	done; \
@@ -161,6 +175,12 @@ image-repro:
 	  echo "$@: $$f build 1 $$a"; echo "$@: $$f build 2 $$b"; \
 	  if [ "$$a" != "$$b" ]; then echo "$@: $$f differs between the builds" >&2; exit 1; fi; \
 	done; \
+	for f in $(K8S_FILES); do \
+	  a=$$(sha256sum $(BUILD)/repro/1/image/k8s/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/k8s/$$f | cut -d' ' -f1); \
+	  echo "$@: k8s/$$f build 1 $$a"; echo "$@: k8s/$$f build 2 $$b"; \
+	  if [ "$$a" != "$$b" ]; then echo "$@: k8s/$$f differs between the builds" >&2; exit 1; fi; \
+	done; \
+	echo "$@: the Kubernetes programs, containerd, runc, the CNI plugins, nft, mount and umount are byte-identical across two clean builds"; \
 	echo "$@: bzImage, mke2fs, mkfs.xfs, etcd, the two credential helpers, the root bundle, the four gaon binaries, initramfs.cpio.gz, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
 
 # nodes boots N (default 2) Nodes of the image under QEMU on one network, as

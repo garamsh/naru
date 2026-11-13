@@ -17,7 +17,7 @@ import (
 
 const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-ca|host-client> [flags]
        naructl <version|services|logs|get config|apply|reboot|upgrade> --config <client file> [--node <ip[:port]>] [flags]
-       naructl topology                              print the services a Node runs, and which signs, as JSON
+       naructl topology [kubernetes]                 print the services a Node runs, and which signs, as JSON
 
   gen api-ca  --ca-dir <dir>                    write the Node API authority, <dir>/api/ca.pem and ca.key
   gen api-client --ca-dir <dir> --role admin|reader --endpoint <ip[:port]> --out <file>
@@ -43,12 +43,19 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
   gen node    --ca <dir> --name <name> --address <cidr> --mac <mac> --gateway <ip> --nameserver <ip>
               --api-server <ip> --machine-prefix <cidr> --guest <guest.json> --firecracker-sha256 <hex>
               --out <file> [--control-plane] [--peer <address>=<machine-prefix>] [--time-server <host[:port]>] [more flags: naructl gen node -h]
-`
+` + kubernetesUsage
 
 // Run runs naructl with args, the command line without the program's name.
 func Run(args []string, stdout, stderr io.Writer) error {
-	if len(args) == 1 && args[0] == "topology" {
-		b, err := layout.Gaon.JSON()
+	if len(args) >= 1 && args[0] == "topology" && len(args) <= 2 {
+		t := layout.Gaon
+		if len(args) == 2 {
+			if args[1] != "kubernetes" {
+				return fmt.Errorf("topology %q: the one besides gaon's is kubernetes", args[1])
+			}
+			t = layout.Kubernetes
+		}
+		b, err := t.JSON()
 		if err != nil {
 			return err
 		}
@@ -102,6 +109,10 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return genToken(args[2:], stdout, stderr)
 	case "node":
 		return genNode(args[2:], stdout, stderr)
+	case "kubernetes":
+		return genKubernetes(args[2:], stdout, stderr)
+	case "kubernetes-node":
+		return genKubernetesNode(args[2:], stdout, stderr)
 	}
 	_, _ = fmt.Fprint(stderr, usage)
 	return fmt.Errorf("unknown command %q", "gen "+args[1])

@@ -53,13 +53,14 @@ Claims about garamsh/mvmd hold at commit `1b08e5e04273b8839f66d9e154bf96086fbc3d
 - **Every service runs in a cgroup of its own.** The hierarchy under the cgroup v2 root is:
 
   ```
-  /sys/fs/cgroup                 cpu, memory and pids enabled for children
+  /sys/fs/cgroup                 cpu, cpuset, hugetlb, memory and pids enabled for children
   /sys/fs/cgroup/naru            the same
   /sys/fs/cgroup/naru/<service>  one leaf per service
   /sys/fs/cgroup/naru/detached   reserved, empty; processes a service places outside its own
+  /sys/fs/cgroup/naru/kubernetes reserved, empty, the same controllers enabled for children; the kubelet's Pod cgroups (ADR 0031)
   ```
 
-  A service is created in its leaf (`CLONE_INTO_CGROUP`), so it is never outside it. `detached` is a reserved service name.
+  A service is created in its leaf (`CLONE_INTO_CGROUP`), so it is never outside it. `detached` and `kubernetes` are reserved service names.
 - **Stop touches only the leaf.** Init sends the service SIGTERM, gives it 5 s, then writes `cgroup.kill` in its leaf, waits for `cgroup.procs` to empty and removes the leaf. After every exit, init kills what the exit left in the leaf, so a restart starts from an empty cgroup. A process the service moved to another cgroup is in none of these and survives its stop and restart. The real-cgroup test of that is `make test-cgroup`.
 - **Restart backoff.** A service that exits, or that cannot be started, is started again after 1 s, doubling per consecutive exit up to 30 s. A run of 60 s or longer resets the delay to 1 s. A stop ends the wait.
 - **Routes.** `spec.network.routes` are static IPv4 routes, installed through netlink with protocol `RTPROT_STATIC` and no link named, so the kernel picks the one that reaches `via`; validation refuses a `to` that is not a canonical IPv4 prefix, the default route, a `via` that is not a unicast IPv4 address or is inside `to`, and a `to` listed twice. They are in the live class of ADR 0018, and `spec.network.forwarding` is the only reboot-only field of `spec.network` ([ADR 0023](./adr/0023-spec-network-routes-are-static-ipv4-routes-init-applies-live.md)).
@@ -91,6 +92,7 @@ What init provides, and what the Node's configuration must carry:
 
 ## Rationale
 
+- [ADR 0031](./adr/0031-a-node-runs-kubernetes-as-init-services-containerd-and-runc-are-static-and-pods-get-routed-prefixes-from-one-pod-network.md): why init keeps the delegated `naru/kubernetes` cgroup for the kubelet's Pod cgroups.
 - [ADR 0028](./adr/0028-naru-hostd-serves-a-host-api-over-mutual-tls-from-its-own-authority-and-creates-microvms-through-mvmds-runtime-api.md): `spec.host`, the file derived from it and why a label change is live.
 - [ADR 0025](./adr/0025-an-upgrade-is-a-bundle-posted-to-v1-upgrade-which-init-writes-to-the-trial-slot-and-the-trial-boot-promotes-when-healthy-and-rolls-back-when-not.md): the upgrade request, the trial boot's health judgement, the promotion and the rollback, and the record of the last outcome.
 - [ADR 0026](./adr/0026-a-node-takes-registry-credentials-and-trust-as-configuration-an-ecr-credential-comes-from-iam-roles-anywhere-and-an-agent-pair-without-the-required-organization-is-set-aside.md): the registry files, the live apply that rewrites them, and the kept-pair set-aside.

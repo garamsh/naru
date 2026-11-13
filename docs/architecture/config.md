@@ -76,12 +76,32 @@ naructl gen etcd-client --ca ca --out etcd-client    # etcd-client/ca.crt, tls.c
 - **The client commands** `version`, `services`, `logs <service> [-f]`, `get config` and `apply -f <file> [--mode no-reboot|staged|reboot] [--dry-run]`, `reboot` and `upgrade` each take `--config <client file>` and `--node <ip[:port]>` (the file's first endpoint when absent), and speak TLS 1.3 to the API with the file's CA as the only root. `get config` prints the revision and the configuration as the Node returns it, redacted. `apply` reads the Node's current revision, then posts the patch (a YAML or JSON mapping) against it; `--mode` defaults to `no-reboot`; `reboot` stores the change as `staged` does, including a reboot-only field, and the Node then reboots on the new revision. `reboot` asks the Node to reboot (`POST /v1/reboot`) and prints the action it accepted: the answer comes before the Node stops, and the client reads `bootId` from `version` to see the new boot. A refusal (403, 409, 422, or a failure after the revision was stored) is one line with the Node's reason, and the exit code is 1. `upgrade --bundle <file> --sums <SHA256SUMS>` finds the bundle's line in the sums file, hashes the file, refuses a mismatch before it sends anything, then streams the file to `POST /v1/upgrade` with the digest as the query parameter `sha256` and prints the actions the Node accepted; `upgrade --status` prints the version, the boot ID, the slot and the outcome of the last upgrade, and sends no bundle. `version` does not print the slot or the outcome. The commands never print a key.
 - **To operate a Node by its API:** (1) `naructl gen api-ca --ca-dir ca`; (2) regenerate each Node's user-data with `gen node` as before, and give each Node its new user-data; (3) `naructl gen api-client --ca-dir ca --role admin --endpoint 192.168.0.20 --out admin.yaml`; (4) `naructl get config --config admin.yaml` reads the revision and the redacted configuration; (5) `naructl apply --config admin.yaml -f patch.yaml --dry-run` lists what a patch would do, and without `--dry-run` applies it.
 
+### Kubernetes ([ADR 0031](./adr/0031-a-node-runs-kubernetes-as-init-services-containerd-and-runc-are-static-and-pods-get-routed-prefixes-from-one-pod-network.md))
+
+`naructl` owns a second layout, the Kubernetes Node's, beside gaon's: `Node.Kube` selects it, and a Node with no `Kube` is written as before.
+
+```sh
+naructl gen ca --out ca
+naructl gen kubernetes --ca ca --endpoint 192.168.0.40 [--admin-address 127.0.0.1:6443]
+naructl gen kubernetes-node --ca ca --name node-1 --role control-plane --address 192.168.0.40/24 --endpoint 192.168.0.40 \
+  --pod-network 10.64.0.0/12 --pod-prefix 10.64.1.0/24 --peer 192.168.0.41=10.64.2.0/24 --out node-1.user-data
+naructl gen kubernetes-node --ca ca --name node-2 --role worker --address 192.168.0.41/24 --endpoint 192.168.0.40 \
+  --pod-network 10.64.0.0/12 --pod-prefix 10.64.2.0/24 --peer 192.168.0.40=10.64.1.0/24 --out node-2.user-data
+naructl topology kubernetes
+```
+
+- **`gen kubernetes --ca <dir> --endpoint <ip>`** writes into the CA's directory what a cluster has besides its authority: the front-proxy authority (`front-proxy/ca.pem`, `ca.key`), the ServiceAccount key pair (`sa.key` mode `0600`, `sa.pub`; ECDSA P-256) and the administrator's kubeconfig `admin.conf` (mode `0600`, certificate and key inline, CN `kubernetes-admin`, Organization `system:masters`). `--admin-address host:port` names the server `admin.conf` dials in place of the endpoint on port 6443, for a forward. Files that exist are kept, except `admin.conf`.
+- **`gen kubernetes-node`** writes a Node's user-data (`--out`, mode `0600`) and, with `--network-config`, its network-config. `--role control-plane` runs etcd, the API server, the controller manager and the scheduler besides the Node's own programs and needs what `gen kubernetes` wrote; `--role worker` runs containerd, the kubelet and kube-proxy only. `--peer <address>=<pod-prefix>` routes to another Node's Pod prefix through its address (`spec.network.routes`); naructl refuses a Pod prefix outside `--pod-network`, one that overlaps another's, the Service range `10.96.0.0/16`, or the Node's own network. `--disable`, `--binary`, `--time-server`, `--extra-nic`, `--local-registry`, `--registry-ca` and `--sandbox-image` are as `gen node`'s, or ADR 0031's.
+- **Only the control-plane Node's user-data carries the cluster CA's key**: init issues its pairs from `spec.pki` (ADR 0013), and the controller manager signs with the key. A worker has no `spec.pki`: `gen kubernetes-node` issues its kubelet client and serving pairs and kube-proxy's from the CA and writes them with the CA's certificate as files under `/run/kubernetes/pki` (keys `0600`), the form of `--pairs-as-files`. They are not renewed at the Node; delivering new user-data renews them. The kubelet's client pair is `system:node:<name>` in `system:nodes`, which the API server's node authorizer names.
+- **`topology kubernetes`** prints the Kubernetes topology as `topology` prints gaon's, with no signer.
+
 ## Decided, not yet implemented
 
 Nothing is decided here and not yet implemented.
 
 ## Rationale
 
+- [ADR 0031](./adr/0031-a-node-runs-kubernetes-as-init-services-containerd-and-runc-are-static-and-pods-get-routed-prefixes-from-one-pod-network.md): the Kubernetes Node's layout, the CA key only the control-plane Node carries, the Pod network and `gen kubernetes`.
 - [ADR 0028](./adr/0028-naru-hostd-serves-a-host-api-over-mutual-tls-from-its-own-authority-and-creates-microvms-through-mvmds-runtime-api.md): why `spec.host` exists, that it applies live as a derived file, and how naructl issues the host API's serving pair and clients.
 - [ADR 0025](./adr/0025-an-upgrade-is-a-bundle-posted-to-v1-upgrade-which-init-writes-to-the-trial-slot-and-the-trial-boot-promotes-when-healthy-and-rolls-back-when-not.md): the upgrade request and the command that sends it.
 - [ADR 0026](./adr/0026-a-node-takes-registry-credentials-and-trust-as-configuration-an-ecr-credential-comes-from-iam-roles-anywhere-and-an-agent-pair-without-the-required-organization-is-set-aside.md): why a Node takes registry credentials and trust as configuration, the files init writes, the ECR credential from IAM Roles Anywhere, the pinned bundle and the O-less kept-pair rule.

@@ -44,6 +44,14 @@ func TestQemuArgs_AHostReachNICIsNotRestricted(t *testing.T) {
 	assert.NotContains(t, line, "restrict")
 }
 
+func TestQemuArgs_AMemoryOfTheConfigReplacesTheDefault(t *testing.T) {
+	c := cfg(1, 2, true, false)
+
+	assert.Contains(t, qemuLine(t, c), "-m 3072 ")
+	c.MemoryMiB = 4096
+	assert.Contains(t, qemuLine(t, c), "-m 4096 ")
+}
+
 func TestQemuArgs_ARTCBaseStartsTheNodesClockAtThatDate(t *testing.T) {
 	spec := Spec{Config: cfg(1, 1, true, false), RTCBase: "2021-03-04T05:06:07"}
 	spec.Dir, spec.Disk, spec.Mcast = t.TempDir(), filepath.Join(t.TempDir(), "naru.img"), "230.78.0.1:5000"
