@@ -9,6 +9,8 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -121,6 +123,15 @@ func registryEntry(extra ...string) []string {
 	return []string{strings.Join(append([]string{"host=" + fixture.RegistryAddr, "ca=" + ca}, extra...), ",")}
 }
 
+// passwordFile writes password to a file of the test's directory and returns the gen node
+// --registry entry that reads it.
+func passwordFile(t *testing.T, password string) string {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "password")
+	require.NoError(t, os.WriteFile(f, []byte(password), 0o600))
+	return "password-file=" + f
+}
+
 // pullMachine boots one Node that runs gaon with spec, admits it, and applies the Machine, whose
 // image is on the Node's registry service. It returns the Node and the cluster's host API.
 func pullMachine(t *testing.T, spec node.ClusterSpec) (*node.Node, *hostapi.Client, *gaoncli.Client) {
@@ -174,7 +185,7 @@ var authArgs = withArgs("registry", "-user", regUser, "-password", regPassword)
 // spec.registries, and checks that mvmd pulled the image.
 func TestNode_AMachineImageIsPulledWithTheCredentialSpecRegistriesGives(t *testing.T) {
 	nd, _, _ := pullMachine(t, node.ClusterSpec{
-		Registries:   registryEntry("username="+regUser, "password="+regPassword),
+		Registries:   registryEntry("username="+regUser, passwordFile(t, regPassword)),
 		EditUserData: editUserData(authArgs),
 	})
 
@@ -197,7 +208,7 @@ func TestNode_AMachineImageIsRefusedWhenSpecRegistriesGivesNoCredential(t *testi
 // registry does not accept.
 func TestNode_AMachineImageIsRefusedWithAWrongPassword(t *testing.T) {
 	nd, _, _ := pullMachine(t, node.ClusterSpec{
-		Registries:   registryEntry("username="+regUser, "password=wrong"),
+		Registries:   registryEntry("username="+regUser, passwordFile(t, "wrong")),
 		EditUserData: editUserData(authArgs),
 	})
 
@@ -210,7 +221,7 @@ func TestNode_AMachineImageIsRefusedWithAWrongPassword(t *testing.T) {
 // the registry sees no request. With the authority (the test above) the same pull succeeds.
 func TestNode_MvmdTrustsARegistryAuthorityOnlyThroughSpecRegistries(t *testing.T) {
 	nd, _, _ := pullMachine(t, node.ClusterSpec{
-		Registries:   []string{"host=" + fixture.RegistryAddr + ",username=" + regUser + ",password=" + regPassword},
+		Registries:   []string{"host=" + fixture.RegistryAddr + ",username=" + regUser + "," + passwordFile(t, regPassword)},
 		EditUserData: editUserData(authArgs),
 	})
 
@@ -353,10 +364,18 @@ func TestNode_AwsSigningHelperAcceptsTheAgentPairAsCertificateAndKey(t *testing.
 	}
 	out, err := run("read-certificate-data", "--certificate", pairFile)
 	require.NoError(t, err, out)
-	assert.Contains(t, out, "gaon:nodes", "the helper read the certificate of the pair")
+	var data struct {
+		CertificateData string `json:"certificateData"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &data), out)
+	der, err := base64.StdEncoding.DecodeString(data.CertificateData)
+	require.NoError(t, err)
+	cert, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"gaon:nodes"}, cert.Subject.Organization, "the helper read the certificate of the pair")
 	out, err = run("sign-string", "--certificate", pairFile, "--private-key", pairFile)
 	require.NoError(t, err, out)
-	assert.Contains(t, out, "signature", "the helper signed with the key of the same file")
+	assert.Regexp(t, `^"[0-9a-f]{16,}"\s*$`, out, "the helper signed with the key of the same file")
 
 	_, err = run("sign-string", "--certificate", pairFile, "--private-key", filepath.Join(dir, "missing.pem"))
 	var exit *exec.ExitError
