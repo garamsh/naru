@@ -56,7 +56,7 @@ func (r *rig) Reissue(spec config.PKI, names []string) error {
 	return r.note(fmt.Sprintf("issue %v", names))
 }
 func (r *rig) WriteRegistries(config.Spec) error { return r.note("write-registries") }
-func (r *rig) Reload(config.API) error { return r.note("reload") }
+func (r *rig) Reload(config.API) error           { return r.note("reload") }
 func (r *rig) AddRoute(rt config.Route) error {
 	return r.note(fmt.Sprintf("add-route %s via %s", rt.To, rt.Via))
 }
