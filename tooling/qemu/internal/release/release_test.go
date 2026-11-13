@@ -95,8 +95,16 @@ func guestFile(t *testing.T) string {
 // userDataFiles is release.UserData with naructl and the test inputs.
 func userDataFiles(t *testing.T) (map[string][]byte, error) {
 	t.Helper()
-	return release.UserData(tool(t), guestFile(t), inputs.FirecrackerSHA256)
+	dir := t.TempDir()
+	require.NoError(t, fixture.WriteRoot(dir))
+	b, err := os.ReadFile(filepath.Join(dir, "ca.pem"))
+	require.NoError(t, err)
+	testCA = string(b)
+	return release.UserData(tool(t), guestFile(t), inputs.FirecrackerSHA256, filepath.Join(dir, "ca.pem"))
 }
+
+// testCA is the registry authority of the user-data the tests last asked for.
+var testCA string
 
 // buildInit builds naru-init from the init module alone, as a release would, and returns its path.
 func buildInit(t *testing.T) string {
@@ -150,6 +158,7 @@ type userData struct {
 		Network struct {
 			Routes []struct{ To, Via string }
 		}
+		Registries []struct{ Host, CA string }
 		PKI *struct {
 			Authorities []struct {
 				Certificate, Key string
@@ -443,4 +452,17 @@ func TestBuild_ShipsTheUpgradeBundleListedInSHA256SUMS(t *testing.T) {
 	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
 	require.NoError(t, err)
 	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists it")
+}
+
+func TestUserData_EveryNodeTrustsTheRegistryServiceThroughSpecRegistries(t *testing.T) {
+	files, err := userDataFiles(t)
+	require.NoError(t, err)
+
+	for name, b := range files {
+		n := parseUserData(t, b)
+		if assert.Len(t, n.Spec.Registries, 1, name) {
+			assert.Equal(t, fixture.RegistryAddr, n.Spec.Registries[0].Host, name)
+			assert.Equal(t, testCA, n.Spec.Registries[0].CA, name)
+		}
+	}
 }

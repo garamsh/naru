@@ -203,6 +203,10 @@ type Node struct {
 	TimeServers []string
 	// Peers are <address>=<machine-prefix> entries (gen node --peer).
 	Peers []string
+	// Registries are gen node --registry values: host=H,ca=FILE,username=U,password=P or helper=NAME.
+	Registries []string
+	// AWSRegion, AWSTrustAnchor, AWSProfile and AWSRole are gen node's --aws-* flags, all or none.
+	AWSRegion, AWSTrustAnchor, AWSProfile, AWSRole string
 	// Binaries maps a service's name to its executable's path on the Node.
 	Binaries                          map[string]string
 	Disable                           []string
@@ -243,6 +247,13 @@ func (t Tool) GenNode(n Node) error {
 	flag("member", n.Members...)
 	flag("time-server", n.TimeServers...)
 	flag("peer", n.Peers...)
+	flag("registry", n.Registries...)
+	if n.AWSRegion != "" {
+		flag("aws-region", n.AWSRegion)
+		flag("aws-trust-anchor", n.AWSTrustAnchor)
+		flag("aws-profile", n.AWSProfile)
+		flag("aws-role", n.AWSRole)
+	}
 	names := make([]string, 0, len(n.Binaries))
 	for name := range n.Binaries {
 		names = append(names, name)

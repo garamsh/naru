@@ -80,12 +80,34 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// Basic, when its User is not empty, makes the registry answer 401 to a request that does not
+// carry that user and password (HTTP basic authentication), as a registry that wants a credential
+// does. The refusal is logged, so a test sees that mvmd asked and was turned away.
+type Basic struct{ User, Password string }
+
+func (b Basic) wrap(next http.Handler) http.Handler {
+	if b.User == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		user, pass, ok := req.BasicAuth()
+		if !ok || user != b.User || pass != b.Password {
+			slog.Info("refused", "method", req.Method, "path", req.URL.Path, "credential", ok)
+			w.Header().Set("Www-Authenticate", `Basic realm="naru test registry"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, req)
+	})
+}
+
 // Serve serves dir on addr over TLS with the certificate and key files, until it fails.
-func Serve(addr, dir, certFile, keyFile string) error {
+func Serve(addr, dir, certFile, keyFile string, auth Basic) error {
 	h, err := Handler(dir)
 	if err != nil {
 		return err
 	}
+	h = auth.wrap(h)
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return err
