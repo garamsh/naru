@@ -53,7 +53,7 @@ func TestNode_ARebootModeApplyStoresAFieldOnlyARebootCanChangeThenTheNodeBootsAt
 
 	refused := ctl(admin, "apply", "-f", forwarding, "--mode", "no-reboot")
 	require.Error(t, refused.Err, "the control: the same patch is refused without a reboot")
-	assert.Contains(t, refused.refusal(), "spec.network")
+	assert.Contains(t, refused.refusal(), "spec.network.forwarding")
 	require.Equal(t, 0, revisionOf(t, admin))
 
 	applied := ctl(admin, "apply", "-f", forwarding, "--mode", "reboot")

@@ -172,6 +172,13 @@ func (f *fakeLinks) SetDefaultRoute(l link, gw netip.Addr) error {
 	return f.do("route " + gw.String() + " " + l.Name)
 }
 
+func (f *fakeLinks) ReplaceRoute(to netip.Prefix, via netip.Addr) error {
+	return f.do("replace-route " + to.String() + " " + via.String())
+}
+func (f *fakeLinks) DeleteRoute(to netip.Prefix, via netip.Addr) error {
+	return f.do("delete-route " + to.String() + " " + via.String())
+}
+
 func TestHost_ApplyNetwork(t *testing.T) {
 	mac := net.HardwareAddr{0x02, 0, 0, 0, 0, 0x07}
 	nic := func(gw string) netcfg.Interface {

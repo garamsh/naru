@@ -169,6 +169,7 @@ func (v *validation) network(n Network) {
 		}
 		seen[f] = true
 	}
+	v.routes(n.Routes)
 }
 
 func (v *validation) files(files []File, services []Service) {

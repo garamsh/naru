@@ -27,6 +27,8 @@ type Host interface {
 	MountDataDisk(config.DataDisk) error
 	// EnableForwarding turns forwarding on for the families.
 	EnableForwarding([]config.Family) error
+	// AddRoute installs a static route of spec.network.routes.
+	AddRoute(config.Route) error
 	// WriteFiles writes the files the configuration carries.
 	WriteFiles([]config.File) error
 	// SyncTime synchronises the clock with the servers, each a host:port, and returns the
@@ -73,6 +75,7 @@ type API interface {
 // disk is refused, the Node API cannot listen, the kernel cannot be set up or
 // a certificate cannot be issued: a refusal is the same whichever service it would have kept from
 // starting. A clock that no time server could set is not one: it is logged, and the boot goes on.
+// Nor is a route the kernel refuses: it is logged too.
 // On success it returns the effective configuration and its revision.
 func Run(host Host, issuer Issuer, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
 	userData, networkConfig, err := host.ReadSeed()
@@ -107,6 +110,7 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	if err := host.EnableForwarding(cfg.Spec.Network.Forwarding); err != nil {
 		return store.Stored{}, err
 	}
+	addRoutes(host, cfg.Spec.Network.Routes, log)
 	if err := host.WriteFiles(cfg.Spec.Files); err != nil {
 		return store.Stored{}, err
 	}
@@ -139,6 +143,19 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 		}
 	}
 	return effective, nil
+}
+
+// addRoutes installs spec.network.routes. It never refuses the boot: a route the kernel refuses is
+// logged at error level and the rest are installed, so a stored route that no longer fits the
+// network cannot take the Node, and its Node API, down.
+func addRoutes(host Host, routes []config.Route, log *slog.Logger) {
+	for _, r := range routes {
+		if err := host.AddRoute(r); err != nil {
+			log.Error("route not installed; the boot goes on", "to", r.To, "via", r.Via, "err", err)
+			continue
+		}
+		log.Info("route installed", "to", r.To, "via", r.Via)
+	}
 }
 
 // syncTime sets the clock from spec.time once, before certificates are issued. It never refuses
