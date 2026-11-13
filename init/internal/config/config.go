@@ -186,10 +186,13 @@ func (s Spec) Runs(svc Service) bool {
 }
 
 // DataDisk names the disk mounted at MountPoint, by Device or by Label, exactly one of them.
+// FormatBlank asks init to format a blank disk as the data disk, which a guest Node's host
+// cannot do for it; it needs Label, the label the new file system gets.
 type DataDisk struct {
-	Device     string `yaml:"device"`
-	Label      string `yaml:"label"`
-	MountPoint string `yaml:"mountPoint"`
+	Device      string `yaml:"device"`
+	Label       string `yaml:"label"`
+	MountPoint  string `yaml:"mountPoint"`
+	FormatBlank bool   `yaml:"formatBlank,omitempty"`
 }
 
 // Network holds the families for which forwarding is turned on and the routes init adds.

@@ -15,8 +15,8 @@ import (
 // outside its own, so no service may take it as a name.
 const DetachedName = "detached"
 
-// DelegatedName is the cgroup init keeps empty, with the cpu, memory and pids controllers enabled in
-// it, for the kubelet to make its pod cgroups in (ADR 0031), so no service may take it as a name.
+// DelegatedName is the cgroup init keeps empty, with the cpu, cpuset, hugetlb, memory and pids controllers
+// enabled in it, for the kubelet to make its pod cgroups in (ADR 0031), so no service may take it as a name.
 const DelegatedName = "kubernetes"
 
 // maxLabelLen is the length of an ext4 volume label.
@@ -219,6 +219,9 @@ func (v *validation) dataDisk(d DataDisk) {
 		v.fail("spec.dataDisk.device", "must be a clean absolute path, got %q", d.Device)
 	case len(d.Label) > maxLabelLen:
 		v.fail("spec.dataDisk.label", "must be at most %d bytes, got %d", maxLabelLen, len(d.Label))
+	}
+	if d.FormatBlank && d.Label == "" {
+		v.fail("spec.dataDisk.formatBlank", "needs spec.dataDisk.label, the label the formatted disk gets")
 	}
 	if !isCleanAbs(d.MountPoint) || d.MountPoint == "/" {
 		v.fail("spec.dataDisk.mountPoint", "must be a clean absolute path other than /, got %q", d.MountPoint)

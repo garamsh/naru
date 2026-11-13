@@ -23,6 +23,8 @@ type Host interface {
 	ReadSeed() (userData, networkConfig []byte, err error)
 	// ApplyNetwork brings the network up and writes the resolvers.
 	ApplyNetwork(netcfg.Config) error
+	// FormatBlankDataDisk formats the blank disk spec.dataDisk.formatBlank names, and logs it.
+	FormatBlankDataDisk(config.DataDisk, *slog.Logger) error
 	// MountDataDisk mounts the data disk, or refuses it.
 	MountDataDisk(config.DataDisk) error
 	// EnableForwarding turns forwarding on for the families.
@@ -105,6 +107,11 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	}
 	log.Info("network configured", "interfaces", len(network.Interfaces), "nameservers", len(network.Nameservers))
 
+	if base.Spec.DataDisk.FormatBlank {
+		if err := host.FormatBlankDataDisk(base.Spec.DataDisk, log); err != nil {
+			return store.Stored{}, err
+		}
+	}
 	if err := host.MountDataDisk(base.Spec.DataDisk); err != nil {
 		return store.Stored{}, err
 	}

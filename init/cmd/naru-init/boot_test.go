@@ -69,6 +69,9 @@ func (n *node) ReadSeed() ([]byte, []byte, error) {
 }
 func (n *node) ApplyNetwork(netcfg.Config) error    { return nil }
 func (n *node) MountDataDisk(config.DataDisk) error { return nil }
+func (n *node) FormatBlankDataDisk(config.DataDisk, *slog.Logger) error {
+	return nil
+}
 func (n *node) EnableForwarding([]config.Family) error {
 	return nil
 }
