@@ -160,6 +160,10 @@ type Node struct {
 	// The first is mounted where mvmd keeps its disks (MvmdDisks); the others under init's storage
 	// root.
 	Storage []StorageDisk
+
+	// Kube, when set, makes the Node a Kubernetes Node (ADR 0031): its description is the Kubernetes
+	// topology's, and the Machine, token and Mode fields are not used.
+	Kube *KubeNode
 }
 
 // Registry is one entry of spec.registries. At most one of Helper and Username with Password is set.
@@ -251,7 +255,9 @@ type pkiCertificate struct {
 	CertificatePath string   `yaml:"certificatePath"`
 	KeyPath         string   `yaml:"keyPath"`
 	CommonName      string   `yaml:"commonName"`
+	Organization    string   `yaml:"organization,omitempty"`
 	Usage           string   `yaml:"usage"`
+	DNSNames        []string `yaml:"dnsNames,omitempty"`
 	IPAddresses     []string `yaml:"ipAddresses,omitempty"`
 	NodeAddresses   bool     `yaml:"nodeAddresses,omitempty"`
 	Restart         []string `yaml:"restart,omitempty"`
@@ -299,6 +305,9 @@ type nodeConfig struct {
 
 // Check reports the first thing wrong with the Node's description.
 func (n Node) Check() error {
+	if n.Kube != nil {
+		return n.checkKube()
+	}
 	switch {
 	case n.Name == "":
 		return errors.New("a Node needs a name")
@@ -423,6 +432,9 @@ func (n Node) apiRoot() string {
 // registry (the scheduler may bind a Machine to any Node, and mvmd pulls from the registry on its
 // own Node), then gaon's.
 func (n Node) UserData() ([]byte, error) {
+	if n.Kube != nil {
+		return n.kubeUserData()
+	}
 	if err := n.Check(); err != nil {
 		return nil, err
 	}

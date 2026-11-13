@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -211,7 +212,7 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 	}
 	args := []string{
 		"-name", name + ",process=" + name,
-		"-enable-kvm", "-cpu", cpu, "-smp", "2", "-m", "3072",
+		"-enable-kvm", "-cpu", cpu, "-smp", "2", "-m", strconv.Itoa(memoryMiB(spec.Config)),
 		"-machine", "q35",
 		"-drive", "if=pflash,format=raw,unit=0,readonly=on,file=" + OVMFCode,
 		"-drive", "if=pflash,format=raw,unit=1,file=" + vars,
@@ -273,6 +274,14 @@ func dataAndExtraDisks(spec Spec, dataDisk string) []string {
 		return append(extra, data...)
 	}
 	return append(data, extra...)
+}
+
+// memoryMiB is the memory of the Node's VM.
+func memoryMiB(c Config) int {
+	if c.MemoryMiB > 0 {
+		return c.MemoryMiB
+	}
+	return 3072
 }
 
 // bootDiskAccess is the drive options that make the boot disk read-only, unless the Spec says the

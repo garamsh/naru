@@ -2,16 +2,16 @@
 # Builds the initramfs: naru-init as /init, mvmd and mvmd-supervisor from the pinned mvmd commit,
 # the Firecracker binary mvmd's fetch.sh verifies, mke2fs as mkfs.ext4 (ADR 0011), mkfs.xfs (ADR 0027), the gaon
 # services and etcd (ADR 0012), the two credential helpers and the public root bundle (ADR 0026), the stand-in
-# service the tests configure, and the guest kernels, the two initrds and guest.json that image/guest/build.sh wrote, which a Machine
+# service the tests configure, Kubernetes with its container runtime, CNI plugins, nft, mount and umount, and the guest kernels, the two initrds and guest.json that image/guest/build.sh wrote, which a Machine
 # boots on (ADR 0010).
-# Every program is static (CGO_ENABLED=0). The archive is a newc cpio written by the kernel's own
+# Every program is a static executable (the image has no libc), which this script checks. The archive is a newc cpio written by the kernel's own
 # usr/gen_init_cpio, which takes the entries in the order of initramfs.list, owns them by 0:0 and
 # stamps every mtime with SOURCE_DATE_EPOCH; it is compressed with gzip -9n, which stores no name
 # or time. The same inputs therefore give the same bytes (image/build.env fixes the environment).
 #
 # NARU_VERSION (optional, in the environment) is the version naru-init reports on the Node API.
 #
-# Usage: build.sh <build-dir> <kernel-build-dir> <output-dir> <guest-dir> <e2fsprogs-dir> <gaon-dir> <etcd-dir> <regtools-dir> <xfsprogs-dir>
+# Usage: build.sh <build-dir> <kernel-build-dir> <output-dir> <guest-dir> <e2fsprogs-dir> <gaon-dir> <etcd-dir> <regtools-dir> <xfsprogs-dir> <k8s-dir>
 # <build-dir> receives the mvmd checkout and the built programs, <kernel-build-dir> is the one
 # image/kernel/build.sh was given, whose dl/ holds the verified kernel tarball (gen_init_cpio.c is
 # taken from it), <guest-dir> is the one image/guest/build.sh wrote, <e2fsprogs-dir> is the one
@@ -19,10 +19,13 @@
 # image/etcd/build.sh wrote, <regtools-dir> holds what image/ecr-login/build.sh,
 # image/rolesanywhere/build.sh and image/cacert/build.sh wrote, <xfsprogs-dir> is the one image/xfsprogs/build.sh wrote, and <output-dir> receives
 # initramfs.cpio.gz and inputs.env, which names the Firecracker binary mvmd's fetch.sh yields.
+# <k8s-dir> holds what image/kubernetes/build.sh, image/containerd/build.sh, image/cni/build.sh,
+# image/nftables/build.sh and image/util-linux/build.sh wrote: the Kubernetes programs, containerd,
+# its shim, runc, the CNI plugins, nft, mount and umount.
 set -euo pipefail
 
-if [ "$#" -ne 9 ]; then
-  echo "usage: $0 <build-dir> <kernel-build-dir> <output-dir> <guest-dir> <e2fsprogs-dir> <gaon-dir> <etcd-dir> <regtools-dir> <xfsprogs-dir>" >&2
+if [ "$#" -ne 10 ]; then
+  echo "usage: $0 <build-dir> <kernel-build-dir> <output-dir> <guest-dir> <e2fsprogs-dir> <gaon-dir> <etcd-dir> <regtools-dir> <xfsprogs-dir> <k8s-dir>" >&2
   exit 2
 fi
 here=$(cd "$(dirname "$0")" && pwd)
@@ -36,6 +39,7 @@ gaon=$(cd "$6" && pwd)
 etcd=$(cd "$7" && pwd)
 regtools=$(cd "$8" && pwd)
 xfsprogs=$(cd "$9" && pwd)
+k8s=$(cd "${10}" && pwd)
 # shellcheck source=pin.env
 . "$here/pin.env"
 # shellcheck source=../build.env
@@ -86,9 +90,13 @@ done
 cp "$etcd/etcd" "$bin/etcd"
 cp "$regtools/docker-credential-ecr-login" "$regtools/aws_signing_helper" "$bin/"
 cp "$regtools/ca-certificates.crt" "$bin/ca-certificates.crt"
+k8s_programs="kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy containerd containerd-shim-runc-v2 runc nft mount umount bridge host-local loopback"
+for f in $k8s_programs; do
+  cp "$k8s/$f" "$bin/$f"
+done
 sed "s#=$build/inputs/#=$out/#" "$build/inputs/inputs.env" >"$out/inputs.env"
 
-for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 mkfs.xfs naru-standin naru-vip naru-fence naru-hostd gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd docker-credential-ecr-login aws_signing_helper; do
+for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 mkfs.xfs naru-standin naru-vip naru-fence naru-hostd gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd docker-credential-ecr-login aws_signing_helper $k8s_programs; do
   if ! file "$bin/$f" | grep -Eq 'statically linked|static-pie linked'; then
     echo "initramfs: $f is not a static executable: $(file "$bin/$f")" >&2
     exit 1

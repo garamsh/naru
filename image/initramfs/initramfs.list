@@ -6,8 +6,12 @@ dir /dev 0755 0 0
 # The kernel's built-in initramfs, whose list has this node, is used only when none is embedded.
 nod /dev/console 0600 0 0 c 5 1
 dir /etc 0755 0 0
+dir /etc/cni 0755 0 0
 dir /etc/ssl 0755 0 0
 dir /etc/ssl/certs 0755 0 0
+dir /opt 0755 0 0
+dir /opt/cni 0755 0 0
+dir /opt/cni/bin 0755 0 0
 dir /proc 0755 0 0
 dir /run 0755 0 0
 dir /sys 0755 0 0
@@ -15,6 +19,23 @@ dir /tmp 1777 0 0
 dir /var 0755 0 0
 dir /var/lib 0755 0 0
 dir /var/lib/naru 0755 0 0
+# The kubelet's device-plugin directory is /var/lib/kubelet in the kubelet's code, whatever --root-dir says.
+slink /var/lib/kubelet /var/lib/naru/kubelet 0777 0 0
+# The kubelet reads /etc/passwd and /etc/group for its user-namespace mappings; a Kubernetes Node's
+# user-data writes them.
+slink /etc/passwd /run/kubernetes/passwd 0777 0 0
+slink /etc/group /run/kubernetes/group 0777 0 0
+# containerd copies /etc/hosts into every Pod's sandbox; a Kubernetes Node's user-data writes it.
+slink /etc/hosts /run/kubernetes/hosts 0777 0 0
+# The kubelet makes /var/log/containers and /var/log/pods, and the root is read-only once init has set
+# up: /var/log is /tmp, which is a tmpfs. The Pods' logs themselves are in the kubelet's podLogsDir.
+slink /var/log /tmp 0777 0 0
+# containerd makes a Pod's network namespace under /var/run/netns, where it keeps them by default.
+slink /var/run /run 0777 0 0
+# The CNI plugins keep their cached results and host-local its leases in /var/lib/cni; both are as
+# short-lived as the Pods, which containerd keeps in /run, so they are in /run/cni, where the
+# network configuration is.
+slink /var/lib/cni /run/cni 0777 0 0
 slink /etc/resolv.conf /run/naru/resolv.conf 0777 0 0
 file /init @OUT@/naru-init 0755 0 0
 file /bin/mvmd @OUT@/mvmd 0755 0 0
@@ -34,3 +55,17 @@ file /bin/naru-standin @OUT@/naru-standin 0755 0 0
 file /bin/naru-vip @OUT@/naru-vip 0755 0 0
 file /bin/naru-fence @OUT@/naru-fence 0755 0 0
 file /bin/naru-hostd @OUT@/naru-hostd 0755 0 0
+file /bin/kube-apiserver @OUT@/kube-apiserver 0755 0 0
+file /bin/kube-controller-manager @OUT@/kube-controller-manager 0755 0 0
+file /bin/kube-scheduler @OUT@/kube-scheduler 0755 0 0
+file /bin/kubelet @OUT@/kubelet 0755 0 0
+file /bin/kube-proxy @OUT@/kube-proxy 0755 0 0
+file /bin/containerd @OUT@/containerd 0755 0 0
+file /bin/containerd-shim-runc-v2 @OUT@/containerd-shim-runc-v2 0755 0 0
+file /bin/runc @OUT@/runc 0755 0 0
+file /bin/nft @OUT@/nft 0755 0 0
+file /bin/mount @OUT@/mount 0755 0 0
+file /bin/umount @OUT@/umount 0755 0 0
+file /opt/cni/bin/bridge @OUT@/bridge 0755 0 0
+file /opt/cni/bin/host-local @OUT@/host-local 0755 0 0
+file /opt/cni/bin/loopback @OUT@/loopback 0755 0 0

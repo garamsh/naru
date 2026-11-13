@@ -95,6 +95,7 @@ func TestParse_RefusesAndNamesTheField(t *testing.T) {
 		{"relative binary", "binary: /usr/bin/etcd", "binary: etcd", "spec.services[1].binary"},
 		{"duplicate service name", "name: etcd", "name: mvmd", "spec.services[1].name"},
 		{"reserved service name", "name: etcd", "name: detached", "spec.services[1].name"},
+		{"delegated cgroup name", "name: etcd", "name: kubernetes", "spec.services[1].name"},
 		{"invalid env name", "MVMD_LOG: debug", "'A=B': debug", "spec.services[0].env"},
 		{"disk named twice", "label: NARUDATA", "label: NARUDATA\n    device: /dev/vdb", "spec.dataDisk"},
 		{"disk not named", "    label: NARUDATA\n", "", "spec.dataDisk"},

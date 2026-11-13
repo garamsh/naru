@@ -125,6 +125,16 @@ func alive(pid int) bool {
 	return state != 'Z' && state != 'X'
 }
 
+func TestCgroupTree_PrepareEnablesTheControllersInTheDelegatedGroup(t *testing.T) {
+	root := t.TempDir()
+
+	require.NoError(t, linux.NewCgroupTree(root).Prepare())
+
+	got, err := os.ReadFile(filepath.Join(root, "naru", config.DelegatedName, "cgroup.subtree_control"))
+	require.NoError(t, err)
+	assert.Equal(t, "+cpu +cpuset +hugetlb +memory +pids", string(got))
+}
+
 func waitGone(pid int) bool {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
