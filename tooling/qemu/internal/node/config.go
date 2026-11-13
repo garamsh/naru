@@ -66,7 +66,17 @@ type Config struct {
 	// AgentPair, when not empty, is a host directory the data disk carries as gaon-node-agent/,
 	// so that a Node boots with a kept agent pair that init may set aside (ADR 0026).
 	AgentPair string
+	// ExtraDisk, when not 0, is the size in bytes of a blank sparse disk the Node has besides its
+	// boot and data disks, which a Node boots with at /dev/sdc.
+	ExtraDisk int64
+	// Storage is spec.storage, and StorageProbe the directory a naru-storageprobe service reports
+	// on, when not empty.
+	Storage      []Storage
+	StorageProbe string
 }
+
+// Storage is a spec.storage entry.
+type Storage struct{ Name, Device, MountPoint string }
 
 // Route is a spec.network.routes entry: a prefix and the address that reaches it.
 type Route struct{ To, Via string }
@@ -169,6 +179,12 @@ type route struct {
 	Via string `yaml:"via"`
 }
 
+type storage struct {
+	Name       string `yaml:"name"`
+	Device     string `yaml:"device"`
+	MountPoint string `yaml:"mountPoint,omitempty"`
+}
+
 type nodeConfig struct {
 	APIVersion string `yaml:"apiVersion"`
 	Kind       string `yaml:"kind"`
@@ -188,6 +204,7 @@ type nodeConfig struct {
 		Services   []service  `yaml:"services"`
 		Files      []file     `yaml:"files"`
 		Registries []registry `yaml:"registries,omitempty"`
+		Storage    []storage  `yaml:"storage,omitempty"`
 	} `yaml:"spec"`
 }
 
@@ -242,6 +259,12 @@ func (c Config) NaruYAML() ([]byte, error) {
 	}
 	if len(c.NetEcho) > 0 {
 		n.Spec.Services = append(n.Spec.Services, service{Name: "netecho", Binary: path.Join(root, "bin/naru-netecho"), Args: c.NetEcho})
+	}
+	for _, s := range c.Storage {
+		n.Spec.Storage = append(n.Spec.Storage, storage(s))
+	}
+	if c.StorageProbe != "" {
+		n.Spec.Services = append(n.Spec.Services, service{Name: "storageprobe", Binary: path.Join(root, "bin/naru-storageprobe"), Args: []string{"-dir", c.StorageProbe}})
 	}
 	if c.Probe {
 		n.Spec.Services = append(n.Spec.Services, service{

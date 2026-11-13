@@ -27,6 +27,9 @@ const (
 	DataMount = "/var/lib/naru"
 	// InputsDir is the tree on the data disk that carries the registry and its image.
 	InputsDir = DataMount + "/inputs"
+	// MvmdDisks is the directory mvmd keeps its disk images in, which it does not let a setting
+	// move: a storage disk is mounted over it.
+	MvmdDisks = DataMount + "/mvmd/disks"
 	// RegistryAddr is where the registry on every Node listens and mvmd pulls from.
 	RegistryAddr = "127.0.0.1:5000"
 
@@ -141,6 +144,10 @@ type Node struct {
 	// AWS is the IAM Roles Anywhere profile the credential helpers use, spec.aws. The Node's
 	// certificate and key are the Node Agent's pair, AgentCertDir/AgentPair.
 	AWS *AWS
+	// Storage are the extra disks the Node offers as XFS, found by file system or partition label.
+	// The first is mounted where mvmd keeps its disks (MvmdDisks); the others under init's storage
+	// root.
+	Storage []StorageDisk
 }
 
 // Registry is one entry of spec.registries. At most one of Helper and Username with Password is set.
@@ -151,6 +158,11 @@ type Registry struct {
 // AWS is spec.aws without the paths of the pair.
 type AWS struct {
 	Region, TrustAnchorArn, ProfileArn, RoleArn string
+}
+
+// StorageDisk is an extra disk: its name, and the label or the device path that finds it, exactly one.
+type StorageDisk struct {
+	Name, Label, Device string
 }
 
 type service struct {
@@ -188,6 +200,14 @@ type awsSpec struct {
 	RoleArn        string `yaml:"roleArn"`
 	Certificate    string `yaml:"certificate"`
 	Key            string `yaml:"key"`
+}
+
+// storage is an entry of spec.storage.
+type storage struct {
+	Name       string `yaml:"name"`
+	Label      string `yaml:"label,omitempty"`
+	Device     string `yaml:"device,omitempty"`
+	MountPoint string `yaml:"mountPoint,omitempty"`
 }
 
 type file struct {
@@ -257,6 +277,7 @@ type nodeConfig struct {
 		// Registries and AWS are spec.registries and spec.aws.
 		Registries []registryEntry `yaml:"registries,omitempty"`
 		AWS        *awsSpec        `yaml:"aws,omitempty"`
+		Storage    []storage       `yaml:"storage,omitempty"`
 	} `yaml:"spec"`
 }
 
@@ -277,6 +298,9 @@ func (n Node) Check() error {
 		return errors.New("the cluster's authority is not set")
 	}
 	if err := n.checkPeers(); err != nil {
+		return err
+	}
+	if err := n.checkStorage(); err != nil {
 		return err
 	}
 	if err := n.Mode.check(n.Token, n.Tokens, n.Disable); err != nil {
@@ -300,6 +324,24 @@ func (n Node) Check() error {
 		if !path.IsAbs(bin) {
 			return fmt.Errorf("the binary of %s, %q, is not an absolute path", name, bin)
 		}
+	}
+	return nil
+}
+
+// checkStorage reports the first extra disk init would refuse: a name that is not a DNS label of at
+// most 12 characters (the XFS label) or is repeated, or an empty label and device.
+func (n Node) checkStorage() error {
+	seen := map[string]bool{}
+	for _, d := range n.Storage {
+		switch {
+		case !dnsLabel.MatchString(d.Name) || len(d.Name) > 12:
+			return fmt.Errorf("the storage name %q is not a DNS label of at most 12 characters", d.Name)
+		case d.Label == "" && d.Device == "":
+			return fmt.Errorf("storage %q has no label or device", d.Name)
+		case seen[d.Name]:
+			return fmt.Errorf("storage %q is given twice", d.Name)
+		}
+		seen[d.Name] = true
 	}
 	return nil
 }
@@ -398,6 +440,13 @@ func (n Node) UserData() ([]byte, error) {
 	if a := n.AWS; a != nil {
 		pair := path.Join(AgentCertDir, AgentPair)
 		c.Spec.AWS = &awsSpec{Region: a.Region, TrustAnchorArn: a.TrustAnchorArn, ProfileArn: a.ProfileArn, RoleArn: a.RoleArn, Certificate: pair, Key: pair}
+	}
+	for i, d := range n.Storage {
+		e := storage{Name: d.Name, Label: d.Label, Device: d.Device}
+		if i == 0 {
+			e.MountPoint = MvmdDisks
+		}
+		c.Spec.Storage = append(c.Spec.Storage, e)
 	}
 	c.Spec.Services = n.services()
 	n.withoutDisabled(&c)

@@ -87,6 +87,9 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 	case na != nil && na.ListenAddr() != ra.ListenAddr():
 		reboot = append(reboot, "spec.api.listen")
 	}
+	if !slices.Equal(next.Spec.Storage, running.Spec.Storage) {
+		reboot = append(reboot, "spec.storage")
+	}
 	if len(reboot) > 0 {
 		return &InvalidError{Fields: reboot, Message: `these fields need a reboot; use mode "staged" or "reboot"`}
 	}

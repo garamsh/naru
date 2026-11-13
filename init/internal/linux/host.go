@@ -42,6 +42,8 @@ type Host struct {
 	procSys       string
 	diskWait      time.Duration
 	mount         mountFunc
+	run           runFunc
+	grow          growFunc
 
 	seedMountPoint string
 	resolvConf     string
@@ -62,6 +64,8 @@ func NewHost(diskWait time.Duration) *Host {
 		procSys:       "/proc/sys",
 		diskWait:      diskWait,
 		mount:         syscall.Mount,
+		run:           execRun,
+		grow:          growFS,
 
 		seedMountPoint: seedMountPoint,
 		resolvConf:     resolvConf,
@@ -166,9 +170,15 @@ func isSeedLabel(got string) bool { return strings.EqualFold(got, seedLabel) }
 // find returns the block device whose label, read by read, satisfies match,
 // waiting up to diskWait for it to appear.
 func (h *Host) find(read labelReader, match func(string) bool) (string, error) {
+	return h.wait(func() (string, error) { return h.scan(read, match) })
+}
+
+// wait returns what look returns, trying again every diskPollInterval for up to diskWait while it
+// returns errNoDisk.
+func (h *Host) wait(look func() (string, error)) (string, error) {
 	deadline := time.Now().Add(h.diskWait)
 	for {
-		dev, err := h.scan(read, match)
+		dev, err := look()
 		if err == nil || !errors.Is(err, errNoDisk) || time.Now().After(deadline) {
 			return dev, err
 		}

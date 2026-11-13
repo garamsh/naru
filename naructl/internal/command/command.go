@@ -245,13 +245,13 @@ func genToken(args []string, stdout, stderr io.Writer) error {
 func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen node", stderr)
 	var (
-		nameservers, serving, binaries, disable, timeServers, peers, members, registries list
-		awsRegion, awsTrustAnchor, awsProfile, awsRole                                   string
-		n                                                                                layout.Node
-		caDir, address, gateway, apiServer                                               string
-		machinePrefix, guest, extraNIC                                                   string
-		out, networkConfig                                                               string
-		controlPlane, pairsAsFiles                                                       bool
+		nameservers, serving, binaries, disable, timeServers, peers, members, registries, storage list
+		awsRegion, awsTrustAnchor, awsProfile, awsRole                                            string
+		n                                                                                         layout.Node
+		caDir, address, gateway, apiServer                                                        string
+		machinePrefix, guest, extraNIC                                                            string
+		out, networkConfig                                                                        string
+		controlPlane, pairsAsFiles                                                                bool
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")
@@ -275,6 +275,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&awsRole, "aws-role", "", "the ARN of the IAM role; the certificate and key are the Node Agent's pair")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.Var(&peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
+	fs.Var(&storage, "storage", "<name>=<label or /dev/path>, an extra disk the Node offers as XFS, found by its partition or file system label, or by its device when the value starts with /dev/ (a blank disk has no label), repeatable: the first is mounted where mvmd keeps its disks")
 	fs.StringVar(&guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
 	fs.StringVar(&n.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
 	fs.BoolVar(&pairsAsFiles, "pairs-as-files", false, "the Node carries operator-issued pairs as files, with no bootstrap token: on a control-plane Node every pair, and no signing key")
@@ -354,6 +355,17 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("--peer: %w", err)
 		}
 		n.Peers = append(n.Peers, layout.Peer{Address: a, MachinePrefix: p})
+	}
+	for _, s := range storage {
+		name, value, ok := strings.Cut(s, "=")
+		if !ok {
+			return fmt.Errorf("--storage %q is not <name>=<label or /dev/path>", s)
+		}
+		d := layout.StorageDisk{Name: name, Label: value}
+		if strings.HasPrefix(value, "/dev/") {
+			d = layout.StorageDisk{Name: name, Device: value}
+		}
+		n.Storage = append(n.Storage, d)
 	}
 	for _, m := range members {
 		name, addr, ok := strings.Cut(m, "=")

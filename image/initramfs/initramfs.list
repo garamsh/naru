@@ -21,6 +21,7 @@ file /bin/mvmd @OUT@/mvmd 0755 0 0
 file /bin/mvmd-supervisor @OUT@/mvmd-supervisor 0755 0 0
 file /bin/firecracker @OUT@/firecracker 0755 0 0
 file /bin/mkfs.ext4 @OUT@/mkfs.ext4 0755 0 0
+file /bin/mkfs.xfs @OUT@/mkfs.xfs 0755 0 0
 file /bin/gaon-node-agent @OUT@/gaon-node-agent 0755 0 0
 file /bin/gaon-apiserver @OUT@/gaon-apiserver 0755 0 0
 file /bin/gaon-scheduler @OUT@/gaon-scheduler 0755 0 0

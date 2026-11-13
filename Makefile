@@ -74,7 +74,7 @@ build:
 	@echo "build: $(BIN)/naru-init: $$(file -b $(BIN)/naru-init | cut -d, -f1-4)"
 	@echo "build: $(BIN)/naructl: $$(file -b $(BIN)/naructl | cut -d, -f1-4)"
 
-# image builds the host kernel, the guest kernels and initrds, the static mke2fs, gaon's four
+# image builds the host kernel, the guest kernels and initrds, the static mke2fs and mkfs.xfs, gaon's four
 # services, etcd, and the initramfs that carries them, from pinned sources, into $(IMAGE): bzImage
 # (the kernel with the initramfs inside it, ADR 0020; bzImage.bare is the kernel before that),
 # initramfs.cpio.gz, inputs.env (the Firecracker pin the tests read) and guest/,
@@ -89,6 +89,7 @@ ETCD := $(IMAGE)/etcd
 # test-qemu builds and no release carries.
 REGTOOLS := $(IMAGE)/regtools
 TEST_ROOT ?=
+XFS := $(IMAGE)/xfsprogs
 # VERSION is the version naru-init reports on the Node API and the release assets carry: `git describe
 # --tags --always`, or VERSION=.
 VERSION ?= $(shell git describe --tags --always)
@@ -96,6 +97,7 @@ export NARU_VERSION := $(VERSION)
 image:
 	image/kernel/build.sh $(BUILD)/kernel $(IMAGE)
 	image/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
+	image/xfsprogs/build.sh $(BUILD)/xfsprogs $(XFS)
 	image/gaon/build.sh $(BUILD)/gaon $(GAON)
 	image/etcd/build.sh $(BUILD)/etcd $(ETCD)
 	image/ecr-login/build.sh $(BUILD)/ecr-login $(REGTOOLS)
@@ -103,7 +105,7 @@ image:
 	image/cacert/build.sh $(BUILD)/cacert $(REGTOOLS) $(TEST_ROOT)
 	image/mvmd-checkout.sh $(BUILD)/initramfs/mvmd
 	image/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
-	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS)
+	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS)
 	image/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
 
 # image-upgrade builds the two kernels the upgrade tests (ADR 0025) put on a running Node, from the
@@ -119,9 +121,9 @@ image-upgrade: image
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
 	  cp $(IMAGE)/bzImage.bare $(IMAGE)/kernel.stamp $(UPGRADE)/$$v/; \
 	done; \
-	NARU_VERSION='$(VERSION)-next' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS); \
+	NARU_VERSION='$(VERSION)-next' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS); \
 	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/next $(UPGRADE)/next/initramfs.cpio.gz; \
-	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS); \
+	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS); \
 	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
 
 # disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
@@ -133,15 +135,16 @@ disk: image
 
 # image-repro builds the image and the disk twice from clean build directories
 # and fails unless the kernel, the initramfs, the guest manifest (which names
-# the SHA-256 of every guest file), mke2fs, naru.img and naru.qcow2 of both are
+# the SHA-256 of every guest file), mke2fs, mkfs.xfs, naru.img and naru.qcow2 of both are
 # byte-identical. It takes two full kernel builds, two guest kernel builds, two
-# builds of the initrds and two of mke2fs.
+# builds of the initrds and two of mke2fs and mkfs.xfs.
 image-repro:
 	@set -e; \
 	for i in 1 2; do \
 	  rm -rf $(BUILD)/repro/$$i; \
 	  image/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
 	  image/e2fsprogs/build.sh $(BUILD)/repro/$$i/e2fsprogs $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
+	  image/xfsprogs/build.sh $(BUILD)/repro/$$i/xfsprogs $(BUILD)/repro/$$i/image/xfsprogs >/dev/null; \
 	  image/gaon/build.sh $(BUILD)/repro/$$i/gaon $(BUILD)/repro/$$i/image/gaon >/dev/null; \
 	  image/etcd/build.sh $(BUILD)/repro/$$i/etcd $(BUILD)/repro/$$i/image/etcd >/dev/null; \
 	  image/ecr-login/build.sh $(BUILD)/repro/$$i/ecr-login $(BUILD)/repro/$$i/image/regtools >/dev/null; \
@@ -149,16 +152,16 @@ image-repro:
 	  image/cacert/build.sh $(BUILD)/repro/$$i/cacert $(BUILD)/repro/$$i/image/regtools >/dev/null; \
 	  image/mvmd-checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
 	  image/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
-	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools >/dev/null; \
+	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs >/dev/null; \
 	  image/kernel/embed.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/initramfs.cpio.gz >/dev/null; \
 	  image/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
 	done; \
-	for f in bzImage e2fsprogs/mke2fs etcd/etcd regtools/docker-credential-ecr-login regtools/aws_signing_helper regtools/ca-certificates.crt gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz guest/guest.json naru.img naru.qcow2; do \
+	for f in bzImage e2fsprogs/mke2fs xfsprogs/mkfs.xfs etcd/etcd regtools/docker-credential-ecr-login regtools/aws_signing_helper regtools/ca-certificates.crt gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz guest/guest.json naru.img naru.qcow2; do \
 	  a=$$(sha256sum $(BUILD)/repro/1/image/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/$$f | cut -d' ' -f1); \
 	  echo "$@: $$f build 1 $$a"; echo "$@: $$f build 2 $$b"; \
 	  if [ "$$a" != "$$b" ]; then echo "$@: $$f differs between the builds" >&2; exit 1; fi; \
 	done; \
-	echo "$@: bzImage, mke2fs, etcd, the two credential helpers, the root bundle, the four gaon binaries, initramfs.cpio.gz, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
+	echo "$@: bzImage, mke2fs, mkfs.xfs, etcd, the two credential helpers, the root bundle, the four gaon binaries, initramfs.cpio.gz, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
 
 # nodes boots N (default 2) Nodes of the image under QEMU on one network, as
 # the user, and keeps them up until interrupted. Their disks and consoles are

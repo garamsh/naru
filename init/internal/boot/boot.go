@@ -36,6 +36,9 @@ type Host interface {
 	// SetAsidePair sets the pair file of p aside when its certificate lacks the Organization p
 	// names, and reports whether it did.
 	SetAsidePair(config.KeptPair) (bool, error)
+	// PrepareStorage finds a storage disk, formats it when it is blank, mounts it and grows its
+	// file system to the device, logging what it does.
+	PrepareStorage(config.Storage, *slog.Logger) error
 	// SyncTime synchronises the clock with the servers, each a host:port, and returns the
 	// result, or an error when none answers within the bound.
 	SyncTime(servers []string) (timesync.Result, error)
@@ -80,7 +83,7 @@ type API interface {
 // disk is refused, the Node API cannot listen, the kernel cannot be set up or
 // a certificate cannot be issued: a refusal is the same whichever service it would have kept from
 // starting. A clock that no time server could set is not one: it is logged, and the boot goes on.
-// Nor is a route the kernel refuses: it is logged too.
+// Nor is a route the kernel refuses, nor a storage disk that is missing or cannot be prepared: each is logged too.
 // On success it returns the effective configuration and its revision.
 func Run(host Host, issuer Issuer, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
 	userData, networkConfig, err := host.ReadSeed()
@@ -122,6 +125,7 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	if err := host.WriteRegistries(cfg.Spec); err != nil {
 		return store.Stored{}, fmt.Errorf("write the registry files: %w", err)
 	}
+	prepareStorage(host, cfg.Spec.Storage, log)
 	syncTime(host, cfg.Spec.Time, log)
 	if pki := cfg.Spec.PKI; len(pki.Authorities) > 0 || len(pki.Certificates) > 0 {
 		var addrs []netip.Addr
@@ -180,6 +184,17 @@ func addRoutes(host Host, routes []config.Route, log *slog.Logger) {
 			continue
 		}
 		log.Info("route installed", "to", r.To, "via", r.Via)
+	}
+}
+
+// prepareStorage prepares each disk of spec.storage. It never refuses the boot: a disk that is
+// missing, holds something else or cannot be mounted is logged at error level, so a Node without
+// its extra disk boots as before and keeps its Node API.
+func prepareStorage(host Host, storage []config.Storage, log *slog.Logger) {
+	for _, s := range storage {
+		if err := host.PrepareStorage(s, log); err != nil {
+			log.Error("storage disk not prepared; the boot goes on", "name", s.Name, "err", err)
+		}
 	}
 }
 
