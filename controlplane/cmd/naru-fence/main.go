@@ -21,7 +21,7 @@ import (
 
 func main() {
 	allow := flag.String("allow", "", "comma-separated IPv4 addresses that may reach etcd's ports; 127.0.0.1 is always allowed")
-	machines := flag.String("allow-machines", "", "comma-separated IPv4 prefixes whose connections to etcd's client port, not its peer port, are accepted: this Node's MicroVMs")
+	machines := flag.String("allow-machines", "", "comma-separated IPv4 prefixes of this Node's MicroVMs: their connections to etcd's client port are accepted, and their packets to its peer port are rejected where this Node sends them")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	if err := run(*allow, *machines); err != nil {
