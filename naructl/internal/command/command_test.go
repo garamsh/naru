@@ -133,6 +133,9 @@ type userData struct {
 			Env    map[string]string
 			// KeptPair is the pair init sets aside when its subject lacks the Organization.
 			KeptPair *struct{ File, Organization string } `yaml:"keptPair"`
+			// RestartOnChange and LogFiles are the files init watches and follows for the service.
+			RestartOnChange []string `yaml:"restartOnChange"`
+			LogFiles        []string `yaml:"logFiles"`
 		}
 		Registries []struct {
 			Host, CA   string
@@ -682,6 +685,25 @@ func TestGenNode_AFlagGivenWithoutWhatMakesItApplyIsRefused(t *testing.T) {
 	}
 }
 
+func serviceOf(t *testing.T, u userData, name string) (svc struct {
+	Name            string
+	Binary          string
+	Args            []string
+	Env             map[string]string
+	KeptPair        *struct{ File, Organization string } `yaml:"keptPair"`
+	RestartOnChange []string                             `yaml:"restartOnChange"`
+	LogFiles        []string                             `yaml:"logFiles"`
+}) {
+	t.Helper()
+	for _, s := range u.Spec.Services {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("no %s service", name)
+	return svc
+}
+
 func mvmdOf(t *testing.T, u userData) (env map[string]string) {
 	t.Helper()
 	for _, s := range u.Spec.Services {
@@ -729,7 +751,13 @@ func TestGenNode_WithoutARegistryCAMvmdNamesNoCAFile(t *testing.T) {
 	assert.Contains(t, cfg, "credentials_file", "init always writes the credentials file")
 	assert.Empty(t, u.Spec.Registries)
 	assert.Nil(t, u.Spec.AWS)
-	assert.NotContains(t, mvmdOf(t, u), "AWS_CONFIG_FILE")
+	for _, k := range []string{"AWS_CONFIG_FILE", "AWS_EC2_METADATA_SERVICE_ENDPOINT", "AWS_REGION"} {
+		assert.NotContains(t, mvmdOf(t, u), k)
+	}
+	assert.Equal(t, "/run/naru/registry/home", mvmdOf(t, u)["HOME"])
+	for _, s := range u.Spec.Services {
+		assert.NotEqual(t, "aws-credentials", s.Name, "a Node without spec.aws runs no aws-credentials")
+	}
 }
 
 func TestGenNode_AWSFlagsGiveTheAgentsPairAndMvmdsEnvironment(t *testing.T) {
@@ -741,8 +769,33 @@ func TestGenNode_AWSFlagsGiveTheAgentsPairAndMvmdsEnvironment(t *testing.T) {
 	assert.Equal(t, u.Spec.AWS.Certificate, u.Spec.AWS.Key, "one file holds both")
 	assert.Equal(t, "arn:ro", u.Spec.AWS.RoleArn)
 	env := mvmdOf(t, u)
-	assert.Equal(t, "/run/naru/aws/config", env["AWS_CONFIG_FILE"])
-	assert.Equal(t, "ap-northeast-2", env["AWS_REGION"])
+	assert.Equal(t, map[string]string{
+		"PATH": "/bin:/run/bin", "HOME": "/run/naru/registry/home",
+		"AWS_EC2_METADATA_SERVICE_ENDPOINT": "http://127.0.0.1:9911", "AWS_REGION": "ap-northeast-2",
+	}, env, "no credential_process file: the SDK reads the credential from the endpoint")
+}
+
+func TestGenNode_AWSFlagsAddTheAWSCredentialsServiceAfterTheNodeAgent(t *testing.T) {
+	u := parse(t, newDeployment(t).node(t, "node-2",
+		"--aws-region", "ap-northeast-2", "--aws-trust-anchor", "arn:ta", "--aws-profile", "arn:pr", "--aws-role", "arn:ro"))
+
+	names := make([]string, len(u.Spec.Services))
+	for i, s := range u.Spec.Services {
+		names[i] = s.Name
+	}
+	require.Equal(t, "aws-credentials", names[len(names)-1])
+	assert.Equal(t, "gaon-node-agent", names[len(names)-2], "init checks the agent's kept pair before the helper reads it")
+	svc := u.Spec.Services[len(u.Spec.Services)-1]
+	pair := "/var/lib/naru/gaon-node-agent/node-agent.pem"
+	assert.Equal(t, "/bin/aws_signing_helper", svc.Binary)
+	assert.Equal(t, []string{
+		"serve", "--certificate", pair, "--private-key", pair,
+		"--trust-anchor-arn", "arn:ta", "--profile-arn", "arn:pr", "--role-arn", "arn:ro",
+		"--region", "ap-northeast-2", "--port", "9911",
+	}, svc.Args)
+	assert.Equal(t, []string{pair}, svc.RestartOnChange, "a pair the agent replaces restarts the helper")
+	assert.Empty(t, svc.Env, "the helper has no environment of its own")
+	assert.Equal(t, []string{"/run/naru/registry/home/.ecr/log/ecr-login.log"}, serviceOf(t, u, "mvmd").LogFiles)
 }
 
 func TestGenNode_TheNodeAgentsKeptPairMustCarryTheOrganizationItsSignerRequires(t *testing.T) {

@@ -51,9 +51,18 @@ const (
 	// AgentOrganization the Organization its signer requires of the certificate's subject.
 	AgentPair         = "node-agent.pem"
 	AgentOrganization = "gaon:nodes"
-	// RegistryFilesDir is where init writes what mvmd and the credential helpers read for spec.registries
-	// and spec.aws.
+	// RegistryFilesDir is where init writes what mvmd reads for spec.registries.
 	RegistryFilesDir = "/run/naru"
+	// MvmdHome is mvmd's HOME, which init makes with mode 0700 under RegistryFilesDir: the
+	// docker-credential-ecr-login it runs writes its log to $HOME/.ecr/log/ecr-login.log.
+	MvmdHome = RegistryFilesDir + "/registry/home"
+	// EcrLoginLog is that log, which init keeps as lines of mvmd so `naructl logs mvmd` shows it.
+	EcrLoginLog = MvmdHome + "/.ecr/log/ecr-login.log"
+	// AWSCredentialsPort is the loopback TCP port the aws-credentials service serves the instance
+	// metadata endpoint on, and AWSCredentialsEndpoint what mvmd's AWS_EC2_METADATA_SERVICE_ENDPOINT
+	// is (ADR 0029). 9911 is aws_signing_helper's default; no other service of a Node uses it.
+	AWSCredentialsPort     = "9911"
+	AWSCredentialsEndpoint = "http://127.0.0.1:" + AWSCredentialsPort
 	// HelperPath is mvmd's PATH: the image's programs and /run/bin, where a file in spec.files may
 	// add a credential helper.
 	HelperPath          = "/bin:/run/bin"
@@ -172,6 +181,9 @@ type service struct {
 	Env          map[string]string `yaml:"env,omitempty"`
 	ControlPlane bool              `yaml:"controlPlane,omitempty"`
 	KeptPair     *keptPair         `yaml:"keptPair,omitempty"`
+	// RestartOnChange and LogFiles are files init watches or follows for the service.
+	RestartOnChange []string `yaml:"restartOnChange,omitempty"`
+	LogFiles        []string `yaml:"logFiles,omitempty"`
 }
 
 // keptPair is the pair a service keeps on the data disk, which init sets aside when its
@@ -571,7 +583,7 @@ func (n Node) services() []service {
 	list := []service{
 		{
 			Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", MvmdConfig},
-			Env: n.mvmdEnv(),
+			Env: n.mvmdEnv(), LogFiles: []string{EcrLoginLog},
 		},
 		{
 			Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")),
@@ -602,6 +614,11 @@ func (n Node) services() []service {
 			KeptPair: &keptPair{File: path.Join(AgentCertDir, AgentPair), Organization: AgentOrganization},
 		},
 	}
+	if a := n.AWS; a != nil {
+		// After the Node Agent, whose keptPair init checks before the agent starts: the helper reads
+		// the pair at start, and init starts it again when the agent replaces the file.
+		list = append(list, n.awsCredentials(*a))
+	}
 	if n.HA() {
 		fence, vip := n.haServices()
 		// The rules are in place before etcd listens; the holder starts once the API server it watches has.
@@ -615,12 +632,29 @@ func (n Node) services() []service {
 	return list
 }
 
-// mvmdEnv is mvmd's environment: PATH, for the credential helpers it runs, and with spec.aws the
-// AWS profile the helpers read (ADR 0026).
+// awsCredentials is the service that serves the Node's IAM Roles Anywhere session on the
+// loopback, as the instance metadata endpoint the AWS SDK reads (ADR 0029). The Node Agent's pair
+// is its certificate and key; a new pair restarts it.
+func (n Node) awsCredentials(a AWS) service {
+	pair := path.Join(AgentCertDir, AgentPair)
+	return service{
+		Name: "aws-credentials", Binary: "/bin/aws_signing_helper",
+		Args: []string{
+			"serve", "--certificate", pair, "--private-key", pair,
+			"--trust-anchor-arn", a.TrustAnchorArn, "--profile-arn", a.ProfileArn, "--role-arn", a.RoleArn,
+			"--region", a.Region, "--port", AWSCredentialsPort,
+		},
+		RestartOnChange: []string{pair},
+	}
+}
+
+// mvmdEnv is mvmd's environment: PATH, for the credential helpers it runs; HOME, where they write
+// their logs; and with spec.aws the region and the endpoint the AWS SDK reads its credential from
+// (ADR 0029).
 func (n Node) mvmdEnv() map[string]string {
-	env := map[string]string{"PATH": HelperPath}
+	env := map[string]string{"PATH": HelperPath, "HOME": MvmdHome}
 	if a := n.AWS; a != nil {
-		env["AWS_CONFIG_FILE"] = path.Join(RegistryFilesDir, "aws/config")
+		env["AWS_EC2_METADATA_SERVICE_ENDPOINT"] = AWSCredentialsEndpoint
 		env["AWS_REGION"] = a.Region
 	}
 	return env

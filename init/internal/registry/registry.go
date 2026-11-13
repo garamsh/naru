@@ -1,6 +1,7 @@
 // Package registry writes the files mvmd and the credential helpers read for the registries of a
 // Node (docs/architecture/adr/0026-a-node-takes-registry-credentials-and-trust-as-configuration-an-ecr-credential-comes-from-iam-roles-anywhere-and-an-agent-pair-without-the-required-organization-is-set-aside.md):
-// the credentials file, the CA bundle and the AWS profile.
+// the credentials file, the CA bundle and the home directory of mvmd and the credential helpers
+// it runs.
 package registry
 
 import (
@@ -17,22 +18,23 @@ import (
 // Dir is the directory the files are written under, init's own.
 const Dir = "/run/naru"
 
-// The files, relative to the Writer's directory. mvmd's configuration names the first two and
-// the services' environment the third; docs/architecture/config.md states the paths.
+// The files and the directory, relative to the Writer's directory. mvmd's configuration names the
+// first two and its environment's HOME the third; docs/architecture/config.md states the paths.
 const (
 	credentialsFile = "registry/credentials.json"
 	caFile          = "registry/ca.pem"
-	awsConfigFile   = "aws/config"
+	homeDir         = "registry/home"
 )
 
-// Writer writes the files of spec.registries and spec.aws under Dir.
+// Writer writes the files of spec.registries under Dir.
 type Writer struct{ Dir string }
 
 // Write makes the files match spec, and writes each whole by a rename, so a reader sees the old
 // file or the new one. The credentials file is always written, with no entry when no registry
 // has a username and password, because mvmd refuses a configuration that names a file that
-// is not there. The CA bundle exists only while some registry has a ca, and the AWS profile only
-// while spec.aws is set. It never logs a value.
+// is not there. The CA bundle exists only while some registry has a ca. The home directory is
+// always there, with mode 0700, because a credential helper writes its log under it. It never
+// logs a value.
 func (w Writer) Write(spec config.Spec) error {
 	creds := map[string]map[string]string{}
 	var bundle strings.Builder
@@ -56,20 +58,20 @@ func (w Writer) Write(spec config.Spec) error {
 	} else {
 		errs = append(errs, w.remove(caFile))
 	}
-	if a := spec.AWS; a != nil {
-		errs = append(errs, w.put(awsConfigFile, []byte(awsProfile(*a)), 0o644))
-	} else {
-		errs = append(errs, w.remove(awsConfigFile))
-	}
+	errs = append(errs, w.home())
 	return errors.Join(errs...)
 }
 
-// awsProfile is the AWS config file whose default profile gets its credentials from
-// aws_signing_helper, which trades the Node's certificate for the role's session.
-func awsProfile(a config.AWS) string {
-	return fmt.Sprintf("[default]\nregion = %s\ncredential_process = aws_signing_helper credential-process"+
-		" --certificate %s --private-key %s --trust-anchor-arn %s --profile-arn %s --role-arn %s --region %s\n",
-		a.Region, a.Certificate, a.Key, a.TrustAnchorArn, a.ProfileArn, a.RoleArn, a.Region)
+// home makes the home directory with mode 0700, whatever mode an earlier boot left it with.
+func (w Writer) home() error {
+	path := filepath.Join(w.Dir, homeDir)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return fmt.Errorf("make %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return fmt.Errorf("make %s: %w", path, err)
+	}
+	return nil
 }
 
 func (w Writer) put(rel string, data []byte, mode os.FileMode) error {

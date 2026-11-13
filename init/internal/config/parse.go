@@ -144,6 +144,16 @@ func (v *validation) services(services []Service) {
 				v.fail(field+".keptPair.organization", "must be given")
 			}
 		}
+		for _, list := range []struct {
+			name  string
+			paths []string
+		}{{"restartOnChange", s.RestartOnChange}, {"logFiles", s.LogFiles}} {
+			for j, p := range list.paths {
+				if !isCleanAbs(p) {
+					v.fail(fmt.Sprintf("%s.%s[%d]", field, list.name, j), "must be a clean absolute path, got %q", p)
+				}
+			}
+		}
 		for k := range s.Env {
 			if k == "" || strings.ContainsAny(k, "=\x00") {
 				v.fail(field+".env", "has the invalid variable name %q", k)

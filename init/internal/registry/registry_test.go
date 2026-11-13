@@ -24,7 +24,7 @@ func specWith() config.Spec {
 	}
 }
 
-func TestWrite_WritesCredentialsCAAndProfile(t *testing.T) {
+func TestWrite_WritesCredentialsAndCA(t *testing.T) {
 	dir := t.TempDir()
 
 	require.NoError(t, registry.Writer{Dir: dir}.Write(specWith()))
@@ -39,10 +39,21 @@ func TestWrite_WritesCredentialsCAAndProfile(t *testing.T) {
 	ca, err := os.ReadFile(filepath.Join(dir, "registry/ca.pem"))
 	require.NoError(t, err)
 	assert.Contains(t, string(ca), "BEGIN CERTIFICATE")
-	prof, err := os.ReadFile(filepath.Join(dir, "aws/config"))
+	assert.NoDirExists(t, filepath.Join(dir, "aws"), "the credential comes from the aws-credentials service, not from a profile file")
+}
+
+func TestWrite_MakesTheHomeDirectoryPrivateWhateverModeItHad(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "registry/home")
+	require.NoError(t, os.MkdirAll(home, 0o755))
+	require.NoError(t, os.Chmod(home, 0o755))
+
+	require.NoError(t, registry.Writer{Dir: dir}.Write(config.Spec{}))
+
+	st, err := os.Stat(home)
 	require.NoError(t, err)
-	assert.Contains(t, string(prof), "credential_process = aws_signing_helper credential-process --certificate /c.pem --private-key /k.pem --trust-anchor-arn arn:ta --profile-arn arn:pr --role-arn arn:ro --region ap-northeast-2")
-	assert.Contains(t, string(prof), "region = ap-northeast-2")
+	assert.True(t, st.IsDir())
+	assert.Equal(t, os.FileMode(0o700), st.Mode().Perm())
 }
 
 func TestWrite_WritesAnEmptyCredentialsFileAndRemovesWhatIsNoLongerConfigured(t *testing.T) {
@@ -56,5 +67,5 @@ func TestWrite_WritesAnEmptyCredentialsFileAndRemovesWhatIsNoLongerConfigured(t 
 	require.NoError(t, err, "mvmd refuses a configuration that names a file that is not there")
 	assert.JSONEq(t, "{}", string(raw))
 	assert.NoFileExists(t, filepath.Join(dir, "registry/ca.pem"))
-	assert.NoFileExists(t, filepath.Join(dir, "aws/config"))
+	assert.DirExists(t, filepath.Join(dir, "registry/home"), "a credential helper's log has a place whatever is configured")
 }

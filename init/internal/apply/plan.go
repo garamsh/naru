@@ -206,9 +206,9 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 }
 
 // registryFilesEqual reports whether a and b give the same registry files: the same hosts,
-// authorities and credentials, and the same spec.aws.
+// authorities and credentials.
 func registryFilesEqual(a, b config.Spec) bool {
-	if len(a.Registries) != len(b.Registries) || (a.AWS == nil) != (b.AWS == nil) || (a.AWS != nil && *a.AWS != *b.AWS) {
+	if len(a.Registries) != len(b.Registries) {
 		return false
 	}
 	for i, r := range a.Registries {

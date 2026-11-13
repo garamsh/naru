@@ -183,6 +183,7 @@ func (m *manager) supervise(s *supervised, svc config.Service, leaf Leaf) {
 			s.set(func(st *Status) { st.Restarts++ })
 		}
 		started := m.clock.Now()
+		before := digests(svc.RestartOnChange)
 		proc, err := m.launcher.Launch(svc, leaf.Path())
 		if err != nil {
 			log.Error("start failed", "err", err)
@@ -191,13 +192,36 @@ func (m *manager) supervise(s *supervised, svc config.Service, leaf Leaf) {
 			log.Info("started", "cgroup", leaf.Path())
 			exited := make(chan error, 1)
 			go func() { exited <- proc.Wait() }()
-			select {
-			case err := <-exited:
-				log.Warn("exited", "err", err)
-			case <-s.stop:
-				m.terminate(log, proc, exited)
-				m.end(log, leaf)
-				return
+			changed := false
+		wait:
+			for {
+				var watch <-chan time.Time
+				if len(svc.RestartOnChange) > 0 {
+					watch = m.clock.After(watchInterval)
+				}
+				select {
+				case err := <-exited:
+					log.Warn("exited", "err", err)
+					break wait
+				case <-s.stop:
+					m.terminate(log, proc, exited)
+					m.end(log, leaf)
+					return
+				case <-watch:
+					if !slices.Equal(digests(svc.RestartOnChange), before) {
+						log.Info("a watched file changed, restarting")
+						m.terminate(log, proc, exited)
+						changed = true
+						break wait
+					}
+				}
+			}
+			if changed {
+				// The file is the reason, not a crash: start again at once, with no backoff.
+				if err := leaf.Kill(); err != nil {
+					log.Error("kill leftovers failed", "err", err)
+				}
+				continue
 			}
 		}
 		if err := leaf.Kill(); err != nil {
