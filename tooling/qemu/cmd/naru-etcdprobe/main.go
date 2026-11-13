@@ -37,19 +37,39 @@ func main() {
 		ca      = flag.String("ca", "/run/gaon/ca.pem", "the cluster's CA certificate")
 		cert    = flag.String("cert", "/run/gaon/apiserver-etcd.pem", "the client certificate to present")
 		key     = flag.String("key", "/run/gaon/apiserver-etcd.key", "its key")
+		machine = flag.String("machine-alias", "", "an address, in this Node's MicroVM prefix, to add to eth0 and dial from")
+		snapCrt = flag.String("snapshot-cert-pem", "", "the PEM of the pair naructl gen etcd-client wrote")
+		snapKey = flag.String("snapshot-key-pem", "", "its key, PEM")
 	)
 	flag.Parse()
-	if err := addAlias(*alias); err != nil {
+	if err := addAlias(*alias, "eth0:59"); err != nil {
 		fmt.Println("naru59-probe: failed to add the alias:", err)
 		os.Exit(1)
+	}
+	machineAddr := strings.Split(*machine, "/")[0]
+	if *machine != "" {
+		if err := addAlias(*machine, "eth0:60"); err != nil {
+			fmt.Println("naru59-probe: failed to add the machine alias:", err)
+			os.Exit(1)
+		}
 	}
 	pool, pair, err := load(*ca, *cert, *key)
 	if err != nil {
 		fmt.Println("naru59-probe: failed to read the certificates:", err)
 		os.Exit(1)
 	}
+	var snap tls.Certificate
+	if *snapCrt != "" {
+		if snap, err = tls.X509KeyPair([]byte(*snapCrt), []byte(*snapKey)); err != nil {
+			fmt.Println("naru59-probe: failed to read the snapshot pair:", err)
+			os.Exit(1)
+		}
+	}
 	for {
 		probeOnce(strings.Split(*members, ","), *vip, *alias, pool, pair)
+		if *snapCrt != "" {
+			probeSnapshot(strings.Split(*members, ","), machineAddr, pool, snap)
+		}
 		time.Sleep(5 * time.Second)
 	}
 }
@@ -65,8 +85,8 @@ func load(ca, cert, key string) (*x509.CertPool, tls.Certificate, error) {
 	return pool, pair, err
 }
 
-// addAlias adds addr, a CIDR, to eth0 as the alias eth0:59 with the ioctls ifconfig uses.
-func addAlias(cidr string) error {
+// addAlias adds addr, a CIDR, to eth0 as the alias label with the ioctls ifconfig uses.
+func addAlias(cidr, label string) error {
 	ip, n, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return err
@@ -78,7 +98,7 @@ func addAlias(cidr string) error {
 	defer func() { _ = syscall.Close(fd) }()
 	set := func(req uintptr, v net.IP) error {
 		var ifr [40]byte
-		copy(ifr[:], "eth0:59")
+		copy(ifr[:], label)
 		binary.LittleEndian.PutUint16(ifr[16:], syscall.AF_INET)
 		copy(ifr[20:24], v.To4())
 		if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), req, uintptr(unsafe.Pointer(&ifr[0]))); e != 0 {
@@ -90,6 +110,25 @@ func addAlias(cidr string) error {
 		return err
 	}
 	return set(siocsifnetmask, net.IP(n.Mask))
+}
+
+// probeSnapshot dials as gaon's snapshot writer does, with the pair naructl gen etcd-client wrote.
+// From this Node's own address every member serves it. From an address in this Node's MicroVM
+// prefix, this Node's own member serves it (local delivery keeps the MicroVM's own source); the
+// other members refuse it, since nothing here masquerades the source as a Node's address, and so
+// does the peer port.
+func probeSnapshot(members []string, machine string, pool *x509.CertPool, snap tls.Certificate) {
+	for _, m := range members {
+		status, err := get("", m+":2379", "/version", pool, []tls.Certificate{snap})
+		fmt.Printf("naru59-probe: etcd=%s source=member client-cert=snapshot result=%s\n", m, classify(status, err))
+		if machine == "" {
+			continue
+		}
+		status, err = get(machine, m+":2379", "/version", pool, []tls.Certificate{snap})
+		fmt.Printf("naru59-probe: etcd=%s source=machine client-cert=snapshot result=%s\n", m, classify(status, err))
+		status, err = get(machine, m+":2380", "/version", pool, []tls.Certificate{snap})
+		fmt.Printf("naru59-probe: etcd-peer=%s source=machine client-cert=snapshot result=%s\n", m, classify(status, err))
+	}
 }
 
 func probeOnce(members []string, vip, alias string, pool *x509.CertPool, pair tls.Certificate) {

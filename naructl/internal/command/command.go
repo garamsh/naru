@@ -29,6 +29,7 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client> [flag
   reboot      stop the Node's services and reboot it
   gen ca      --out <dir>                       write ca.pem and ca.key
   gen client  --ca <dir> --cn <name> --out <dir> write an operator's client.pem and client.key
+  gen etcd-client --ca <dir> --out <dir>      write ca.crt, tls.crt and tls.key, a client pair etcd's members accept
   gen token   --ca <dir> --name <name>              write the Node's bootstrap token to <dir>/tokens/<name>, if none is there
   gen node    --ca <dir> --name <name> --address <cidr> --mac <mac> --gateway <ip> --nameserver <ip>
               --api-server <ip> --machine-prefix <cidr> --guest <guest.json> --firecracker-sha256 <hex>
@@ -76,6 +77,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return genCA(args[2:], stdout, stderr)
 	case "client":
 		return genClient(args[2:], stdout, stderr)
+	case "etcd-client":
+		return genEtcdClient(args[2:], stdout, stderr)
 	case "token":
 		return genToken(args[2:], stdout, stderr)
 	case "node":
@@ -170,6 +173,47 @@ func genClient(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: wrote %s and %s for CN %s\n", filepath.Join(*out, "client.pem"), filepath.Join(*out, "client.key"), *cn)
+	return nil
+}
+
+// EtcdClientCN is the subject CN of the pair gen etcd-client issues: the caller of etcd's client
+// port that is gaon's snapshot writer (ADR 0024). etcd authorizes no CN, any pair the CA signed is
+// accepted, so the name is for whoever reads etcd's logs.
+const EtcdClientCN = "gaon-etcd-snapshot"
+
+func genEtcdClient(args []string, stdout, stderr io.Writer) error {
+	fs := newFlags("gen etcd-client", stderr)
+	caDir := fs.String("ca", "", "directory of ca.pem and ca.key")
+	out := fs.String("out", "", "directory that receives ca.crt, tls.crt and tls.key (0600), the keys of gaon's Secret etcd-snapshot-etcd-client")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := require(fs, "ca", "out"); err != nil {
+		return err
+	}
+	ca, err := pki.Load(*caDir)
+	if err != nil {
+		return err
+	}
+	pair, err := ca.Client(EtcdClientCN)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil { //nolint:gosec // holds a certificate
+		return err
+	}
+	if err := pki.WriteFile(filepath.Join(*out, "tls.crt"), pair.CertPEM, 0o644); err != nil { //nolint:gosec // a certificate
+		return err
+	}
+	if err := pki.WriteFile(filepath.Join(*out, "tls.key"), pair.KeyPEM, 0o600); err != nil {
+		return err
+	}
+	// etcd's members trust the CA and serve with certificates it signed: the one file is both the
+	// CA that signs their server certificates and the CA their client certificates are checked against.
+	if err := pki.WriteFile(filepath.Join(*out, "ca.crt"), ca.CertPEM, 0o644); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "naructl: wrote %s, %s and %s for CN %s\n", filepath.Join(*out, "ca.crt"), filepath.Join(*out, "tls.crt"), filepath.Join(*out, "tls.key"), EtcdClientCN)
 	return nil
 }
 

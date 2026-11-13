@@ -294,9 +294,6 @@ func TestNode_GaonAgentsGetTheirPairsFromSigningRequestsWithATokenAndAWorkerReus
 		before = l.Spec.RenewTime
 		return err == nil && !before.IsZero()
 	})
-	// Reboot cuts the power: the agent's pair is renamed into place on the data disk, and the rename
-	// is on the disk once ext4 commits its journal, every 5 s, which the Lease's first renewal does not wait for.
-	time.Sleep(6 * time.Second)
 	require.NoError(t, second.Reboot())
 	require.NoError(t, second.WaitFor(ctx, bootTimeout, "started", "service=gaon-node-agent"), "node-2 booted again")
 	// The Lease is renewed only by an agent that holds a certificate; the first boot's pair is the only one it can hold.

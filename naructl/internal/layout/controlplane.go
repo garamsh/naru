@@ -123,15 +123,24 @@ func (n Node) etcdArgs() []string {
 		"--peer-cert-file", gaonPath(etcdServer.name + ".pem"), "--peer-key-file", gaonPath(etcdServer.name + ".key"),
 		"--peer-client-cert-file", gaonPath(etcdPeer.name + ".pem"), "--peer-client-key-file", gaonPath(etcdPeer.name + ".key"),
 		"--peer-client-cert-auth", "--peer-trusted-ca-file", gaonPath("ca.pem"),
+		// The gateway serves etcd's JSON API, which nothing here uses, and dials the client port with the serving pair, whose certificate has no clientAuth: its handshake fails and etcd logs it.
+		"--enable-grpc-gateway=false",
 	}
 }
 
-// etcdEndpoints is the client URL the API server dials: its own Node's member, on the Node's address
-// in HA and on the loopback otherwise. One endpoint, not every member's: etcd's client keeps its
-// connection to a member that is powered off until TCP gives up and sends a request on it, which
-// then waits for its deadline, so an API server that listed a member that stopped would fail a
-// share of its requests (found in the QEMU test of ADR 0024).
-func (n Node) etcdEndpoints() string { return etcdURL(n.listenAddrs()[0], EtcdClientPort) }
+// etcdEndpoints are the client URLs the API server dials: every member's, in the order of Members,
+// the same list on every Node as gaon's deployment.md has it; a control plane of one Node is
+// dialled on the loopback, which its certificate names.
+func (n Node) etcdEndpoints() string {
+	if !n.HA() {
+		return etcdURL(n.listenAddrs()[0], EtcdClientPort)
+	}
+	var urls []string
+	for _, m := range n.Members {
+		urls = append(urls, etcdURL(m.Address, EtcdClientPort))
+	}
+	return strings.Join(urls, ",")
+}
 
 // haServices are the two services a control-plane Node of an HA control plane runs besides the
 // others: the rules that close etcd's ports, which start before etcd, and the holder of the virtual
@@ -145,13 +154,14 @@ func (n Node) haServices() (fence, vip service) {
 	allowed = append(allowed, n.APIServer.String())
 	fence = service{
 		Name: "fence", ControlPlane: true, Binary: n.binary("fence", "/bin/naru-fence"),
-		Args: []string{"-allow", strings.Join(slices.Compact(allowed), ",")},
+		Args: []string{"-allow", strings.Join(slices.Compact(allowed), ","), "-allow-machines", n.MachinePrefix.Masked().String()},
 	}
 	vip = service{
 		Name: "vip", ControlPlane: true, Binary: n.binary("vip", "/bin/naru-vip"),
 		Args: []string{
 			"-address", netip.PrefixFrom(n.APIServer, n.Address.Bits()).String(), "-interface", "eth0",
 			"-self", n.Address.Addr().String(), "-member", strings.Join(members, ","), "-port", APIPort,
+			"-etcd-ca-file", gaonPath("ca.pem"), "-etcd-cert-file", gaonPath(apiserverTo.name + ".pem"), "-etcd-key-file", gaonPath(apiserverTo.name + ".key"),
 		},
 	}
 	return fence, vip

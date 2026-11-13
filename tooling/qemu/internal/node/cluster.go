@@ -186,6 +186,9 @@ func freePort() (int, error) {
 type gaonFiles struct {
 	caDir, guest string
 	client       naructl.Client
+	// etcdClient is the directory naructl gen etcd-client wrote, set when the control plane has
+	// several members.
+	etcdClient string
 	// ports are the host ports forwarded to the API server of each control-plane Node, by number.
 	ports map[int]int
 	// api and apiPort are set when the cluster has a Node API.
@@ -218,6 +221,12 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 	clientDir := filepath.Join(spec.Dir, "client")
 	if g.client, err = spec.Naructl.GenClient(g.caDir, "naru-test-host", clientDir); err != nil {
 		return nil, err
+	}
+	if spec.ha() {
+		g.etcdClient = filepath.Join(spec.Dir, "etcd-client")
+		if err := spec.Naructl.GenEtcdClient(g.caDir, g.etcdClient); err != nil {
+			return nil, err
+		}
 	}
 	if spec.BootPKI {
 		// Node 1's user-data, written first, lists the token of every Node.
@@ -285,7 +294,7 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 		return nil, nil, err
 	}
 	if spec.ha() && c.Index == spec.EtcdProbeOn {
-		if err := addEtcdProbe(a.Out, spec); err != nil {
+		if err := addEtcdProbe(a.Out, spec, g.etcdClient, c.Index); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -383,7 +392,16 @@ func swapPair(base, from, out string) error {
 const ProbeAlias = "10.78.0.50/24"
 
 // addEtcdProbe appends naru-etcdprobe to the services of the user-data in file, the last to start.
-func addEtcdProbe(file string, spec ClusterSpec) error {
+// It dials from an address of the Node's own MicroVM prefix too, and with the pair in etcdClient.
+func addEtcdProbe(file string, spec ClusterSpec, etcdClient string, index int) error {
+	crt, err := os.ReadFile(filepath.Join(etcdClient, "tls.crt"))
+	if err != nil {
+		return err
+	}
+	key, err := os.ReadFile(filepath.Join(etcdClient, "tls.key"))
+	if err != nil {
+		return err
+	}
 	b, err := os.ReadFile(file)
 	if err != nil {
 		return err
@@ -397,9 +415,18 @@ func addEtcdProbe(file string, spec ClusterSpec) error {
 		members = append(members, QEMUNetwork(i, spec.N).IP)
 	}
 	var extra yaml.Node
-	err = yaml.Unmarshal([]byte("name: naru59-etcdprobe\nbinary: "+path.Join(fixture.GuestRoot, "bin/naru-etcdprobe")+
-		"\nargs: [-member, \""+strings.Join(members, ",")+"\", -vip, "+VirtualAddress+", -alias, "+ProbeAlias+"]\n"), &extra)
+	svc, err := yaml.Marshal(map[string]any{
+		"name": "naru59-etcdprobe", "binary": path.Join(fixture.GuestRoot, "bin/naru-etcdprobe"),
+		"args": []string{
+			"-member", strings.Join(members, ","), "-vip", VirtualAddress, "-alias", ProbeAlias,
+			"-machine-alias", fmt.Sprintf("10.77.%d.50/24", index),
+			"-snapshot-cert-pem", string(crt), "-snapshot-key-pem", string(key),
+		},
+	})
 	if err != nil {
+		return err
+	}
+	if err := yaml.Unmarshal(svc, &extra); err != nil {
 		return err
 	}
 	services := yamlField(yamlField(doc.Content[0], "spec"), "services")

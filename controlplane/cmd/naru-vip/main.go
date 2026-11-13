@@ -1,7 +1,7 @@
 // Command naru-vip is the service a control-plane Node's configuration starts to hold the control
 // plane's virtual address (docs/architecture/adr/0024): it looks at the API server of every
 // control-plane Node, and keeps the address on this Node exactly while this Node is the first of
-// them, in the order -member lists them, whose API server accepts a connection.
+// them, in the order -member lists them, whose API server accepts a connection and whose etcd member is healthy.
 package main
 
 import (
@@ -25,10 +25,19 @@ func main() {
 		link    = flag.String("interface", "eth0", "the network card that carries the address")
 		self    = flag.String("self", "", "this Node's own address, one of -member")
 		members = flag.String("member", "", "comma-separated addresses of the control-plane Nodes, in priority order")
-		port    = flag.String("port", "6443", "the API server's port, whose answer is a member's liveness")
+		port    = flag.String("port", "6443", "the API server's port, which must accept a connection for a member to be alive")
+		etcd    = vip.Etcd{}
 	)
+	flag.StringVar(&etcd.Port, "etcd-port", "2379", "etcd's client port, whose /health must answer for a member to be alive")
+	flag.StringVar(&etcd.CAFile, "etcd-ca-file", "", "the CA that signed etcd's serving certificates")
+	flag.StringVar(&etcd.CertFile, "etcd-cert-file", "", "the client certificate etcd accepts")
+	flag.StringVar(&etcd.KeyFile, "etcd-key-file", "", "the key of -etcd-cert-file")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	if etcd.CAFile == "" || etcd.CertFile == "" || etcd.KeyFile == "" {
+		log.Error("naru-vip", "err", "-etcd-ca-file, -etcd-cert-file and -etcd-key-file are required")
+		os.Exit(2)
+	}
 	cfg, host, err := parse(*address, *link, *self, *members)
 	if err != nil {
 		log.Error("naru-vip", "err", err)
@@ -37,7 +46,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	log.Info("naru-vip: started", "address", *address, "self", *self, "members", *members)
-	vip.Run(ctx, cfg, host, vip.DialProbe(*port, time.Second), log)
+	vip.Run(ctx, cfg, host, vip.LiveProbe(*port, etcd, time.Second), log)
 }
 
 func parse(address, link, self, members string) (vip.Config, vip.Linux, error) {

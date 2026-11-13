@@ -232,6 +232,30 @@ func TestGenClient_IssuesAClientPairTheCAVerifiesWithTheNamedCN(t *testing.T) {
 	assert.Error(t, err, "a client needs a CN")
 }
 
+func TestGenEtcdClient_WritesTheKeysOfGaonsSecretWithAPairTheClusterCASignsForClientAuth(t *testing.T) {
+	dep := newDeployment(t)
+	out := filepath.Join(t.TempDir(), "etcd")
+
+	mustRun(t, "gen", "etcd-client", "--ca", dep.ca, "--out", out)
+
+	b, err := os.ReadFile(filepath.Join(out, "tls.crt"))
+	require.NoError(t, err)
+	c := certOf(t, string(b))
+	assert.Equal(t, command.EtcdClientCN, c.Subject.CommonName)
+	_, err = c.Verify(x509.VerifyOptions{Roots: roots(t, filepath.Join(dep.ca, "ca.pem")), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
+	assert.NoError(t, err, "signed by the CA etcd's members trust, for client authentication")
+	ca, err := os.ReadFile(filepath.Join(out, "ca.crt"))
+	require.NoError(t, err)
+	want, err := os.ReadFile(filepath.Join(dep.ca, "ca.pem"))
+	require.NoError(t, err)
+	assert.Equal(t, string(want), string(ca), "ca.crt is the CA that signs the members' server certificates")
+	key, err := os.Stat(filepath.Join(out, "tls.key"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), key.Mode().Perm())
+	_, err = run(t, "gen", "etcd-client", "--ca", dep.ca)
+	assert.Error(t, err, "--out is required")
+}
+
 func TestGenNode_ControlPlaneIssuesFromSpecPKIAndCarriesTheCAKeyOnlyThere(t *testing.T) {
 	dep := newDeployment(t)
 	path := dep.node(t, "node-1", "--control-plane")
@@ -716,12 +740,13 @@ func TestGenNode_ControlPlaneOfThreeRunsEtcdOnTheMembersWithTLSAndHoldsTheVirtua
 	assert.Contains(t, etcd, "--initial-cluster node-1=https://192.168.0.10:2380,node-2=https://192.168.0.20:2380,node-3=https://192.168.0.30:2380")
 	assert.Contains(t, etcd, "--client-cert-auth --trusted-ca-file /run/gaon/ca.pem")
 	assert.Contains(t, etcd, "--peer-client-cert-auth --peer-trusted-ca-file /run/gaon/ca.pem")
+	assert.Contains(t, etcd, "--enable-grpc-gateway=false")
 	assert.Contains(t, etcd, "--peer-cert-file /run/gaon/etcd-server.pem --peer-key-file /run/gaon/etcd-server.key --peer-client-cert-file /run/gaon/etcd-peer.pem --peer-client-key-file /run/gaon/etcd-peer.key")
 	api := u.args("gaon-apiserver")
-	assert.Contains(t, api, "--etcd-endpoints https://192.168.0.20:2379 ")
+	assert.Contains(t, api, "--etcd-endpoints https://192.168.0.10:2379,https://192.168.0.20:2379,https://192.168.0.30:2379 ", "every member, the same list on every Node")
 	assert.Contains(t, api, "--etcd-ca-file /run/gaon/ca.pem --etcd-cert-file /run/gaon/apiserver-etcd.pem --etcd-key-file /run/gaon/apiserver-etcd.key")
-	assert.Equal(t, "-allow 192.168.0.10,192.168.0.20,192.168.0.30,192.168.0.100", u.args("fence"))
-	assert.Equal(t, "-address 192.168.0.100/24 -interface eth0 -self 192.168.0.20 -member 192.168.0.10,192.168.0.20,192.168.0.30 -port 6443", u.args("vip"))
+	assert.Equal(t, "-allow 192.168.0.10,192.168.0.20,192.168.0.30,192.168.0.100 -allow-machines 10.200.2.0/24", u.args("fence"))
+	assert.Equal(t, "-address 192.168.0.100/24 -interface eth0 -self 192.168.0.20 -member 192.168.0.10,192.168.0.20,192.168.0.30 -port 6443 -etcd-ca-file /run/gaon/ca.pem -etcd-cert-file /run/gaon/apiserver-etcd.pem -etcd-key-file /run/gaon/apiserver-etcd.key", u.args("vip"))
 	assert.Contains(t, u.args("gaon-node-agent"), "--api-server https://192.168.0.100:6443/", "the agent dials the virtual address")
 	for _, c := range u.Spec.PKI.Certificates {
 		if c.Name == "etcd-server" {

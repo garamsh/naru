@@ -21,9 +21,10 @@ import (
 
 func main() {
 	allow := flag.String("allow", "", "comma-separated IPv4 addresses that may reach etcd's ports; 127.0.0.1 is always allowed")
+	machines := flag.String("allow-machines", "", "comma-separated IPv4 prefixes whose connections to etcd's client port, not its peer port, are accepted: this Node's MicroVMs")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	if err := run(*allow); err != nil {
+	if err := run(*allow, *machines); err != nil {
 		log.Error("naru-fence", "err", err)
 		os.Exit(1)
 	}
@@ -33,7 +34,7 @@ func main() {
 	<-sig
 }
 
-func run(allow string) error {
+func run(allow, machines string) error {
 	addrs := []netip.Addr{netip.MustParseAddr("127.0.0.1")}
 	for _, s := range strings.Split(allow, ",") {
 		if s == "" {
@@ -49,9 +50,20 @@ func run(allow string) error {
 	if err != nil {
 		return err
 	}
+	var prefixes []netip.Prefix
+	for _, s := range strings.Split(machines, ",") {
+		if s == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return fmt.Errorf("-allow-machines: %w", err)
+		}
+		prefixes = append(prefixes, p)
+	}
 	c, err := nftables.New()
 	if err != nil {
 		return err
 	}
-	return fence.Apply(c, allowed)
+	return fence.Apply(c, allowed, prefixes)
 }
