@@ -1,4 +1,4 @@
-.PHONY: lint format format-apply test test-cgroup test-qemu test-harness nodes judge-serial release build image image-upgrade disk image-repro ci
+.PHONY: lint format format-apply envtest crds crds-check test test-cgroup test-qemu test-harness nodes judge-serial release build image image-upgrade disk image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -42,10 +42,51 @@ format:
 format-apply:
 	$(call each_module, (cd "$$dir" && git ls-files --cached --others --exclude-standard -z -- '*.go' | xargs -0 gofmt -w))
 
+# envtest fetches the kube-apiserver and etcd the cluster unit's tests run against (ADR 0033): the
+# controller-tools release asset of the pinned Kubernetes version, verified against its SHA-256 and
+# kept under $(BUILD). Only linux/amd64 is pinned. The tests read the directory from
+# KUBEBUILDER_ASSETS and use no network.
+ENVTEST_VERSION := envtest-v1.37.0
+ENVTEST_SHA256 := f03faedfc68d2a78cee5cb02618bb44e7f67044f4c5fc957f72d3307fda61a9c
+ENVTEST_DIR := $(BUILD)/envtest/$(ENVTEST_VERSION)
+export KUBEBUILDER_ASSETS := $(ENVTEST_DIR)/controller-tools/envtest
+envtest:
+	@set -e; \
+	if [ -f "$(ENVTEST_DIR)/verified" ]; then echo "$@: $(ENVTEST_VERSION) is in $(ENVTEST_DIR)"; exit 0; fi; \
+	rm -rf "$(ENVTEST_DIR)"; mkdir -p "$(ENVTEST_DIR)"; \
+	url=https://github.com/kubernetes-sigs/controller-tools/releases/download/$(ENVTEST_VERSION)/$(ENVTEST_VERSION)-linux-amd64.tar.gz; \
+	curl -fsSL -o "$(ENVTEST_DIR)/envtest.tar.gz" "$$url"; \
+	got=$$(sha256sum "$(ENVTEST_DIR)/envtest.tar.gz" | cut -d' ' -f1); \
+	if [ "$$got" != "$(ENVTEST_SHA256)" ]; then echo "$@: $$url has SHA-256 $$got, want $(ENVTEST_SHA256)" >&2; rm -rf "$(ENVTEST_DIR)"; exit 1; fi; \
+	tar -xzf "$(ENVTEST_DIR)/envtest.tar.gz" -C "$(ENVTEST_DIR)"; \
+	for f in kube-apiserver etcd; do test -x "$(KUBEBUILDER_ASSETS)/$$f" || { echo "$@: $$f is missing from the archive" >&2; exit 1; }; done; \
+	touch "$(ENVTEST_DIR)/verified"; \
+	echo "$@: fetched $(ENVTEST_VERSION) into $(ENVTEST_DIR), SHA-256 $$got"
+
+# crds regenerates the cluster unit's deepcopy functions and CRDs from its Go types with the
+# controller-gen the module pins; both are committed.
+CRD_GEN := go tool controller-gen object crd paths=./internal/api/... output:crd:artifacts:config=config/crd/bases
+crds:
+	cd cluster && GOWORK=off $(CRD_GEN)
+
+# crds-check regenerates them in a copy of the module and fails when the committed files differ,
+# or when the copy has a file the committed tree lacks or the reverse.
+crds-check:
+	@set -e; \
+	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	cp -r cluster "$$tmp/cluster"; \
+	rm -rf "$$tmp/cluster/config/crd/bases" "$$tmp/cluster/internal/api/v1alpha1/zz_generated.deepcopy.go"; \
+	(cd "$$tmp/cluster" && GOWORK=off $(CRD_GEN)); \
+	diff -r cluster/config/crd/bases "$$tmp/cluster/config/crd/bases" || { echo "$@: the CRDs are stale: run make crds" >&2; exit 1; }; \
+	diff cluster/internal/api/v1alpha1/zz_generated.deepcopy.go "$$tmp/cluster/internal/api/v1alpha1/zz_generated.deepcopy.go" || { echo "$@: the deepcopy functions are stale: run make crds" >&2; exit 1; }; \
+	n=$$(ls "$$tmp/cluster/config/crd/bases" | wc -l); \
+	if [ "$$n" -eq 0 ]; then echo "$@: controller-gen wrote no CRD" >&2; exit 1; fi; \
+	echo "$@: $$n CRD file(s) and the deepcopy file match what controller-gen generates"
+
 # The tests need neither root nor a VM. The ones that need a delegated cgroup
 # are skipped here and run by test-cgroup; those that need PID 1 run in the
-# QEMU test of the image.
-test:
+# QEMU test of the image. The cluster unit's tests need envtest's binaries.
+test: envtest
 	$(call each_module, $(count_packages); (cd "$$dir" && go test -race -count=1 ./...))
 
 # test-cgroup runs the tests that use real cgroups, in a cgroup the user
@@ -252,4 +293,4 @@ test-harness: release
 	echo "$@: $$n test(s) passed, selected by -run '^TestCluster_' with -tags qemu_real"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
-ci: lint format test build
+ci: lint format crds-check test build
