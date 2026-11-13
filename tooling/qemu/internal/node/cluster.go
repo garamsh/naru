@@ -55,6 +55,9 @@ type ClusterSpec struct {
 	TimeServers []string
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
+	// Configure, when set, changes each Node's Config before it starts, such as to give it routes.
+	// It does not apply to a Gaon cluster, whose user-data is naructl's.
+	Configure func(*Config)
 }
 
 // Cluster is the Nodes of one network. Node 1 is the one whose configuration
@@ -107,6 +110,9 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		name := fmt.Sprintf("node-%d", i)
 		cfg := Config{
 			Name: name, Index: i, Total: spec.N, ControlPlane: i == 1, Probe: i == spec.ProbeOn, Inputs: spec.Inputs,
+		}
+		if spec.Configure != nil {
+			spec.Configure(&cfg)
 		}
 		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase}
 		if gen != nil {

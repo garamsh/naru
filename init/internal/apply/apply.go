@@ -85,6 +85,12 @@ type Time interface {
 	ConfigureTime(servers []string)
 }
 
+// Routes adds and removes the static routes of spec.network.routes in the kernel's table.
+type Routes interface {
+	AddRoute(config.Route) error
+	DeleteRoute(config.Route) error
+}
+
 // Certificates issues the named certificates of spec again and keeps renewing
 // the certificates of spec.
 type Certificates interface {
@@ -103,6 +109,7 @@ type Deps struct {
 	Services     Services
 	Files        Files
 	Time         Time
+	Routes       Routes
 	Certificates Certificates
 	API          API
 }

@@ -101,6 +101,20 @@ func (n Node) mvmdJSON() ([]byte, error) {
 	}
 	prefix := n.MachinePrefix
 	first := prefix.Masked().Addr().Next().String()
+	network := map[string]any{
+		"ipv4_prefix":  prefix.String(),
+		"ipv4_gateway": first,
+		"resolvers":    []string{first},
+	}
+	if len(n.Peers) > 0 {
+		// A Machine's traffic to another Node's Machines keeps its source address, so the peer's
+		// Machines see who sent it (mvmd ADR 0049).
+		peers := make([]string, 0, len(n.Peers))
+		for _, p := range n.Peers {
+			peers = append(peers, p.MachinePrefix.String())
+		}
+		network["no_masquerade"] = peers
+	}
 	return json.MarshalIndent(map[string]any{
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
 		"state_dir": DataMount + "/mvmd",
@@ -123,13 +137,9 @@ func (n Node) mvmdJSON() ([]byte, error) {
 		// the state directory and the run directories stay on one file system (mvmd ADR 0015).
 		"supervision":   map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": SupervisorCgroup},
 		"vmm_uid_range": map[string]any{"first": 100000, "count": 1000},
-		"network": map[string]any{
-			"ipv4_prefix":  prefix.String(),
-			"ipv4_gateway": first,
-			"resolvers":    []string{first},
-		},
-		"pull_timeout": "4m",
-		"boot_timeout": "2m",
-		"call_timeout": "5m",
+		"network":       network,
+		"pull_timeout":  "4m",
+		"boot_timeout":  "2m",
+		"call_timeout":  "5m",
 	}, "", "  ")
 }

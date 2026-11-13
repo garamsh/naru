@@ -32,7 +32,7 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client> [flag
   gen token   --ca <dir> --name <name>              write the Node's bootstrap token to <dir>/tokens/<name>, if none is there
   gen node    --ca <dir> --name <name> --address <cidr> --mac <mac> --gateway <ip> --nameserver <ip>
               --api-server <ip> --machine-prefix <cidr> --guest <guest.json> --firecracker-sha256 <hex>
-              --out <file> [--control-plane] [--time-server <host[:port]>] [more flags: naructl gen node -h]
+              --out <file> [--control-plane] [--peer <address>=<machine-prefix>] [--time-server <host[:port]>] [more flags: naructl gen node -h]
 `
 
 // Run runs naructl with args, the command line without the program's name.
@@ -196,12 +196,12 @@ func genToken(args []string, stdout, stderr io.Writer) error {
 func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen node", stderr)
 	var (
-		nameservers, serving, binaries, disable, timeServers list
-		n                                                    layout.Node
-		caDir, address, gateway, apiServer                   string
-		machinePrefix, guest, extraNIC                       string
-		out, networkConfig                                   string
-		controlPlane, pairsAsFiles                           bool
+		nameservers, serving, binaries, disable, timeServers, peers list
+		n                                                           layout.Node
+		caDir, address, gateway, apiServer                          string
+		machinePrefix, guest, extraNIC                              string
+		out, networkConfig                                          string
+		controlPlane, pairsAsFiles                                  bool
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")
@@ -218,6 +218,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.Var(&disable, "disable", "a service to leave out ("+strings.Join(layout.Gaon.Names(), ", ")+"), repeatable")
 	fs.Var(&timeServers, "time-server", "an SNTP server init sets the clock from, host or host:port, repeatable and asked in order (none: the clock is not set)")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
+	fs.Var(&peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
 	fs.StringVar(&guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
 	fs.StringVar(&n.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
 	fs.BoolVar(&pairsAsFiles, "pairs-as-files", false, "the Node carries operator-issued pairs as files, with no bootstrap token: on a control-plane Node every pair, and no signing key")
@@ -279,6 +280,21 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("--serving-address: %w", err)
 		}
 		n.ServingAddresses = append(n.ServingAddresses, a)
+	}
+	for _, s := range peers {
+		addr, prefix, ok := strings.Cut(s, "=")
+		if !ok {
+			return fmt.Errorf("--peer %q is not <address>=<machine-prefix>", s)
+		}
+		a, err := netip.ParseAddr(addr)
+		if err != nil {
+			return fmt.Errorf("--peer: %w", err)
+		}
+		p, err := netip.ParsePrefix(prefix)
+		if err != nil {
+			return fmt.Errorf("--peer: %w", err)
+		}
+		n.Peers = append(n.Peers, layout.Peer{Address: a, MachinePrefix: p})
 	}
 	if extraNIC != "" {
 		mac, cidr, ok := strings.Cut(extraNIC, "=")

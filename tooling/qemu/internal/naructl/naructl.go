@@ -193,6 +193,8 @@ type Node struct {
 	ServingAddresses              []string
 	// TimeServers are host[:port] entries of spec.time.servers (gen node --time-server).
 	TimeServers []string
+	// Peers are <address>=<machine-prefix> entries (gen node --peer).
+	Peers []string
 	// Binaries maps a service's name to its executable's path on the Node.
 	Binaries                          map[string]string
 	Disable                           []string
@@ -231,6 +233,7 @@ func (t Tool) GenNode(n Node) error {
 	}
 	flag("serving-address", n.ServingAddresses...)
 	flag("time-server", n.TimeServers...)
+	flag("peer", n.Peers...)
 	names := make([]string, 0, len(n.Binaries))
 	for name := range n.Binaries {
 		names = append(names, name)

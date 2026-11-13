@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -34,6 +35,27 @@ type links interface {
 	SetUp(link) error
 	AddAddr(link, netip.Prefix) error
 	SetDefaultRoute(link, netip.Addr) error
+	// ReplaceRoute installs the route to a prefix through a next hop, and DeleteRoute removes it;
+	// the kernel picks the device the next hop is on.
+	ReplaceRoute(netip.Prefix, netip.Addr) error
+	DeleteRoute(netip.Prefix, netip.Addr) error
+}
+
+// AddRoute installs the static route r, replacing one to the same prefix. It fails when the
+// kernel has no network the next hop is on.
+func (h *Host) AddRoute(r config.Route) error {
+	if err := h.links.ReplaceRoute(r.To, r.Via); err != nil {
+		return fmt.Errorf("route %s via %s: %w", r.To, r.Via, err)
+	}
+	return nil
+}
+
+// DeleteRoute removes the static route r. A route that is not there is not an error.
+func (h *Host) DeleteRoute(r config.Route) error {
+	if err := h.links.DeleteRoute(r.To, r.Via); err != nil {
+		return fmt.Errorf("delete route %s via %s: %w", r.To, r.Via, err)
+	}
+	return nil
 }
 
 // ApplyNetwork brings each interface of the configuration up with its
@@ -179,12 +201,27 @@ func (netlinkLinks) List() ([]link, error) {
 func (netlinkLinks) SetUp(l link) error { return netlink.LinkSetUp(handle(l)) }
 
 func (netlinkLinks) AddAddr(l link, p netip.Prefix) error {
-	ipnet := &net.IPNet{IP: p.Addr().AsSlice(), Mask: net.CIDRMask(p.Bits(), 8*len(p.Addr().AsSlice()))}
-	return netlink.AddrReplace(handle(l), &netlink.Addr{IPNet: ipnet})
+	return netlink.AddrReplace(handle(l), &netlink.Addr{IPNet: ipNet(p)})
 }
 
 func (netlinkLinks) SetDefaultRoute(l link, gw netip.Addr) error {
 	return netlink.RouteReplace(&netlink.Route{LinkIndex: l.Index, Gw: gw.AsSlice()})
+}
+
+func (netlinkLinks) ReplaceRoute(to netip.Prefix, via netip.Addr) error {
+	return netlink.RouteReplace(&netlink.Route{Dst: ipNet(to), Gw: via.AsSlice(), Protocol: syscall.RTPROT_STATIC})
+}
+
+func (netlinkLinks) DeleteRoute(to netip.Prefix, via netip.Addr) error {
+	err := netlink.RouteDel(&netlink.Route{Dst: ipNet(to), Gw: via.AsSlice(), Protocol: syscall.RTPROT_STATIC})
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}
+
+func ipNet(p netip.Prefix) *net.IPNet {
+	return &net.IPNet{IP: p.Addr().AsSlice(), Mask: net.CIDRMask(p.Bits(), 8*len(p.Addr().AsSlice()))}
 }
 
 func handle(l link) netlink.Link {

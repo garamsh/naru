@@ -53,7 +53,17 @@ type Config struct {
 	// has no gateway, so the Node still has no route off the host. Without it the NIC is
 	// restrict=on, as image.md describes.
 	HostReach bool
+	// Routes is the Node's spec.network.routes.
+	Routes []Route
+	// NoMasquerade is mvmd's network.no_masquerade: the prefixes whose traffic from a Machine keeps
+	// its source address.
+	NoMasquerade []string
+	// NetEcho is the arguments of a naru-netecho service, which the Node runs when it is not empty.
+	NetEcho []string
 }
+
+// Route is a spec.network.routes entry: a prefix and the address that reaches it.
+type Route struct{ To, Via string }
 
 // Network is what a Node's network-config and its configuration say of addresses. The QEMU tests
 // use QEMUNetwork; the release's example user-data gives the Proxmox values.
@@ -145,6 +155,11 @@ type service struct {
 	ControlPlane bool              `yaml:"controlPlane,omitempty"`
 }
 
+type route struct {
+	To  string `yaml:"to"`
+	Via string `yaml:"via"`
+}
+
 type nodeConfig struct {
 	APIVersion string `yaml:"apiVersion"`
 	Kind       string `yaml:"kind"`
@@ -159,6 +174,7 @@ type nodeConfig struct {
 		} `yaml:"dataDisk"`
 		Network struct {
 			Forwarding []string `yaml:"forwarding"`
+			Routes     []route  `yaml:"routes,omitempty"`
 		} `yaml:"network"`
 		Services []service `yaml:"services"`
 		Files    []file    `yaml:"files"`
@@ -191,6 +207,9 @@ func (c Config) NaruYAML() ([]byte, error) {
 	n.Spec.DataDisk.Label = DataLabel
 	n.Spec.DataDisk.MountPoint = DataMount
 	n.Spec.Network.Forwarding = []string{"ipv4"}
+	for _, r := range c.Routes {
+		n.Spec.Network.Routes = append(n.Spec.Network.Routes, route(r))
+	}
 	root := fixture.GuestRoot
 	mvmd := service{
 		Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", mvmdConfig},
@@ -205,6 +224,9 @@ func (c Config) NaruYAML() ([]byte, error) {
 			Args: []string{"-socket", MvmdSocket, "-mount", DataMount, "-listen", c.IP() + ":" + StandinPort, "-peer", c.PeerIP() + ":" + StandinPort},
 		},
 		{Name: "control", Binary: "/bin/naru-standin", ControlPlane: true},
+	}
+	if len(c.NetEcho) > 0 {
+		n.Spec.Services = append(n.Spec.Services, service{Name: "netecho", Binary: path.Join(root, "bin/naru-netecho"), Args: c.NetEcho})
 	}
 	if c.Probe {
 		n.Spec.Services = append(n.Spec.Services, service{
@@ -234,6 +256,14 @@ func (c Config) MvmdJSON() ([]byte, error) {
 	}
 	prefix := c.net().MachinePrefix
 	first := prefix.Masked().Addr().Next().String()
+	network := map[string]any{
+		"ipv4_prefix":  prefix.String(),
+		"ipv4_gateway": first,
+		"resolvers":    []string{first},
+	}
+	if len(c.NoMasquerade) > 0 {
+		network["no_masquerade"] = c.NoMasquerade
+	}
 	return json.MarshalIndent(map[string]any{
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
 		"state_dir": DataMount + "/mvmd",
@@ -256,13 +286,9 @@ func (c Config) MvmdJSON() ([]byte, error) {
 		// the state directory and the run directories stay on one file system (mvmd ADR 0015).
 		"supervision":   map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": supervisorCgroup},
 		"vmm_uid_range": map[string]any{"first": 100000, "count": 1000},
-		"network": map[string]any{
-			"ipv4_prefix":  prefix.String(),
-			"ipv4_gateway": first,
-			"resolvers":    []string{first},
-		},
-		"pull_timeout": "4m",
-		"boot_timeout": "2m",
-		"call_timeout": "5m",
+		"network":       network,
+		"pull_timeout":  "4m",
+		"boot_timeout":  "2m",
+		"call_timeout":  "5m",
 	}, "", "  ")
 }

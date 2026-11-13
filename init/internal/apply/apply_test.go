@@ -56,6 +56,12 @@ func (r *rig) Reissue(spec config.PKI, names []string) error {
 	return r.note(fmt.Sprintf("issue %v", names))
 }
 func (r *rig) Reload(config.API) error { return r.note("reload") }
+func (r *rig) AddRoute(rt config.Route) error {
+	return r.note(fmt.Sprintf("add-route %s via %s", rt.To, rt.Via))
+}
+func (r *rig) DeleteRoute(rt config.Route) error {
+	return r.note(fmt.Sprintf("delete-route %s via %s", rt.To, rt.Via))
+}
 func (r *rig) ConfigureTime(servers []string) {
 	_ = r.note(fmt.Sprintf("time %v", servers))
 }
@@ -65,7 +71,7 @@ func newRig(t *testing.T) *rig {
 	r := &rig{}
 	cfg, err := config.Parse([]byte(baseDoc(t)))
 	require.NoError(t, err)
-	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Certificates: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
+	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Certificates: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
 	return r
 }
 
@@ -216,7 +222,7 @@ func TestApply_RefusesWithoutChangingTheNode(t *testing.T) {
 		{"an unknown field", apply.Request{Patch: patch(obj{"bogus": 1}), Mode: apply.Staged}, invalidAt("spec.bogus")},
 		{"a never field in no-reboot", apply.Request{Patch: obj{"metadata": obj{"name": "other"}}, Mode: apply.NoReboot}, invalidAt("metadata.name")},
 		{"a never field in staged", apply.Request{Patch: patch(obj{"dataDisk": obj{"mountPoint": "/mnt"}}), Mode: apply.Staged}, invalidAt("spec.dataDisk")},
-		{"a reboot-only field in no-reboot", apply.Request{Patch: patch(obj{"controlPlane": true, "network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.NoReboot}, invalidAt("spec.controlPlane", "spec.network")},
+		{"a reboot-only field in no-reboot", apply.Request{Patch: patch(obj{"controlPlane": true, "network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.NoReboot}, invalidAt("spec.controlPlane", "spec.network.forwarding")},
 		{"a changed authority in no-reboot", apply.Request{Patch: patch(obj{"pki": obj{"authorities": []any{obj{"name": "ca", "certificatePath": "/run/other.pem"}}}}), Mode: apply.NoReboot}, invalidAt("spec.pki.authorities")},
 		{"a new listen address in no-reboot", apply.Request{Patch: patch(obj{"api": obj{"listen": "127.0.0.1:50001"}}), Mode: apply.NoReboot}, invalidAt("spec.api.listen")},
 		{"turning spec.api off in no-reboot", apply.Request{Patch: patch(obj{"api": nil}), Mode: apply.NoReboot}, invalidAt("spec.api")},

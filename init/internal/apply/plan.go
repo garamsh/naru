@@ -2,6 +2,7 @@ package apply
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 
 	"github.com/garamsh/naru/init/internal/config"
@@ -67,7 +68,7 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 		reboot = append(reboot, "spec.controlPlane")
 	}
 	if !slices.Equal(next.Spec.Network.Forwarding, running.Spec.Network.Forwarding) {
-		reboot = append(reboot, "spec.network")
+		reboot = append(reboot, "spec.network.forwarding")
 	}
 	if !slices.Equal(next.Spec.PKI.Authorities, running.Spec.PKI.Authorities) {
 		reboot = append(reboot, "spec.pki.authorities")
@@ -86,10 +87,11 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 
 // plan returns the live steps that take the running configuration to next, in
 // the order they run: the clock's servers change first, since the certificates
-// issued next depend on the clock; files and certificates are written, then the
-// listener reloads, then services stop, start or restart, and last the
-// services a written file or certificate names restart, each once and only if
-// the apply did not start or restart it already.
+// issued next depend on the clock; routes are deleted and added; files and
+// certificates are written, then the listener reloads, then services stop,
+// start or restart, and last the services a written file or certificate names
+// restart, each once and only if the apply did not start or restart it
+// already.
 func (e *Engine) plan(next config.NodeConfig) []step {
 	running := e.running
 	var steps []step
@@ -107,6 +109,18 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 		steps = append(steps, step{Action{"stop-time-sync", "spec.time"}, func() error { e.deps.Time.ConfigureTime(nil); return nil }})
 	case len(nt) > 0 && !slices.Equal(nt, rt):
 		steps = append(steps, step{Action{"sync-time", "spec.time"}, func() error { e.deps.Time.ConfigureTime(nt); return nil }})
+	}
+	for _, old := range running.Spec.Network.Routes {
+		if _, ok := routeAt(next.Spec.Network.Routes, old.To); ok {
+			continue // a changed next hop is replaced by the add below
+		}
+		steps = append(steps, step{Action{"delete-route", old.To.String()}, func() error { return e.deps.Routes.DeleteRoute(old) }})
+	}
+	for _, r := range next.Spec.Network.Routes {
+		if old, ok := routeAt(running.Spec.Network.Routes, r.To); ok && old.Via == r.Via {
+			continue
+		}
+		steps = append(steps, step{Action{"add-route", r.To.String()}, func() error { return e.deps.Routes.AddRoute(r) }})
 	}
 	for _, f := range next.Spec.Files {
 		if old, ok := fileAt(running.Spec.Files, f.Path); ok && old.Perm() == f.Perm() && old.Content == f.Content {
@@ -175,6 +189,14 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 		steps = append(steps, step{Action{"restart", n}, func() error { e.deps.Services.Restart(n); return nil }})
 	}
 	return steps
+}
+
+func routeAt(routes []config.Route, to netip.Prefix) (config.Route, bool) {
+	i := slices.IndexFunc(routes, func(r config.Route) bool { return r.To == to })
+	if i < 0 {
+		return config.Route{}, false
+	}
+	return routes[i], true
 }
 
 func fileAt(files []config.File, path string) (config.File, bool) {

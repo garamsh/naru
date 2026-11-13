@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
@@ -131,9 +132,17 @@ type DataDisk struct {
 	MountPoint string `yaml:"mountPoint"`
 }
 
-// Network holds the families for which forwarding is turned on.
+// Network holds the families for which forwarding is turned on and the routes init adds.
 type Network struct {
 	Forwarding []Family `yaml:"forwarding"`
+	// Routes are static IPv4 routes, one per destination prefix (docs/architecture/adr/0023-spec-network-routes-are-static-ipv4-routes-init-applies-live.md).
+	Routes []Route `yaml:"routes,omitempty"`
+}
+
+// Route sends the traffic for To to the next hop Via, which must be on a network the Node is on.
+type Route struct {
+	To  netip.Prefix `yaml:"to"`
+	Via netip.Addr   `yaml:"via"`
 }
 
 // FieldError is a validation failure that names the field it concerns, as a

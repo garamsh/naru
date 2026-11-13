@@ -61,6 +61,13 @@ type NIC struct {
 	Address netip.Prefix
 }
 
+// Peer is another Node of the cluster: its address, which is the next hop to its Machines, and
+// the IPv4 prefix its mvmd gives them.
+type Peer struct {
+	Address       netip.Addr
+	MachinePrefix netip.Prefix
+}
+
 // Node says what one Node is configured with.
 type Node struct {
 	// Name is the Node's name, such as "node-1".
@@ -93,6 +100,10 @@ type Node struct {
 	// MachinePrefix is the IPv4 prefix mvmd gives its Machines; the first host address of it is the
 	// Machines' gateway and resolver.
 	MachinePrefix netip.Prefix
+	// Peers are the other Nodes of the cluster. The Node routes to each one's MachinePrefix via its
+	// Address (spec.network.routes), and mvmd keeps a Machine's source address for traffic to it
+	// (network.no_masquerade).
+	Peers []Peer
 	// Guest is guest.json, and FirecrackerSHA256 the digest of the Firecracker binary.
 	Guest             Manifest
 	FirecrackerSHA256 string
@@ -158,6 +169,12 @@ type timeSpec struct {
 	Servers []string `yaml:"servers"`
 }
 
+// route is an entry of spec.network.routes.
+type route struct {
+	To  netip.Prefix `yaml:"to"`
+	Via netip.Addr   `yaml:"via"`
+}
+
 type nodeConfig struct {
 	APIVersion string `yaml:"apiVersion"`
 	Kind       string `yaml:"kind"`
@@ -172,6 +189,7 @@ type nodeConfig struct {
 		} `yaml:"dataDisk"`
 		Network struct {
 			Forwarding []string `yaml:"forwarding"`
+			Routes     []route  `yaml:"routes,omitempty"`
 		} `yaml:"network"`
 		Services []service `yaml:"services"`
 		Files    []file    `yaml:"files"`
@@ -197,6 +215,9 @@ func (n Node) Check() error {
 	case n.CA == nil:
 		return errors.New("the cluster's authority is not set")
 	}
+	if err := n.checkPeers(); err != nil {
+		return err
+	}
 	if err := n.Mode.check(n.Token, n.Tokens, n.Disable); err != nil {
 		return err
 	}
@@ -214,6 +235,43 @@ func (n Node) Check() error {
 		}
 		if !path.IsAbs(bin) {
 			return fmt.Errorf("the binary of %s, %q, is not an absolute path", name, bin)
+		}
+	}
+	return nil
+}
+
+// checkPeers reports the first peer the Node cannot route to: one whose address is not an IPv4
+// address on the Node's own network, is the Node's own or another peer's, or whose Machine prefix is
+// not an IPv4 prefix in its canonical form, or overlaps the Node's network, its own Machine prefix
+// or another peer's. A next hop must be on-link, and the prefixes must be disjoint for a route to a
+// peer's Machines to lead to the right Node.
+func (n Node) checkPeers() error {
+	for i, p := range n.Peers {
+		switch {
+		case !p.Address.IsValid() || !p.Address.Is4():
+			return fmt.Errorf("peer %d: the address is not an IPv4 address", i+1)
+		case !n.Address.Masked().Contains(p.Address):
+			return fmt.Errorf("peer %s: the address is not on the Node's network %s, so it cannot be a next hop", p.Address, n.Address.Masked())
+		case p.Address == n.Address.Addr():
+			return fmt.Errorf("peer %s: the address is the Node's own", p.Address)
+		case !p.MachinePrefix.IsValid() || !p.MachinePrefix.Addr().Is4():
+			return fmt.Errorf("peer %s: the Machine prefix is not an IPv4 prefix", p.Address)
+		case p.MachinePrefix != p.MachinePrefix.Masked():
+			return fmt.Errorf("peer %s: the Machine prefix %s has host bits set; write %s", p.Address, p.MachinePrefix, p.MachinePrefix.Masked())
+		case p.MachinePrefix.Bits() == 0:
+			return fmt.Errorf("peer %s: the Machine prefix is the default route", p.Address)
+		case p.MachinePrefix.Overlaps(n.Address.Masked()):
+			return fmt.Errorf("peer %s: the Machine prefix %s overlaps the Node's network %s", p.Address, p.MachinePrefix, n.Address.Masked())
+		case p.MachinePrefix.Overlaps(n.MachinePrefix):
+			return fmt.Errorf("peer %s: the Machine prefix %s overlaps the Node's own %s", p.Address, p.MachinePrefix, n.MachinePrefix)
+		}
+		for _, q := range n.Peers[:i] {
+			switch {
+			case q.Address == p.Address:
+				return fmt.Errorf("peer %s is listed twice", p.Address)
+			case q.MachinePrefix.Overlaps(p.MachinePrefix):
+				return fmt.Errorf("peers %s and %s have overlapping Machine prefixes %s and %s", q.Address, p.Address, q.MachinePrefix, p.MachinePrefix)
+			}
 		}
 	}
 	return nil
@@ -253,6 +311,9 @@ func (n Node) UserData() ([]byte, error) {
 	c.Spec.DataDisk.Label = DataLabel
 	c.Spec.DataDisk.MountPoint = DataMount
 	c.Spec.Network.Forwarding = []string{"ipv4"}
+	for _, p := range n.Peers {
+		c.Spec.Network.Routes = append(c.Spec.Network.Routes, route{To: p.MachinePrefix, Via: p.Address})
+	}
 	c.Spec.Files = []file{{Path: MvmdConfig, Mode: "0600", Content: string(mvmdJSON) + "\n"}}
 	certFiles, err := n.certFiles()
 	if err != nil {

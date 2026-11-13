@@ -85,7 +85,7 @@ func UserData(tool naructl.Tool, guest, firecracker string) (map[string][]byte, 
 		p := filepath.Join(work, UserDataName(i))
 		if err := tool.GenNode(naructl.Node{
 			CA: ca, Name: d.Name, ControlPlane: i == 1, Address: d.Address, APIServer: APIServer, MachinePrefix: d.MachinePrefix,
-			Guest: guest, Firecracker: firecracker, Out: p,
+			Guest: guest, Firecracker: firecracker, Peers: peers(i), Out: p,
 		}); err != nil {
 			return nil, err
 		}
@@ -94,6 +94,21 @@ func UserData(tool naructl.Tool, guest, firecracker string) (map[string][]byte, 
 		}
 	}
 	return out, nil
+}
+
+// peers lists the other Nodes of the example deployment as gen node's --peer values: each one's
+// address, without its prefix length, and its Machine prefix.
+func peers(index int) []string {
+	var out []string
+	for i := 1; i <= Nodes; i++ {
+		if i == index {
+			continue
+		}
+		d := Deployment(i)
+		addr, _, _ := strings.Cut(d.Address, "/")
+		out = append(out, addr+"="+d.MachinePrefix)
+	}
+	return out
 }
 
 // ServiceBinaries returns the binary of every service in a naru.yaml, by service name.

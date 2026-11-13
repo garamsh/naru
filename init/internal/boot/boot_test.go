@@ -66,6 +66,7 @@ type recorder struct {
 	sealErr    error
 	issueErr   error
 	timeErr    error
+	routeErr   error
 	startErr   error
 	apiErr     error
 	api        *store.Stored
@@ -84,6 +85,7 @@ type recorder struct {
 	issuedTo  []netip.Addr
 
 	timeServers []string
+	routes      []config.Route
 }
 
 func (r *recorder) ReadSeed() ([]byte, []byte, error) {
@@ -113,6 +115,12 @@ func (r *recorder) EnableForwarding(f []config.Family) error {
 	r.calls = append(r.calls, "forward")
 	r.forwarded = f
 	return r.forwardErr
+}
+
+func (r *recorder) AddRoute(rt config.Route) error {
+	r.calls = append(r.calls, "route "+rt.To.String())
+	r.routes = append(r.routes, rt)
+	return r.routeErr
 }
 
 func (r *recorder) SyncTime(servers []string) (timesync.Result, error) {
@@ -255,6 +263,29 @@ func TestRun_GoesOnWhenNoTimeServerAnswers(t *testing.T) {
 	require.NoError(t, run(r))
 
 	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "time", "issue", "prepare", "seal", "start mvmd"}, r.calls)
+}
+
+func withRoutes(t *testing.T, doc string) string {
+	t.Helper()
+	return replace(t, doc, "    forwarding: [ipv4]\n", "    forwarding: [ipv4]\n    routes:\n      - {to: 10.200.2.0/24, via: 10.78.0.2}\n      - {to: 10.200.3.0/24, via: 10.78.0.3}\n")
+}
+
+func TestRun_InstallsTheRoutesAfterForwardingAndBeforeFiles(t *testing.T) {
+	r := &recorder{raw: withRoutes(t, validConfig)}
+
+	require.NoError(t, run(r))
+
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "route 10.200.2.0/24", "route 10.200.3.0/24", "files", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, netip.MustParseAddr("10.78.0.3"), r.routes[1].Via)
+}
+
+func TestRun_GoesOnWhenARouteCannotBeInstalled(t *testing.T) {
+	// The control is the test above: with the same configuration every route is installed.
+	r := &recorder{raw: withRoutes(t, validConfig), routeErr: errors.New("network is unreachable")}
+
+	require.NoError(t, run(r))
+
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "route 10.200.2.0/24", "route 10.200.3.0/24", "files", "prepare", "seal", "start mvmd"}, r.calls, "the second route is tried and the services start")
 }
 
 func TestRun_SetsNoClockWithoutSpecTime(t *testing.T) {

@@ -14,6 +14,7 @@ var keyed = map[string]string{
 	"spec.files":            "path",
 	"spec.pki.authorities":  "name",
 	"spec.pki.certificates": "name",
+	"spec.network.routes":   "to",
 }
 
 // merge applies patch to target as a JSON merge patch (RFC 7386) with keyed
