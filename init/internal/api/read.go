@@ -7,12 +7,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/garamsh/naru/init/internal/upgrade"
 )
 
 type versionBody struct {
 	Version       string  `json:"version"`
 	BootID        string  `json:"bootId"`
 	UptimeSeconds float64 `json:"uptimeSeconds"`
+	// Slot is "default" or "trial". LastUpgrade is how the last upgrade ended, and absent when none has.
+	Slot        string           `json:"slot"`
+	LastUpgrade *upgrade.Outcome `json:"lastUpgrade,omitempty"`
 }
 
 func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
@@ -22,7 +27,14 @@ func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "the boot ID cannot be read"})
 		return
 	}
-	writeJSON(w, http.StatusOK, versionBody{Version: s.deps.Version, BootID: bootID, UptimeSeconds: s.deps.Uptime().Seconds()})
+	body := versionBody{Version: s.deps.Version, BootID: bootID, UptimeSeconds: s.deps.Uptime().Seconds(), Slot: upgrade.SlotDefault}
+	if u := s.deps.Upgrades; u != nil {
+		body.Slot = u.Slot()
+		if last, ok := u.Last(); ok {
+			body.LastUpgrade = &last
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // stateStopped is the state of a configured service that is not supervised.

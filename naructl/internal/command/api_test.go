@@ -234,6 +234,11 @@ type fakeNode struct {
 	postDry           bool
 	logQuery          string
 	stalenessRevision int
+	// upgradeBody and upgradeQuery are what the last POST /v1/upgrade carried.
+	upgradeBody  []byte
+	upgradeQuery string
+	// lastUpgrade is the outcome GET /v1/version reports, when it is not nil.
+	lastUpgrade map[string]any
 }
 
 func newFakeNode(t *testing.T, dep deployment) *fakeNode { return newFakeNodeTLS(t, dep, 0) }
@@ -249,7 +254,13 @@ func newFakeNodeTLS(t *testing.T, dep deployment, maxTLS uint16) *fakeNode {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/version", func(w http.ResponseWriter, r *http.Request) {
 		f.note(r)
-		writeJSON(w, 200, map[string]any{"version": "v9.9.9", "bootId": "boot-1", "uptimeSeconds": 125.5})
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		body := map[string]any{"version": "v9.9.9", "bootId": "boot-1", "uptimeSeconds": 125.5, "slot": "default"}
+		if f.lastUpgrade != nil {
+			body["lastUpgrade"] = f.lastUpgrade
+		}
+		writeJSON(w, 200, body)
 	})
 	mux.HandleFunc("GET /v1/services", func(w http.ResponseWriter, r *http.Request) {
 		f.note(r)
@@ -315,6 +326,14 @@ func newFakeNodeTLS(t *testing.T, dep deployment, maxTLS uint16) *fakeNode {
 	mux.HandleFunc("POST /v1/reboot", func(w http.ResponseWriter, r *http.Request) {
 		f.note(r)
 		writeJSON(w, 202, map[string]any{"actions": []map[string]any{{"action": "reboot", "target": "node"}}})
+	})
+	mux.HandleFunc("POST /v1/upgrade", func(w http.ResponseWriter, r *http.Request) {
+		f.note(r)
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.upgradeBody, f.upgradeQuery = body, r.URL.RawQuery
+		f.mu.Unlock()
+		writeJSON(w, 202, map[string]any{"actions": []map[string]any{{"action": "upgrade", "target": "v2"}, {"action": "reboot", "target": "node"}}})
 	})
 	// The handshake and the role come first, as they do in init: 403 for a certificate with no role
 	// that allows the method.

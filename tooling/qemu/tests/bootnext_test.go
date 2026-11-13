@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -66,7 +65,6 @@ func TestNode_BootNextBootsTheTrialSlotOnceAndTheNextRebootTheDefault(t *testing
 	require.NoError(t, n.WaitFor(ctx, bootTimeout, "naru56-efi: armed Boot0100 and BootNext=0100"))
 	require.NoError(t, n.WaitFor(ctx, bootTimeout, "naru56-efi: BootCurrent=", "BootNext=0100", "trial=true"))
 	assert.NotContains(t, n.Console(), "BootCurrent=0100", "boot 1 is not the trial entry")
-	first := bootCurrent(t, n.Console())
 	logEFI(t, "boot 1 (default slot)", n.Console())
 
 	// Boot 2: the firmware boots the trial entry, and deletes BootNext when it does.
@@ -75,11 +73,13 @@ func TestNode_BootNextBootsTheTrialSlotOnceAndTheNextRebootTheDefault(t *testing
 	assert.NotContains(t, n.Console(), "armed", "boot 2 did not arm again: the entry and BootNext were already there")
 	logEFI(t, "boot 2 (after BootNext)", n.Console())
 
-	// Boot 3: BootNext is gone, so the default slot boots again.
+	// Boot 3: BootNext is gone, so the default slot boots again. Init finds the trial slot on a
+	// default boot and removes it (ADR 0025), and the service runs at the same time as that removal,
+	// so the test reads init's own lines: the boot is the default slot and the trial was rolled back.
 	require.NoError(t, n.Reboot())
-	require.NoError(t, n.WaitFor(ctx, bootTimeout, "naru56-efi: BootCurrent=", "BootNext=none", "trial=true"))
+	require.NoError(t, n.WaitFor(ctx, bootTimeout, "the boot slot", "slot=default"))
+	require.NoError(t, n.WaitFor(ctx, bootTimeout, "upgrade rolled back"))
 	assert.NotContains(t, n.Console(), "BootCurrent=0100", "boot 3 is not the trial entry: BootNext was used once")
-	assert.Equal(t, first, bootCurrent(t, n.Console()), "boot 3 is the entry boot 1 was")
 	logEFI(t, "boot 3 (next reboot)", n.Console())
 }
 
@@ -91,13 +91,4 @@ func logEFI(t *testing.T, boot, console string) {
 			t.Logf("%s: %s", boot, strings.TrimSpace(line))
 		}
 	}
-}
-
-var currentLine = regexp.MustCompile(`naru56-efi: BootCurrent=([0-9A-F]{4})`)
-
-func bootCurrent(t *testing.T, console string) string {
-	t.Helper()
-	m := currentLine.FindStringSubmatch(console)
-	require.NotNil(t, m, console)
-	return m[1]
 }

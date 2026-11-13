@@ -22,6 +22,7 @@ import (
 	"github.com/garamsh/naru/init/internal/service"
 	"github.com/garamsh/naru/init/internal/store"
 	"github.com/garamsh/naru/init/internal/timesync"
+	"github.com/garamsh/naru/init/internal/upgrade"
 )
 
 // Engine is the configuration the Node holds and the means to change it.
@@ -57,7 +58,20 @@ type Deps struct {
 	// Reboot asks init to stop the services and reboot the Node. It returns at once, and is
 	// called after the reply that asked for the reboot has been sent.
 	Reboot func()
-	Log    *slog.Logger
+	// Upgrades is the in-place upgrade; nil on a Node that has none.
+	Upgrades Upgrades
+	Log      *slog.Logger
+}
+
+// Upgrades is the Node's in-place A/B upgrade.
+type Upgrades interface {
+	// Install stages the bundle read from body, whose SHA-256 is expected to be sha256, in the
+	// trial slot and arms the firmware to boot it once. It does not reboot.
+	Install(body io.Reader, sha256 string) (upgrade.Staged, error)
+	// Slot is "default" or "trial", the slot this boot came from.
+	Slot() string
+	// Last returns how the last upgrade ended, and false when none has.
+	Last() (upgrade.Outcome, bool)
 }
 
 // Server is the Node API. It serves nothing until Start, and applies nothing until Attach.

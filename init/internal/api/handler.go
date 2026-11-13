@@ -20,6 +20,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/config", s.getConfig)
 	mux.HandleFunc("POST /v1/config", s.postConfig)
 	mux.HandleFunc("POST /v1/reboot", s.postReboot)
+	mux.HandleFunc("POST /v1/upgrade", s.postUpgrade)
 	return s.recovering(s.logged(s.authorised(mux)))
 }
 
