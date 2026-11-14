@@ -30,13 +30,17 @@ type Inputs struct {
 	// Guest names the guest kernels and initrds the image carries, by their paths inside it and
 	// their digests, as image/host/guest/build.sh wrote them (ADR 0010).
 	Guest guest.Manifest
+	// Extension is the system extension that carries naru-orchd and naru-signer, stored the way a
+	// Node stores it (ADR 0055). Its StoreDir is not in Dir: the data disk takes it as
+	// /var/lib/naru/extensions.
+	Extension Extension
 }
 
 // Sources are the host files and directories Stage takes its inputs from.
 type Sources struct {
 	// Root is the repository root, where go.work is.
 	Root string
-	// ImageDir holds inputs.env, which make image writes.
+	// ImageDir holds inputs.env and extensions/, which make image writes.
 	ImageDir string
 	// GuestDir holds guest.json, which image/host/guest/build.sh writes.
 	GuestDir string
@@ -57,6 +61,9 @@ type Sources struct {
 //	bin/naru-sockproxy                 forwards a TCP port to a unix socket (harness.md)
 //	bin/naru-keyprobe                  scans for the private keys of given authorities (harness.md)
 //	registry/                          see WriteRegistry
+//
+// The extension make image built (extensions/naru-orch.sqfs) is stored beside the tree, in the form
+// of a Node's extension store (ExtensionStore).
 //
 // The guest kernel, the initrds and mkfs.ext4 are not staged: the image carries them (ADR 0010,
 // ADR 0011).
@@ -109,9 +116,16 @@ func Stage(src Sources, out string) (Inputs, error) {
 	if err != nil {
 		return Inputs{}, err
 	}
-	in.Image, err = WriteRegistry(filepath.Join(out, "registry"), entry, runtime.GOARCH)
+	if in.Image, err = WriteRegistry(filepath.Join(out, "registry"), entry, runtime.GOARCH); err != nil {
+		return Inputs{}, err
+	}
+	in.Extension, err = stageExtension(src.ImageDir, ExtensionStore(out))
 	return in, err
 }
+
+// ExtensionStore is where Stage lays out the extension store of the inputs tree at dir: beside it,
+// since the data disk takes the tree and the store to different places.
+func ExtensionStore(dir string) string { return filepath.Clean(dir) + "-extensions" }
 
 // goBuild builds the package of the module as a static Linux executable.
 func goBuild(moduleDir, pkg, out string) error {

@@ -21,6 +21,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/config", s.postConfig)
 	mux.HandleFunc("POST /v1/reboot", s.postReboot)
 	mux.HandleFunc("POST /v1/upgrade", s.postUpgrade)
+	mux.HandleFunc("GET /v1/extensions", s.getExtensions)
+	mux.HandleFunc("PUT /v1/extensions/{sha256}", s.putExtension)
+	mux.HandleFunc("DELETE /v1/extensions/{sha256}", s.deleteExtension)
 	return s.recovering(s.logged(s.authorised(mux)))
 }
 

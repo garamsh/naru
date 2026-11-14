@@ -303,3 +303,62 @@ func apiClient(t *testing.T, file string) (*http.Client, string) {
 	hc := &http.Client{Timeout: time.Minute, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{pair}}}}
 	return hc, f.Endpoints[0]
 }
+
+// extensionRows are the lines of `naructl extension list` after the header, by digest.
+func extensionRows(t *testing.T, file string) map[string][]string {
+	t.Helper()
+	r := ctl(file, "extension", "list")
+	require.NoError(t, r.Err, r.refusal())
+	rows := map[string][]string{}
+	for i, line := range strings.Split(strings.TrimSpace(r.Stdout), "\n") {
+		if f := strings.Fields(line); i > 0 && len(f) >= 6 {
+			rows[f[2]] = f
+		}
+	}
+	return rows
+}
+
+func TestNode_ASystemExtensionIsDeliveredOverTheNodeAPIAndListedWithoutBeingMounted(t *testing.T) {
+	c := nodeAPI(t)
+	admin, ext := c.API.Admin, inputs.Extension
+
+	// The data disk stores the extension the way a delivery leaves it.
+	rows := extensionRows(t, admin)
+	require.Contains(t, rows, ext.SHA256)
+	assert.Equal(t, "no", rows[ext.SHA256][len(rows[ext.SHA256])-1], "no spec.extensions names it: it is stored, not mounted")
+
+	// Removed, then delivered again: the Node checks the digest of what it reads and the manifest in it.
+	r := ctl(admin, "extension", "remove", ext.SHA256)
+	require.NoError(t, r.Err, r.refusal())
+	assert.Empty(t, extensionRows(t, admin))
+	r = ctl(admin, "extension", "add", ext.Image)
+	require.NoError(t, r.Err, r.refusal())
+	assert.Contains(t, r.Stdout, "name: naru-orch, sha256: "+ext.SHA256)
+	assert.Contains(t, extensionRows(t, admin), ext.SHA256)
+
+	// A reader may list and may not deliver or remove.
+	assert.NoError(t, ctl(c.API.Reader, "extension", "list").Err)
+	assert.Error(t, ctl(c.API.Reader, "extension", "add", ext.Image).Err)
+	assert.Error(t, ctl(c.API.Reader, "extension", "remove", ext.SHA256).Err)
+}
+
+func TestNode_ASpecExtensionIsMountedReadOnlyAtBootAndAMountedOneCannotBeRemoved(t *testing.T) {
+	c := nodeAPI(t)
+	admin, ext := c.API.Admin, inputs.Extension
+
+	// spec.extensions changes only at a boot (ADR 0055): staged, then the Node boots again.
+	patch := "spec:\n  extensions:\n    - {name: naru-orch, sha256: " + ext.SHA256 + "}\n"
+	r := ctl(admin, "apply", "-f", patchFile(t, patch), "--mode", "staged")
+	require.NoError(t, r.Err, r.refusal())
+	assert.Error(t, ctl(admin, "apply", "-f", patchFile(t, patch)).Err, "a live apply refuses a change of spec.extensions")
+	require.NoError(t, c.Nodes[0].Reboot())
+	eventually(t, "the Node API answers after the boot", func() bool { return ctl(admin, "version").Err == nil })
+
+	row := extensionRows(t, admin)[ext.SHA256]
+	require.NotNil(t, row, "the extension is still stored")
+	assert.Equal(t, "/usr/lib/naru/extensions/naru-orch", row[len(row)-1], "the Node mounted it")
+	r = ctl(admin, "extension", "remove", ext.SHA256)
+	require.Error(t, r.Err)
+	assert.Contains(t, r.refusal(), "409")
+	assert.Contains(t, extensionRows(t, admin), ext.SHA256, "the refusal removed nothing")
+}

@@ -155,6 +155,9 @@ type Node struct {
 	Signer        *Signer
 	Orch          *Orch
 	MetricsListen string
+	// Extensions are spec.extensions: the system extensions init mounts before any service starts,
+	// each by name and the SHA-256 of its image. Orch and the signer need "naru-orch".
+	Extensions []Extension
 
 	// TimeServers are the SNTP servers init sets the clock from, each a host or host:port, in the
 	// order they are asked. With none, spec.time is left out and the Node's clock is not set.
@@ -316,6 +319,7 @@ type nodeConfig struct {
 		Host       *hostSpec       `yaml:"host,omitempty"`
 		Signer     *signerSpec     `yaml:"signer,omitempty"`
 		Orch       *orchSpec       `yaml:"orch,omitempty"`
+		Extensions []extensionSpec `yaml:"extensions,omitempty"`
 		Metrics    *metricsSpec    `yaml:"metrics,omitempty"`
 	} `yaml:"spec"`
 }

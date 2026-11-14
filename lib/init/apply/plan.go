@@ -93,6 +93,9 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 	if !slices.Equal(next.Spec.Storage, running.Spec.Storage) {
 		reboot = append(reboot, "spec.storage")
 	}
+	if !slices.Equal(next.Spec.Extensions, running.Spec.Extensions) {
+		reboot = append(reboot, "spec.extensions")
+	}
 	if len(reboot) > 0 {
 		return &InvalidError{Fields: reboot, Message: `these fields need a reboot; use mode "staged" or "reboot"`}
 	}

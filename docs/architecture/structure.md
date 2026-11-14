@@ -12,7 +12,7 @@ Nothing here states what goes inside a unit, or how the units are deployed. A un
 
 The repository holds these top-level folders (garamsh/discussions Discussion #3 decisions 3, 4 and 6, and [ADR 0039](./adr/0039-init-dissolves-into-lib-init-called-by-host-and-node-and-controlplane-into-lib-vip-and-node-and-a-check-fails-an-import-between-units.md)). `host/`, `node/`, `orch/`, `naructl/`, `tooling/` and `lib/` exist.
 
-- **`host/`**, the host: `naru-hostd`, `naru-init` and `naru-signer`.
+- **`host/`**, the host: `naru-hostd`, `naru-init` and `naru-signer` (which, with `naru-orchd`, a Node runs from the `naru-orch` system extension, [ADR 0055](./adr/0055-orch-and-the-signer-are-delivered-as-a-system-extension-a-squashfs-image-init-mounts-read-only.md)).
   - `naru-hostd` is the host API that creates, shows and destroys microVMs on a host through mvmd's runtime API. A service the host's configuration starts when it has `spec.host`, built into the image; it builds an OS-form microVM's NoCloud seed with `lib/iso9660` ([ADR 0028](./adr/0028-naru-hostd-serves-a-host-api-over-mutual-tls-from-its-own-authority-and-creates-microvms-through-mvmds-runtime-api.md)).
   - `naru-signer` is the one process that holds the authorities' keys (`host/cmd/naru-signer`, `host/internal/signer`; [signer.md](./signer.md)).
   - `host/cmd/naru-init` is the host's PID 1, a call of `lib/init/run`. hostd does not become PID 1 yet: it stays a service init supervises, which keeps it restartable on its own (ADR 0039).

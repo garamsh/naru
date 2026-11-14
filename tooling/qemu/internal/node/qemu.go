@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
 )
 
@@ -100,7 +101,7 @@ func Start(spec Spec) (*Node, error) {
 	if err := BuildCidata(cidata, "naru15-"+spec.Config.Name, naruYAML, networkConfig); err != nil {
 		return nil, err
 	}
-	dataDisk, err := BuildDataDiskWith(spec.Dir, spec.Config.Inputs.Dir, spec.Config.AgentPair)
+	dataDisk, err := BuildDataDiskWith(spec.Dir, spec.Config.Inputs.Dir, spec.Config.AgentPair, spec.Config.Inputs.Extension.StoreDir)
 	if err != nil {
 		return nil, err
 	}
@@ -203,11 +204,11 @@ func (n *Node) ReplaceUserData(userData, networkConfig []byte) error {
 }
 
 // ResetData stops the Node, replaces its data disk with a new one that carries only the inputs tree
-// at inputsDir, and boots it again: a control host that lost its disk, whose signer and orch state
+// and the extension store of inputs, and boots it again: a control host that lost its disk, whose signer and orch state
 // are gone. The boot disk, the NoCloud drive and the variable store are kept.
-func (n *Node) ResetData(inputsDir string) error {
+func (n *Node) ResetData(inputs fixture.Inputs) error {
 	n.Stop()
-	if _, err := BuildDataDiskWith(n.dir, inputsDir, ""); err != nil {
+	if _, err := BuildDataDiskWith(n.dir, inputs.Dir, "", inputs.Extension.StoreDir); err != nil {
 		return err
 	}
 	return n.launch()

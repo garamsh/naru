@@ -265,7 +265,8 @@ func (f *fleet) genFlags(c node.Config) []string {
 		}
 		return flags
 	}
-	flags = append(flags, "--signer", "--signer-peer-listen", nodeIP(c.Index)+":"+signerPeerPort,
+	// The signer and orch run from the naru-orch extension, which the data disk stores (ADR 0055).
+	flags = append(flags, "--extension", "naru-orch="+inputs.Extension.SHA256, "--signer", "--signer-peer-listen", nodeIP(c.Index)+":"+signerPeerPort,
 		"--signer-peer-name", nodeIP(c.Index), "--signer-peer-name", fmt.Sprintf("node-%d", c.Index))
 	if c.Index == 1 {
 		return append(flags, "--signer-recovery-public", f.rec.pub, "--signer-root-csr", f.rootCSR)

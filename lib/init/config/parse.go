@@ -121,6 +121,7 @@ func validate(cfg NodeConfig) error {
 	v.hostNetwork(cfg.Spec)
 	v.hostOrch(cfg.Spec)
 	v.hostdArgs(cfg.Spec.Services)
+	v.extensions(cfg.Spec)
 	v.signer(cfg.Spec.Signer)
 	v.orch(cfg)
 	v.metrics(cfg.Spec.Metrics)

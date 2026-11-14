@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/lib/init/api"
+	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/console"
+	"github.com/garamsh/naru/lib/init/extension"
 	"github.com/garamsh/naru/lib/init/linux"
 	"github.com/garamsh/naru/lib/init/pki"
 	"github.com/garamsh/naru/lib/init/service"
@@ -27,6 +29,8 @@ const (
 	cgroupRoot = "/sys/fs/cgroup"
 	// diskWait is how long init waits for a disk the kernel has not yet probed.
 	diskWait = 10 * time.Second
+	// extensionProbeDir is where init mounts a new extension image for the moment it takes to read its manifest.
+	extensionProbeDir = "/run/naru/extension-probe"
 )
 
 // Main runs PID 1 and never returns; given -validate <file> it checks a configuration and exits.
@@ -68,6 +72,7 @@ func Main() {
 	go reaper.Run(context.Background())
 
 	host := linux.NewHost(diskWait)
+	extensions := extension.NewManager(extension.NewStore(extension.Dir, extensionProbeDir, extension.MaxBytes, linux.Loop{}), linux.Loop{}, config.ExtensionsRoot, version(), log)
 	services := service.NewManager(linux.NewCgroupTree(cgroupRoot), linux.NewLauncher(reaper, con), service.SystemClock{}, log)
 
 	issuer := pki.New("", service.SystemClock{}, services, log)
@@ -84,17 +89,18 @@ func Main() {
 	upgrades := upgrade.New(version(), started, log)
 	upgrades.Detect()
 	server := api.New(api.Deps{
-		Services: services,
-		Logs:     con,
-		Version:  version(),
-		BootID:   func() (string, error) { return linux.ReadBootID(linux.BootIDPath) },
-		Uptime:   func() time.Duration { return time.Since(started) },
-		Reboot:   reboot,
-		Upgrades: upgrades,
-		Log:      log,
+		Services:   services,
+		Logs:       con,
+		Version:    version(),
+		BootID:     func() (string, error) { return linux.ReadBootID(linux.BootIDPath) },
+		Uptime:     func() time.Duration { return time.Since(started) },
+		Reboot:     reboot,
+		Upgrades:   upgrades,
+		Extensions: extensions,
+		Log:        log,
 	})
 	metricsCtx, stopMetrics := context.WithCancel(context.Background())
-	stopRenewing, booted := bootAndRenew(host, issuer, services, configs, server, log)
+	stopRenewing, booted := bootAndRenew(bootHost{host, extensions}, issuer, services, configs, server, log)
 	if booted != nil {
 		server.Attach(newEngine(*booted, configs, services, host, issuer, server))
 		log.Info("the apply engine is ready", "revision", booted.Revision)
