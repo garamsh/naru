@@ -186,9 +186,9 @@ func services(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "NAME\tSTATE\tPID\tRESTARTS\tSTARTED")
+	_, _ = fmt.Fprintln(w, "NAME\tSTATE\tPID\tRESTARTS\tSTARTED\tEXTENSION")
 	for _, s := range list {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\n", s.Name, s.State, s.PID, s.Restarts, s.StartedAt)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\t%s\n", s.Name, s.State, s.PID, s.Restarts, s.StartedAt, s.Extension)
 	}
 	return w.Flush()
 }

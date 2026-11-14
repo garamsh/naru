@@ -6,10 +6,21 @@ import (
 
 	"github.com/garamsh/naru/lib/init/apply"
 	"github.com/garamsh/naru/lib/init/boot"
+	"github.com/garamsh/naru/lib/init/config"
+	"github.com/garamsh/naru/lib/init/extension"
+	"github.com/garamsh/naru/lib/init/linux"
 	"github.com/garamsh/naru/lib/init/pki"
 	"github.com/garamsh/naru/lib/init/store"
 	"github.com/garamsh/naru/lib/init/timesync"
 )
+
+// bootHost is the machine with the means to mount the system extensions.
+type bootHost struct {
+	*linux.Host
+	extensions *extension.Manager
+}
+
+func (h bootHost) MountExtensions(specs []config.Extension) error { return h.extensions.Mount(specs) }
 
 // timedHost is the machine as the boot sequence reaches it, with its clock.
 type timedHost interface {

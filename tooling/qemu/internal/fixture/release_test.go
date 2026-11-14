@@ -14,8 +14,8 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
-// fakeRelease writes the five assets ReadRelease reads: a boot disk, a data disk holding a small
-// inputs tree, the guest manifest, the inputs file and the naructl binary.
+// fakeRelease writes the assets ReadRelease reads: a boot disk, a data disk holding a small
+// inputs tree, the guest manifest, the inputs file, the naructl binary and the extension.
 func fakeRelease(t *testing.T) string {
 	t.Helper()
 	dir, work, tree := t.TempDir(), t.TempDir(), t.TempDir()
@@ -37,6 +37,9 @@ func fakeRelease(t *testing.T) string {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, fixture.ReleaseInputsName("v1")),
 		[]byte(`{"firecrackerSha256":"f1","imageRepository":"127.0.0.1:5000/test/entry","imageDigest":"sha256:`+d+`"}`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "naructl-v1-linux-amd64"), []byte("#!/bin/sh\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fixture.ReleaseExtensionName("v1", ".sqfs")), []byte("squashfs"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fixture.ReleaseExtensionName("v1", ".json")),
+		[]byte(`{"name":"naru-orch","version":"v1","sha256":"`+strings.Repeat("c", 64)+`","services":["naru-orchd","naru-signer"]}`), 0o644))
 	return dir
 }
 
@@ -53,6 +56,15 @@ func TestReadRelease_ReadsTheInputsTreeFromTheDataDiskAndTheFirecrackerDigestAnd
 	assert.Equal(t, "f1", r.Inputs.FirecrackerSHA256)
 	assert.Equal(t, fixture.Image{Repository: "127.0.0.1:5000/test/entry", Digest: "sha256:" + strings.Repeat("a", 64)}, r.Inputs.Image)
 	assert.Equal(t, "naru", r.Inputs.Guest.DefaultKernel)
+	ext := r.Inputs.Extension
+	assert.Equal(t, strings.Repeat("c", 64), ext.SHA256)
+	assert.Equal(t, []string{"naru-orchd", "naru-signer"}, ext.Services)
+	stored, err := os.ReadFile(filepath.Join(ext.StoreDir, ext.SHA256+".sqfs"))
+	require.NoError(t, err, "the image is stored under its digest")
+	assert.Equal(t, "squashfs", string(stored))
+	manifest, err := os.ReadFile(filepath.Join(ext.StoreDir, ext.SHA256+".json"))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"name":"naru-orch","version":"v1","services":["naru-orchd","naru-signer"]}`, string(manifest), "the manifest the Node's store keeps")
 	info, err = os.Stat(r.Naructl)
 	require.NoError(t, err, "the release's naructl asset")
 	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm(), "a downloaded asset is made executable")
@@ -74,4 +86,22 @@ func TestReadRelease_NamesTheNaructlAssetAReleaseLacks(t *testing.T) {
 	_, err := fixture.ReadRelease(dir, t.TempDir())
 
 	assert.ErrorContains(t, err, "naructl-v1-linux-amd64")
+}
+
+func TestReadRelease_NamesTheExtensionAssetAReleaseLacks(t *testing.T) {
+	dir := fakeRelease(t)
+	require.NoError(t, os.Remove(filepath.Join(dir, fixture.ReleaseExtensionName("v1", ".json"))))
+
+	_, err := fixture.ReadRelease(dir, t.TempDir())
+
+	assert.ErrorContains(t, err, "naru-orch-ext-v1.json")
+}
+
+func TestReadExtensionInfo_RefusesADescriptionWithoutADigestOrServices(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "naru-orch.json")
+	require.NoError(t, os.WriteFile(p, []byte(`{"name":"naru-orch","version":"v1","sha256":"abc","services":[]}`), 0o644))
+
+	_, err := fixture.ReadExtensionInfo(p)
+
+	assert.ErrorContains(t, err, "a version, a SHA-256 and services")
 }

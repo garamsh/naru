@@ -60,3 +60,7 @@ This note appends to the decision above and to the section it names under decisi
 - **Why `initialCluster` is refused, not ignored.** A value the member does not use is one an operator edits and expects to matter; the member that joins takes the cluster etcd returns, which has the members the cluster holds when it joins, not the members the operator wrote down some time before.
 - **Why `restore` is refused.** A member that restores starts a cluster of itself alone and the others join it; one member cannot do both at its first start.
 - **`naructl gen node --orch-join <url>`** writes the field, in place of `--orch-member`.
+
+## Errata
+
+- 2026-11-15: item 1 of the decision put `naru-orchd` and `naru-signer` in the initramfs's `/bin`. That placement is superseded by [ADR 0055](./0055-orch-and-the-signer-are-delivered-as-a-system-extension-a-squashfs-image-init-mounts-read-only.md): they are in the `naru-orch` system extension, mounted at `/usr/lib/naru/extensions/naru-orch`, and `spec.signer` and `spec.orch` need a `spec.extensions` entry for it. The rest of this decision holds.

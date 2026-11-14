@@ -38,6 +38,9 @@ type Host interface {
 	// SetAsidePair sets the pair file of p aside when its certificate lacks the Organization p
 	// names, and reports whether it did.
 	SetAsidePair(config.KeptPair) (bool, error)
+	// MountExtensions mounts the system extensions of spec.extensions read-only under their
+	// directories, or refuses: one that is missing, built for another version or fails its digest.
+	MountExtensions([]config.Extension) error
 	// PrepareStorage finds a storage disk, formats it when it is blank, mounts it and grows its
 	// file system to the device, logging what it does.
 	PrepareStorage(config.Storage, *slog.Logger) error
@@ -82,7 +85,7 @@ type API interface {
 // and the user-data's otherwise. The steps before the data disk mounts use the
 // user-data. It starts none, and returns the reason, when the configuration or
 // the network-config is invalid, the network cannot be brought up, the data
-// disk is refused, the Node API cannot listen, the kernel cannot be set up or
+// disk is refused, a system extension cannot be mounted, the Node API cannot listen, the kernel cannot be set up or
 // a certificate cannot be issued: a refusal is the same whichever service it would have kept from
 // starting. A clock that no time server could set is not one: it is logged, and the boot goes on.
 // Nor is a route the kernel refuses, nor a storage disk that is missing or cannot be prepared: each is logged too.
@@ -131,6 +134,11 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	}
 	if err := host.WriteRegistries(cfg.Spec); err != nil {
 		return store.Stored{}, fmt.Errorf("write the registry files: %w", err)
+	}
+	if len(cfg.Spec.Extensions) > 0 {
+		if err := host.MountExtensions(cfg.Spec.Extensions); err != nil {
+			return store.Stored{}, fmt.Errorf("mount the system extensions: %w", err)
+		}
 	}
 	prepareStorage(host, cfg.Spec.Storage, log)
 	syncTime(host, cfg.Spec.Time, log)

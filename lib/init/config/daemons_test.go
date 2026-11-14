@@ -41,6 +41,9 @@ func indent(s string) string {
 	return "        " + strings.ReplaceAll(strings.TrimSuffix(s, "\n"), "\n", "\n        ") + "\n"
 }
 
+// orchDigest is the SHA-256 daemonsDoc gives its naru-orch extension.
+const orchDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 // daemonsDoc is a Node that runs hostd, the signer and orch, with every section set.
 func daemonsDoc(t *testing.T) string {
 	cert, pub, csr := throwaway(t)
@@ -56,6 +59,9 @@ spec:
   dataDisk:
     label: NARUDATA
     mountPoint: /var/lib/naru
+  extensions:
+    - name: naru-orch
+      sha256: ` + orchDigest + `
   host:
     region: seoul
     network:
@@ -134,7 +140,7 @@ func TestParse_SectionsBecomeServicesAndFlags(t *testing.T) {
 	assert.Equal(t, []string{"naru-hostd"}, enroll.Restart)
 
 	signer := service(t, cfg, "naru-signer")
-	assert.Equal(t, "/bin/naru-signer", signer.Binary)
+	assert.Equal(t, "/usr/lib/naru/extensions/naru-orch/bin/naru-signer", signer.Binary)
 	assert.Equal(t, &config.User{UID: 6001, GID: 6001}, signer.User)
 	assert.Equal(t, []config.Dir{
 		{Path: "/var/lib/naru/signer", Mode: "0700", UID: 6001, GID: 6001},
@@ -149,6 +155,7 @@ func TestParse_SectionsBecomeServicesAndFlags(t *testing.T) {
 	assert.Equal(t, "init", signer.Setup[0].Args[0])
 
 	orch := service(t, cfg, "naru-orchd")
+	assert.Equal(t, "/usr/lib/naru/extensions/naru-orch/bin/naru-orchd", orch.Binary, "orch runs from the extension")
 	assert.Equal(t, &config.User{UID: 6002, GID: 6002, Groups: []uint32{6001}}, orch.User, "orch's group is its own; the signer's group is the only one it joins")
 	assert.NotContains(t, orch.User.Groups, uint32(0))
 	assert.Equal(t, []config.Dir{{Path: "/var/lib/naru/orch", Mode: "0700", UID: 6002, GID: 6002}}, orch.Dirs)

@@ -69,6 +69,7 @@ type recorder struct {
 	timeErr    error
 	routeErr   error
 	storageErr error
+	extErr     error
 	startErr   error
 	apiErr     error
 	api        *store.Stored
@@ -93,6 +94,13 @@ type recorder struct {
 	setAsideErr   error
 	registriesErr error
 	storage       []config.Storage
+	extensions    []config.Extension
+}
+
+func (r *recorder) MountExtensions(e []config.Extension) error {
+	r.calls = append(r.calls, "extensions")
+	r.extensions = e
+	return r.extErr
 }
 
 func (r *recorder) ReadSeed() ([]byte, []byte, error) {
@@ -505,4 +513,29 @@ func TestRun_FormatsTheBlankDataDiskOnlyWhenTheConfigurationAsksAndBeforeMountin
 	r = &recorder{raw: asks, formatErr: boom}
 	assert.ErrorIs(t, run(r), boom)
 	assert.Equal(t, []string{"read", "network", "format"}, r.calls, "a disk that cannot be formatted is not mounted and nothing starts")
+}
+
+// withExtension adds a spec.extensions entry to validConfig.
+func withExtension(t *testing.T) string {
+	t.Helper()
+	return replace(t, validConfig, "  services:\n", "  extensions:\n    - name: naru-orch\n      sha256: "+strings.Repeat("ab", 32)+"\n  services:\n")
+}
+
+func TestRun_MountsTheExtensionsBeforeTheRootIsSealedAndAnyServiceStarts(t *testing.T) {
+	r := &recorder{raw: withExtension(t)}
+
+	require.NoError(t, run(r))
+
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "extensions", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, []config.Extension{{Name: "naru-orch", SHA256: strings.Repeat("ab", 32)}}, r.extensions)
+}
+
+func TestRun_StartsNothingWhenAnExtensionCannotBeMounted(t *testing.T) {
+	// The control is the test above: with the same configuration, a service starts.
+	r := &recorder{raw: withExtension(t), extErr: errors.New("no image is stored")}
+
+	err := run(r)
+
+	require.ErrorContains(t, err, "mount the system extensions: no image is stored")
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "extensions"}, r.calls, "the API has started, so the image can still be delivered")
 }

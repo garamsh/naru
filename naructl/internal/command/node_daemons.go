@@ -25,12 +25,19 @@ type daemonFlags struct {
 	orchCert, orchCA, orchRevocation, orchRecovery, orchKey, metricsListen string
 	orchHostCA, orchJoin                                                   string
 	orchRestore                                                            bool
-	orchCluster, orchSANs                                                  list
+	orchCluster, orchSANs, extensions                                      list
 }
 
 // genNodeDaemons sets what the flags say of those sections on the Node, reading the files they
 // name. The orch key is read into the Node and never printed.
 func genNodeDaemons(n *layout.Node, f daemonFlags) error {
+	for _, e := range f.extensions {
+		name, digest, ok := strings.Cut(e, "=")
+		if !ok || name == "" || digest == "" {
+			return fmt.Errorf("--extension %q is not <name>=<SHA-256 of the image>", e)
+		}
+		n.Extensions = append(n.Extensions, layout.Extension{Name: name, SHA256: digest})
+	}
 	if f.hostMgmt != "" {
 		p, err := netip.ParsePrefix(f.hostMgmt)
 		if err != nil {

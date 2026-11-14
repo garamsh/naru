@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/upgrade"
 )
 
@@ -56,6 +57,9 @@ type serviceBody struct {
 	Restarts int    `json:"restarts"`
 	// StartedAt is RFC 3339, and absent for a service that has not started.
 	StartedAt string `json:"startedAt,omitempty"`
+	// Extension is the system extension the service's binary comes from, and absent for one that
+	// runs from the image.
+	Extension string `json:"extension,omitempty"`
 }
 
 // serviceList returns the services of the stored configuration in its order, each with the
@@ -79,6 +83,7 @@ func (s *Server) serviceList() []serviceBody {
 		if !ok {
 			b = serviceBody{Name: svc.Name, State: stateStopped}
 		}
+		b.Extension = config.ExtensionOf(svc)
 		out = append(out, b)
 		extra = slices.DeleteFunc(extra, func(n string) bool { return n == svc.Name })
 	}

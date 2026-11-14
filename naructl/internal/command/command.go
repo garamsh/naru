@@ -57,6 +57,8 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
   upgrade --bundle <naru-upgrade-<version>.tar> --sums <SHA256SUMS>
               check the bundle against the sums file, then send it: the Node reboots into it once, and keeps it when healthy
   upgrade --status                              print the Node's boot slot and how its last upgrade ended
+  extension add <naru-orch-ext-<tag>.sqfs>      store a system extension image on the Node (the admin role); spec.extensions names it by SHA-256
+  extension list | extension remove <sha256>    list the images the Node stores and whether each is mounted, or remove one that is not mounted
   gen ca      --out <dir>                       write ca.pem and ca.key
   gen client  --ca <dir> --cn <name> --out <dir> write an operator's client.pem and client.key
   gen etcd-client --ca <dir> --out <dir>      write ca.crt, tls.crt and tls.key, a client pair etcd's members accept
@@ -100,6 +102,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			return reboot(args[1:], stdout, stderr)
 		case "upgrade":
 			return upgradeCmd(args[1:], stdout, stderr)
+		case "extension":
+			return extensionCmd(args[1:], stdout, stderr)
 		case "host":
 			return hostCmd(args[1:], stdout, stderr)
 		case "console":
@@ -302,7 +306,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	var (
 		nameservers, serving, binaries, disable, timeServers, peers, members, registries, storage, noMasquerade list
 		awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion                                              string
-		hostLabels, orchCluster, orchSANs, signerPeerNames                                                      list
+		hostLabels, orchCluster, orchSANs, signerPeerNames, extensions                                          list
 		hostMgmt, hostEgress, signerPeer, signerRecovery, signerRootCSR, metricsListen                          string
 		orchPeerURL, orchClientURL, orchState, orchListen, orchCert, orchCA, orchRevocation                     string
 		orchRecovery, orchKey, orchHostCA, hostClientCA, orchJoin                                               string
@@ -366,6 +370,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&orchJoin, "orch-join", "", "spec.orch.join: the client URL, https://<host>:<port>, of a running member, which this member joins; it takes the initial cluster from that cluster, so no --orch-member, and excludes --orch-restore")
 	fs.BoolVar(&orchRestore, "orch-restore", false, "spec.orch.restore: orchd starts empty and waits for root's etcd snapshot (PUT /v1/restore)")
 	fs.StringVar(&orchKey, "orch-key", "", "spec.orch: the file holding orch's private key, which the user data carries 0600 for orch's user alone")
+	fs.Var(&extensions, "extension", "spec.extensions: <name>=<SHA-256 of the image>, a system extension init mounts before any service starts, repeatable; the signer and orch need naru-orch=the sha256 field of the release's naru-orch-ext-TAG.json")
 	fs.StringVar(&metricsListen, "metrics-listen", "", "spec.metrics: the IP address init and the daemons serve /metrics on, each on its own port")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.Var(&peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
@@ -419,7 +424,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 		signerReplica: signerReplica, signerJoinPeer: signerJoinPeer, signerJoinPeerCA: signerJoinPeerCA, signerJoinAuthz: signerJoinAuthz,
 		runSigner: runSigner, signerPeer: signerPeer, signerPeerNames: signerPeerNames, signerRecovery: signerRecovery, signerRootCSR: signerRootCSR,
 		orchPeerURL: orchPeerURL, orchClientURL: orchClientURL, orchCluster: orchCluster, orchState: orchState, orchListen: orchListen, orchSANs: orchSANs,
-		orchCert: orchCert, orchCA: orchCA, orchRevocation: orchRevocation, orchRecovery: orchRecovery, orchKey: orchKey, orchHostCA: orchHostCA, orchRestore: orchRestore, orchJoin: orchJoin, metricsListen: metricsListen,
+		orchCert: orchCert, orchCA: orchCA, orchRevocation: orchRevocation, orchRecovery: orchRecovery, orchKey: orchKey, orchHostCA: orchHostCA, orchRestore: orchRestore, orchJoin: orchJoin, metricsListen: metricsListen, extensions: extensions,
 	}); err != nil {
 		return err
 	}
