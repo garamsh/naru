@@ -23,8 +23,9 @@ const (
 type Inputs struct {
 	// Dir is the tree on the host; it becomes GuestRoot on every Node's data disk.
 	Dir string
-	// Image is the OCI image the registry serves.
-	Image Image
+	// Image is the OCI image the registry serves, and Sandbox the image of a Kubernetes Pod's sandbox
+	// container, which shares its layer. A release's inputs name no Sandbox: the Image is then both.
+	Image, Sandbox Image
 	// FirecrackerSHA256 is the digest of the Firecracker binary the image carries.
 	FirecrackerSHA256 string
 	// Guest names the guest kernels and initrds the image carries, by their paths inside it and
@@ -109,7 +110,7 @@ func Stage(src Sources, out string) (Inputs, error) {
 	if err != nil {
 		return Inputs{}, err
 	}
-	in.Image, err = WriteRegistry(filepath.Join(out, "registry"), entry, runtime.GOARCH)
+	in.Image, in.Sandbox, err = WriteRegistry(filepath.Join(out, "registry"), entry, runtime.GOARCH)
 	return in, err
 }
 

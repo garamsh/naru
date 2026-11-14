@@ -75,7 +75,7 @@ func fetch(t *testing.T, c *http.Client, url string) []byte {
 
 func TestWriteRegistry_PublishesAPullableImageOverTLS(t *testing.T) {
 	dir := t.TempDir()
-	img, err := WriteRegistry(dir, []byte("program"), "amd64")
+	img, _, err := WriteRegistry(dir, []byte("program"), "amd64")
 	require.NoError(t, err)
 	s, client := served(t, dir)
 
@@ -108,7 +108,7 @@ func TestWriteRegistry_PublishesAPullableImageOverTLS(t *testing.T) {
 
 func TestWriteRegistry_IsTrustedOnlyThroughItsOwnAuthority(t *testing.T) {
 	dir := t.TempDir()
-	_, err := WriteRegistry(dir, []byte("program"), "amd64")
+	_, _, err := WriteRegistry(dir, []byte("program"), "amd64")
 	require.NoError(t, err)
 	s, _ := served(t, dir)
 
@@ -116,4 +116,35 @@ func TestWriteRegistry_IsTrustedOnlyThroughItsOwnAuthority(t *testing.T) {
 
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "certificate"), err.Error())
+}
+
+func TestWriteRegistry_SandboxImageSharesTheLayerAndRunsIdle(t *testing.T) {
+	dir := t.TempDir()
+	img, sandbox, err := WriteRegistry(dir, []byte("program"), "amd64")
+	require.NoError(t, err)
+	s, client := served(t, dir)
+	read := func(i Image) (layer string, cmd []string) {
+		var m struct {
+			Config struct{ Digest string }
+			Layers []struct{ Digest string }
+		}
+		require.NoError(t, json.Unmarshal(fetch(t, client, s.URL+"/v2/test/x/manifests/"+i.Digest), &m))
+		require.Len(t, m.Layers, 1)
+		var cfg struct {
+			Config struct {
+				Entrypoint, Cmd []string
+			}
+		}
+		require.NoError(t, json.Unmarshal(fetch(t, client, s.URL+"/v2/test/x/blobs/"+m.Config.Digest), &cfg))
+		assert.Equal(t, []string{"/bin/entry"}, cfg.Config.Entrypoint)
+		return m.Layers[0].Digest, cfg.Config.Cmd
+	}
+
+	imgLayer, imgCmd := read(img)
+	sandboxLayer, sandboxCmd := read(sandbox)
+
+	assert.NotEqual(t, img.Digest, sandbox.Digest)
+	assert.Equal(t, imgLayer, sandboxLayer)
+	assert.Empty(t, imgCmd, "a microVM runs the entrypoint with no arguments")
+	assert.Equal(t, []string{"idle"}, sandboxCmd, "a sandbox container serves nothing")
 }
