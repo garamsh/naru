@@ -81,6 +81,7 @@ func (n *node) WriteFiles([]config.File) error                    { return nil }
 func (n *node) WriteRegistries(config.Spec) error                 { return nil }
 func (n *node) SetAsidePair(config.KeptPair) (bool, error)        { return false, nil }
 func (n *node) PrepareStorage(config.Storage, *slog.Logger) error { return nil }
+func (n *node) MountExtensions([]config.Extension) error          { return nil }
 func (n *node) SealRoot() error                                   { return nil }
 func (n *node) SyncTime([]string) (timesync.Result, error) {
 	return timesync.Result{}, nil

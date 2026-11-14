@@ -1,7 +1,8 @@
 // Package release writes the assets a deployment of naru Nodes is made from: the boot disk, the
 // upgrade bundle (the kernel with its initramfs, for A/B boot), the Node boot set (a kernel and an
 // initramfs a host takes with no reboot, and the manifest that names them), one
-// data disk that carries the test inputs and nothing of any Node, the guest manifest (the names
+// data disk that carries the test inputs and nothing of any Node, the system extension that carries
+// orch and the signer with its description, the guest manifest (the names
 // and SHA-256 of the guest kernels and initrds the boot disk carries), the inputs file (the Firecracker
 // digest and the test image's reference), a test-only NoCloud
 // user-data per Node for Proxmox that runs gaon with certificates issued for the release, and the
@@ -177,6 +178,27 @@ type Options struct {
 	Figures string
 }
 
+// checkExtension refuses a release whose extension description states another digest than the
+// image's, or another version than the release's: an operator would write that digest into
+// spec.extensions, and init would refuse the boot.
+func checkExtension(o Options) error {
+	info, err := fixture.ReadExtensionInfo(filepath.Join(o.Out, fixture.ReleaseExtensionName(o.Version, ".json")))
+	if err != nil {
+		return err
+	}
+	a, err := digest(filepath.Join(o.Out, fixture.ReleaseExtensionName(o.Version, ".sqfs")))
+	if err != nil {
+		return err
+	}
+	if a.SHA256 != info.SHA256 {
+		return fmt.Errorf("the extension's description states SHA-256 %s, and its image is %s (make image)", info.SHA256, a.SHA256)
+	}
+	if info.Version != o.Version {
+		return fmt.Errorf("the extension was built for version %s, not the release's %s (make image)", info.Version, o.Version)
+	}
+	return nil
+}
+
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
 // Asset is a file Build wrote.
@@ -271,6 +293,19 @@ func Build(o Options) ([]Asset, error) {
 		return nil, err
 	}
 	names = append(names, inputsAsset)
+
+	// The system extension that carries naru-orchd and naru-signer: an operator delivers the image
+	// to a Node and writes its SHA-256, which the JSON states, into spec.extensions (ADR 0055).
+	for suffix, from := range map[string]string{".sqfs": fixture.ExtensionImageName, ".json": fixture.ExtensionInfoName} {
+		asset := fixture.ReleaseExtensionName(o.Version, suffix)
+		if err := copyFile(filepath.Join(o.ImageDir, fixture.ExtensionDir, from), filepath.Join(o.Out, asset)); err != nil {
+			return nil, fmt.Errorf("the extension (make image): %w", err)
+		}
+		names = append(names, asset)
+	}
+	if err := checkExtension(o); err != nil {
+		return nil, err
+	}
 
 	// naructl is the operator's tool and the one owner of the Node layout: the release ships the
 	// binary and writes the test user-data with it.
