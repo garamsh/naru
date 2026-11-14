@@ -1,0 +1,41 @@
+# Orch
+
+What `naru-orchd` is: the service of the control hosts that keeps the inventory of hosts (enrolled, admitted, in a region, with labels), elects the one member that acts, and answers the API through which operators and hosts reach it. The authorities' keys are not here: they stay with the signer.
+
+## Current decisions
+
+- **`naru-orchd` is a unit.** It is the module `orch/`, with one binary, `cmd/naru-orchd`, which is the composition site. Its types and Go client are the library module `lib/orchapi`, used by naructl and naru-hostd; the roles, the pairing code, the admission statement, the revocation list and the sealed box are `lib/identity`'s ([ADR 0041](./adr/0041-orch-is-a-cluster-of-members-with-an-embedded-etcd-one-elected-leader-and-an-mtls-api-that-enrolls-and-admits-hosts-and-the-signer-holds-every-key.md)).
+- **Members.** Each control host runs one member: an embedded etcd v3.6 (peer and client URLs over mutual TLS from the orch certificate, the flags `--name`, `--data-dir`, `--peer-url`, `--client-url`, `--initial-cluster`, `--initial-cluster-state`) and the API. Three members tolerate the loss of one.
+- **One leader.** The members campaign on an etcd election with a session lease of 10 s. Reconcilers and state derived from the inventory run only while a member leads, with a context that ends when it stops leading. A stopped leader is replaced within about the lease; a member never resigns early. `orch/internal/groups/` plugs into that seam as a `Reconciler` and is not part of this document yet.
+- **The API** is HTTPS, TLS 1.3, port 7500 by default. A client certificate is verified against the authority and read with `lib/identity`; the role is its one OrganizationalUnit. A revoked serial is refused: the revocation list is the signer's, verified with the revocation public key (`--revocation-public-key`), kept 30 s and replaced only by a list whose `seq` is not lower. With no verified list yet every authenticated call is 503; with a list and a signer that stops answering, the last list stays in force.
+- **What each role may do.**
+
+  | Endpoint | reader | operator, automation | root | host | no certificate |
+  | --- | --- | --- | --- | --- | --- |
+  | `GET /v1/hosts`, `GET /v1/pending`, `GET /v1/events` | yes | yes | yes | 403 | 401 |
+  | `POST /v1/admit`, `PUT /v1/hosts/{id}/labels` | 403 | yes | yes | 403 | 401 |
+  | `POST /v1/enrollment-keys`, `DELETE /v1/enrollment-keys/{id}` | 403 | yes | yes | 403 | 401 |
+  | `POST /v1/snapshot` | 403 | 403 | yes | 403 | 401 |
+  | `POST /v1/heartbeat` | 403 | 403 | 403 | yes | 401 |
+  | `GET /v1/crl` | yes | yes | yes | yes | 401 |
+  | `POST /v1/enroll`, `GET /v1/enroll/{hostID}` | n/a | n/a | n/a | n/a | key or proof, not a certificate |
+
+- **Enrollment.** An operator creates an enrollment key (`naru-ek-` and 64 hex digits, shown once, valid at most 365 days); orch keeps the SHA-256 of it, never the key. A host sends the key, its ID, its public key and a certificate request to `POST /v1/enroll`; the request is refused with 403 for a key that is unknown, expired or revoked, and with 429 over a token bucket per source address (1 per second, burst 10) and per key (5 per second, burst 50). The buckets are in each member's memory. At most 1000 enrollments wait. The host shows its pairing code on its console every minute and polls `GET /v1/enroll/{hostID}` with a signature of the current time by its own key (five minutes of skew); orch answers a poll only for the holder of the enrolled key.
+- **Admission.** `POST /v1/admit` is for an operator. Orch computes the pairing code from the key it stored and compares it with the request's code; it does not use a code a host sent. A mismatch is 403 and nothing reaches the signer. Otherwise the opaque admission statement and the host's certificate request go to the signer, which verifies the statement (role, revocation, expiry, the key's hash) and issues the host's certificate; orch checks that the certificate is for the enrolled key and stores it. The region and labels are fields of the request beside the statement. naructl's `host admit` takes the key from `GET /v1/pending`, compares the code against that key itself and signs locally with the operator's person file.
+- **Region and labels.** A region is a DNS label; labels are Kubernetes keys and values, at most 64. `PUT /v1/hosts/{id}/labels` replaces both. Every enrollment, admission, refusal of a code and label change is an event, listed by `GET /v1/events`.
+- **Heartbeat.** An admitted host presents its certificate to `POST /v1/heartbeat`; orch records the time as the host's `lastSeen`. After a restore the host reconnects with the same certificate.
+- **Snapshots.** The leader's member takes an etcd snapshot every 6 hours, keeps the newest 8 and writes each sealed to the recovery public key (`--recovery-public-key`) with `lib/identity`'s sealed box; with no recovery key nothing is written, and an unsealed snapshot is never written. `POST /v1/snapshot` (root) takes one at once. `naructl orch restore` opens a file with the recovery key and its passphrase.
+- **The signer** is a service on the control host that orch calls over a unix socket (`--signer-socket`), HTTP with JSON bodies. Orch assumes these calls, which the signer's own document will fix: `POST /v1/host` with `statement` and `csr`, answered with `certificate`; `GET /v1/crl`, answered with the signed list; `POST /v1/orch` with `csr`, answered with `certificate` and `ca`. A 401 or 403 is the signer's refusal; anything else that fails is a 502 to the caller. At start a member without an identity asks the signer for one.
+- **The host's agent** in `naru-hostd` runs when `--orch-url` is set. It trusts orch by the SHA-256 of the authority's certificate (`--orch-ca-sha256`), which must be in the chain orch presents, and by orch's name, so a host's own certificate cannot stand in for orch. It reads the enrollment key from `--enroll-key-file`, keeps its key at `--host-key`, writes the certificate beside it and then heartbeats; with a valid certificate for the key it does not enroll again.
+- **naructl** takes `orch init|backup|restore`, `host pending|admit|label` and `enroll-key create|revoke` ([config.md](./config.md)).
+- **Deployment.** orchd runs as a configured service under the user `naru-orch`. Packaging it as an extension is not decided here (garamsh/naru#57).
+
+## Rationale
+
+- [ADR 0041](./adr/0041-orch-is-a-cluster-of-members-with-an-embedded-etcd-one-elected-leader-and-an-mtls-api-that-enrolls-and-admits-hosts-and-the-signer-holds-every-key.md): why etcd embedded in the member, why a leader that does not resign, why roles from `lib/identity`, why orch recomputes the pairing code, why the statement stays opaque to orch, why keys are stored as hashes, why snapshots are only written sealed, and the signs it was wrong.
+
+## Open questions
+
+- The signer's HTTP contract above is orch's assumption until the signer's document fixes it.
+- `naructl orch init` writes the recovery key and its public half only. The root person file and the first control host's identities come from the signer's own commands, which this change does not have.
+- The rate limits are per member, so an attacker who spreads requests over three members is allowed three times the rate.

@@ -8,6 +8,7 @@ use (
 	./init
 	./lib/identity
 	./lib/iso9660
+	./lib/orchapi
 	./naructl
 	./orch
 	./tooling/disk
