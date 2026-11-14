@@ -37,7 +37,7 @@ func (f *fleet) get(i int, method, path string) (int, []byte) {
 	pair, err := tls.LoadX509KeyPair(f.rootCertFile, f.rootKey)
 	require.NoError(f.t, err)
 	pool := x509.NewCertPool()
-	require.True(f.t, pool.AppendCertsFromPEM([]byte(f.rootCert)))
+	require.True(f.t, pool.AppendCertsFromPEM([]byte(f.orchCA)))
 	cl := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		Certificates: []tls.Certificate{pair}, RootCAs: pool, MinVersion: tls.VersionTLS13,
 	}}}
@@ -327,7 +327,7 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 	})
 	eventually(t, "the empty orch takes the snapshot", func() bool {
 		return nrun("orch", "restore", "--snapshot", snap, "--recovery-key", f.rec.key, "--passphrase-file", f.pass,
-			"--push", "https://"+f.forward(1, orchPort), "--orch-ca", f.rootCertFile, "--admin", f.root.file).Err == nil
+			"--push", "https://"+f.forward(1, orchPort), "--orch-ca", f.orchCAFile, "--admin", f.root.file).Err == nil
 	})
 
 	// The other two join as new members, their signers as replicas of the restored one: spec.orch.join

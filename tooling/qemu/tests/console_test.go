@@ -29,7 +29,7 @@ func (f *fleet) startConsole() (*http.Client, string) {
 	addr := l.Addr().String()
 	require.NoError(t, l.Close())
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, tool.Bin, "console", "--listen", addr, "--orch-url", f.orchURL(1), "--orch-ca", f.rootCertFile,
+	cmd := exec.CommandContext(ctx, tool.Bin, "console", "--listen", addr, "--orch-url", f.orchURL(1), "--orch-ca", f.orchCAFile,
 		"--identity", f.root.file, "--passphrase-file", f.pass)
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { cancel(); _ = cmd.Wait() })
