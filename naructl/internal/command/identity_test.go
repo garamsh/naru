@@ -286,4 +286,3 @@ func TestSignerCommands_RefuseAnUnknownVerbAndAnAdminThatIsNotRoot(t *testing.T)
 	_, err = run(t, "signer", "bundle", "--admin", admin, "--passphrase-file", pass, "--socket", socket, "--out", filepath.Join(t.TempDir(), "b"))
 	assert.ErrorContains(t, err, "refused")
 }
-
