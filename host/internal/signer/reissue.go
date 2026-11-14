@@ -5,10 +5,8 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"time"
@@ -17,10 +15,6 @@ import (
 )
 
 const (
-	// noncesFile holds the nonces of the reissue requests the signer took, with their expiry. It
-	// is not part of the bundle: it guards this signer against a replay, and a replica or a
-	// restored signer is guarded by the requests' own expiry only.
-	noncesFile = "reissue-nonces.json"
 	// maxReissueTTL bounds how far ahead a reissue request may expire, so that remembering its
 	// nonce until then is bounded and a captured request goes stale.
 	maxReissueTTL = 10 * time.Minute
@@ -34,7 +28,8 @@ var ErrReplay = errors.New("request was already used")
 // ReissueRoot issues a new root certificate for the certificate request of a request the recovery
 // key signed, and revokes every serial the signer recorded as root's, so the old root is no longer
 // admitted. It is for the holder of the recovery key who has lost root's person file. The request
-// is once-only: its nonce is written to the directory before anything changes.
+// is once-only: its nonce is signed into the revocation list, which orch carries to every signer,
+// before anything else changes.
 func (s *Signer) ReissueRoot(signed []byte) (identity.Issued, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -61,8 +56,11 @@ func (s *Signer) ReissueRoot(signed []byte) (identity.Issued, error) {
 	if err != nil {
 		return identity.Issued{}, err
 	}
-	if err := s.useNonce(req.Nonce, expiresAt, now); err != nil {
+	if err := s.checkSynced(now); err != nil {
 		return identity.Issued{}, err
+	}
+	if cur.crl.Used(req.Nonce, now) {
+		return identity.Issued{}, fmt.Errorf("%w: its nonce was seen", ErrReplay)
 	}
 
 	old := slices.Sorted(func(yield func(string) bool) {
@@ -72,18 +70,17 @@ func (s *Signer) ReissueRoot(signed []byte) (identity.Issued, error) {
 			}
 		}
 	})
-	next := cur
-	if revoked := slices.DeleteFunc(slices.Clone(old), cur.crl.Revokes); len(revoked) > 0 {
-		crl := identity.CRL{Seq: cur.crl.Seq + 1, IssuedAt: now, Serials: slices.Sorted(slices.Values(append(slices.Clone(cur.crl.Serials), revoked...)))}
-		withCRL := *cur
-		if err := withCRL.signCRL(crl); err != nil {
-			return identity.Issued{}, err
-		}
-		if err := writeFile(filepath.Join(s.dir, crlFile), withCRL.crlSigned); err != nil {
-			return identity.Issued{}, err
-		}
-		s.auth, next = &withCRL, &withCRL
+	crl := cur.successor(now)
+	crl.Nonces[req.Nonce] = expiresAt
+	crl.Serials = slices.Sorted(slices.Values(slices.Concat(crl.Serials, slices.DeleteFunc(slices.Clone(old), cur.crl.Revokes))))
+	next := *cur
+	if err := next.signCRL(crl); err != nil {
+		return identity.Issued{}, err
 	}
+	if err := writeFile(filepath.Join(s.dir, crlFile), next.crlSigned); err != nil {
+		return identity.Issued{}, err
+	}
+	s.auth = &next
 	issued, err := issueLeaf(next.operator, now, "root", identity.RoleRoot, csr.PublicKey, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil)
 	if err != nil {
 		return identity.Issued{}, err
@@ -98,34 +95,4 @@ func (s *Signer) ReissueRoot(signed []byte) (identity.Issued, error) {
 	s.log.Warn("reissued root from the recovery key", "serial", issued.Serial, "key_sha256", hex.EncodeToString(keySum[:]),
 		"recovery_key_sha256", hex.EncodeToString(recoverySum[:]), "nonce", req.Nonce, "revoked_root_serials", old)
 	return issued, nil
-}
-
-// useNonce records nonce as used until expiresAt and refuses one already recorded. Nonces past
-// their expiry are dropped: a request with one fails on its expiry.
-func (s *Signer) useNonce(nonce string, expiresAt, now time.Time) error {
-	path := filepath.Join(s.dir, noncesFile)
-	used := map[string]time.Time{}
-	data, err := os.ReadFile(path) //nolint:gosec // a file of the signer's own directory
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(data, &used); err != nil {
-			return fmt.Errorf("%w: %s: %w", errCorrupt, noncesFile, err)
-		}
-	case !errors.Is(err, os.ErrNotExist):
-		return fmt.Errorf("read %s: %w", noncesFile, err)
-	}
-	for n, exp := range used {
-		if !now.Before(exp) {
-			delete(used, n)
-		}
-	}
-	if _, ok := used[nonce]; ok {
-		return fmt.Errorf("%w: its nonce was seen", ErrReplay)
-	}
-	used[nonce] = expiresAt
-	out, err := json.Marshal(used)
-	if err != nil {
-		return fmt.Errorf("marshal %s: %w", noncesFile, err)
-	}
-	return writeFile(path, out)
 }

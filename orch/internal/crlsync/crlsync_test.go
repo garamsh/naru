@@ -150,3 +150,89 @@ func TestARevokeOnOneSignerReachesTheOthersThroughEtcd(t *testing.T) {
 	assert.Eventually(t, func() bool { return replicas[1].Has(op) && replicas[2].Has(op) }, 20*time.Second, 50*time.Millisecond,
 		"the signers B and C hold the serial revoked on A")
 }
+
+// nonceReplica is a signer replica as far as the sync can tell: it takes a list with PushCRL,
+// holds the union of the nonces it was given and its own, and signs a list that adds one at the
+// next sequence.
+type nonceReplica struct {
+	ca     *orchtest.CA
+	mu     sync.Mutex
+	seq    uint64
+	nonces map[string]time.Time
+	cur    []byte
+}
+
+func newNonceReplica(t *testing.T, ca *orchtest.CA) *nonceReplica {
+	t.Helper()
+	r := &nonceReplica{ca: ca, seq: 1, nonces: map[string]time.Time{}}
+	require.NoError(t, r.sign())
+	return r
+}
+
+func (r *nonceReplica) sign() error {
+	b, err := r.ca.SignCRL(identity.CRL{Seq: r.seq, IssuedAt: time.Now(), Nonces: r.nonces})
+	r.cur = b
+	return err
+}
+
+// use records a nonce, the way a reissue of root does.
+func (r *nonceReplica) use(nonce string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nonces[nonce] = time.Now().Add(time.Minute)
+	r.seq++
+	return r.sign()
+}
+
+func (r *nonceReplica) refuses(nonce string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	crl, err := identity.VerifyCRL(r.ca.RevocationKey(), r.cur)
+	return err == nil && crl.Used(nonce, time.Now())
+}
+
+func (r *nonceReplica) CRL(context.Context) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cur, nil
+}
+
+func (r *nonceReplica) PushCRL(_ context.Context, data []byte) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	in, err := identity.VerifyCRL(r.ca.RevocationKey(), data)
+	if err != nil {
+		return nil, err
+	}
+	added := false
+	for n, exp := range in.Nonces {
+		if _, ok := r.nonces[n]; !ok {
+			r.nonces[n], added = exp, true
+		}
+	}
+	if !added {
+		return r.cur, nil
+	}
+	r.seq = max(r.seq, in.Seq) + 1
+	return r.cur, r.sign()
+}
+
+// A nonce one signer took changes no serial, so only its list's sequence tells the sync that the
+// list is new: it must reach the store and then the other signers.
+func TestANonceTakenOnOneSignerReachesTheOthersThroughTheStore(t *testing.T) {
+	ca := orchtest.NewCA(t)
+	a, b := newNonceReplica(t, ca), newNonceReplica(t, ca)
+	st := &memStore{}
+	require.NoError(t, syncer(ca, st, a).Once(t.Context()))
+	require.NoError(t, syncer(ca, st, b).Once(t.Context()))
+	require.Equal(t, uint64(1), st.crl(t, ca).Seq, "control: nothing is stored beyond the empty list")
+
+	const nonce = "0123456789abcdef0123456789abcdef"
+	require.NoError(t, a.use(nonce))
+	assert.False(t, b.refuses(nonce), "control: before a sync B does not know the nonce")
+	require.NoError(t, syncer(ca, st, a).Once(t.Context()))
+	assert.True(t, st.crl(t, ca).Used(nonce, time.Now()), "the store holds the nonce")
+
+	require.NoError(t, syncer(ca, st, b).Once(t.Context()))
+	assert.True(t, b.refuses(nonce), "B refuses the nonce A took")
+}
