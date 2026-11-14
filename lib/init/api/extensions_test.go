@@ -84,12 +84,14 @@ func TestServer_ExtensionThatIsRefusedAnswersTheStatusOfTheReason(t *testing.T) 
 		err    error
 		status int
 	}{
-		"a digest that is wrong":      {http.MethodPut, fmt.Errorf("%w: the body is x", extension.ErrDigest), http.StatusBadRequest},
-		"bytes that are not an image": {http.MethodPut, fmt.Errorf("%w: wrong fs type", extension.ErrImage), http.StatusBadRequest},
-		"an image that is too large":  {http.MethodPut, extension.ErrTooLarge, http.StatusRequestEntityTooLarge},
-		"a failure of the Node":       {http.MethodPut, errors.New("write /var/lib/naru/extensions: secret detail"), http.StatusInternalServerError},
-		"an image that is not stored": {http.MethodDelete, extension.ErrNotFound, http.StatusNotFound},
-		"an image that is mounted":    {http.MethodDelete, extension.ErrMounted, http.StatusConflict},
+		"a store that accepts the put":    {http.MethodPut, nil, http.StatusOK},
+		"a store that accepts the delete": {http.MethodDelete, nil, http.StatusNoContent},
+		"a digest that is wrong":          {http.MethodPut, fmt.Errorf("%w: the body is x", extension.ErrDigest), http.StatusBadRequest},
+		"bytes that are not an image":     {http.MethodPut, fmt.Errorf("%w: wrong fs type", extension.ErrImage), http.StatusBadRequest},
+		"an image that is too large":      {http.MethodPut, extension.ErrTooLarge, http.StatusRequestEntityTooLarge},
+		"a failure of the Node":           {http.MethodPut, errors.New("write /var/lib/naru/extensions: secret detail"), http.StatusInternalServerError},
+		"an image that is not stored":     {http.MethodDelete, extension.ErrNotFound, http.StatusNotFound},
+		"an image that is mounted":        {http.MethodDelete, extension.ErrMounted, http.StatusConflict},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -99,7 +101,9 @@ func TestServer_ExtensionThatIsRefusedAnswersTheStatusOfTheReason(t *testing.T) 
 			status, body := r.do(t, r.admin(t), tt.method, "/v1/extensions/"+orchDigest, "x")
 
 			assert.Equal(t, tt.status, status)
-			assert.NotEmpty(t, decode(t, body)["error"])
+			if tt.status >= http.StatusBadRequest {
+				assert.NotEmpty(t, decode(t, body)["error"])
+			}
 			assert.NotContains(t, string(body), "secret detail", "a failure of the Node is left to its log")
 		})
 	}
