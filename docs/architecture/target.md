@@ -73,7 +73,5 @@ Each line gives what it needs first; a number in this list is a line of this lis
 
 - **Whether [structure.md](./structure.md)'s "node API server, a binary" and [boundaries.md](./boundaries.md)'s open questions on the Node API's shape and PKI stay**, now that ADR 0017 decides both inside init. Those files are edited by another change; they are the PM's to update when ADR 0017 merges.
 - **A maintenance mode's trust.** A Node with no valid configuration has no `spec.api` and so no authority to trust; how it accepts an operator is not decided.
-- **The upgrade image's path to a Node.** Whether the call carries the image or names a URL, and how an image is signed ([image.md](./image.md) §Open questions, Signing), is not decided.
-- **Whether extensions can be added without a kernel option.** Which file-system format an extension takes depends on what the host kernel supports; not checked here.
-- **Who holds the VIP.** Which service moves a virtual address, and what tells it a control-plane Node is alive, is not decided.
+- **How an upgrade bundle is signed.** The call carries the bundle, checked against the release's SHA-256 ([ADR 0025](./adr/0025-an-upgrade-is-a-bundle-posted-to-v1-upgrade-which-init-writes-to-the-trial-slot-and-the-trial-boot-promotes-when-healthy-and-rolls-back-when-not.md)); a signature over it ([image.md](./image.md) §Open questions, Signing) is not decided.
 - **Whether a Node API client library under `lib/` is built.** gaon would require it as an external module ([structure.md](./structure.md) §Units); nothing asks for it yet.
