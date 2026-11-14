@@ -193,6 +193,13 @@ func (n *Node) Reboot() error {
 	return n.launch()
 }
 
+// ReplaceUserData writes a new NoCloud drive with the user-data and network-config, which the Node's
+// next boot reads: an operator who edits spec in the hypervisor's console and restarts the machine.
+// The instance ID is the same, so the data disk is kept.
+func (n *Node) ReplaceUserData(userData, networkConfig []byte) error {
+	return BuildCidata(filepath.Join(n.dir, "cidata.img"), "naru15-"+n.Name, userData, networkConfig)
+}
+
 // qemuArgs is the QEMU command line of a Node, laid out as Proxmox lays out a guest: a q35
 // machine under OVMF, the boot and data disks on a virtio-scsi controller, the NoCloud drive as a
 // CD-ROM on the AHCI bus, one virtio NIC, and the serial console written to console.
