@@ -61,16 +61,18 @@ bin=$build/bin
 rm -rf "$bin"
 mkdir -p "$bin"
 
-# naru-init and the stand-in are built from this repository.
+# naru-init and the stand-in are built from this repository. The image has one /init, built from
+# host/cmd/naru-init, and the node initrd below takes it too; node/cmd/naru-init is not installed until
+# the image is split by unit (ADR 0039).
 gobuild() { # <module-dir> <output> <package> [<extra ldflags>]
   (cd "$1" && CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -ldflags="-s -w ${4:-}" -o "$2" "$3")
 }
 # NARU_VERSION, when set, is the version naru-init reports on the Node API. The same value gives the
 # same bytes: it is the only thing that enters the binary.
-gobuild "$root/init" "$bin/naru-init" ./cmd/naru-init "${NARU_VERSION:+-X main.buildVersion=$NARU_VERSION}"
+gobuild "$root/host" "$bin/naru-init" ./cmd/naru-init "${NARU_VERSION:+-X github.com/garamsh/naru/lib/init/run.buildVersion=$NARU_VERSION}"
 gobuild "$root/tooling/qemu" "$bin/naru-standin" ./cmd/naru-standin
-gobuild "$root/controlplane" "$bin/naru-vip" ./cmd/naru-vip
-gobuild "$root/controlplane" "$bin/naru-fence" ./cmd/naru-fence
+gobuild "$root/node" "$bin/naru-vip" ./cmd/naru-vip
+gobuild "$root/node" "$bin/naru-fence" ./cmd/naru-fence
 gobuild "$root/host" "$bin/naru-hostd" ./cmd/naru-hostd
 
 # mvmd is fetched at its pinned commit and nowhere else.

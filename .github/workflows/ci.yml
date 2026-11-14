@@ -1,0 +1,38 @@
+name: ci
+
+# Runs the import check, which `make lint-imports` runs locally (docs/architecture/structure.md: a
+# unit imports no other unit). It needs no Docker, QEMU or image build.
+#
+# Moved by (every pin below): the PM, in a pull request that reads the action's current release and
+# the GitHub Advisory Database (ci.md), when an advisory is published for it and at each Go minor
+# release. No bot proposes the bumps (.github/ holds no dependabot.yml). The pins are the ones of
+# release.yml.
+on:
+  pull_request:
+  push:
+
+permissions: read-all
+
+jobs:
+  lint-imports:
+    # A hosted runner label cannot be pinned. It names the version, and the first step records what
+    # it resolved to. Moved by: the PM, when GitHub announces the label's retirement.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Record what the runner resolved to
+        run: |
+          echo "image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: true
+          cache-dependency-path: "tooling/importcheck/go.sum"
+
+      - name: Check that no unit imports another
+        run: make lint-imports

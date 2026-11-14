@@ -1,4 +1,4 @@
-.PHONY: lint format format-apply test test-cgroup test-qemu test-harness nodes judge-serial release build image image-upgrade disk image-repro ci
+.PHONY: lint lint-imports format format-apply test test-cgroup test-qemu test-harness nodes judge-serial release build image image-upgrade disk image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -31,6 +31,12 @@ endef
 lint:
 	$(call each_module, $(count_packages); (cd "$$dir" && go vet ./... && go vet -tags qemu_real ./...))
 
+# lint-imports fails when a unit imports another unit or lib/ imports a unit
+# (docs/architecture/structure.md). It reads every Go file of every module under the root, and
+# prints how many.
+lint-imports:
+	cd tooling/importcheck && go run ./cmd/importcheck -root $(CURDIR)
+
 format:
 	$(call each_module, \
 	files=$$(cd "$$dir" && git ls-files --cached --others --exclude-standard -z -- '*.go' | tr -cd '\0' | wc -c); \
@@ -55,7 +61,7 @@ test:
 test-cgroup:
 	@set -e; \
 	bin=$$(mktemp -d); trap 'rm -rf "$$bin"' EXIT; \
-	(cd init && go test -c -o "$$bin/linux.test" ./internal/linux); \
+	(cd lib/init && go test -c -o "$$bin/linux.test" ./linux); \
 	log=$$(mktemp); trap 'rm -rf "$$bin" "$$log"' EXIT; \
 	if ! systemd-run --user --scope --quiet -p Delegate=yes sh -c \
 	  'NARU_TEST_CGROUP_ROOT=/sys/fs/cgroup$$(cut -d: -f3 /proc/self/cgroup) exec "$$0" -test.v -test.run "^TestCgroups_" -test.count=1' \
@@ -65,13 +71,15 @@ test-cgroup:
 	echo "$@: $$n test(s) passed, selected by -test.run '^TestCgroups_' in a delegated cgroup"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
-# naru-init is static: it runs in an initramfs with no libc. naructl is static too: it is a release
+# The two naru-init are static: each runs in an initramfs with no libc. naructl is static too: it is a release
 # asset an operator runs on any Linux amd64 host.
 build:
 	$(call each_module, $(count_packages); (cd "$$dir" && go build ./...))
-	CGO_ENABLED=0 go build -trimpath -o $(BIN)/naru-init ./init/cmd/naru-init
+	CGO_ENABLED=0 go build -trimpath -o $(BIN)/host/naru-init ./host/cmd/naru-init
+	CGO_ENABLED=0 go build -trimpath -o $(BIN)/node/naru-init ./node/cmd/naru-init
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o $(BIN)/naructl ./naructl/cmd/naructl
-	@echo "build: $(BIN)/naru-init: $$(file -b $(BIN)/naru-init | cut -d, -f1-4)"
+	@echo "build: $(BIN)/host/naru-init: $$(file -b $(BIN)/host/naru-init | cut -d, -f1-4)"
+	@echo "build: $(BIN)/node/naru-init: $$(file -b $(BIN)/node/naru-init | cut -d, -f1-4)"
 	@echo "build: $(BIN)/naructl: $$(file -b $(BIN)/naructl | cut -d, -f1-4)"
 
 # image builds the host kernel, the guest kernels and initrds, the static mke2fs and mkfs.xfs, gaon's four
@@ -121,9 +129,9 @@ image:
 # programs and the kernel image built: next/bzImage is the same tree with the version $(VERSION)-next
 # stamped in, and refuse/bzImage a naru-init that cannot find its configuration drive, so a trial
 # boot of it refuses and rolls back by itself. The second kernel's version carries an extra linker
-# flag, which build.sh passes to the linker as part of -X main.buildVersion=.
+# flag, which build.sh passes to the linker as part of -X github.com/garamsh/naru/lib/init/run.buildVersion=.
 UPGRADE := $(BUILD)/upgrade
-REFUSE_FLAG := -X github.com/garamsh/naru/init/internal/linux.seedLabel=naru67-absent
+REFUSE_FLAG := -X github.com/garamsh/naru/lib/init/linux.seedLabel=naru67-absent
 image-upgrade: image
 	@set -e; \
 	for v in next refuse; do \
@@ -258,4 +266,4 @@ test-harness: release
 	echo "$@: $$n test(s) passed, selected by -run '^TestCluster_' with -tags qemu_real"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
-ci: lint format test build
+ci: lint lint-imports format test build
