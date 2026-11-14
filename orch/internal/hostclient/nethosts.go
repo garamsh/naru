@@ -17,6 +17,8 @@ type NetAPI interface {
 	MicroVMs(ctx context.Context) ([]netrec.MicroVM, error)
 	PutNetwork(ctx context.Context, name string, n netrec.NetworkState) error
 	PutPeers(ctx context.Context, peers []netrec.Peer) error
+	Networks(ctx context.Context) ([]string, error)
+	DeleteNetwork(ctx context.Context, name string) error
 }
 
 // NetHosts implements netrec.Hosts: it reads the admitted hosts from the inventory and reaches
@@ -87,6 +89,24 @@ func (h *NetHosts) PutNetwork(ctx context.Context, id, name string, n netrec.Net
 	return a.PutNetwork(ctx, name, n)
 }
 
+// Networks lists the names of the networks the host holds.
+func (h *NetHosts) Networks(ctx context.Context, id string) ([]string, error) {
+	a, err := h.api(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return a.Networks(ctx)
+}
+
+// DeleteNetwork removes the network from the host.
+func (h *NetHosts) DeleteNetwork(ctx context.Context, id, name string) error {
+	a, err := h.api(ctx, id)
+	if err != nil {
+		return err
+	}
+	return a.DeleteNetwork(ctx, name)
+}
+
 // PutPeers replaces the host's peers.
 func (h *NetHosts) PutPeers(ctx context.Context, id string, peers []netrec.Peer) error {
 	a, err := h.api(ctx, id)
@@ -139,4 +159,20 @@ func (n hostNet) PutPeers(ctx context.Context, peers []netrec.Peer) error {
 	}
 	_, err := n.api.SetPeers(ctx, out)
 	return err
+}
+
+func (n hostNet) Networks(ctx context.Context) ([]string, error) {
+	nets, err := n.api.Networks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(nets))
+	for i, x := range nets {
+		out[i] = x.Name
+	}
+	return out, nil
+}
+
+func (n hostNet) DeleteNetwork(ctx context.Context, name string) error {
+	return n.api.DeleteNetwork(ctx, name)
 }

@@ -46,6 +46,23 @@ func (n *netHosts) PutNetwork(_ context.Context, id, name string, st netrec.Netw
 	return nil
 }
 
+func (n *netHosts) Networks(_ context.Context, id string) ([]string, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var out []string
+	for name := range n.nets[id] {
+		out = append(out, name)
+	}
+	return out, nil
+}
+
+func (n *netHosts) DeleteNetwork(_ context.Context, id, name string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	delete(n.nets[id], name)
+	return nil
+}
+
 func (n *netHosts) PutPeers(context.Context, string, []netrec.Peer) error { return nil }
 
 func (n *netHosts) told(id, name string) (netrec.NetworkState, bool) {

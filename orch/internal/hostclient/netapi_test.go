@@ -32,6 +32,8 @@ func TestDialNetAPISpeaksTheHostAPI(t *testing.T) {
 			_, _ = w.Write([]byte(`{"publicKey":"k","listenPort":51820,"machinePrefixes":["10.200.1.0/24"]}`))
 		case "GET /v1/microvms":
 			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","network":"lab","podPrefix":"10.9.0.64/26","addresses":["10.9.0.2"]}]}`))
+		case "GET /v1/networks":
+			_, _ = w.Write([]byte(`{"networks":[{"name":"lab"},{"name":"old"}]}`))
 		default:
 			_, _ = w.Write([]byte(`{"peers":[]}`))
 		}
@@ -53,6 +55,13 @@ func TestDialNetAPISpeaksTheHostAPI(t *testing.T) {
 	var nr map[string]any
 	require.NoError(t, json.Unmarshal([]byte(got["PUT /v1/networks/lab"]), &nr))
 	assert.Equal(t, map[string]any{"prefix": "10.9.0.0/24", "apiEndpoint": "10.9.0.2", "remoteMembers": []any{"10.9.0.3/32"}}, nr)
+
+	names, err := h.Networks(t.Context(), "h1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"lab", "old"}, names)
+	require.NoError(t, h.DeleteNetwork(t.Context(), "h1", "old"))
+	_, deleted := got["DELETE /v1/networks/old"]
+	assert.True(t, deleted)
 
 	require.NoError(t, h.PutPeers(t.Context(), "h1", []netrec.Peer{{Name: "h2", PublicKey: "k2", Endpoint: "192.0.2.2:51820", Prefixes: []string{"10.200.2.0/24"}}}))
 	var pr map[string]any

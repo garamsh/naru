@@ -76,6 +76,23 @@ func (f *fakeHosts) PutPeers(_ context.Context, id string, p []netrec.Peer) erro
 	return nil
 }
 
+func (f *fakeHosts) Networks(_ context.Context, id string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for name := range f.hosts[id].networks {
+		out = append(out, name)
+	}
+	return out, nil
+}
+
+func (f *fakeHosts) DeleteNetwork(_ context.Context, id, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.hosts[id].networks, name)
+	return nil
+}
+
 type fakeNetworks []orchapi.Network
 
 func (n fakeNetworks) List(context.Context) ([]orchapi.Network, error) { return n, nil }
@@ -137,6 +154,22 @@ func TestAMemberThatIsRemovedDisappearsFromTheOtherHosts(t *testing.T) {
 	assert.Empty(t, f.hosts["h1"].networks["lab"].RemoteMembers)
 	assert.Equal(t, []string{"10.8.0.3/32"}, f.hosts["h1"].networks["edge"].RemoteMembers, "the pod prefix went with its member")
 	assert.Equal(t, []string{"10.200.2.0/24"}, f.hosts["h1"].peers[0].Prefixes)
+}
+
+func TestANetworkOrchNoLongerKeepsIsRemovedFromEveryHost(t *testing.T) {
+	f := fleet()
+	r := newRec(f, twoNetworks, &bytes.Buffer{})
+	require.NoError(t, r.Reconcile(t.Context()))
+	for _, h := range []string{"h1", "h2"} {
+		require.Contains(t, f.hosts[h].networks, "lab", "control: both hosts hold the network first")
+	}
+
+	only := newRec(f, fakeNetworks{twoNetworks[0]}, &bytes.Buffer{})
+	require.NoError(t, only.Reconcile(t.Context()))
+	for _, h := range []string{"h1", "h2"} {
+		assert.NotContains(t, f.hosts[h].networks, "lab")
+		assert.Contains(t, f.hosts[h].networks, "edge", "a network orch still keeps stays")
+	}
 }
 
 func TestAHostWithNoTunnelIsSkippedAndLoggedWhileTheOthersConverge(t *testing.T) {

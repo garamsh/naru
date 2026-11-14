@@ -70,6 +70,10 @@ type Hosts interface {
 	PutNetwork(ctx context.Context, hostID, name string, n NetworkState) error
 	// PutPeers replaces the host's whole list of peers.
 	PutPeers(ctx context.Context, hostID string, peers []Peer) error
+	// Networks returns the names of the networks the host holds.
+	Networks(ctx context.Context, hostID string) ([]string, error)
+	// DeleteNetwork removes the network from the host.
+	DeleteNetwork(ctx context.Context, hostID, name string) error
 }
 
 // Networks lists the networks orch keeps.
@@ -188,7 +192,8 @@ func (r *Reconciler) observe(ctx context.Context, hosts []Host) []observed {
 	return out
 }
 
-// apply tells one host the networks and the peers.
+// apply tells one host the networks and the peers, and removes the networks it holds that orch
+// does not keep.
 func (r *Reconciler) apply(ctx context.Context, self observed, all []observed, nets []orchapi.Network) error {
 	var errs []error
 	for _, n := range nets {
@@ -199,6 +204,22 @@ func (r *Reconciler) apply(ctx context.Context, self observed, all []observed, n
 	}
 	if err := r.hosts.PutPeers(ctx, self.host.ID, peers(self.host.ID, all)); err != nil {
 		errs = append(errs, fmt.Errorf("host %s: peers: %w", self.host.ID, err))
+	}
+	held, err := r.hosts.Networks(ctx, self.host.ID)
+	if err != nil {
+		return errors.Join(append(errs, fmt.Errorf("host %s: list networks: %w", self.host.ID, err))...)
+	}
+	kept := map[string]bool{}
+	for _, n := range nets {
+		kept[n.Name] = true
+	}
+	for _, name := range held {
+		if kept[name] {
+			continue
+		}
+		if err := r.hosts.DeleteNetwork(ctx, self.host.ID, name); err != nil {
+			errs = append(errs, fmt.Errorf("host %s: delete network %s: %w", self.host.ID, name, err))
+		}
 	}
 	return errors.Join(errs...)
 }
