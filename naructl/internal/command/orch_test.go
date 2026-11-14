@@ -33,6 +33,8 @@ type fakeOrch struct {
 	pending []orchapi.Pending
 	admits  []orchapi.AdmitRequest
 	revoked []string
+	groups  []orchapi.GroupSpec
+	deleted []string
 }
 
 func (f *fakeOrch) lastAdmit(t *testing.T) orchapi.AdmitRequest {
@@ -65,6 +67,29 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 	mux.HandleFunc("DELETE /v1/enrollment-keys/{id}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.revoked = append(f.revoked, r.PathValue("id"))
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("PUT /v1/groups/{name}", func(w http.ResponseWriter, r *http.Request) {
+		var spec orchapi.GroupSpec
+		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		f.groups = append(f.groups, spec)
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(orchapi.Group{Spec: spec, Hash: "h1", Observed: true, Members: []orchapi.GroupMember{}})
+	})
+	mux.HandleFunc("GET /v1/groups", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]orchapi.Group{{Spec: orchapi.GroupSpec{Name: "web", Region: "kr-seoul", Count: 2}, Members: []orchapi.GroupMember{{ID: "web-1", Phase: orchapi.PhaseRunning}, {ID: "web-2", Phase: orchapi.PhasePending}}}})
+	})
+	mux.HandleFunc("GET /v1/groups/{name}", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(orchapi.Group{Spec: orchapi.GroupSpec{Name: r.PathValue("name"), Region: "kr-seoul", Count: 1}, Hash: "h1", Observed: true, Members: []orchapi.GroupMember{{ID: "web-1", Host: "host-a", TemplateHash: "h1", Phase: orchapi.PhaseRunning}}})
+	})
+	mux.HandleFunc("DELETE /v1/groups/{name}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.deleted = append(f.deleted, r.PathValue("name"))
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})

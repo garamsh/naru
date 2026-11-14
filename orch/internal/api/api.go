@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
+	"github.com/garamsh/naru/orch/internal/groupsvc"
 	"github.com/garamsh/naru/orch/internal/inventory"
 )
 
@@ -34,6 +36,7 @@ type Snapshots interface {
 // Deps is what the handlers call.
 type Deps struct {
 	Inventory inventory.Service
+	Groups    groupsvc.Service
 	Signer    inventory.Signer
 	Auth      auth.Authenticator
 	Snapshots Snapshots
@@ -53,6 +56,10 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/hosts", h.guard(auth.Read, h.hosts))
 	mux.HandleFunc("GET /v1/pending", h.guard(auth.Read, h.pending))
 	mux.HandleFunc("GET /v1/events", h.guard(auth.Read, h.events))
+	mux.HandleFunc("GET /v1/groups", h.guard(auth.Read, h.groupList))
+	mux.HandleFunc("GET /v1/groups/{name}", h.guard(auth.Read, h.groupGet))
+	mux.HandleFunc("PUT /v1/groups/{name}", h.guard(auth.Operate, h.groupApply))
+	mux.HandleFunc("DELETE /v1/groups/{name}", h.guard(auth.Operate, h.groupDelete))
 	mux.HandleFunc("GET /v1/crl", h.guard(auth.Any, h.crl))
 	mux.HandleFunc("POST /v1/admit", h.guard(auth.Operate, h.admit))
 	mux.HandleFunc("POST /v1/enrollment-keys", h.guard(auth.Operate, h.createKey))
@@ -225,6 +232,41 @@ func (h *handler) labels(w http.ResponseWriter, r *http.Request, who identity.Id
 	}
 	out, err := h.Inventory.SetLabels(r.Context(), who.Subject, r.PathValue("id"), req)
 	reply(w, r, out, err)
+}
+
+func (h *handler) groupList(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Groups.List(r.Context())
+	reply(w, r, out, err)
+}
+
+func (h *handler) groupGet(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Groups.Get(r.Context(), r.PathValue("name"))
+	reply(w, r, out, err)
+}
+
+func (h *handler) groupApply(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	var spec orchapi.GroupSpec
+	if !decode(w, r, &spec) {
+		return
+	}
+	name := r.PathValue("name")
+	if spec.Name == "" {
+		spec.Name = name
+	}
+	if spec.Name != name {
+		writeError(w, r, fmt.Errorf("%w: the body names group %q and the path %q", inventory.ErrInvalid, spec.Name, name))
+		return
+	}
+	out, err := h.Groups.Apply(r.Context(), who.Subject, spec)
+	reply(w, r, out, err)
+}
+
+func (h *handler) groupDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	if err := h.Groups.Delete(r.Context(), who.Subject, r.PathValue("name")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) snapshot(w http.ResponseWriter, r *http.Request, _ identity.Identity) {

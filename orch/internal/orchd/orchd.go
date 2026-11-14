@@ -1,5 +1,5 @@
-// Package orchd composes one naru-orchd member: its etcd member, leader election, inventory, API
-// and snapshots.
+// Package orchd composes one naru-orchd member: its etcd member, leader election, inventory, groups
+// API and engine, and snapshots.
 package orchd
 
 import (
@@ -14,9 +14,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
+
 	"github.com/garamsh/naru/orch/internal/api"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
+	"github.com/garamsh/naru/orch/internal/groups"
+	groupsetcd "github.com/garamsh/naru/orch/internal/groups/etcd"
+	"github.com/garamsh/naru/orch/internal/groupsvc"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	invetcd "github.com/garamsh/naru/orch/internal/inventory/etcd"
 	"github.com/garamsh/naru/orch/internal/leader"
@@ -40,17 +45,24 @@ type Config struct {
 	SnapshotInterval time.Duration
 	SnapshotKeep     int
 	LeaderTTL        time.Duration
-	Limits           inventory.Config
 	// CRLSyncInterval is how often the member syncs the revocation list; it defaults to
 	// crlsync.DefaultInterval.
 	CRLSyncInterval time.Duration
+	// GroupInterval is the pause between the groups engine's passes; it defaults to groups.DefaultInterval.
+	GroupInterval time.Duration
+	Limits        inventory.Config
 }
 
 // Deps are the parts the binary's main chooses.
 type Deps struct {
-	Signer     inventory.Signer
-	Auth       auth.Authenticator
-	Sealer     snapshot.Sealer
+	Signer inventory.Signer
+	Auth   auth.Authenticator
+	Sealer snapshot.Sealer
+	// NewHosts returns the engine's view of the hosts, given the inventory it reads them from. With
+	// it the leader runs the groups engine; without it, and without a Reconciler, no group is
+	// reconciled.
+	NewHosts func(inv inventory.Service) groups.Hosts
+	// Reconciler replaces the groups engine, for a test of the leader seam.
 	Reconciler Reconciler
 	Clock      inventory.Clock
 	Log        *slog.Logger
@@ -97,8 +109,19 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	o := &Orchd{name: c.Name, member: m, addr: l.Addr().String(), cancel: cancel, log: d.Log}
 
 	taker := &snapshot.Taker{Source: snapshot.ClientSource(m.Client()), Sealer: d.Sealer, Dir: c.SnapshotDir, Keep: c.SnapshotKeep, Now: d.Clock.Now, Log: d.Log}
-	svc := inventory.NewService(invetcd.New(m.Client()), d.Signer, d.Clock, c.Limits)
-	handler := api.New(api.Deps{Inventory: svc, Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Log: d.Log})
+	invStore := invetcd.New(m.Client())
+	svc := inventory.NewService(invStore, d.Signer, d.Clock, c.Limits)
+	groupStore := groupsetcd.New(m.Client())
+	var hosts groups.Hosts
+	if d.NewHosts != nil {
+		hosts = d.NewHosts(svc)
+	}
+	if d.Reconciler == nil && hosts != nil {
+		d.Reconciler = groups.New(groups.Config{
+			Hosts: hosts, Store: groupStore, Clock: groupClock{d.Clock}, Events: groupsetcd.NewEvents(invStore), Interval: c.GroupInterval,
+		})
+	}
+	handler := api.New(api.Deps{Inventory: svc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Log: d.Log})
 
 	o.wg.Add(4)
 	go func() {
@@ -129,6 +152,11 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	}()
 	return o, nil
 }
+
+// groupClock gives the engine the deployment's clock and real waits.
+type groupClock struct{ inventory.Clock }
+
+func (groupClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 // lead is what the leader does: note itself, then run the reconciler until leadership ends.
 func (o *Orchd) lead(d Deps) func(context.Context) {
@@ -170,6 +198,9 @@ func serverTLS(c Config) (*tls.Config, error) {
 
 // Addr is the address the API listens on.
 func (o *Orchd) Addr() string { return o.addr }
+
+// Etcd is the member's etcd client, for a test that reads what orch stored.
+func (o *Orchd) Etcd() *clientv3.Client { return o.member.Client() }
 
 // IsLeader reports whether this member currently leads.
 func (o *Orchd) IsLeader() bool { return o.leading.Load() }

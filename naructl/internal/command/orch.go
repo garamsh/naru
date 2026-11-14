@@ -31,6 +31,8 @@ func orchCommands(args []string, stdout, stderr io.Writer) (bool, error) {
 		return true, orchCmd(args[1:], stdout, stderr)
 	case "enroll-key":
 		return true, enrollKeyCmd(args[1:], stdout, stderr)
+	case "group":
+		return true, groupCmd(args[1:], stdout, stderr)
 	case "host":
 		if len(args) > 1 {
 			switch args[1] {

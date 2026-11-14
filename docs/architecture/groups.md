@@ -4,7 +4,7 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
 
 ## Current decisions
 
-- **The engine is the package `orch/internal/groups`.** It is a pure-Go engine in the module `orch/`. orchd's composition site constructs it with adapters for the host API, the store, the clock and the events, and runs it while orchd holds the leader lease; leader gating is orchd's ([ADR 0042](./adr/0042-the-groups-engine-plans-from-observation-alone-and-replaces-a-stateful-member-only-after-its-fence-has-passed.md)).
+- **The engine is the package `orch/internal/groups`.** It is a pure-Go engine in the module `orch/`. orchd constructs it with adapters for the host API (`orch/internal/hostclient`), the store and the events (`orch/internal/groups/etcd`) and the clock, and runs it while orchd holds the leader lease, as its `Reconciler`; [orch.md](./orch.md) §Groups says what each adapter does; leader gating is orchd's ([ADR 0042](./adr/0042-the-groups-engine-plans-from-observation-alone-and-replaces-a-stateful-member-only-after-its-fence-has-passed.md)).
 - **Level-triggered.** Every pass observes (groups and members from the store, hosts and their microVMs from the host API, and the fence of each stateful member whose host answers), evaluates, plans and applies. The plan reads only that observation; nothing about earlier passes is kept, so a new engine continues what another started.
 - **What an operator declares (`GroupSpec`).**
   - Identity and size: `name`, `count`, `region`.
@@ -42,7 +42,7 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
 ## Open questions
 
 - **Clock between orch and the hosts.** The wait compares the deadline orch armed with orch's clock, and the host ends the VMM by its own. No margin is added; the engine does not yet know the skew it must tolerate.
-- **A group that is deleted.** The engine lists the groups the store holds, so the members of a removed group are not reconciled. Lowering `count` to zero removes them.
+- **A group that is deleted.** The engine lists the groups the store holds, so the members of a removed group are not reconciled. The API therefore refuses to delete a group that has a member that is not gone: lowering `count` to zero removes them first.
 - **Tombstones.** Forgotten members stay in the store; compaction waits until their number matters.
-- **Repeated holds.** A wait that lasts is recorded on every pass; collapsing repeats belongs to the events adapter orchd supplies.
-- **Group and event records.** The store interface the engine consumes lists groups and members and writes members; writing groups and reading events belong to orchd's API layer.
+- **Repeated holds.** A wait that lasts is recorded on every pass; the events adapter writes it once per 10 minutes. The adapter's memory is per leader, so a new leader writes it again.
+- **Group and event records.** The store interface the engine consumes lists groups and members and writes members; the API layer (`orch/internal/groupsvc`) writes groups and reads events.

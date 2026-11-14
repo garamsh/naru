@@ -38,7 +38,8 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
   orch init --out-dir <dir> --passphrase-file <file>    write the recovery key, encrypted, and its public half
   orch backup | orch restore --snapshot <file> --recovery-key <file> --passphrase-file <file> --out <file>
   enroll-key create [--ttl d] | enroll-key revoke <id>  | host pending | host admit <id> --code <code> --region <r> [--label k=v]
-  host label <id> --region <r> [--label k=v]            these take --orch-url, --orch-ca, --identity and --passphrase-file
+  host label <id> --region <r> [--label k=v] | group apply -f <spec> | group get <name> | group list | group delete <name>
+              these take --orch-url, --orch-ca, --identity and --passphrase-file
   version | services | get config               read a Node
   logs <service> [-f]                           print a service's kept log, and with -f each new line
   apply -f <patch> [--mode no-reboot|staged|reboot] [--dry-run]

@@ -20,9 +20,9 @@ type Action int
 
 // The actions. Each endpoint belongs to exactly one.
 const (
-	// Read lists hosts, pending enrollments and events.
+	// Read lists hosts, pending enrollments, groups and events.
 	Read Action = iota
-	// Operate admits a host, manages enrollment keys and sets labels.
+	// Operate admits a host, manages enrollment keys, sets labels and applies and deletes groups.
 	Operate
 	// Administer takes a snapshot.
 	Administer

@@ -15,6 +15,7 @@ import (
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
+	"github.com/garamsh/naru/orch/internal/groups"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/member"
 	"github.com/garamsh/naru/orch/internal/orchd"
@@ -38,6 +39,10 @@ type Options struct {
 	Limits  inventory.Config
 	// LeaderTTL defaults to 3 seconds, which keeps failover tests short.
 	LeaderTTL time.Duration
+	// NewHosts gives the groups engine its hosts; without it no group is reconciled.
+	NewHosts func(inv inventory.Service) groups.Hosts
+	// GroupInterval is the pause between the engine's passes; it defaults to 200 ms.
+	GroupInterval time.Duration
 	// Log receives the members' logs; it defaults to discarding them.
 	Log *slog.Logger
 	// CA, when set, is the authority the cluster uses; a test that builds peers first passes it.
@@ -75,6 +80,9 @@ func Start(t testing.TB, o Options) *Cluster {
 	if o.LeaderTTL == 0 {
 		o.LeaderTTL = 3 * time.Second
 	}
+	if o.GroupInterval == 0 {
+		o.GroupInterval = 200 * time.Millisecond
+	}
 	if o.Log == nil {
 		o.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -107,9 +115,9 @@ func Start(t testing.TB, o Options) *Cluster {
 				Cert: files.Cert, Key: files.Key, CA: files.CA,
 			},
 			Listen: "127.0.0.1:0", ClientCA: files.CA, SnapshotDir: filepath.Join(dir, "snapshots"),
-			LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval,
+			LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval, GroupInterval: o.GroupInterval,
 		}
-		deps := orchd.Deps{Signer: c.Signer, Auth: &auth.Revocations{Source: c.Signer, Key: ca.RevocationKey(), Now: time.Now, Log: o.Log}, Sealer: o.Sealer, Clock: c.Clock, Log: o.Log.With("member", name)}
+		deps := orchd.Deps{Signer: c.Signer, Auth: &auth.Revocations{Source: c.Signer, Key: ca.RevocationKey(), Now: time.Now, Log: o.Log}, Sealer: o.Sealer, NewHosts: o.NewHosts, Clock: c.Clock, Log: o.Log.With("member", name)}
 		if i < len(o.CRLPeers) {
 			deps.CRLPeer, deps.RevocationKey = o.CRLPeers[i], ca.RevocationKey()
 		}

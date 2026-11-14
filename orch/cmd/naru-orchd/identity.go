@@ -2,15 +2,18 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/signer"
 	"github.com/garamsh/naru/orch/internal/snapshot"
@@ -66,4 +69,23 @@ func newSealer(path string) (snapshot.Sealer, error) {
 		return nil, err
 	}
 	return snapshot.SealTo(k), nil
+}
+
+// newHostHTTP is the HTTP client the groups engine drives the hosts' APIs with. It presents the
+// pair in certFile and keyFile, orch's own identity unless the operator names another, and trusts
+// the authority in caFile.
+func newHostHTTP(certFile, keyFile, caFile string) (*http.Client, error) {
+	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load the host API client pair: %w", err)
+	}
+	ca, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read the host API authority: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		return nil, fmt.Errorf("%s holds no certificate", caFile)
+	}
+	return orchapi.HTTPClient(orchapi.TrustCA(pool, &pair), 30*time.Second), nil
 }
