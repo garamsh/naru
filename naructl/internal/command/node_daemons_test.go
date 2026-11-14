@@ -103,6 +103,7 @@ type daemonsData struct {
 			HostCA              string            `yaml:"hostCA"`
 			RecoveryPublicKey   string            `yaml:"recoveryPublicKey"`
 			Restore             bool              `yaml:"restore"`
+			Join                string            `yaml:"join"`
 		} `yaml:"orch"`
 		Metrics *struct {
 			Listen string `yaml:"listen"`
@@ -315,4 +316,47 @@ func TestGenNode_TheOrchKeyAndTheEnrollmentKeyAreNeverPrinted(t *testing.T) {
 	info, err := os.Stat(out)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "the user data carries keys")
+}
+
+func TestGenNode_OrchJoinWritesTheRunningMemberInsteadOfTheClusterAndInitAcceptsIt(t *testing.T) {
+	dep := newDeployment(t)
+	in := newDaemonInputs(t)
+	orch := []string{
+		"--signer", "--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
+		"--orch-certificate", in.cert, "--orch-ca", in.cert, "--orch-revocation-public-key", in.pub, "--orch-key", in.key,
+	}
+
+	path := dep.node(t, "node-1", append(orch, "--orch-join", "https://192.168.0.20:2379")...)
+
+	validate(t, path)
+	got := parseDaemons(t, path)
+	require.NotNil(t, got.Spec.Orch)
+	assert.Equal(t, "https://192.168.0.20:2379", got.Spec.Orch.Join)
+	assert.Empty(t, got.Spec.Orch.InitialCluster, "the member takes the initial cluster from the one it joins")
+
+	base := []string{
+		"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"),
+	}
+	for name, tc := range map[string]struct {
+		extra    []string
+		want     string
+		bareJoin bool
+	}{
+		"no join and no members": {nil, "the members of its cluster", false},
+		"join with a member":     {[]string{"--orch-join", "https://192.168.0.20:2379", "--orch-member", "naru-node-1=https://192.168.0.10:2380"}, "takes its initial cluster", false},
+		"join with restore":      {[]string{"--orch-join", "https://192.168.0.20:2379", "--orch-restore"}, "takes its initial cluster", false},
+		"join with state new":    {[]string{"--orch-join", "https://192.168.0.20:2379", "--orch-state", "new"}, "takes its initial cluster", false},
+		"join without orch":      {[]string{"--orch-join", "https://192.168.0.20:2379"}, "--orch-join has no effect without --orch-peer-url", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			args := append(append([]string{}, base...), "--out", filepath.Join(t.TempDir(), "x"))
+			if !tc.bareJoin {
+				args = append(args, orch...)
+			}
+			out, err := run(t, append(args, tc.extra...)...)
+			require.Error(t, err, out)
+			assert.Contains(t, out, tc.want)
+		})
+	}
 }

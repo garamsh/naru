@@ -332,7 +332,7 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 
 	// The other two join as new members, their signers as replicas of the restored one: spec.orch.join
 	// is a running member's client URL, which init passes as --join with the state "existing", and each
-	// member adds itself to the cluster.
+	// member adds itself to the cluster and takes the initial cluster from it, so the section has none.
 	auth := map[int]string{}
 	for _, i := range f.controls()[1:] {
 		auth[i] = f.authorise(i)
@@ -344,6 +344,7 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 				return err
 			}
 			spec := f.orchSpec(i, f.controls(), "existing", crt)
+			delete(spec, "initialCluster")
 			spec["join"] = "https://" + nodeIP(1) + ":" + orchClientPort
 			return seed.Set(file, spec, "spec", "orch")
 		})

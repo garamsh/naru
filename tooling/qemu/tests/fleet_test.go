@@ -181,7 +181,7 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 	f.root = f.personOf("root", f.rootKey, f.rootCertFile, cert)
 
 	for _, i := range f.controls() {
-		sock := filepath.Join(f.dir, fmt.Sprintf("signer-%d.sock", i))
+		sock := shortSocketPath(t, fmt.Sprintf("signer-%d.sock", i))
 		stop, err := unixfwd.Listen(sock, f.forward(i, sockProxyPort))
 		require.NoError(t, err)
 		t.Cleanup(stop)
@@ -464,3 +464,13 @@ func (f *fleet) orchAs(p person, i int, args ...string) result {
 }
 
 func (f *fleet) orch(args ...string) result { return f.orchAs(f.root, 1, args...) }
+
+// shortSocketPath is a socket path in a directory removed with the test. t.TempDir carries the test's
+// name, which with a long TMPDIR passes the 107 bytes a unix socket path may have.
+func shortSocketPath(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "s")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, name)
+}

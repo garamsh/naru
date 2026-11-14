@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -154,6 +155,67 @@ func TestASecondRestoreIsRefusedAndChangesNothing(t *testing.T) {
 	require.Equal(t, http.StatusConflict, status(err))
 	_, err = root.Network(t.Context(), "after")
 	require.NoError(t, err, "what was written after the restore is still there")
+}
+
+// gated is a snapshot body that gives its first half at once and the rest only when released, so a
+// server that reads it holds the restore until then. blocked closes when the first half has been read.
+type gated struct {
+	first, rest io.Reader
+	blocked     chan struct{}
+	release     chan struct{}
+}
+
+func newGated(plain []byte) *gated {
+	half := len(plain) / 2
+	return &gated{first: bytes.NewReader(plain[:half]), rest: bytes.NewReader(plain[half:]), blocked: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (g *gated) Read(p []byte) (int, error) {
+	if n, _ := g.first.Read(p); n > 0 {
+		return n, nil
+	}
+	select {
+	case <-g.blocked:
+	default:
+		close(g.blocked)
+	}
+	<-g.release
+	return g.rest.Read(p)
+}
+
+func TestTwoConcurrentRestoresGiveOneSuccessAndOneConflict(t *testing.T) {
+	src := takeSource(t)
+	c := src.waiting(t)
+	root := c.Client(t, 0, &src.root)
+	held := newGated(src.plain)
+	first := make(chan error, 1)
+	go func() { first <- root.Restore(t.Context(), held, sumHex(src.plain)) }()
+	select {
+	case <-held.blocked:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the first restore never began")
+	}
+
+	// The first call holds the restore with half of its body read. A second, whole call is refused
+	// while it has not finished; with the claim not exclusive it would restore beside it.
+	err := root.Restore(t.Context(), bytes.NewReader(src.plain), sumHex(src.plain))
+	require.Equal(t, http.StatusConflict, status(err))
+	select {
+	case err := <-first:
+		t.Fatalf("the first restore ended before its body did: %v", err)
+	default:
+	}
+
+	close(held.release)
+	select {
+	case err := <-first:
+		require.NoError(t, err)
+	case <-time.After(60 * time.Second):
+		t.Fatal("the restore did not finish")
+	}
+	groups, err := root.Groups(t.Context())
+	require.NoError(t, err)
+	require.Len(t, groups, 1, "the one restore brought the snapshot back")
 }
 
 func TestRestoreFlagIsIgnoredWhenTheDataDirectoryHoldsAMember(t *testing.T) {

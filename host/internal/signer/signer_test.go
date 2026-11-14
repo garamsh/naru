@@ -592,7 +592,7 @@ func TestReplicate_ANewSignerReceivesTheAuthoritiesFromARunningOne(t *testing.T)
 }
 
 func TestListenSocket_SetsTheModeAndReplacesAStaleSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.sock")
+	path := shortSocketPath(t, "s.sock")
 	l, err := signer.ListenSocket(path, 0o660, quiet)
 	require.NoError(t, err)
 	info, err := os.Stat(path)
@@ -630,4 +630,14 @@ func TestOrch_ItsCertificateCarriesTheNamesItAskedFor(t *testing.T) {
 	assert.Equal(t, []string{"orch.example"}, cert.DNSNames)
 	require.Len(t, cert.IPAddresses, 1)
 	assert.True(t, cert.IPAddresses[0].Equal(net.ParseIP("10.0.0.7")))
+}
+
+// shortSocketPath is a socket path in a directory removed with the test. t.TempDir carries the test's
+// name, which with a long TMPDIR passes the 107 bytes a unix socket path may have.
+func shortSocketPath(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "s")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, name)
 }

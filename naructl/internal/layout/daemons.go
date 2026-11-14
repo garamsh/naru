@@ -73,6 +73,9 @@ type Orch struct {
 	Key string
 	// Restore starts orchd waiting for root's snapshot (spec.orch.restore).
 	Restore bool
+	// Join is the client URL of a running member this one joins (spec.orch.join). The member then
+	// has no initial cluster and its state is "existing"; it excludes Restore.
+	Join string
 }
 
 type hostOrchSpec struct {
@@ -112,8 +115,9 @@ type signerBootstrap struct {
 type orchSpec struct {
 	PeerURL             string            `yaml:"peerURL"`
 	ClientURL           string            `yaml:"clientURL"`
-	InitialCluster      map[string]string `yaml:"initialCluster"`
+	InitialCluster      map[string]string `yaml:"initialCluster,omitempty"`
 	InitialClusterState string            `yaml:"initialClusterState,omitempty"`
+	Join                string            `yaml:"join,omitempty"`
 	Listen              string            `yaml:"listen,omitempty"`
 	SANs                []string          `yaml:"sans,omitempty"`
 	Certificate         string            `yaml:"certificate"`
@@ -169,10 +173,16 @@ func (n Node) checkDaemons() error {
 		if n.Signer == nil {
 			return errors.New("orch asks the signer on this Node for every identity: run the signer here")
 		}
-		if o.PeerURL == "" || o.ClientURL == "" || len(o.InitialCluster) == 0 {
-			return errors.New("orch needs its peer URL, its client URL and the members of its cluster")
+		if o.PeerURL == "" || o.ClientURL == "" {
+			return errors.New("orch needs its peer URL and its client URL")
 		}
-		if o.InitialCluster["naru-"+n.Name] != o.PeerURL {
+		if o.Join != "" {
+			if len(o.InitialCluster) != 0 || o.Restore || (o.State != "" && o.State != "existing") {
+				return errors.New("a member that joins a running one takes its initial cluster from it: it has no members, no restore and the state existing")
+			}
+		} else if len(o.InitialCluster) == 0 {
+			return errors.New("orch needs the members of its cluster, or the running member it joins")
+		} else if o.InitialCluster["naru-"+n.Name] != o.PeerURL {
 			return fmt.Errorf("the initial cluster holds %q for this Node, not its peer URL %q", o.InitialCluster["naru-"+n.Name], o.PeerURL)
 		}
 		if o.Certificate == "" || o.CA == "" || o.RevocationPublicKey == "" || o.Key == "" {
@@ -225,7 +235,7 @@ func (n Node) daemonSpecs(c *nodeConfig) {
 		c.Spec.Orch = &orchSpec{
 			PeerURL: o.PeerURL, ClientURL: o.ClientURL, InitialCluster: o.InitialCluster, InitialClusterState: o.State,
 			Listen: o.Listen, SANs: o.SANs, Certificate: o.Certificate, CA: o.CA,
-			RevocationPublicKey: o.RevocationPublicKey, HostCA: o.HostCA, RecoveryPublicKey: o.RecoveryPublicKey, Restore: o.Restore,
+			RevocationPublicKey: o.RevocationPublicKey, HostCA: o.HostCA, RecoveryPublicKey: o.RecoveryPublicKey, Restore: o.Restore, Join: o.Join,
 		}
 		c.Spec.Files = append(c.Spec.Files, file{Path: OrchKeyFile, Mode: "0600", Content: o.Key, Owner: &fileOwner{UID: OrchUID, GID: OrchUID}})
 	}
