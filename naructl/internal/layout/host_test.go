@@ -59,6 +59,9 @@ func TestUserData_HostRunsNaruHostdWithAPairFromTheHostAuthorityAndNeverItsKey(t
 		if s.Name == "naru-hostd" {
 			assert.Contains(t, s.Args, "/run/naru-hostd/client-ca.crt")
 			assert.Equal(t, map[string]string{"PATH": "/bin"}, s.Env, "init passes no PATH of its own, and hostd runs nft")
+			j := slices.Index(s.Args, "--host-id")
+			require.GreaterOrEqual(t, j, 0, "naru-hostd would enroll under the kernel's hostname, which is (none)")
+			assert.Equal(t, n.Name, s.Args[j+1])
 			i := slices.Index(s.Args, "--machine-gateway")
 			require.GreaterOrEqual(t, i, 0, "naru-hostd is not told the gateway of the Machines' network")
 			assert.Equal(t, "10.200.1.1", s.Args[i+1], "the first address of the Machine prefix, which mvmd's own gateway is")

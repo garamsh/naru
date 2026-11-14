@@ -120,6 +120,8 @@ func (n Node) hostService() service {
 		Name: HostService, Binary: HostBinary, Env: map[string]string{"PATH": "/bin"},
 		Args: []string{
 			"--listen", "0.0.0.0:" + HostPort,
+			// A Node's kernel hostname is "(none)", so the host enrolls under the Node's name.
+			"--host-id", n.Name,
 			"--cert", path.Join(HostDir, "tls.crt"), "--key", path.Join(HostDir, "tls.key"),
 			"--client-ca", path.Join(HostDir, "client-ca.crt"),
 			"--host-file", path.Join(HostDir, "host.json"), "--mvmd-socket", MvmdSocket,
