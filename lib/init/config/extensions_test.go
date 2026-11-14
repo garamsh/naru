@@ -22,6 +22,15 @@ func TestParse_ReadsSpecExtensions(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestParse_AcceptsOneNameWithSeveralDigests(t *testing.T) {
+	entry := "    - name: naru-orch\n      sha256: " + orchDigest + "\n"
+	other := strings.Repeat("a", 64)
+	cfg, err := config.Parse([]byte(strings.Replace(daemonsDoc(t), entry, entry+"    - name: naru-orch\n      sha256: "+other+"\n", 1)))
+
+	require.NoError(t, err)
+	assert.Equal(t, []config.Extension{{Name: "naru-orch", SHA256: orchDigest}, {Name: "naru-orch", SHA256: other}}, cfg.Spec.Extensions)
+}
+
 func TestParse_RefusesAnInvalidExtensionEntry(t *testing.T) {
 	entry := "    - name: naru-orch\n      sha256: " + orchDigest + "\n"
 	tests := []struct {
@@ -32,7 +41,6 @@ func TestParse_RefusesAnInvalidExtensionEntry(t *testing.T) {
 		{"a name with capitals", "    - name: Naru\n      sha256: " + orchDigest + "\n", "spec.extensions[0].name"},
 		{"a digest that is not hex", "    - name: naru-orch\n      sha256: xyz\n", "spec.extensions[0].sha256"},
 		{"an upper-case digest", "    - name: naru-orch\n      sha256: " + strings.ToUpper(orchDigest) + "\n", "spec.extensions[0].sha256"},
-		{"a name listed twice", entry + "    - name: naru-orch\n      sha256: " + strings.Repeat("a", 64) + "\n", "spec.extensions[1].name"},
 		{"a digest listed twice", entry + "    - name: other\n      sha256: " + orchDigest + "\n", "spec.extensions[1].sha256"},
 	}
 	doc := daemonsDoc(t)

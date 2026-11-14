@@ -10,6 +10,17 @@ import (
 	"github.com/garamsh/naru/naructl/internal/layout"
 )
 
+func TestCheck_AcceptsOneExtensionNameWithADigestPerVersion(t *testing.T) {
+	n := node(t, func(n *layout.Node) {
+		n.Extensions = []layout.Extension{
+			{Name: layout.OrchExtension, SHA256: strings.Repeat("e", 64)},
+			{Name: layout.OrchExtension, SHA256: strings.Repeat("f", 64)},
+		}
+	})
+
+	assert.NoError(t, n.Check())
+}
+
 func TestCheck_RefusesTheDaemonSettingsInitWouldRefuse(t *testing.T) {
 	_, ca := hostNode(t)
 	join := &layout.SignerJoin{Peer: "192.168.0.41:7600", PeerCA: "ca", Authorisation: "{}"}
@@ -24,7 +35,7 @@ func TestCheck_RefusesTheDaemonSettingsInitWouldRefuse(t *testing.T) {
 		{"extension with an upper-case digest", func(n *layout.Node) {
 			n.Extensions = []layout.Extension{{Name: "x", SHA256: strings.Repeat("E", 64)}}
 		}, "lowercase hex SHA-256"},
-		{"extension given twice", func(n *layout.Node) { n.Extensions = append(append([]layout.Extension{}, ext...), ext...) }, "given twice"},
+		{"an extension image given twice", func(n *layout.Node) { n.Extensions = append(append([]layout.Extension{}, ext...), ext...) }, "given twice"},
 		{"join without replica", func(n *layout.Node) { n.Signer = &layout.Signer{Join: join} }, "give --signer-replica"},
 		{"join missing its authorisation", func(n *layout.Node) {
 			n.Signer = &layout.Signer{Replica: true, Join: &layout.SignerJoin{Peer: "p:1", PeerCA: "ca"}}

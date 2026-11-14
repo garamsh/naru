@@ -25,7 +25,8 @@ type Extension struct {
 // Dir returns the directory the extension is mounted on.
 func (e Extension) Dir() string { return ExtensionsRoot + "/" + e.Name }
 
-// Extension returns the extension named name, and false when the configuration lists none.
+// Extension returns the first entry named name, and false when the configuration lists none. A
+// name may have several entries, one per digest, each for another naru version.
 func (s Spec) Extension(name string) (Extension, bool) {
 	i := slices.IndexFunc(s.Extensions, func(e Extension) bool { return e.Name == name })
 	if i < 0 {
@@ -45,7 +46,8 @@ func ExtensionOf(svc Service) string {
 	return name
 }
 
-// extensions checks spec.extensions, and that spec.orch and spec.signer, and every service that
+// extensions checks spec.extensions (a name may repeat with distinct digests, so that an upgrade
+// and a rollback each find their own version's image, ADR 0055), and that spec.orch and spec.signer, and every service that
 // runs from an extension, have the entry for it.
 func (v *validation) extensions(spec Spec) {
 	names := map[string]bool{}
@@ -57,9 +59,6 @@ func (v *validation) extensions(spec Spec) {
 		}
 		if !sha256RE.MatchString(e.SHA256) {
 			v.fail(field+".sha256", "must be 64 lowercase hex digits, the SHA-256 of the image, got %q", e.SHA256)
-		}
-		if names[e.Name] {
-			v.fail(field+".name", "%q is listed twice", e.Name)
 		}
 		if digests[e.SHA256] {
 			v.fail(field+".sha256", "%q is listed twice", e.SHA256)

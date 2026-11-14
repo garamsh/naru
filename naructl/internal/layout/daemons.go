@@ -157,17 +157,17 @@ type fileOwner struct {
 // checkDaemons reports the first thing init would refuse in the sections above, which would stop
 // the Node booting or leave it without what orch needs.
 func (n Node) checkDaemons() error {
-	seen := map[string]bool{}
+	seen, digests := map[string]bool{}, map[string]bool{}
 	for _, e := range n.Extensions {
 		switch {
 		case e.Name == "":
 			return errors.New("an extension needs a name")
 		case !extensionDigestRE.MatchString(e.SHA256):
 			return fmt.Errorf("the extension %q needs the lowercase hex SHA-256 of its image, not %q", e.Name, e.SHA256)
-		case seen[e.Name]:
-			return fmt.Errorf("the extension %q is given twice", e.Name)
+		case digests[e.SHA256]:
+			return fmt.Errorf("the extension image %s is given twice", e.SHA256)
 		}
-		seen[e.Name] = true
+		seen[e.Name], digests[e.SHA256] = true, true
 	}
 	if (n.Signer != nil || n.Orch != nil) && !seen[OrchExtension] {
 		return fmt.Errorf("the signer and orch run from the %s extension: give --extension %s=<SHA-256 of its image>", OrchExtension, OrchExtension)

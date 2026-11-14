@@ -31,19 +31,21 @@ func TestApply_AnExtensionChangeIsRefusedInNoRebootAndTakenAtTheNextBoot(t *test
 	assert.Equal(t, []config.Extension{{Name: "tools", SHA256: digest}}, r.saved[0].Config.Spec.Extensions)
 }
 
-func TestApply_AnExtensionPatchMergesByName(t *testing.T) {
+func TestApply_AnExtensionPatchMergesByDigestSoOneNameKeepsAnEntryPerVersion(t *testing.T) {
 	r := newRig(t)
-	first, second := strings.Repeat("ab", 32), strings.Repeat("cd", 32)
-	_, err := r.engine.Apply(apply.Request{Patch: patch(obj{"extensions": []any{
-		obj{"name": "a", "sha256": first}, obj{"name": "b", "sha256": second},
-	}}), Mode: apply.Staged})
+	old, next := strings.Repeat("ab", 32), strings.Repeat("cd", 32)
+	_, err := r.engine.Apply(apply.Request{Patch: patch(obj{"extensions": []any{obj{"name": "tools", "sha256": old}}}), Mode: apply.Staged})
 	require.NoError(t, err)
 
-	_, err = r.engine.Apply(apply.Request{Revision: 1, Patch: patch(obj{"extensions": []any{
-		obj{"name": "a", "sha256": second}, obj{"name": "b", "$patch": "delete"},
-	}}), Mode: apply.Staged})
-
+	// The new version's entry goes beside the old one.
+	_, err = r.engine.Apply(apply.Request{Revision: 1, Patch: patch(obj{"extensions": []any{obj{"name": "tools", "sha256": next}}}), Mode: apply.Staged})
 	require.NoError(t, err)
 	_, cfg := r.engine.Config()
-	assert.Equal(t, []config.Extension{{Name: "a", SHA256: second}}, cfg.Spec.Extensions)
+	assert.Equal(t, []config.Extension{{Name: "tools", SHA256: old}, {Name: "tools", SHA256: next}}, cfg.Spec.Extensions)
+
+	// After the promotion the old entry is removed by its digest.
+	_, err = r.engine.Apply(apply.Request{Revision: 2, Patch: patch(obj{"extensions": []any{obj{"sha256": old, "$patch": "delete"}}}), Mode: apply.Staged})
+	require.NoError(t, err)
+	_, cfg = r.engine.Config()
+	assert.Equal(t, []config.Extension{{Name: "tools", SHA256: next}}, cfg.Spec.Extensions)
 }

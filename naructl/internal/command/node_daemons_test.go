@@ -288,7 +288,7 @@ func TestGenNode_DaemonFlagsRefuseWhatInitWouldRefuseOrWhatDoesNothing(t *testin
 		{"signer without the naru-orch extension", without("--extension", orchExtension), "run from the naru-orch extension"},
 		{"extension that is not name=digest", []string{"--extension", "naru-orch"}, "is not <name>=<SHA-256"},
 		{"extension with a short digest", []string{"--extension", "naru-orch=abcd"}, "lowercase hex SHA-256"},
-		{"extension given twice", []string{"--extension", "tools=" + d("1"), "--extension", "tools=" + d("2")}, "given twice"},
+		{"an extension image given twice", []string{"--extension", "tools=" + d("1"), "--extension", "more=" + d("1")}, "given twice"},
 		{"orch without its key", without("--orch-key"), "needs its certificate"},
 		{"orch cluster without this member", append(without("--orch-member"), "--orch-member", "node-2=https://192.168.0.20:2380"), "initial cluster holds"},
 		{"orch host authority not a certificate", append(append([]string{}, orch...), "--orch-host-ca", in.key), "not a PEM certificate"},

@@ -41,25 +41,39 @@ func NewManager(store *Store, mounter Mounter, root, version string, log *slog.L
 	return &Manager{store: store, mounter: mounter, root: root, version: version, log: log, mounted: map[string]string{}}
 }
 
-// Mount mounts each extension of specs read-only under its directory. For each name it picks the
-// stored image whose manifest names it and was built for init's version, checks that the image is
-// the one the configuration names and that its digest holds, and checks the manifest again from the
-// mounted image. It stops at the first extension it cannot mount, and the error says why: a missing
-// image, one built for another version, a digest that does not hold, or a manifest that disagrees.
+// Mount mounts each extension name of specs read-only under its directory. A name may have several
+// entries, one per digest, each for another naru version (ADR 0055): for each name it mounts the
+// entry whose stored image was built for init's version, so an upgrade and a rollback each find
+// their own. It checks that the digest holds and checks the manifest again from the mounted image.
+// It stops at the first name it cannot mount, and the error says why: no entry has an image built
+// for this version, two have, a digest that does not hold, or a manifest that disagrees. An entry
+// whose image is stored for another version, or not stored, is logged and skipped.
 func (m *Manager) Mount(specs []config.Extension) error {
 	if err := m.store.Sweep(); err != nil {
 		m.log.Warn("remove the leftovers of an unfinished extension upload", "err", err)
 	}
+	var names []string
 	for _, e := range specs {
-		if err := m.mount(e); err != nil {
-			return fmt.Errorf("extension %q: %w", e.Name, err)
+		if !slices.Contains(names, e.Name) {
+			names = append(names, e.Name)
+		}
+	}
+	for _, name := range names {
+		var entries []config.Extension
+		for _, e := range specs {
+			if e.Name == name {
+				entries = append(entries, e)
+			}
+		}
+		if err := m.mount(name, entries); err != nil {
+			return fmt.Errorf("extension %q: %w", name, err)
 		}
 	}
 	return nil
 }
 
-func (m *Manager) mount(e config.Extension) error {
-	img, err := m.pick(e)
+func (m *Manager) mount(name string, entries []config.Extension) error {
+	img, err := m.pick(name, entries)
 	if err != nil {
 		return err
 	}
@@ -68,7 +82,7 @@ func (m *Manager) mount(e config.Extension) error {
 		return fmt.Errorf("image %s: %w", img.SHA256, err)
 	}
 	defer f.Close()
-	dir := filepath.Join(m.root, e.Name)
+	dir := filepath.Join(m.root, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -88,42 +102,42 @@ func (m *Manager) mount(e config.Extension) error {
 	m.mu.Lock()
 	m.mounted[img.SHA256] = dir
 	m.mu.Unlock()
-	m.log.Info("extension mounted", "name", e.Name, "sha256", img.SHA256, "version", img.Version, "dir", dir)
+	m.log.Info("extension mounted", "name", name, "sha256", img.SHA256, "version", img.Version, "dir", dir)
 	return nil
 }
 
-// pick returns the stored image of e.Name built for init's version, which must be the image e.SHA256 names.
-func (m *Manager) pick(e config.Extension) (Image, error) {
+// pick returns the image of name that init mounts: the one entry whose stored image was built for
+// init's version. Entries for other versions, or whose image is not stored, are logged and skipped.
+func (m *Manager) pick(name string, entries []config.Extension) (Image, error) {
 	stored, err := m.store.List()
 	if err != nil {
 		return Image{}, err
 	}
-	var versions []string
-	var built *Image
-	for _, img := range stored {
-		if img.Name != e.Name {
-			if img.SHA256 == e.SHA256 {
-				return Image{}, fmt.Errorf("the image %s is the extension %q, not %q", e.SHA256, img.Name, e.Name)
-			}
-			continue
-		}
-		versions = append(versions, img.Version)
-		if img.Version == m.version {
-			built = &img
-			if img.SHA256 == e.SHA256 {
-				return img, nil
-			}
+	var found []Image
+	var elsewhere []string
+	for _, e := range entries {
+		i := slices.IndexFunc(stored, func(img Image) bool { return img.SHA256 == e.SHA256 })
+		switch {
+		case i < 0:
+			m.log.Info("extension entry skipped: its image is not stored", "name", name, "sha256", e.SHA256)
+		case stored[i].Name != name:
+			return Image{}, fmt.Errorf("the image %s is the extension %q, not %q", e.SHA256, stored[i].Name, name)
+		case stored[i].Version != m.version:
+			elsewhere = append(elsewhere, stored[i].Version)
+			m.log.Info("extension entry skipped: its image is built for another naru version", "name", name, "sha256", e.SHA256, "version", stored[i].Version)
+		default:
+			found = append(found, stored[i])
 		}
 	}
 	switch {
-	case built != nil:
-		return Image{}, fmt.Errorf("the image stored for naru %s has SHA-256 %s, not the configured %s", m.version, built.SHA256, e.SHA256)
-	case slices.ContainsFunc(stored, func(i Image) bool { return i.SHA256 == e.SHA256 }):
-		return Image{}, fmt.Errorf("the image %s is not built for naru %s (stored for: %s)", e.SHA256, m.version, strings.Join(versions, ", "))
-	case len(versions) > 0:
-		return Image{}, fmt.Errorf("no image %s is stored; stored images are built for naru %s, and this is naru %s", e.SHA256, strings.Join(versions, ", "), m.version)
+	case len(found) == 1:
+		return found[0], nil
+	case len(found) > 1:
+		return Image{}, fmt.Errorf("%d entries are built for naru %s, and only one may be", len(found), m.version)
+	case len(elsewhere) > 0:
+		return Image{}, fmt.Errorf("no entry is built for naru %s (stored for: %s)", m.version, strings.Join(elsewhere, ", "))
 	}
-	return Image{}, fmt.Errorf("no image is stored; PUT /v1/extensions/%s delivers it", e.SHA256)
+	return Image{}, fmt.Errorf("no image of an entry is stored; PUT /v1/extensions/%s delivers it", entries[0].SHA256)
 }
 
 // Put stores the image read from body, whose SHA-256 must be digest.

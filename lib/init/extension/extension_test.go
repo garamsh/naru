@@ -252,6 +252,63 @@ func TestManager_MountPicksTheImageBuiltForInitsVersionAndMountsItReadOnlyUnderI
 	assert.Len(t, list, 2)
 }
 
+func TestManager_MountMountsTheEntryOfInitsOwnVersionWhenTwoVersionsAreConfigured(t *testing.T) {
+	n := newNode(t)
+	old := n.put(t, manifest("naru-orch", "v0.9.0"))
+	next := n.put(t, manifest("naru-orch", version))
+	specs := []config.Extension{{Name: "naru-orch", SHA256: old}, {Name: "naru-orch", SHA256: next}}
+	dir := filepath.Join(n.root, "naru-orch")
+
+	// The new init mounts the new image; after a rollback the old init, over the same
+	// configuration and store, mounts the old one.
+	require.NoError(t, n.mgr.Mount(specs))
+	assert.Equal(t, manifest("naru-orch", version), n.m.mounted[dir])
+
+	older := newNode(t)
+	older.mgr = extension.NewManager(older.s, older.m, older.root, "v0.9.0", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	older.put(t, manifest("naru-orch", "v0.9.0"))
+	older.put(t, manifest("naru-orch", version))
+	require.NoError(t, older.mgr.Mount(specs))
+	assert.Equal(t, manifest("naru-orch", "v0.9.0"), older.m.mounted[filepath.Join(older.root, "naru-orch")])
+}
+
+func TestManager_MountSkipsAnEntryWhoseImageIsNotStoredAndRefusesAmbiguityOrNoMatch(t *testing.T) {
+	good := manifest("naru-orch", version)
+	missing := config.Extension{Name: "naru-orch", SHA256: digestOf("not stored")}
+
+	{ // the control: a stored image of this version beside an entry with no image mounts
+		n := newNode(t)
+		d := n.put(t, good)
+		require.NoError(t, n.mgr.Mount([]config.Extension{missing, {Name: "naru-orch", SHA256: d}}))
+	}
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, n *node) []config.Extension
+		want  string
+	}{
+		{"two entries built for init's version", func(t *testing.T, n *node) []config.Extension {
+			a, b := n.put(t, good), n.put(t, good+" ")
+			return []config.Extension{{Name: "naru-orch", SHA256: a}, {Name: "naru-orch", SHA256: b}}
+		}, "2 entries are built for naru " + version},
+		{"entries all for other versions", func(t *testing.T, n *node) []config.Extension {
+			a := n.put(t, manifest("naru-orch", "v0.9.0"))
+			return []config.Extension{missing, {Name: "naru-orch", SHA256: a}}
+		}, "no entry is built for naru " + version},
+		{"entries none of which is stored", func(t *testing.T, n *node) []config.Extension {
+			return []config.Extension{missing}
+		}, "no image of an entry is stored"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n := newNode(t)
+			err := n.mgr.Mount(tt.setup(t, n))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+			assert.Empty(t, n.m.mounted)
+		})
+	}
+}
+
 func TestManager_MountRefuses(t *testing.T) {
 	good := manifest("naru-orch", version)
 	tests := []struct {
@@ -259,17 +316,17 @@ func TestManager_MountRefuses(t *testing.T) {
 		setup func(t *testing.T, n *node) string // returns the configured digest
 		want  string
 	}{
-		{"an extension nothing was stored for", func(t *testing.T, n *node) string { return digestOf("x") }, "no image is stored"},
+		{"an extension nothing was stored for", func(t *testing.T, n *node) string { return digestOf("x") }, "no image of an entry is stored"},
 		{"an image built for another version", func(t *testing.T, n *node) string {
 			return n.put(t, manifest("naru-orch", "v0.9.0"))
-		}, "not built for naru " + version},
+		}, "no entry is built for naru " + version},
 		{"an image under another name", func(t *testing.T, n *node) string {
 			return n.put(t, manifest("other", version))
 		}, `is the extension "other"`},
 		{"a configured digest that is not the one stored for this version", func(t *testing.T, n *node) string {
 			n.put(t, good)
 			return digestOf("another")
-		}, "not the configured"},
+		}, "no image of an entry is stored"},
 		{"an image whose file changed on the disk", func(t *testing.T, n *node) string {
 			d := n.put(t, good)
 			require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(n.root), "extensions", d+".sqfs"), []byte(manifest("naru-orch", version)+" "), 0o600))
