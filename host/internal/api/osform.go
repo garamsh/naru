@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/iso9660"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
@@ -25,13 +26,20 @@ const (
 	seedDiskName = "seed"
 )
 
-// osForm reports whether the request carries a field only the OS form has.
-func (r CreateRequest) osForm() bool {
+// isOSForm reports whether the request carries a field only the OS form has.
+func isOSForm(r hostapi.CreateRequest) bool {
 	return r.BootSet != "" || r.Cmdline != "" || len(r.Seed) > 0 || r.DataDisk > 0 || r.PodPrefix != ""
 }
 
+// validRoutedPrefix reports whether mvmd would route the prefix to a Machine: an IPv4 prefix of /16
+// to /32, with no host bits.
+func validRoutedPrefix(s string) bool {
+	p, err := netip.ParsePrefix(s)
+	return err == nil && p == p.Masked() && p.Addr().Is4() && p.Bits() >= 16
+}
+
 // validateOS returns the plan for an OS-form request, or every field that is wrong with it.
-func validateOS(r CreateRequest) (plan, []string, string) {
+func validateOS(r hostapi.CreateRequest) (plan, []string, string) {
 	var fields []string
 	bad := func(f string) { fields = append(fields, f) }
 	// The image form's fields, which the OS form has no use for.
@@ -73,8 +81,7 @@ func validateOS(r CreateRequest) (plan, []string, string) {
 	}
 	var routed []string
 	if r.PodPrefix != "" {
-		// mvmd takes an IPv4 prefix of /16 to /32 and routes it to the Machine.
-		if p, err := netip.ParsePrefix(r.PodPrefix); err != nil || p != p.Masked() || !p.Addr().Is4() || p.Bits() < 16 {
+		if !validRoutedPrefix(r.PodPrefix) {
 			bad("podPrefix")
 		} else {
 			routed = []string{r.PodPrefix}
@@ -93,11 +100,11 @@ func validateOS(r CreateRequest) (plan, []string, string) {
 		return plan{}, fields, "the request is invalid"
 	}
 	p := plan{
-		disks:    []DiskSpec{{Name: dataDiskName, SizeBytes: r.DataDisk}},
+		disks:    []hostapi.DiskSpec{{Name: dataDiskName, SizeBytes: r.DataDisk}},
 		userData: r.Seed,
 		create: mvmd.Create{
 			ID: r.Name, CPU: r.CPU, MemoryBytes: r.Memory, Policy: r.NetworkPolicy,
-			BootSet: r.BootSet, Cmdline: r.Cmdline, RoutedPrefixes: routed, RestartOnBoot: restartOnBoot(r.RestartOnBoot, true),
+			BootSet: r.BootSet, Cmdline: r.Cmdline, RoutedPrefixes: routed, RestartOnBoot: restartOnBoot(r.RestartOnBoot, true), Fenced: r.Fenced,
 			Disks: []mvmd.Attachment{{ID: diskID(r.Name, dataDiskName)}},
 		},
 	}

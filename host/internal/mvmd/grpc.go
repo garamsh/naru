@@ -199,7 +199,7 @@ func (g *GRPC) CreateMachine(ctx context.Context, cr Create) (Machine, error) {
 		MachineId: cr.ID, RequestId: createRequestID, ImageDigest: cr.ImageDigest,
 		Resources:     &v1alpha2.Resources{CpuCount: cr.CPU, MemoryBytes: cr.MemoryBytes},
 		RootDiskBytes: cr.RootDiskBytes, NetworkPolicy: policyToProto(cr.Policy), RoutedPrefixes: cr.RoutedPrefixes,
-		RestartOnBoot: cr.RestartOnBoot,
+		RestartOnBoot: cr.RestartOnBoot, Fenced: cr.Fenced,
 	}
 	if cr.BootSet != "" {
 		req.OsBoot = &v1alpha2.OsBoot{BootSet: cr.BootSet, KernelCmdline: cr.Cmdline}
@@ -278,11 +278,95 @@ func (g *GRPC) InspectDeadline(ctx context.Context) (Deadline, error) {
 	if err != nil {
 		return Deadline{}, err
 	}
-	s := r.GetStatus()
+	return deadlineFromProto(r.GetStatus()), nil
+}
+
+func (g *GRPC) RenewMachine(ctx context.Context, id string, length time.Duration, number uint64) (Deadline, error) {
+	r, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.RenewDeadlineResponse, error) {
+		return c.RenewDeadline(ctx, &v1alpha2.RenewDeadlineRequest{
+			Length: durationpb.New(length), RenewalNumber: number, MachineId: id,
+		})
+	})
+	if err != nil {
+		return Deadline{}, err
+	}
+	return deadlineFromProto(r.GetStatus()), nil
+}
+
+func (g *GRPC) InspectMachineDeadline(ctx context.Context, id string) (Deadline, error) {
+	r, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.InspectDeadlineResponse, error) {
+		return c.InspectDeadline(ctx, &v1alpha2.InspectDeadlineRequest{MachineId: id})
+	})
+	if err != nil {
+		return Deadline{}, err
+	}
+	return deadlineFromProto(r.GetStatus()), nil
+}
+
+var phaseNames = map[v1alpha2.DeadlinePhase]string{
+	v1alpha2.DeadlinePhase_DEADLINE_PHASE_NOT_ARMED: "notArmed", v1alpha2.DeadlinePhase_DEADLINE_PHASE_ARMED: "armed",
+	v1alpha2.DeadlinePhase_DEADLINE_PHASE_EXPIRED: "expired", v1alpha2.DeadlinePhase_DEADLINE_PHASE_STOPPED_EVERYTHING: "stoppedEverything",
+}
+
+func deadlineFromProto(s *v1alpha2.DeadlineStatus) Deadline {
 	return Deadline{
 		Armed: s.GetPhase() == v1alpha2.DeadlinePhase_DEADLINE_PHASE_ARMED, LastNumber: s.GetLastRenewalNumber(),
-		Remaining: s.GetRemaining().AsDuration(),
-	}, nil
+		Remaining: s.GetRemaining().AsDuration(), Phase: phaseNames[s.GetPhase()], Length: s.GetLength().AsDuration(),
+	}
+}
+
+func (g *GRPC) SnapshotMachine(ctx context.Context, snapshotID, machineID string) error {
+	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.SnapshotMachineResponse, error) {
+		return c.SnapshotMachine(ctx, &v1alpha2.SnapshotMachineRequest{
+			SnapshotId: snapshotID, RequestId: createRequestID, MachineId: machineID,
+		})
+	})
+	return err
+}
+
+func (g *GRPC) ListSnapshots(ctx context.Context) ([]Snapshot, error) {
+	r, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.ListSnapshotsResponse, error) {
+		return c.ListSnapshots(ctx, &v1alpha2.ListSnapshotsRequest{})
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Snapshot, 0, len(r.GetSnapshots()))
+	for _, s := range r.GetSnapshots() {
+		sn := Snapshot{
+			ID: s.GetId(), MachineID: s.GetMachineId(), ImageDigest: s.GetImageDigest(),
+			Driver: strings.TrimSpace(s.GetDriver().GetName() + " " + s.GetDriver().GetVersion()), CPUModel: s.GetCpuModel(),
+			Kernel: s.GetKernel(), RootDisk: s.GetRootDiskBytes(), SizeBytes: s.GetSizeBytes(),
+		}
+		if s.GetCreatedAt() != nil {
+			sn.CreatedAt = s.GetCreatedAt().AsTime()
+		}
+		for _, d := range s.GetDisks() {
+			sn.Disks = append(sn.Disks, SnapshotDisk{ID: d.GetDiskId(), ReadOnly: d.GetReadOnly(), SizeBytes: d.GetSizeBytes()})
+		}
+		out = append(out, sn)
+	}
+	return out, nil
+}
+
+func (g *GRPC) DeleteSnapshot(ctx context.Context, id string) error {
+	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.DeleteSnapshotResponse, error) {
+		return c.DeleteSnapshot(ctx, &v1alpha2.DeleteSnapshotRequest{SnapshotId: id})
+	})
+	return err
+}
+
+func (g *GRPC) RestoreMachine(ctx context.Context, r Restore) (Machine, error) {
+	resp, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.RestoreMachineResponse, error) {
+		return c.RestoreMachine(ctx, &v1alpha2.RestoreMachineRequest{
+			MachineId: r.ID, RequestId: createRequestID, SnapshotId: r.SnapshotID,
+			NetworkPolicy: policyToProto(r.Policy), RoutedPrefixes: r.RoutedPrefixes,
+		})
+	})
+	if err != nil {
+		return Machine{}, err
+	}
+	return machineFromProto(resp.GetMachine()), nil
 }
 
 var stateNames = map[v1alpha2.MachineState]string{
@@ -297,7 +381,10 @@ func machineFromProto(m *v1alpha2.Machine) Machine {
 		ImageDigest: m.GetImageDigest(), CPU: m.GetResources().GetCpuCount(), MemoryBytes: m.GetResources().GetMemoryBytes(),
 		RootDiskBytes: m.GetRootDiskBytes(), Policy: policyFromProto(m.GetNetworkPolicy()),
 		BootSet: m.GetOsBoot().GetBootSet(), Cmdline: m.GetOsBoot().GetKernelCmdline(), RoutedPrefixes: m.GetRoutedPrefixes(),
-		RestartOnBoot: m.GetRestartOnBoot(),
+		RestartOnBoot: m.GetRestartOnBoot(), Fenced: m.GetFenced(),
+	}
+	if m.GetFenceLapsedAt() != nil {
+		out.FenceLapsedAt = m.GetFenceLapsedAt().AsTime()
 	}
 	if out.State == "" {
 		out.State = strings.ToLower(strings.TrimPrefix(m.GetState().String(), "MACHINE_STATE_"))

@@ -22,6 +22,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 // Deps is what the server reads and acts through.
@@ -62,6 +63,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/microvms/{name}", s.deleteMicroVM)
 	mux.HandleFunc("POST /v1/microvms/{name}/stop", s.stopMicroVM)
 	mux.HandleFunc("POST /v1/microvms/{name}/start", s.startMicroVM)
+	mux.HandleFunc("POST /v1/microvms/{name}/fence", s.renewFence)
+	mux.HandleFunc("GET /v1/microvms/{name}/fence", s.getFence)
+	mux.HandleFunc("POST /v1/microvms/{name}/snapshot", s.snapshotMicroVM)
+	mux.HandleFunc("GET /v1/snapshots", s.listSnapshots)
+	mux.HandleFunc("GET /v1/snapshots/{name}", s.getSnapshot)
+	mux.HandleFunc("DELETE /v1/snapshots/{name}", s.deleteSnapshot)
+	mux.HandleFunc("POST /v1/snapshots/{name}/resume", s.resumeSnapshot)
 	return s.recovering(s.logged(s.authorised(mux)))
 }
 
@@ -73,7 +81,7 @@ func (s *Server) authorised(next http.Handler) http.Handler {
 			need = Provisioner
 		}
 		if roleOf(clientCertificate(r)) < need {
-			writeJSON(w, http.StatusForbidden, errorBody{Error: "the client certificate's role does not allow this request"})
+			writeJSON(w, http.StatusForbidden, hostapi.ErrorBody{Error: "the client certificate's role does not allow this request"})
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -85,7 +93,7 @@ func (s *Server) recovering(next http.Handler) http.Handler {
 		defer func() {
 			if v := recover(); v != nil {
 				s.deps.Log.Error("host API handler panicked", "method", r.Method, "path", r.URL.Path, "panic", v)
-				writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+				writeJSON(w, http.StatusInternalServerError, hostapi.ErrorBody{Error: "internal error"})
 			}
 		}()
 		next.ServeHTTP(w, r)
@@ -124,12 +132,6 @@ func (r *statusRecorder) WriteHeader(code int) {
 }
 
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
-
-// errorBody is the body of every refusal and failure.
-type errorBody struct {
-	Error  string   `json:"error"`
-	Fields []string `json:"fields,omitempty"`
-}
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")

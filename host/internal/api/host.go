@@ -8,36 +8,13 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 // HostInfo is spec.host as init writes it to the host file.
 type HostInfo struct {
 	Region string            `json:"region"`
 	Labels map[string]string `json:"labels"`
-}
-
-// Resources are the amounts /v1/host reports as capacity and as free. Memory and Disk are bytes.
-type Resources struct {
-	CPU    uint32 `json:"cpu"`
-	Memory uint64 `json:"memory"`
-	Disk   uint64 `json:"disk"`
-}
-
-// MvmdInfo is what /v1/host says of mvmd: the runtime API version it serves, its driver, and the
-// guest kernels a microVM can boot.
-type MvmdInfo struct {
-	Version string        `json:"version"`
-	Driver  string        `json:"driver"`
-	Kernels []mvmd.Kernel `json:"kernels"`
-}
-
-// Host is the body of GET /v1/host.
-type Host struct {
-	Region   string            `json:"region"`
-	Labels   map[string]string `json:"labels"`
-	Capacity Resources         `json:"capacity"`
-	Free     Resources         `json:"free"`
-	Mvmd     MvmdInfo          `json:"mvmd"`
 }
 
 func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +25,7 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.deps.Log.Error("cannot read the host file", "file", s.deps.HostFile, "err", err.Error())
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "the host's region and labels cannot be read"})
+		writeJSON(w, http.StatusInternalServerError, hostapi.ErrorBody{Error: "the host's region and labels cannot be read"})
 		return
 	}
 	if info.Labels == nil {
@@ -66,15 +43,15 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	out := Host{
+	out := hostapi.Host{
 		Region: info.Region, Labels: info.Labels,
-		Capacity: Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateTotalBytes},
-		Mvmd:     MvmdInfo{Version: rt.APIVersion, Driver: rt.Driver, Kernels: rt.Kernels},
+		Capacity: hostapi.Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateTotalBytes},
+		Mvmd:     hostapi.MvmdInfo{Version: rt.APIVersion, Driver: rt.Driver, Kernels: rt.Kernels},
 	}
 	if out.Mvmd.Kernels == nil {
 		out.Mvmd.Kernels = []mvmd.Kernel{}
 	}
-	out.Free = Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateAvailableBytes}
+	out.Free = hostapi.Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateAvailableBytes}
 	for _, m := range machines {
 		if m.State != mvmd.StateRunning && m.State != mvmd.StatePaused {
 			continue

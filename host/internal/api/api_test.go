@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -155,7 +156,7 @@ func TestHost_ReportsTheHostFileOnEveryRequest(t *testing.T) {
 	c := e.as(t, ReaderOrganization)
 	code, b := e.do(t, c, "GET", "/v1/host", nil)
 	require.Equal(t, 200, code)
-	var h Host
+	var h hostapi.Host
 	require.NoError(t, json.Unmarshal(b, &h))
 	assert.Equal(t, "eu-1", h.Region)
 	assert.Equal(t, map[string]string{"disk": "ssd"}, h.Labels)
@@ -295,11 +296,11 @@ func TestMicroVMs_GetListDelete(t *testing.T) {
 
 	code, b := e.do(t, c, "GET", "/v1/microvms/web", nil)
 	require.Equal(t, 200, code)
-	var m MicroVM
+	var m hostapi.MicroVM
 	require.NoError(t, json.Unmarshal(b, &m))
 	assert.Equal(t, "running", m.State)
 	assert.Equal(t, []string{"10.1.0.5"}, m.Addresses)
-	assert.Equal(t, []DiskSpec{{Name: "data", SizeBytes: 1 << 20}}, m.Disks)
+	assert.Equal(t, []hostapi.DiskSpec{{Name: "data", SizeBytes: 1 << 20}}, m.Disks)
 
 	_, b = e.do(t, c, "GET", "/v1/microvms", nil)
 	assert.Contains(t, string(b), `"web"`)

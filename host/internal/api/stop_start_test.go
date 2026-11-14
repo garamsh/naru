@@ -8,11 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
-func microVMOf(t *testing.T, b []byte) MicroVM {
+func microVMOf(t *testing.T, b []byte) hostapi.MicroVM {
 	t.Helper()
-	var v MicroVM
+	var v hostapi.MicroVM
 	require.NoError(t, json.Unmarshal(b, &v), string(b))
 	return v
 }
