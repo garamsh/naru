@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/garamsh/naru/orch/internal/auth"
+	"github.com/garamsh/naru/orch/internal/crlsync"
 	"github.com/garamsh/naru/orch/internal/member"
 	"github.com/garamsh/naru/orch/internal/orchd"
 	"github.com/garamsh/naru/orch/internal/signer"
@@ -41,6 +43,8 @@ func main() {
 		revoke    = flag.String("revocation-public-key", "/var/lib/naru/orch/tls/revocation.pub", "the Ed25519 public key (PKIX, PEM) that verifies the revocation list")
 		recovery  = flag.String("recovery-public-key", "", "the recovery key's public half; without it no snapshot is written")
 		snapEvery = flag.Duration("snapshot-interval", snapshot.DefaultInterval, "how often a snapshot is taken")
+		maxAge    = flag.Duration("revocation-max-age", auth.DefaultMaxAge, "how long a revocation list that cannot be refreshed is used before callers are refused with 503")
+		crlEvery  = flag.Duration("revocation-sync-interval", crlsync.DefaultInterval, "how often the revocation list is synced between the signers")
 		snapKeep  = flag.Int("snapshot-keep", snapshot.DefaultKeep, "how many snapshots are kept")
 	)
 	flag.Parse()
@@ -48,7 +52,7 @@ func main() {
 	if err := run(log, runFlags{
 		name: *name, dataDir: *dataDir, peerURL: *peerURL, clientURL: *clientURL, initial: *initial, state: *state,
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sans: *sans, sock: *sock,
-		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep,
+		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
 	}); err != nil {
 		log.Error("naru-orchd stopped", "err", err.Error())
 		os.Exit(1)
@@ -58,7 +62,7 @@ func main() {
 type runFlags struct {
 	name, dataDir, peerURL, clientURL, initial, state, listen string
 	cert, key, ca, sans, sock, snapDir, revoke, recovery      string
-	snapEvery                                                 time.Duration
+	snapEvery, maxAge, crlEvery                               time.Duration
 	snapKeep                                                  int
 }
 
@@ -75,10 +79,11 @@ func run(log *slog.Logger, f runFlags) error {
 	if err := sg.EnsureIdentity(ctx, signer.Files{Cert: f.cert, Key: f.key, CA: f.ca}, f.name, strings.Split(f.sans, ",")); err != nil {
 		return err
 	}
-	authn, err := newAuthenticator(sg, f.revoke, log)
+	revokeKey, err := readRevocationKey(f.revoke)
 	if err != nil {
 		return err
 	}
+	authn := newAuthenticator(sg, revokeKey, f.maxAge, log)
 	sealer, err := newSealer(f.recovery)
 	if err != nil {
 		return err
@@ -88,8 +93,8 @@ func run(log *slog.Logger, f runFlags) error {
 			Name: f.name, DataDir: f.dataDir, PeerURL: f.peerURL, ClientURL: f.clientURL,
 			InitialCluster: f.initial, State: f.state, Cert: f.cert, Key: f.key, CA: f.ca,
 		},
-		Listen: f.listen, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep,
-	}, orchd.Deps{Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log})
+		Listen: f.listen, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
+	}, orchd.Deps{Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey})
 	if err != nil {
 		return err
 	}

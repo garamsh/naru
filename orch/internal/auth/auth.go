@@ -54,6 +54,14 @@ func Allowed(who identity.Identity, a Action) bool {
 // be told apart from a revoked identity.
 var ErrNoRevocationList = errors.New("no revocation list is available")
 
+// ErrStaleRevocationList is returned when the cached list is older than MaxAge and the signer
+// could not give a fresh one, so a revocation made since may not be known.
+var ErrStaleRevocationList = errors.New("the revocation list is too old")
+
+// DefaultMaxAge is how old a cached revocation list may be, when no refresh has succeeded, before
+// callers are refused.
+const DefaultMaxAge = 10 * time.Minute
+
 // Authenticator turns the verified chains of a TLS connection into an Identity, refusing a
 // revoked one.
 type Authenticator interface {
@@ -66,14 +74,17 @@ type CRLSource interface {
 }
 
 // Revocations is an Authenticator that checks lib/identity's revocation list, kept at most TTL
-// old. A list that fails to refresh is kept; with none at all every call fails.
+// old. A list that fails to refresh is kept for MaxAge from its last refresh, then every call
+// fails with ErrStaleRevocationList; with none at all every call fails.
 type Revocations struct {
 	Source CRLSource
 	// Key verifies the list's signature.
 	Key ed25519.PublicKey
 	TTL time.Duration
-	Now func() time.Time
-	Log *slog.Logger
+	// MaxAge bounds how long a list is kept while it cannot be refreshed; zero means DefaultMaxAge.
+	MaxAge time.Duration
+	Now    func() time.Time
+	Log    *slog.Logger
 
 	mu      sync.Mutex
 	crl     *identity.CRL
@@ -102,6 +113,13 @@ func (r *Revocations) list(ctx context.Context) (*identity.CRL, error) {
 	if err != nil {
 		if r.crl == nil {
 			return nil, fmt.Errorf("%w: %v", ErrNoRevocationList, err)
+		}
+		maxAge := r.MaxAge
+		if maxAge == 0 {
+			maxAge = DefaultMaxAge
+		}
+		if age := now.Sub(r.fetched); age > maxAge {
+			return nil, fmt.Errorf("%w: %s old, not refreshed: %v", ErrStaleRevocationList, age.Round(time.Second), err)
 		}
 		r.Log.Warn("revocation list not refreshed, keeping the last one", "err", err.Error())
 		return r.crl, nil

@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -81,6 +82,90 @@ func (s *Signer) IssueHost(_ context.Context, statement, csr []byte) ([]byte, er
 
 // CRL implements inventory.Signer.
 func (s *Signer) CRL(context.Context) ([]byte, error) { return s.CA.CRL() }
+
+// CRLReplica stands in for one naru-signer replica's revocation list: it takes lists with
+// PushCRL and merges them the way the signer does, and Revoke adds a serial to its own.
+type CRLReplica struct {
+	ca  *CA
+	mu  sync.Mutex
+	seq uint64
+	set map[string]struct{}
+	cur []byte
+}
+
+// NewCRLReplica starts a replica holding the empty list at sequence 1.
+func NewCRLReplica(t testing.TB, ca *CA) *CRLReplica {
+	r := &CRLReplica{ca: ca, seq: 1, set: map[string]struct{}{}}
+	if err := r.sign(); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func (r *CRLReplica) sign() error {
+	crl := identity.CRL{Seq: r.seq, IssuedAt: time.Now()}
+	for s := range r.set {
+		crl.Serials = append(crl.Serials, s)
+	}
+	sort.Strings(crl.Serials)
+	b, err := r.ca.SignCRL(crl)
+	r.cur = b
+	return err
+}
+
+// Revoke adds the identity's serial and signs the next sequence.
+func (r *CRLReplica) Revoke(id Identity) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.set[identity.SerialOf(id.Cert)] = struct{}{}
+	r.seq++
+	return r.sign()
+}
+
+// CRL returns the list the replica holds.
+func (r *CRLReplica) CRL(context.Context) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cur, nil
+}
+
+// PushCRL takes a list and returns the one held: the same with nothing new, the pushed one when it
+// is newer and a superset, and otherwise the union signed at the higher sequence plus one.
+func (r *CRLReplica) PushCRL(_ context.Context, data []byte) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	in, err := identity.VerifyCRL(r.ca.RevocationKey(), data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", inventory.ErrSignerRefused, err)
+	}
+	added, inHasAll := false, true
+	for _, s := range in.Serials {
+		if _, ok := r.set[s]; !ok {
+			added = true
+			r.set[s] = struct{}{}
+		}
+	}
+	if !added {
+		return r.cur, nil
+	}
+	if len(r.set) != len(in.Serials) {
+		inHasAll = false
+	}
+	if inHasAll && in.Seq > r.seq {
+		r.seq, r.cur = in.Seq, data
+		return r.cur, nil
+	}
+	r.seq = max(r.seq, in.Seq) + 1
+	return r.cur, r.sign()
+}
+
+// Has reports whether the replica holds the serial.
+func (r *CRLReplica) Has(id Identity) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.set[identity.SerialOf(id.Cert)]
+	return ok
+}
 
 // Clock is a clock a test moves.
 type Clock struct {

@@ -4,6 +4,7 @@ package orchd
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/garamsh/naru/orch/internal/api"
 	"github.com/garamsh/naru/orch/internal/auth"
+	"github.com/garamsh/naru/orch/internal/crlsync"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	invetcd "github.com/garamsh/naru/orch/internal/inventory/etcd"
 	"github.com/garamsh/naru/orch/internal/leader"
@@ -39,6 +41,9 @@ type Config struct {
 	SnapshotKeep     int
 	LeaderTTL        time.Duration
 	Limits           inventory.Config
+	// CRLSyncInterval is how often the member syncs the revocation list; it defaults to
+	// crlsync.DefaultInterval.
+	CRLSyncInterval time.Duration
 }
 
 // Deps are the parts the binary's main chooses.
@@ -49,6 +54,10 @@ type Deps struct {
 	Reconciler Reconciler
 	Clock      inventory.Clock
 	Log        *slog.Logger
+	// CRLPeer, with RevocationKey, turns on the sync of the revocation list between the signers: it
+	// is the local signer. Without it the list is not synced.
+	CRLPeer       crlsync.Peer
+	RevocationKey ed25519.PublicKey
 }
 
 // Orchd is a running member.
@@ -91,7 +100,7 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	svc := inventory.NewService(invetcd.New(m.Client()), d.Signer, d.Clock, c.Limits)
 	handler := api.New(api.Deps{Inventory: svc, Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Log: d.Log})
 
-	o.wg.Add(3)
+	o.wg.Add(4)
 	go func() {
 		defer o.wg.Done()
 		if err := api.Serve(runCtx, l, handler); err != nil {
@@ -105,6 +114,14 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 			return
 		}
 		taker.Run(runCtx, c.SnapshotInterval)
+	}()
+	go func() {
+		defer o.wg.Done()
+		if d.CRLPeer == nil {
+			d.Log.Warn("no revocation list peer: the signers' lists are not synced")
+			return
+		}
+		(&crlsync.Syncer{Store: crlsync.EtcdStore{Client: m.Client()}, Peer: d.CRLPeer, Key: d.RevocationKey, Interval: c.CRLSyncInterval, Log: d.Log}).Run(runCtx)
 	}()
 	go func() {
 		defer o.wg.Done()

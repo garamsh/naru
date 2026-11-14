@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -55,6 +56,7 @@ func (s *Signer) Init(opts InitOptions) (identity.Issued, error) {
 	if err != nil {
 		return identity.Issued{}, err
 	}
+	a.issued = map[string]string{root.Serial: string(identity.RoleRoot)}
 	if err := a.save(s.dir); err != nil {
 		return identity.Issued{}, err
 	}
@@ -89,6 +91,9 @@ func (s *Signer) IssueHost(req identity.HostRequest) (identity.Issued, error) {
 	}
 	issued, err := issueLeaf(a.host, now, adm.HostID, identity.RoleHost, csr.PublicKey, serverAndClient, nil)
 	if err != nil {
+		return identity.Issued{}, err
+	}
+	if err := s.record(issued.Serial, identity.RoleHost); err != nil {
 		return identity.Issued{}, err
 	}
 	s.log.Info("issued a host certificate", "host_id", adm.HostID, "serial", issued.Serial, "key_sha256", adm.HostKeySHA256,
@@ -137,9 +142,25 @@ func (s *Signer) issueFor(a *authorities, who identity.Identity, ca authority, r
 	if err != nil {
 		return identity.Issued{}, err
 	}
+	if err := s.record(issued.Serial, role); err != nil {
+		return identity.Issued{}, err
+	}
 	s.log.Info("issued a certificate", "role", string(role), "subject", req.Name, "serial", issued.Serial,
 		"authorised_by", who.Subject, "authorised_by_serial", who.Serial)
 	return issued, nil
+}
+
+// record notes the role of a serial the signer issued, in its directory, before the certificate
+// is handed out.
+func (s *Signer) record(serial string, role identity.Role) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.auth.withIssued(serial, role)
+	if err := writeFile(filepath.Join(s.dir, issuedFile), next.marshalIssued()); err != nil {
+		return err
+	}
+	s.auth = next
+	return nil
 }
 
 // authorise verifies a request signed for action by one of the roles allowed, decodes its body
