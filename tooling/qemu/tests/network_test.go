@@ -201,7 +201,17 @@ func TestFleet_NetworksAreSeparateMembershipSetsAndOnlyWireGuardCrossesBetweenTh
 
 	// A to A answers on the same host, and across the hosts once the leader has declared the members
 	// remote: the TCP dial and a datagram.
-	eventually(t, "a1 reaches a2 across the hosts", func() bool { return a1.tryDials(a2.ip + ":" + probePort) })
+	var dialed string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log("a1's last answer to the dial of a2: " + dialed)
+		}
+	})
+	eventually(t, "a1 reaches a2 across the hosts", func() bool {
+		body, ok := a1.try("/probe?target=" + a2.ip + ":" + probePort)
+		dialed = fmt.Sprintf("%q, answered: %v", body, ok)
+		return ok && body == "ok"
+	})
 	assert.True(t, a1.dials(t, a1b.ip+":"+probePort), "a1 reaches a1b on its own host")
 	assert.Equal(t, "sent", a1.call(t, "/send?dst="+a2.ip))
 	eventually(t, "a2 receives a1's datagram from a1's address", func() bool {
