@@ -81,6 +81,7 @@ spec:
     sans: [192.168.0.40, 127.0.0.1]
     certificate: |
 ` + indent(cert) + `    ca: |
+` + indent(cert) + `    hostCA: |
 ` + indent(cert) + `    revocationPublicKey: |
 ` + indent(pub) + `    recoveryPublicKey: '{"x25519":"AA","ed25519":"AA"}'
   metrics:
@@ -156,9 +157,11 @@ func TestParse_SectionsBecomeServicesAndFlags(t *testing.T) {
 		"--initial-cluster-state=new", "--listen=0.0.0.0:7500", "--san=192.168.0.40,127.0.0.1",
 		"--key=/run/naru-orchd/orch.key", "--signer-socket=/run/naru-signer/signer.sock",
 		"--recovery-public-key=/run/naru-orchd/recovery.pub", "--metrics-addr=192.168.0.40:9102",
+		"--host-client-cert=/run/naru-orchd/orch.crt", "--host-client-key=/run/naru-orchd/orch.key", "--host-ca=/run/naru-orchd/host-ca.crt",
 	} {
 		assert.Contains(t, orch.Args, want)
 	}
+	assert.Equal(t, []string{"naru-orchd"}, file(t, cfg, config.OrchHostCAFile).Restart, "a changed host authority restarts orch")
 	assert.Equal(t, []string{"/run/naru-orchd/orch.key"}, orch.RestartOnChange)
 
 	assert.Equal(t, []string{"naru-hostd", "naru-signer", "naru-orchd"}, []string{cfg.Spec.Services[0].Name, cfg.Spec.Services[1].Name, cfg.Spec.Services[2].Name})
@@ -215,6 +218,7 @@ func TestParse_DerivedPartsFollowTheirSections(t *testing.T) {
 		assert.NotContains(t, f.Path, "/run/naru-hostd/enroll.key")
 		assert.NotContains(t, f.Path, "/run/naru-signer/")
 		assert.NotContains(t, f.Path, "/run/naru-orchd/orch.crt")
+		assert.NotContains(t, f.Path, config.OrchHostCAFile)
 	}
 }
 
@@ -236,6 +240,22 @@ func TestParse_OrchWithoutBootstrapOrOptionalFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, service(t, cfg, "naru-signer").Setup, "a signer with no bootstrap has no setup")
 	assert.NotContains(t, filePaths(cfg), "/run/naru-signer/root.csr")
+}
+
+func TestParse_OrchWithoutAHostAuthorityPresentsItsOwnPairAndTrustsItsAuthority(t *testing.T) {
+	doc := daemonsDoc(t)
+	i := strings.Index(doc, "    hostCA: |\n")
+	j := strings.Index(doc, "    revocationPublicKey:")
+	require.True(t, i >= 0 && j > i)
+	cfg, err := config.Parse([]byte(doc[:i] + doc[j:]))
+	require.NoError(t, err)
+	args := service(t, cfg, "naru-orchd").Args
+	assert.Contains(t, args, "--host-client-cert=/run/naru-orchd/orch.crt")
+	assert.Contains(t, args, "--host-client-key=/run/naru-orchd/orch.key")
+	for _, a := range args {
+		assert.NotContains(t, a, "--host-ca", "orchd's --host-ca defaults to --ca")
+	}
+	assert.NotContains(t, filePaths(cfg), config.OrchHostCAFile)
 }
 
 func filePaths(cfg config.NodeConfig) []string {
@@ -273,6 +293,7 @@ func TestParse_DaemonSectionsRefuse(t *testing.T) {
 		{"orch cluster state", "sans:", "initialClusterState: old\n    sans:", "spec.orch.initialClusterState"},
 		{"orch listen", "sans:", "listen: nope\n    sans:", "spec.orch.listen"},
 		{"orch certificate not PEM", "    certificate: |\n        -----BEGIN CERTIFICATE-----", "    certificate: |\n        -----BEGIN NOTHING-----", "spec.orch.certificate"},
+		{"orch host authority not PEM", "    hostCA: |\n        -----BEGIN CERTIFICATE-----", "    hostCA: |\n        -----BEGIN NOTHING-----", "spec.orch.hostCA"},
 		{"orch name", "sans:", "name: Bad_Name\n    sans:", "spec.orch.name"},
 		{"metrics listen not an address", "listen: 192.168.0.40\n  files", "listen: example.com\n  files", "spec.metrics.listen"},
 		{"orch key file owned by root", "owner: {uid: 6002, gid: 6002}", "owner: {uid: 0, gid: 0}", "spec.files[0].owner"},

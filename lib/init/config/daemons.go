@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -41,6 +42,8 @@ const (
 	OrchDataDir = "/var/lib/naru/orch"
 	// OrchRunDir holds orch's serving pair, authority and public keys.
 	OrchRunDir = "/run/naru-orchd"
+	// OrchHostCAFile is the authority the hosts' API certificates chain to, from spec.orch.hostCA.
+	OrchHostCAFile = OrchRunDir + "/host-ca.crt"
 	// OrchKeyFile is orch's private key. It is the one file of this directory that spec.files
 	// carries, so GET /v1/config redacts it; spec.orch has no field for a key.
 	OrchKeyFile = OrchRunDir + "/orch.key"
@@ -75,6 +78,9 @@ type Orch struct {
 	Certificate         string `yaml:"certificate"`
 	CA                  string `yaml:"ca"`
 	RevocationPublicKey string `yaml:"revocationPublicKey"`
+	// HostCA is the PEM of the authority the hosts' API certificates chain to. Orch presents its
+	// own certificate to the hosts and trusts HostCA for theirs; without it orch trusts CA.
+	HostCA string `yaml:"hostCA,omitempty"`
 	// RecoveryPublicKey is the recovery key's public half, as the signer's init takes it. Without
 	// it orch writes no snapshot.
 	RecoveryPublicKey string `yaml:"recoveryPublicKey,omitempty"`
@@ -247,6 +253,9 @@ func (v *validation) orch(cfg NodeConfig) {
 	}
 	if !pemOf(o.RevocationPublicKey, "PUBLIC KEY") {
 		v.fail("spec.orch.revocationPublicKey", "must be a PKIX public key in PEM")
+	}
+	if o.HostCA != "" && !x509.NewCertPool().AppendCertsFromPEM([]byte(o.HostCA)) {
+		v.fail("spec.orch.hostCA", "must be the PEM of the certificate authority the hosts' API certificates chain to")
 	}
 	if o.RecoveryPublicKey != "" && !json.Valid([]byte(o.RecoveryPublicKey)) {
 		v.fail("spec.orch.recoveryPublicKey", "must be the JSON document of the recovery key's public half")
@@ -512,6 +521,7 @@ func orchService(o Orch, node string, m *Metrics) (Service, []File) {
 		"--san=" + strings.Join(sans, ","), "--cert=" + OrchRunDir + "/orch.crt", "--key=" + OrchKeyFile, "--ca=" + OrchRunDir + "/ca.crt",
 		"--signer-socket=" + SignerRunDir + "/signer.sock", "--snapshot-dir=" + OrchDataDir + "/snapshots",
 		"--revocation-public-key=" + OrchRunDir + "/revocation.pub",
+		"--host-client-cert=" + OrchRunDir + "/orch.crt", "--host-client-key=" + OrchKeyFile,
 	}
 	if o.Restore {
 		args = append(args, "--restore")
@@ -521,6 +531,10 @@ func orchService(o Orch, node string, m *Metrics) (Service, []File) {
 		{Path: OrchRunDir + "/orch.crt", Mode: "0644", Content: o.Certificate, Restart: restart},
 		{Path: OrchRunDir + "/ca.crt", Mode: "0644", Content: o.CA, Restart: restart},
 		{Path: OrchRunDir + "/revocation.pub", Mode: "0644", Content: o.RevocationPublicKey, Restart: restart},
+	}
+	if o.HostCA != "" {
+		args = append(args, "--host-ca="+OrchHostCAFile)
+		files = append(files, File{Path: OrchHostCAFile, Mode: "0644", Content: o.HostCA, Restart: restart})
 	}
 	if o.RecoveryPublicKey != "" {
 		args = append(args, "--recovery-public-key="+OrchRunDir+"/recovery.pub")

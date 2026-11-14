@@ -100,6 +100,7 @@ type daemonsData struct {
 			Certificate         string            `yaml:"certificate"`
 			CA                  string            `yaml:"ca"`
 			RevocationPublicKey string            `yaml:"revocationPublicKey"`
+			HostCA              string            `yaml:"hostCA"`
 			RecoveryPublicKey   string            `yaml:"recoveryPublicKey"`
 			Restore             bool              `yaml:"restore"`
 		} `yaml:"orch"`
@@ -130,7 +131,11 @@ func parseDaemons(t *testing.T, path string) daemonsData {
 func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 	dep := newDeployment(t)
 	in := newDaemonInputs(t)
-	flags := append(dep.hostFlags(t),
+	hostFlags := dep.hostFlags(t)
+	hostAuthorityFile := filepath.Join(dep.ca, "host", "ca.pem")
+	hostAuthority, err := os.ReadFile(hostAuthorityFile)
+	require.NoError(t, err)
+	flags := append(hostFlags,
 		"--host-management-prefix", "192.168.0.0/24", "--host-egress-interface", "eth0", "--host-tunnel-port", "51821",
 		"--host-orch-url", "https://192.168.0.10:7500", "--host-orch-ca-sha256", d("a"), "--host-orch-enroll-key", in.enroll,
 		"--signer", "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10",
@@ -139,6 +144,7 @@ func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 		"--orch-member", "naru-node-1=https://192.168.0.10:2380", "--orch-member", "node-2=https://192.168.0.20:2380",
 		"--orch-san", "192.168.0.10", "--orch-san", "127.0.0.1", "--orch-state", "new", "--orch-listen", "0.0.0.0:7500",
 		"--orch-certificate", in.cert, "--orch-ca", in.cert, "--orch-revocation-public-key", in.pub, "--orch-recovery-public", in.recovery, "--orch-key", in.key, "--orch-restore",
+		"--orch-host-ca", hostAuthorityFile, "--host-client-ca", in.cert,
 		"--metrics-listen", "192.168.0.10",
 	)
 
@@ -168,8 +174,18 @@ func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 	assert.Equal(t, in.certPEM, got.Spec.Orch.Certificate)
 	assert.Equal(t, in.recoveryText, got.Spec.Orch.RecoveryPublicKey)
 	assert.True(t, got.Spec.Orch.Restore)
+	assert.Equal(t, string(hostAuthority), got.Spec.Orch.HostCA, "orch trusts the host authority for the hosts' certificates")
 	require.NotNil(t, got.Spec.Metrics)
 	assert.Equal(t, "192.168.0.10", got.Spec.Metrics.Listen)
+
+	var clientCA string
+	for _, f := range got.Spec.Files {
+		if f.Path == "/run/naru-hostd/client-ca.crt" {
+			clientCA = f.Content
+		}
+	}
+	assert.Contains(t, clientCA, string(hostAuthority), "hostd still trusts the host authority")
+	assert.Contains(t, clientCA, in.certPEM, "hostd trusts the authority orch's certificate chains to")
 
 	var found bool
 	for _, f := range got.Spec.Files {
@@ -258,6 +274,10 @@ func TestGenNode_DaemonFlagsRefuseWhatInitWouldRefuseOrWhatDoesNothing(t *testin
 		{"orch without the signer", without("--signer"), "run the signer here"},
 		{"orch without its key", without("--orch-key"), "needs its certificate"},
 		{"orch cluster without this member", append(without("--orch-member"), "--orch-member", "node-2=https://192.168.0.20:2380"), "initial cluster holds"},
+		{"orch host authority not a certificate", append(append([]string{}, orch...), "--orch-host-ca", in.key), "not a PEM certificate"},
+		{"orch host authority without --orch-peer-url", []string{"--orch-host-ca", in.cert}, "--orch-host-ca has no effect without --orch-peer-url"},
+		{"host client authority not a certificate", append([]string{"--host-client-ca", in.key}, host...), "not a PEM certificate"},
+		{"host client authority without the host API", []string{"--host-client-ca", in.cert}, "--host-client-ca has no effect without --host-region"},
 		{"orch flag without --orch-peer-url", []string{"--orch-ca", in.cert}, "--orch-ca has no effect without --orch-peer-url"},
 		{"bootstrap beside replica", []string{"--signer", "--signer-replica", "--signer-recovery-public", in.recovery, "--signer-root-csr", in.csr}, "not both"},
 		{"bootstrap with one half", []string{"--signer", "--signer-root-csr", in.csr}, "both the recovery public key and the root request"},

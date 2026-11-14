@@ -42,3 +42,12 @@ Drafted for garamsh/naru#121, garamsh/naru#117 and garamsh/naru#118, and the ope
 - A third daemon needs a user and the same four fields: the generic form holds; if each daemon needs a different launch path, a launcher per daemon would have been right.
 - Two users prove not enough, for instance orch needing a file only the signer's group may read beyond the socket.
 - The reboot a metrics-listener change needs is felt: the listeners would have to move without one.
+
+## Note of 2026-11-14: how orch reaches the hosts
+
+This note appends to the decision above and supersedes the Consequences line that says orch's host-client flags are written by no section.
+
+- Orch presents its own certificate, the pair of `spec.orch`, to the hosts, not a separate host-client pair. Init writes `--host-client-cert=/run/naru-orchd/orch.crt` and `--host-client-key=/run/naru-orchd/orch.key`, and `--host-ca=/run/naru-orchd/host-ca.crt` from the new optional `spec.orch.hostCA` (PEM; without it orchd trusts `--ca`). The file is mode 0644 and restarts orch.
+- naru-hostd's role comes from the Organization `naru:host-provisioner` or `naru:host-reader`, and now also from `lib/identity`: a certificate whose one OrganizationalUnit is `orch` is a provisioner. Only that unit is read; a certificate that carries `orch` beside another unit has no role. This is the change the Consequences above name ("until the host API takes `lib/identity`'s roles").
+- The hosts' client trust is a bundle. `naructl gen node --host-client-ca` appends the authority orch's certificate chains to the host authority in `/run/naru-hostd/client-ca.crt`; `--orch-host-ca` writes `spec.orch.hostCA`.
+- A certificate with the `orch` unit is also what the signer's replicas present on the replication channel. A host that trusts the authority those chain to takes such a certificate as a provisioner, because the host reads only the unit.
