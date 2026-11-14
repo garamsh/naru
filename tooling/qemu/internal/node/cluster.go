@@ -68,6 +68,10 @@ type ClusterSpec struct {
 	// which prints what a client of the control plane sees from a member's address and from one that
 	// is no member's, or 0 for none.
 	EtcdProbeOn int
+	// SerialSocket gives every Node's serial port a socket nothing reads (Spec.SerialSocket).
+	SerialSocket bool
+	// ExtraServices, with Gaon, are services appended to every Node's user-data, after naructl's.
+	ExtraServices []ExtraService
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
 	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
@@ -176,7 +180,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		if spec.Configure != nil {
 			spec.Configure(&cfg)
 		}
-		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase}
+		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase, SerialSocket: spec.SerialSocket}
 		if gen != nil {
 			if spec.controlPlane(i) {
 				start.Config.HostPort = gen.ports[i] // only a control-plane Node has the second NIC
@@ -200,6 +204,12 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		c.Nodes = append(c.Nodes, n)
 	}
 	return c, nil
+}
+
+// ExtraService is a test's own service: a name and the guest path of a program the Inputs tree carries.
+type ExtraService struct {
+	Name, Binary string
+	Args         []string
 }
 
 // controlPlane reports whether Node i is a control-plane Node.
@@ -355,6 +365,15 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	}
 	if spec.EditUserData != nil {
 		if err := spec.EditUserData(c, a.Out); err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, e := range spec.ExtraServices {
+		svc := map[string]any{"name": e.Name, "binary": e.Binary}
+		if len(e.Args) > 0 {
+			svc["args"] = e.Args
+		}
+		if err := appendService(a.Out, svc); err != nil {
 			return nil, nil, err
 		}
 	}

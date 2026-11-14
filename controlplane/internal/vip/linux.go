@@ -1,12 +1,10 @@
 package vip
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
 	"net/netip"
-	"time"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -109,17 +107,4 @@ func ARPFrame(mac net.HardwareAddr, ip netip.Addr, op uint16) []byte {
 	}
 	copy(arp[24:28], ip.AsSlice())
 	return b
-}
-
-// DialProbe reports whether a TCP connection to addr's port is accepted within timeout.
-func DialProbe(port string, timeout time.Duration) Prober {
-	return func(ctx context.Context, addr netip.Addr) bool {
-		d := net.Dialer{Timeout: timeout}
-		c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(addr.String(), port))
-		if err != nil {
-			return false
-		}
-		_ = c.Close()
-		return true
-	}
 }

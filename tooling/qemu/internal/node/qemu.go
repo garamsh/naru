@@ -50,6 +50,9 @@ type Spec struct {
 	// ExtraDiskFirst attaches the extra disk before the data disk, so that the kernel names them in
 	// the other order.
 	ExtraDiskFirst bool
+	// SerialSocket attaches the serial port as a server socket, Dir/serial.sock, that nothing
+	// reads, as Proxmox does for `serial0: socket`. Console is then empty.
+	SerialSocket bool
 }
 
 // Node is one running QEMU machine.
@@ -251,8 +254,20 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 	if spec.RTCBase != "" {
 		args = append(args, "-rtc", "base="+spec.RTCBase+",clock=vm")
 	}
-	return append(args, "-display", "none", "-monitor", "none", "-serial", "file:"+console, "-no-reboot"), nil
+	args = append(args, serialArgs(spec, console)...)
+	return append(args, "-display", "none", "-monitor", "none", "-no-reboot"), nil
 }
+
+// serialArgs is QEMU's serial port: written to the file console, or a server socket nobody reads.
+func serialArgs(spec Spec, console string) []string {
+	if spec.SerialSocket {
+		return []string{"-chardev", "socket,id=serial0,path=" + SerialSocketPath(spec.Dir) + ",server=on,wait=off", "-serial", "chardev:serial0"}
+	}
+	return []string{"-serial", "file:" + console}
+}
+
+// SerialSocketPath is the socket of a Node's serial port in dir, when its Spec has SerialSocket.
+func SerialSocketPath(dir string) string { return filepath.Join(dir, "serial.sock") }
 
 // dataAndExtraDisks is the drives and devices of the data disk and, when the Node has one, the extra
 // disk, in the order the kernel finds them: the extra disk first when the Spec says so. Both are

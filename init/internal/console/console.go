@@ -19,6 +19,16 @@ const (
 	// KeptBytes bounds the bytes of lines kept. Past it the oldest lines are dropped, and the
 	// begin marker of each re-print says how many.
 	KeptBytes = 1 << 20
+	// ReprintBytes bounds the bytes of lines in one re-print: the newest lines that fit. The
+	// serial console costs the guest time for every byte written to it (ADR 0036), so a
+	// re-print of everything kept would stall the Node for as long as it takes to write it.
+	ReprintBytes = 16 << 10
+	// BlockPiece is the most bytes of a re-print written to the device at once, and BlockGap is
+	// the pause after each piece but the last. A Node does not run while the device takes a
+	// write, so a block written whole stalls it for as long as the block is large (ADR 0036);
+	// in pieces each stall is a piece long and the Node runs between them.
+	BlockPiece = 2 << 10
+	BlockGap   = 50 * time.Millisecond
 	// MaxLine is the longest line kept; a longer one is kept as several.
 	MaxLine = 4096
 	// QueueBytes bounds the live output waiting for the device. A write that would pass it is
@@ -30,7 +40,8 @@ const (
 // The markers that open and close a re-print.
 const (
 	// BeginFormat takes the sequence number, the number of lines in the block and the number
-	// of lines dropped since boot.
+	// of lines since boot that the block does not carry: dropped from the kept lines, or older
+	// than the newest ReprintBytes.
 	BeginFormat = "NARU-LOG-BEGIN seq=%d lines=%d dropped=%d\n"
 	// EndFormat takes the sequence number.
 	EndFormat = "NARU-LOG-END seq=%d\n"
@@ -42,7 +53,8 @@ const (
 
 // Console passes writes to out and keeps the complete lines written, each with the source
 // that wrote it. It is safe for concurrent use. Writes reach out in order through one
-// goroutine, and a re-print block is one write, so it is contiguous. Nothing that calls
+// goroutine, and a re-print block is written in pieces with nothing else between them, so it is
+// contiguous. Nothing that calls
 // Console waits on out; the mutex is never held while out is written.
 type Console struct {
 	out   io.Writer
@@ -168,6 +180,13 @@ func (c *Console) drain() {
 		}
 		if len(p) > 0 {
 			// A console that cannot be written to has nowhere to report it.
+			if it.block {
+				for len(p) > BlockPiece {
+					_, _ = c.out.Write(p[:BlockPiece])
+					p = p[BlockPiece:]
+					time.Sleep(BlockGap)
+				}
+			}
 			_, _ = c.out.Write(p)
 			midLine = p[len(p)-1] != '\n'
 		}
@@ -225,7 +244,8 @@ func (c *Console) add(source string, line []byte) {
 	}
 }
 
-// Reprint queues one block for the output: the begin marker, every kept line, the end marker.
+// Reprint queues one block for the output: the begin marker, the newest kept lines that fit in
+// ReprintBytes, the end marker.
 // It copies the kept lines and returns without waiting for the output. While the previous
 // block is still queued or being written it queues nothing and counts the skip, and the
 // sequence number is not used.
@@ -237,9 +257,14 @@ func (c *Console) Reprint() {
 		return
 	}
 	c.sequence++
+	first, size := len(c.lines), 0
+	for first > 0 && size+len(c.lines[first-1].text)+1 <= ReprintBytes {
+		first--
+		size += len(c.lines[first].text) + 1
+	}
 	var block bytes.Buffer
-	fmt.Fprintf(&block, BeginFormat, c.sequence, len(c.lines), c.dropped)
-	for _, l := range c.lines {
+	fmt.Fprintf(&block, BeginFormat, c.sequence, len(c.lines)-first, c.dropped+first)
+	for _, l := range c.lines[first:] {
 		block.Write(l.text)
 		block.WriteByte('\n')
 	}
