@@ -115,17 +115,38 @@ func TestBuild_TheESPHoldsTheDefaultSlotAndNoTrialSlot(t *testing.T) {
 	assert.ErrorContains(t, err, "not found", "the trial slot is written by an upgrade, not by the disk")
 }
 
-func TestBuild_TheESPHasRoomForASecondKernelOfTheSameSize(t *testing.T) {
-	// A kernel bigger than the 64 MiB minimum makes the size follow the kernel, so the room tested
-	// is the kernel's and not the minimum's.
+func TestESPBytes_IsOneGiBUntilTwoSlotsOfTwiceTheKernelNeedMore(t *testing.T) {
+	tests := []struct {
+		name   string
+		kernel int64
+		want   int64
+	}{
+		{"a kernel of 211 MB, the size of v0.1.0-dev.8's", 211239936, 1024 * mib},
+		{"a kernel whose four copies and slack come to exactly 1 GiB", 254 * mib, 1024 * mib},
+		{"a kernel whose four copies and slack pass 1 GiB", 300 * mib, 1208 * mib},
+		{"a kernel that is not a whole number of MiB rounds the partition up", 300*mib + 1, 1209 * mib},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, disk.ESPBytes(tc.kernel))
+		})
+	}
+}
+
+func TestBuild_TheESPHasRoomForATrialKernelTwiceTheSizeOfTheBuiltOne(t *testing.T) {
+	// The ESP is 1 GiB here, whatever the kernel's size, so the room tested is the headroom and
+	// not the minimum of the old layout, which held one more kernel of the same size.
 	const kernelBytes = 33 * mib
 	s := spec(t, t.TempDir())
 	require.NoError(t, os.WriteFile(s.Kernel, bytes.Repeat([]byte("k"), kernelBytes), 0o644))
 	require.NoError(t, disk.Build(s))
+	out, err := exec.Command("/sbin/sgdisk", "--info=1", s.Out).CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "Partition size: 2097152 sectors", "the partition is 1 GiB")
 	v, err := fat.Open(esp(t, s), s.Stamp)
 	require.NoError(t, err)
 
-	err = v.Add(disk.Trial, bytes.NewReader(bytes.Repeat([]byte("t"), kernelBytes)), kernelBytes)
+	err = v.Add(disk.Trial, bytes.NewReader(bytes.Repeat([]byte("t"), 2*kernelBytes)), 2*kernelBytes)
 
 	assert.NoError(t, err)
 	assert.NoError(t, v.Close())

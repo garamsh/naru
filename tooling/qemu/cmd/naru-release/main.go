@@ -28,6 +28,8 @@ func run() error {
 	flag.StringVar(&o.Out, "out", "", "directory that receives the assets")
 	flag.StringVar(&o.Version, "version", "", "version in the asset names")
 	flag.StringVar(&o.Naructl, "naructl", "", "the naructl binary (static, linux/amd64): an asset, and it writes the user-data")
+	flag.StringVar(&o.PrevManifest, "prev-manifest", "", "the manifest.json of the previous release's upgrade bundle, to refuse a kernel its Nodes cannot take (ADR 0037)")
+	flag.BoolVar(&o.RequiresRecreation, "requires-recreation", false, "allow a kernel the previous release's Nodes cannot take: the notes tell them to be recreated")
 	flag.Parse()
 	if o.ImageDir == "" || o.DiskDir == "" || o.GuestDir == "" || o.Out == "" || o.Version == "" || o.Naructl == "" {
 		return fmt.Errorf("-image, -disk, -guest, -out, -version and -naructl are required")

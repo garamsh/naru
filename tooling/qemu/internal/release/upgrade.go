@@ -28,10 +28,16 @@ type BundleManifestJSON struct {
 		Bytes  int64  `json:"bytes"`
 		SHA256 string `json:"sha256"`
 	} `json:"kernel"`
+	// ESP is the partition of the boot disk this release's image is built with (ADR 0037). A
+	// manifest of an earlier release has none.
+	ESP struct {
+		Bytes int64 `json:"bytes"`
+	} `json:"esp"`
 }
 
 // WriteBundle writes the upgrade bundle of version, which holds the kernel at kernelPath, to out.
-func WriteBundle(out, version, kernelPath string) error {
+// espBytes is the size of the ESP of the boot disk built with that kernel.
+func WriteBundle(out, version, kernelPath string, espBytes int64) error {
 	k, err := os.Open(kernelPath)
 	if err != nil {
 		return err
@@ -48,6 +54,7 @@ func WriteBundle(out, version, kernelPath string) error {
 	var m BundleManifestJSON
 	m.Version = version
 	m.Kernel.Name, m.Kernel.Bytes, m.Kernel.SHA256 = BundleKernel, n, fmt.Sprintf("%x", h.Sum(nil))
+	m.ESP.Bytes = espBytes
 	manifest, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
