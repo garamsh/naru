@@ -127,6 +127,10 @@ type Node struct {
 	// Address (spec.network.routes), and mvmd keeps a Machine's source address for traffic to it
 	// (network.no_masquerade).
 	Peers []Peer
+	// NoMasquerade are prefixes whose traffic from a Machine keeps its source address
+	// (network.no_masquerade) with no route to them, such as the Machine prefixes of the hosts a
+	// tunnel carries them to, which hostd routes through the interface it makes.
+	NoMasquerade []netip.Prefix
 	// Guest is guest.json, and FirecrackerSHA256 the digest of the Firecracker binary.
 	Guest             Manifest
 	FirecrackerSHA256 string

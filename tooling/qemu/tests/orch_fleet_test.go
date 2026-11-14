@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/tooling/qemu/internal/seed"
 )
 
@@ -32,12 +33,19 @@ import (
 // it covers.
 
 // get is a request to the orch of control Node i as root, over mutual TLS: the status and the body.
+// Root's key is in its person file only (naructl operator person removes the plain key), so the
+// request opens the file with the fleet's passphrase.
 func (f *fleet) get(i int, method, path string) (int, []byte) {
 	f.t.Helper()
-	pair, err := tls.LoadX509KeyPair(f.rootCertFile, f.rootKey)
+	enc, err := os.ReadFile(f.root.file)
 	require.NoError(f.t, err)
+	pass, err := os.ReadFile(f.pass)
+	require.NoError(f.t, err)
+	p, err := identity.DecryptPerson(strings.TrimSpace(string(pass)), enc)
+	require.NoError(f.t, err)
+	pair := tls.Certificate{Certificate: [][]byte{p.Cert.Raw}, PrivateKey: p.Key}
 	pool := x509.NewCertPool()
-	require.True(f.t, pool.AppendCertsFromPEM([]byte(f.rootCert)))
+	require.True(f.t, pool.AppendCertsFromPEM([]byte(f.orchCA)))
 	cl := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		Certificates: []tls.Certificate{pair}, RootCAs: pool, MinVersion: tls.VersionTLS13,
 	}}}
@@ -112,6 +120,11 @@ func (g groupJSON) count(phase string) int {
 
 // groupFile is the group's spec as the operator's file, with the knobs the scenarios change.
 func (f *fleet) groupFile(name string, count, memoryMiB int, extra string) string {
+	// A stateful group may not surge: two instances would run at once.
+	surge := 1
+	if strings.Contains(extra, "stateful: true") {
+		surge = 0
+	}
 	return f.file(fmt.Sprintf("%s-%d-%d.yaml", name, count, memoryMiB), fmt.Sprintf(`name: %s
 count: %d
 region: eu-1
@@ -121,9 +134,9 @@ template:
   memoryMiB: %d
   version: %s@%s
   rootDiskBytes: 1073741824
-rollout: {maxUnavailable: 1, maxSurge: 1}
+rollout: {maxUnavailable: 1, maxSurge: %d}
 minAvailable: %d
-%s`, name, count, memoryMiB, inputs.Image.Repository, inputs.Image.Digest, max(count-1, 0), extra))
+%s`, name, count, memoryMiB, inputs.Image.Repository, inputs.Image.Digest, surge, max(count-1, 0), extra))
 }
 
 func TestFleet_OrchLeaderLossElectsAnotherAndEnrollmentKeepsTheRegionLabelsAndTheCodeIsTheConsoles(t *testing.T) {
@@ -285,7 +298,7 @@ func (f *fleet) lose(i int, extraFiles ...map[string]any) {
 }
 
 func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 3, hosts: 1})
+	f := newFleet(t, fleetOpts{controls: 3, hosts: 1, vmMiB: 512})
 	f.startOrch()
 	hostIDs := f.enrollAndAdmit("eu-1", "disk=ssd")
 	f.must(f.orch("group", "apply", "-f", f.groupFile("keep", 1, 256, "")), "group apply")
@@ -298,16 +311,18 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 	snap := f.snapshot(1) // GET /v1/snapshots/latest, root only, the sealed bytes
 
 	// Every control host loses its disk. The recovery key and its passphrase go to the first one as
-	// files, for the signer's restore, which reads them on the signer's host.
+	// files owned by the signer, for its restore, which reads them on its host.
 	recKey, err := os.ReadFile(f.rec.key)
 	require.NoError(t, err)
 	pass, err := os.ReadFile(f.pass)
 	require.NoError(t, err)
+	// The signer reads them as its own user, 6001.
+	signerOwner := map[string]any{"uid": 6001, "gid": 6001}
 	for _, i := range f.controls() {
 		if i == 1 {
 			f.lose(i,
-				map[string]any{"path": "/run/harness/recovery.key", "mode": "0600", "content": string(recKey)},
-				map[string]any{"path": "/run/harness/recovery.pass", "mode": "0600", "content": string(pass)})
+				map[string]any{"path": "/run/harness/recovery.key", "mode": "0600", "content": string(recKey), "owner": signerOwner},
+				map[string]any{"path": "/run/harness/recovery.pass", "mode": "0600", "content": string(pass), "owner": signerOwner})
 		} else {
 			f.lose(i)
 		}
@@ -327,7 +342,7 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 	})
 	eventually(t, "the empty orch takes the snapshot", func() bool {
 		return nrun("orch", "restore", "--snapshot", snap, "--recovery-key", f.rec.key, "--passphrase-file", f.pass,
-			"--push", "https://"+f.forward(1, orchPort), "--orch-ca", f.rootCertFile, "--admin", f.root.file).Err == nil
+			"--push", "https://"+f.forward(1, orchPort), "--orch-ca", f.orchCAFile, "--admin", f.root.file).Err == nil
 	})
 
 	// The other two join as new members, their signers as replicas of the restored one: spec.orch.join
@@ -372,7 +387,7 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 }
 
 func TestFleet_GroupsKeepTheCountRollDrainReplaceOnALabelChangeAndFenceAStatefulMember(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 1, hosts: 2})
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1536, vmCPUs: 4})
 	f.startOrch()
 	key := f.enrollmentKey()
 	ids := map[int]string{}

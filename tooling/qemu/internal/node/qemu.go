@@ -238,7 +238,7 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 	}
 	args := []string{
 		"-name", name + ",process=" + name,
-		"-enable-kvm", "-cpu", cpu, "-smp", "2", "-m", strconv.Itoa(memoryMiB(spec.Config)),
+		"-enable-kvm", "-cpu", cpu, "-smp", strconv.Itoa(cpus(spec.Config)), "-m", strconv.Itoa(memoryMiB(spec.Config)),
 		"-machine", "q35",
 		"-drive", "if=pflash,format=raw,unit=0,readonly=on,file=" + OVMFCode,
 		"-drive", "if=pflash,format=raw,unit=1,file=" + vars,
@@ -330,6 +330,14 @@ func dataAndExtraDisks(spec Spec, dataDisk string) []string {
 		return append(extra, data...)
 	}
 	return append(data, extra...)
+}
+
+// cpus is the virtual CPUs of the Node's VM.
+func cpus(c Config) int {
+	if c.CPUs > 0 {
+		return c.CPUs
+	}
+	return 2
 }
 
 // memoryMiB is the memory of the Node's VM.

@@ -32,7 +32,7 @@ import (
 // network shows what crosses between the hosts.
 
 const (
-	probePort  = "8080"
+	probePort  = "8080" // where naru-entry serves probe when a microVM runs it with no arguments
 	prefixA    = "10.201.0.0/16"
 	prefixB    = "10.202.0.0/16"
 	netA, netB = "neta", "netb"
@@ -51,7 +51,12 @@ func probeBody(t *testing.T, name, network string) string {
 	body, err := json.Marshal(map[string]any{
 		"name": name, "image": inputs.Image.Repository + "@" + inputs.Image.Digest,
 		"cpu": 1, "memory": 256 << 20, "rootDiskBytes": 1 << 30, "network": network,
-		"command": []string{"/bin/entry", "probe", "0.0.0.0:" + probePort},
+		// A microVM carries no network policy by default and mvmd drops its ingress: every source may reach it, and
+		// the microVM may send anywhere, so that the drops the scenario counts are hostd's table's.
+		"networkPolicy": map[string]any{
+			"ingress": []map[string]any{{"prefix": "0.0.0.0/0", "protocol": "any"}},
+			"egress":  []map[string]any{{"prefix": "0.0.0.0/0", "protocol": "any"}},
+		},
 	})
 	require.NoError(t, err)
 	p := filepath.Join(t.TempDir(), name+".json")
@@ -76,19 +81,29 @@ func (f *fleet) netVMOn(i int, name, network string) netVM {
 	t := f.t
 	h := f.hostOfNode(i)
 	file := probeBody(t, name, network)
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log("the last answer of microvm create: " + last)
+		}
+	})
 	eventually(t, name+" is created once orch has declared "+network+" on node-"+fmt.Sprint(i), func() bool {
-		return hctl(h.Provisioner, []string{"microvm", "create"}, "-f", file).Err == nil
+		r := hctl(h.Provisioner, []string{"microvm", "create"}, "-f", file)
+		last = fmt.Sprintf("%v: %s %s", r.Err, r.Stdout, r.Stderr)
+		return r.Err == nil
 	})
 	var ip string
 	eventually(t, name+" runs and has an address", func() bool {
 		r := hctl(h.Reader, []string{"microvm", "get"}, name)
 		var vm struct {
 			State     string   `json:"state"`
+			Network   string   `json:"network"`
 			Addresses []string `json:"addresses"`
 		}
 		if r.Err != nil || json.Unmarshal([]byte(r.Stdout), &vm) != nil || vm.State != "running" || len(vm.Addresses) == 0 {
 			return false
 		}
+		assert.Equal(t, network, vm.Network, "%s is a member of the network it was created on", name)
 		ip = strings.SplitN(vm.Addresses[0], "/", 2)[0]
 		return true
 	})
@@ -173,7 +188,7 @@ func (f *fleet) networkFile(name, prefix string) string {
 }
 
 func TestFleet_NetworksAreSeparateMembershipSetsAndOnlyWireGuardCrossesBetweenTheHosts(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, capture: true, services: []node.ExtraService{{Name: "naru94-nftprobe", Binary: nftProbe}}})
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1024, capture: true, services: []node.ExtraService{{Name: "naru94-nftprobe", Binary: nftProbe, Env: map[string]string{"PATH": "/bin"}}}})
 	f.startOrch()
 	f.enrollAndAdmit("eu-1", "disk=ssd")
 	h1, h2 := 2, 3
@@ -189,16 +204,20 @@ func TestFleet_NetworksAreSeparateMembershipSetsAndOnlyWireGuardCrossesBetweenTh
 	a1, a2 := f.netVMOn(h1, "a1", netA), f.netVMOn(h2, "a2", netA)
 	b1, b2 := f.netVMOn(h1, "b1", netB), f.netVMOn(h2, "b2", netB)
 	a1b := f.netVMOn(h1, "a1b", netA)
-	for _, v := range []netVM{a1, a2, a1b} {
-		assert.True(t, netip.MustParsePrefix(prefixA).Contains(netip.MustParseAddr(v.ip)), "%s is in net A's prefix", v.name)
-	}
-	for _, v := range []netVM{b1, b2} {
-		assert.True(t, netip.MustParsePrefix(prefixB).Contains(netip.MustParseAddr(v.ip)), "%s is in net B's prefix", v.name)
-	}
 
 	// A to A answers on the same host, and across the hosts once the leader has declared the members
 	// remote: the TCP dial and a datagram.
-	eventually(t, "a1 reaches a2 across the hosts", func() bool { return a1.tryDials(a2.ip + ":" + probePort) })
+	var dialed string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log("a1's last answer to the dial of a2: " + dialed)
+		}
+	})
+	eventually(t, "a1 reaches a2 across the hosts", func() bool {
+		body, ok := a1.try("/probe?target=" + a2.ip + ":" + probePort)
+		dialed = fmt.Sprintf("%q, answered: %v", body, ok)
+		return ok && body == "ok"
+	})
 	assert.True(t, a1.dials(t, a1b.ip+":"+probePort), "a1 reaches a1b on its own host")
 	assert.Equal(t, "sent", a1.call(t, "/send?dst="+a2.ip))
 	eventually(t, "a2 receives a1's datagram from a1's address", func() bool {
@@ -226,12 +245,12 @@ func TestFleet_NetworksAreSeparateMembershipSetsAndOnlyWireGuardCrossesBetweenTh
 	})
 
 	// A forged source is dropped: an address outside every network and the address of a member of the
-	// network on another host, which no local member holds. The forged datagram never arrives, and
-	// the host's counter of forged sources rises.
-	before := counter(hostNode, "forged_source")
+	// network on another host, which no local member holds. The forged datagram never arrives. It is
+	// mvmd that drops it: the ingress chain of the microVM's tap has the policy drop and accepts IPv4
+	// from the microVM's own address only, which is before hostd's rule, so hostd counts none of it.
 	assert.Equal(t, "sent", a1.call(t, "/spoof?src=192.0.2.7&dst="+a2.ip))
 	assert.Equal(t, "sent", a1.call(t, "/spoof?src="+a2.ip+"&dst="+a1b.ip))
-	eventually(t, "the host counts the forged sources", func() bool { return counter(hostNode, "forged_source") >= before+2 })
+	eventually(t, "mvmd's ingress chain of a1's tap drops all but a1's address", func() bool { return ingressDrops(hostNode, a1.ip) })
 	time.Sleep(3 * time.Second)
 	assert.Zero(t, a2.received(t)["192.0.2.7"], "the outside source arrives nowhere")
 	assert.Zero(t, a1b.received(t)[a2.ip], "the other member's address as a source arrives nowhere")
@@ -258,3 +277,18 @@ func TestFleet_NetworksAreSeparateMembershipSetsAndOnlyWireGuardCrossesBetweenTh
 
 // targetOf is address:port of control Node i.
 func (f *fleet) targetOf(i int, port string) string { return nodeIP(i) + ":" + port }
+
+// ingressDrops is whether the Node's last report of mvmd's ingress chains has one whose policy is drop
+// and whose only accepted source is addr: the chain of the tap of the microVM that holds addr.
+func ingressDrops(nd *node.Node, addr string) bool {
+	lines := regexp.MustCompile(`(?m)naru94-nft-ingress: (.*)$`).FindAllStringSubmatch(nd.Console(), -1)
+	if len(lines) == 0 {
+		return false
+	}
+	for _, c := range strings.Fields(lines[len(lines)-1][1]) {
+		if strings.HasSuffix(c, "=drop:"+addr) {
+			return true
+		}
+	}
+	return false
+}

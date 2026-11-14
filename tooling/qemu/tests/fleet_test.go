@@ -8,14 +8,18 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -55,8 +59,17 @@ var (
 	keyProbe  = path.Join(fixture.GuestRoot, "bin/naru-keyprobe")
 )
 
+// defaultNodeMiB is the memory a Node needs to unpack the image's initramfs (Config.MemoryMiB).
+const defaultNodeMiB = 3072
+
 type fleetOpts struct {
 	controls, hosts int
+	// vmMiB is the memory the microVMs placed on one host may take at once, added to the default the host
+	// needs to boot.
+	vmMiB int
+	// vmCPUs is the virtual CPUs of a host, which orch's placement counts against the microVMs' CPUs;
+	// 0 is the Node's default of 2.
+	vmCPUs int
 	// capture records the shared network at every Node.
 	capture bool
 	// services are added to every Node.
@@ -80,7 +93,12 @@ type fleet struct {
 	// rootCert is the first root certificate, PEM, as the signer logged it; revPub the revocation key.
 	rootCert, revPub string
 	rootCertFile     string
-	caSHA            string
+	// orchCA is the orch authority's certificate, PEM, which signs orch's certificate and which the
+	// operator reads from the signer's GET /v1/ca; orchCAFile holds it and caSHA is its SHA-256.
+	orchCA, orchCAFile, caSHA string
+	// orchTrust is the authorities spec.orch.ca holds: the orch authority, which signs the members'
+	// certificates, the operator authority, which signs the callers', and the host authority, which signs the hosts'.
+	orchTrust        string
 	rootKey, rootCSR string
 }
 
@@ -159,7 +177,7 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 	c := start(t, node.ClusterSpec{
 		N: o.controls + o.hosts, Gaon: true, NodeAPI: true, Host: true, Hosts: f.hosts(), Capture: o.capture,
 		Disable: []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"},
-		Forward: forward, MemoryMiB: 2048, GenFlags: f.genFlags, ExtraServices: services,
+		Forward: forward, HostMemoryMiB: defaultNodeMiB + o.vmMiB, HostCPUs: o.vmCPUs, GenFlags: f.genFlags, ExtraServices: services,
 	})
 	f.c = c
 
@@ -174,8 +192,6 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 	f.rootCertFile = f.file("root.pem", f.rootCert)
 	block, _ := pem.Decode([]byte(f.rootCert))
 	require.NotNil(t, block, "root's certificate is PEM")
-	sum := sha256.Sum256(block.Bytes)
-	f.caSHA = hex.EncodeToString(sum[:])
 	cert, err := x509.ParseCertificate(block.Bytes)
 	require.NoError(t, err)
 	f.root = f.personOf("root", f.rootKey, f.rootCertFile, cert)
@@ -187,7 +203,42 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 		t.Cleanup(stop)
 		f.socks[i] = sock
 	}
+	f.readOrchCA()
 	return f
+}
+
+// readOrchCA reads the orch authority's certificate from the first signer, as GET /v1/ca answers it.
+func (f *fleet) readOrchCA() {
+	cl := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", f.socks[1])
+		},
+	}}
+	var auth struct {
+		Orch     []byte `json:"orch"`
+		Operator []byte `json:"operator"`
+		Host     []byte `json:"host"`
+	}
+	eventually(f.t, "the first signer answers GET /v1/ca", func() bool {
+		resp, err := cl.Get("http://signer/v1/ca")
+		if err != nil {
+			return false
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&auth) == nil && len(auth.Orch) > 0 && len(auth.Operator) > 0 && len(auth.Host) > 0
+	})
+	cert, err := x509.ParseCertificate(auth.Orch)
+	require.NoError(f.t, err, "the orch authority's certificate is DER")
+	operator, err := x509.ParseCertificate(auth.Operator)
+	require.NoError(f.t, err, "the operator authority's certificate is DER")
+	host, err := x509.ParseCertificate(auth.Host)
+	require.NoError(f.t, err, "the host authority's certificate is DER")
+	f.orchCA = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
+	f.orchTrust = f.orchCA + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operator.Raw})) +
+		string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: host.Raw}))
+	f.orchCAFile = f.file("orch-ca.pem", f.orchCA)
+	sum := sha256.Sum256(cert.Raw)
+	f.caSHA = hex.EncodeToString(sum[:])
 }
 
 func orchName(i int) string { return fmt.Sprintf("orch-%d", i) }
@@ -204,7 +255,15 @@ func (f *fleet) personOf(name, key, certFile string, cert *x509.Certificate) per
 func (f *fleet) genFlags(c node.Config) []string {
 	flags := []string{"--metrics-listen", node.HostNICAddress}
 	if c.Index > f.opts.controls {
-		return append(flags, "--host-management-prefix", managementPrefix, "--host-egress-interface", "eth0", "--host-tunnel-port", "51820")
+		flags = append(flags, "--host-management-prefix", managementPrefix, "--host-egress-interface", "eth0", "--host-tunnel-port", "51820")
+		// mvmd masquerades a Machine's traffic that leaves the Node, which the tunnel's peer refuses as a
+		// source it does not hold: another host's Machine prefix keeps the source address.
+		for _, h := range f.hosts() {
+			if h != c.Index {
+				flags = append(flags, "--no-masquerade", fmt.Sprintf("10.77.%d.0/24", h))
+			}
+		}
+		return flags
 	}
 	flags = append(flags, "--signer", "--signer-peer-listen", nodeIP(c.Index)+":"+signerPeerPort,
 		"--signer-peer-name", nodeIP(c.Index), "--signer-peer-name", fmt.Sprintf("node-%d", c.Index))
@@ -233,17 +292,21 @@ func (f *fleet) edit(i int, change func(file string) error) {
 var base64Token = regexp.MustCompile(`[A-Za-z0-9+/=]{40,}`)
 
 // joinKeyOn is the public join key a replica signer logged on its first boot: the longest base64
-// token of the console line that names a join key.
+// token of the console line that names a join key and of the line after it, where the key is printed.
 func joinKeyOn(console string) string {
+	lines := strings.Split(console, "\n")
 	best := ""
-	for _, line := range strings.Split(console, "\n") {
+	for i, line := range lines {
 		low := strings.ToLower(line)
 		if !strings.Contains(low, "join") || !strings.Contains(low, "key") {
 			continue
 		}
-		for _, tok := range base64Token.FindAllString(line, -1) {
-			if len(tok) > len(best) {
-				best = tok
+		// naru-signer join-key prints a line that names the key and the key on the line after it.
+		for _, l := range lines[i:min(i+2, len(lines))] {
+			for _, tok := range base64Token.FindAllString(l, -1) {
+				if len(tok) > len(best) {
+					best = tok
+				}
 			}
 		}
 	}
@@ -265,7 +328,7 @@ func (f *fleet) orchSpec(i int, members []int, state string, crt string) map[str
 	spec := map[string]any{
 		"name": orchName(i), "peerURL": "https://" + nodeIP(i) + ":" + orchPeerPort, "clientURL": "https://" + nodeIP(i) + ":" + orchClientPort,
 		"initialCluster": cluster, "initialClusterState": state, "listen": "0.0.0.0:" + orchPort,
-		"sans": []string{"127.0.0.1", nodeIP(i), node.HostNICAddress}, "certificate": crt + f.rootCert, "ca": f.rootCert,
+		"sans": []string{"127.0.0.1", nodeIP(i), node.HostNICAddress}, "certificate": crt + f.orchCA, "ca": f.orchTrust,
 		"revocationPublicKey": f.revPub, "recoveryPublicKey": string(recPub), "hostCA": string(hostCA),
 	}
 	if f.opts.orchExtra != nil {
@@ -295,13 +358,14 @@ func (f *fleet) issueOrch(i int) string {
 }
 
 // authorise has root authorise the signer of replica Node i from the join key its first boot logged,
-// and returns the authorisation text.
+// and returns the authorisation text. The host ID is the Node's metadata.name, "naru-" and the harness's
+// name, which `naru-signer join` presents and the bundle is sealed to.
 func (f *fleet) authorise(i int) string {
 	nd := f.node(i)
 	eventually(f.t, nd.Name+"'s signer logs its join key", func() bool { return joinKeyOn(nd.Console()) != "" })
 	jk := f.file(fmt.Sprintf("join-%d.key", i), joinKeyOn(nd.Console())+"\n")
 	out := filepath.Join(f.dir, fmt.Sprintf("authorisation-%d", i))
-	f.must(nrun("signer", "authorise-replica", "--admin", f.root.file, "--passphrase-file", f.pass, "--host-id", nd.Name, "--join-key", jk, "--out", out), "authorise "+nd.Name)
+	f.must(nrun("signer", "authorise-replica", "--admin", f.root.file, "--passphrase-file", f.pass, "--host-id", "naru-"+nd.Name, "--join-key", jk, "--out", out), "authorise "+nd.Name)
 	b, err := os.ReadFile(out)
 	require.NoError(f.t, err)
 	return string(b)
@@ -309,7 +373,7 @@ func (f *fleet) authorise(i int) string {
 
 // joinSigner is the patch that has the signer of replica Node i join the first one.
 func (f *fleet) joinSigner(file string, authorisation string) error {
-	return seed.Set(file, map[string]any{"peer": nodeIP(1) + ":" + signerPeerPort, "peerCA": f.rootCert, "authorisation": authorisation}, "spec", "signer", "replica", "join")
+	return seed.Set(file, map[string]any{"peer": nodeIP(1) + ":" + signerPeerPort, "peerCA": f.orchCA, "authorisation": authorisation}, "spec", "signer", "replica", "join")
 }
 
 // startOrch has the replica signers join the first signer, and starts orchd on every control Node as
@@ -334,9 +398,16 @@ func (f *fleet) startOrch() {
 			return seed.Set(file, f.orchSpec(i, members, "new", crt), "spec", "orch")
 		})
 	}
+	var last string
+	f.t.Cleanup(func() {
+		if f.t.Failed() {
+			f.t.Log("the last answer of orch: " + last)
+		}
+	})
 	eventually(f.t, "orch answers root on every control Node", func() bool {
 		for _, i := range members {
-			if f.orchAs(f.root, i, "host", "pending").Err != nil {
+			if r := f.orchAs(f.root, i, "host", "pending"); r.Err != nil {
+				last = fmt.Sprintf("control Node %d: %v: %s", i, r.Err, strings.TrimSpace(r.Stderr))
 				return false
 			}
 		}
@@ -395,7 +466,7 @@ func (f *fleet) enroll(i int, key string) string {
 	hostCA, err := os.ReadFile(f.c.HostCA)
 	require.NoError(f.t, err)
 	f.edit(i, func(file string) error {
-		if err := seed.SetFile(file, hostClientCA, strings.TrimSuffix(string(hostCA), "\n")+"\n"+f.rootCert); err != nil {
+		if err := seed.SetFile(file, hostClientCA, strings.TrimSuffix(string(hostCA), "\n")+"\n"+f.orchCA); err != nil {
 			return err
 		}
 		return seed.Set(file, map[string]any{"url": "https://" + nodeIP(1) + ":" + orchPort, "caSHA256": f.caSHA, "enrollKey": key}, "spec", "host", "orch")
@@ -460,7 +531,7 @@ func (f *fleet) orchURL(i int) string { return "https://" + f.forward(i, orchPor
 
 // orchAs runs naructl as the person against the orch of control Node i.
 func (f *fleet) orchAs(p person, i int, args ...string) result {
-	return nrun(append(append([]string{}, args...), "--orch-url", f.orchURL(i), "--orch-ca", f.rootCertFile, "--identity", p.file, "--passphrase-file", f.pass)...)
+	return nrun(append(append([]string{}, args...), "--orch-url", f.orchURL(i), "--orch-ca", f.orchCAFile, "--identity", p.file, "--passphrase-file", f.pass)...)
 }
 
 func (f *fleet) orch(args ...string) result { return f.orchAs(f.root, 1, args...) }

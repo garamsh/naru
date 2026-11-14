@@ -18,8 +18,9 @@ type parsed struct {
 	Spec struct {
 		Host     map[string]any `yaml:"host"`
 		Services []struct {
-			Name string   `yaml:"name"`
-			Args []string `yaml:"args"`
+			Name string            `yaml:"name"`
+			Args []string          `yaml:"args"`
+			Env  map[string]string `yaml:"env"`
 		} `yaml:"services"`
 		Files []struct {
 			Path    string `yaml:"path"`
@@ -57,6 +58,13 @@ func TestUserData_HostRunsNaruHostdWithAPairFromTheHostAuthorityAndNeverItsKey(t
 		names = append(names, s.Name)
 		if s.Name == "naru-hostd" {
 			assert.Contains(t, s.Args, "/run/naru-hostd/client-ca.crt")
+			assert.Equal(t, map[string]string{"PATH": "/bin"}, s.Env, "init passes no PATH of its own, and hostd runs nft")
+			j := slices.Index(s.Args, "--host-id")
+			require.GreaterOrEqual(t, j, 0, "naru-hostd would enroll under the kernel's hostname, which is (none)")
+			assert.Equal(t, n.Name, s.Args[j+1])
+			k := slices.Index(s.Args, "--advertise")
+			require.GreaterOrEqual(t, k, 0, "orch would call 0.0.0.0, which --listen names")
+			assert.Equal(t, n.Address.Addr().String()+":"+layout.HostPort, s.Args[k+1])
 			i := slices.Index(s.Args, "--machine-gateway")
 			require.GreaterOrEqual(t, i, 0, "naru-hostd is not told the gateway of the Machines' network")
 			assert.Equal(t, "10.200.1.1", s.Args[i+1], "the first address of the Machine prefix, which mvmd's own gateway is")

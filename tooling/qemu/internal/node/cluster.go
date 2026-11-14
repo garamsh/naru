@@ -85,6 +85,13 @@ type ClusterSpec struct {
 	// MemoryMiB, when not 0, is every Node's memory in place of the default (Config.MemoryMiB): a host
 	// that runs a Kubernetes Node as a microVM needs the microVM's memory and its own.
 	MemoryMiB int
+	// HostMemoryMiB, when not 0, is the memory of the Nodes that run naru-hostd in place of MemoryMiB:
+	// a fleet's control Nodes keep the default while a host adds its microVMs' memory to it.
+	HostMemoryMiB int
+	// HostCPUs, when not 0, is the virtual CPUs of the Nodes that run naru-hostd in place of the
+	// default (Config.CPUs): hostd offers its CPUs less those of the microVMs it runs to orch's
+	// placement, so a host that runs several microVMs needs their CPUs added to its own.
+	HostCPUs int
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
 	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
@@ -189,7 +196,15 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		c.Client, c.HostAddr, c.API = gen.client, "127.0.0.1:"+strconv.Itoa(gen.ports[1]), gen.api
 		c.Hosts, c.Forwards = gen.hostList, gen.forwarded
 		if len(gen.hostList) > 0 {
-			c.HostCA = filepath.Join(gen.caDir, "host", "ca.pem")
+			// The authority's directory goes when StartCluster returns; the certificate stays.
+			c.HostCA = filepath.Join(spec.Dir, "host-ca.pem")
+			ca, err := os.ReadFile(filepath.Join(gen.caDir, "host", "ca.pem"))
+			if err != nil {
+				return nil, fmt.Errorf("read the host authority's certificate: %w", err)
+			}
+			if err := os.WriteFile(c.HostCA, ca, 0o644); err != nil { //nolint:gosec // a certificate holds nothing secret
+				return nil, err
+			}
 		}
 		if h := gen.hosts[1]; h != nil {
 			c.Host = h.api
@@ -207,6 +222,12 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		name := fmt.Sprintf("node-%d", i)
 		cfg := Config{
 			Name: name, Index: i, Total: spec.N, ControlPlane: spec.controlPlane(i), Probe: i == spec.ProbeOn, Inputs: spec.Inputs, MemoryMiB: spec.MemoryMiB,
+		}
+		if spec.HostMemoryMiB > 0 && spec.isHost(i) {
+			cfg.MemoryMiB = spec.HostMemoryMiB
+		}
+		if spec.HostCPUs > 0 && spec.isHost(i) {
+			cfg.CPUs = spec.HostCPUs
 		}
 		if !spec.Gaon {
 			ca, err := os.ReadFile(filepath.Join(spec.Inputs.Dir, "registry", "ca.pem"))
@@ -252,6 +273,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 type ExtraService struct {
 	Name, Binary string
 	Args         []string
+	Env          map[string]string
 }
 
 // controlPlane reports whether Node i is a control-plane Node.
@@ -460,6 +482,9 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 		svc := map[string]any{"name": e.Name, "binary": e.Binary}
 		if len(e.Args) > 0 {
 			svc["args"] = e.Args
+		}
+		if len(e.Env) > 0 {
+			svc["env"] = e.Env
 		}
 		if err := appendService(a.Out, svc); err != nil {
 			return nil, nil, err

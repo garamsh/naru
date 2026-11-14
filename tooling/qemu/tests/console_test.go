@@ -29,7 +29,7 @@ func (f *fleet) startConsole() (*http.Client, string) {
 	addr := l.Addr().String()
 	require.NoError(t, l.Close())
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, tool.Bin, "console", "--listen", addr, "--orch-url", f.orchURL(1), "--orch-ca", f.rootCertFile,
+	cmd := exec.CommandContext(ctx, tool.Bin, "console", "--listen", addr, "--orch-url", f.orchURL(1), "--orch-ca", f.orchCAFile,
 		"--identity", f.root.file, "--passphrase-file", f.pass)
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { cancel(); _ = cmd.Wait() })
@@ -57,7 +57,7 @@ func page(t *testing.T, cl *http.Client, base, path string) string {
 var csrfField = regexp.MustCompile(`name="csrf"[^>]*value="([^"]+)"|value="([^"]+)"[^>]*name="csrf"`)
 
 func TestFleet_ConsoleListsHostsMicroVMsGroupsAndEventsAndAdmitsAPendingHost(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 1, hosts: 2})
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 512})
 	f.startOrch()
 	first, second := f.hosts()[0], f.hosts()[1]
 	key := f.enrollmentKey()

@@ -65,6 +65,8 @@ type Config struct {
 	// MemoryMiB is the Node's memory; 0 is 3072. A Kubernetes Node's initramfs holds the control-plane
 	// programs, so it asks for more (ADR 0031).
 	MemoryMiB int
+	// CPUs is the Node's virtual CPUs; 0 is 2.
+	CPUs int
 	// Routes is the Node's spec.network.routes.
 	Routes []Route
 	// NoMasquerade is mvmd's network.no_masquerade: the prefixes whose traffic from a Machine keeps
