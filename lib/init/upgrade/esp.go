@@ -13,7 +13,7 @@ import (
 )
 
 // ESPGUID is the fixed partition GUID of the EFI system partition of the image's disk
-// (image/disk/disk.env, ADR 0020). The partition is found by it, not by a device name.
+// (image/host/disk/disk.env, ADR 0020). The partition is found by it, not by a device name.
 const ESPGUID = "cb4162e7-9d1e-48df-b937-f5792071b950"
 
 // The files of the two kernel slots, relative to the ESP's mount, and the trial slot's path as the

@@ -17,7 +17,7 @@ import (
 
 func sum(c string) string { return strings.Repeat(c, 64) }
 
-// guestFiles is a manifest as image/guest/build.sh writes it, for the one kernel naru builds.
+// guestFiles is a manifest as image/host/guest/build.sh writes it, for the one kernel naru builds.
 var guestFiles = guest.Manifest{
 	Kernels:         map[string]guest.File{"naru": {Path: "/usr/lib/naru/guest/kernels/naru/vmlinux", SHA256: sum("k")}},
 	DefaultKernel:   "naru",
@@ -156,7 +156,7 @@ func TestMvmdJSON_NamesTheMkfsExt4TheInitramfsInstallsAndNotOneOnTheDataDisk(t *
 	mkfs := m["disk"].(map[string]any)["mkfs"].(string)
 	assert.Equal(t, "/bin/mkfs.ext4", mkfs)
 	assert.False(t, strings.HasPrefix(mkfs, DataMount), "the data disk carries no mkfs")
-	list, err := os.ReadFile("../../../../image/initramfs/initramfs.list")
+	list, err := os.ReadFile("../../../../image/host/initramfs/initramfs.list")
 	require.NoError(t, err)
 	assert.Regexp(t, `(?m)^file `+regexp.QuoteMeta(mkfs)+` @OUT@/mkfs\.ext4 0755 `, string(list))
 }

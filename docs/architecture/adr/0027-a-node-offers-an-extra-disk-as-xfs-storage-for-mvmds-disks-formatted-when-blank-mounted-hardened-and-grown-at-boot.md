@@ -53,3 +53,7 @@ Drafted for garamsh/naru#66, part of garamsh/naru#62 (E5) and garamsh/aurora#749
 - A disk's growth under a running Node is needed without a reboot: growth moves to a live action of the apply engine, and the class of `spec.storage` is reconsidered.
 - A form other than XFS is needed (a thin-provisioned device-mapper layout, a raw device): `form` takes it, and this decision's single accepted value is what changes.
 - A failure to prepare a disk is regularly missed in the log and costs a Node's Machines their disks: the failure refuses the boot, as the data disk's does.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/xfsprogs/` is `image/common/xfsprogs/`.

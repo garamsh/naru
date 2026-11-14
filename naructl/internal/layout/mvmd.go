@@ -15,7 +15,7 @@ type File struct {
 	SHA256 string `json:"sha256"`
 }
 
-// Manifest is guest.json, which image/guest/build.sh writes and the release carries as
+// Manifest is guest.json, which image/host/guest/build.sh writes and the release carries as
 // naru-guest-<version>.json (ADR 0010): the guest kernels and initrds a Node boots Machines from.
 type Manifest struct {
 	Kernels         map[string]File `json:"kernels"`

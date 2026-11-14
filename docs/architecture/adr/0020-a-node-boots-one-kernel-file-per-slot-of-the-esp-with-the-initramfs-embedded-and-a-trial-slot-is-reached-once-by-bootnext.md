@@ -46,3 +46,7 @@ Drafted for garamsh/naru#56. It supersedes item 1 of [ADR 0007](./0007-the-proxm
 - A vfat rename within a directory is found not to be atomic on a power cut, so a Node cannot boot after promotion.
 - The embedded initramfs's size makes a slot too large for the ESP the release can afford, or the extra link step makes `make image` too slow.
 - A real need for a per-slot command line or an initrd that is not the system.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/initramfs/initramfs.list` is `image/host/initramfs/initramfs.list` and `image/kernel/embed.sh` is `image/host/kernel/embed.sh`.

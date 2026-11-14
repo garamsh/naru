@@ -105,7 +105,7 @@ jobs:
       # on the runner; it installs the channel, components and targets the file names, in the
       # directory of each Rust workspace the guest inputs build.
       - name: Fetch the pinned sources
-        run: image/mvmd-checkout.sh build/initramfs/mvmd
+        run: image/host/mvmd/checkout.sh build/initramfs/mvmd
 
       - name: Install the Rust toolchain mvmd names
         run: |

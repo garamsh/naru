@@ -40,3 +40,7 @@ Drafted for garamsh/naru#15. It stands beside [ADR 0004](./0004-p0-boots-a-host-
 - The FAT writer is found to produce a volume a firmware or `fsck.fat` rejects, or grows past what a two-file volume needs; mtools or a vetted module would replace it.
 - A tool of the disk build gives different bytes on another host, so `make image-repro` fails for the disk and not for the kernel.
 - The built-in command line needs a per-Node value, so it is edited more often than the kernel is rebuilt.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/disk/disk.env` is `image/host/disk/disk.env` and `image/kernel/pin.env` is `image/common/kernel/pin.env`.
