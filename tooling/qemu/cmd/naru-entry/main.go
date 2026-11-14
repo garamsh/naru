@@ -7,6 +7,8 @@
 //	naru-entry serve <address>       answer every HTTP request with a line, and print each peer
 //	naru-entry probe <address>       serve, and act from inside the microVM for the network tests (probe.go)
 //	naru-entry dial <url>...         fetch each URL until it answers, print one line per URL, and stay running
+//	naru-entry idle                  print one line and stay running: the command of the sandbox image
+//	                                 (fixture.WriteRegistry), which a Pod's sandbox container runs
 package main
 
 import (
