@@ -7,6 +7,7 @@ What naru's authorities and their callers agree on, in pure Go with the standard
 - `PairingCode`: 40 bits of the SHA-256 of a public key's DER, `XXXX-XXXX`.
 - The admission statement an operator signs for a host: `SignAdmission`, `VerifyAdmission`.
 - The person file and the recovery key file, each encrypted by a passphrase (scrypt N=2^15, r=8, p=1; AES-256-GCM): `EncryptPerson`, `DecryptPerson`, `GenerateRecovery`, `DecryptRecovery`.
+- The signed request a caller sends the signer, and the wire types the signer and naructl share: `SignRequest`, `VerifyRequest` (the action, an expiry and a body, signed with the caller's key and certificate).
 - The sealed box, X25519 with HKDF-SHA256 and AES-256-GCM: `Seal`, `Open`.
 
 Linked by `host` (the signer) and `naructl`, and by every unit that checks a caller's role.

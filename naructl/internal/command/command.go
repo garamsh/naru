@@ -17,6 +17,8 @@ import (
 
 const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-ca|host-client> [flags]
        naructl <version|services|logs|get config|apply|reboot|upgrade> --config <client file> [--node <ip[:port]>] [flags]
+       naructl operator <add|revoke> --admin <person file> --passphrase-file <file> --socket <path> [flags]
+                                                     issue or revoke an operator through naru-signer (naructl operator -h)
        naructl topology [kubernetes]                 print the services a Node runs, and which signs, as JSON
        naructl console --orch <url> --identity <person file> --passphrase-file <file> [--listen 127.0.0.1:8484] [--ca <file>]
               serve a web console on this workstation; it signs admissions with your key, which stays in this process
@@ -94,6 +96,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			return consoleCmd(args[1:], stdout, stderr)
 		case "microvm":
 			return microvm(args[1:], stdout, stderr)
+		case "operator":
+			return operatorCmd(args[1:], stdout, stderr)
 		case "get":
 			if len(args) > 1 && args[1] == "config" {
 				return getConfig(args[2:], stdout, stderr)
