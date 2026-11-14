@@ -1,0 +1,16 @@
+{{define "content"}}
+<p>A host prints its pairing code on its console. Type that code to admit the host: it is checked against the key orch holds for the host, and the admission is signed in this process with your key.</p>
+{{$p := .}}
+{{range .Pending}}
+<form method="post" action="/pending/admit" class="admit" autocomplete="off">
+<input type="hidden" name="csrf" value="{{$p.CSRF}}">
+<input type="hidden" name="host" value="{{.HostID}}">
+<h2>{{.HostID}}</h2>
+<p>Enrolled {{.FirstSeen.Format "2006-01-02 15:04:05 MST"}}. Pairing code in orch: <code>{{.Code}}</code></p>
+<label>Pairing code from the host's console <input name="code" required pattern="[A-Za-z0-9 -]{8,9}" maxlength="9" placeholder="XXXX-XXXX" data-code></label>
+<label>Region <input name="region" required value="{{$p.Region}}"></label>
+<label>Labels, key=value, one per line <textarea name="labels" rows="3">{{$p.Labels}}</textarea></label>
+<button type="submit">Admit</button>
+</form>
+{{else}}<p>No pending hosts.</p>{{end}}
+{{end}}

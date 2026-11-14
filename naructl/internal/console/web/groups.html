@@ -1,0 +1,11 @@
+{{define "content"}}
+{{if .NoFleet}}<p>orch does not serve groups yet.</p>{{else}}
+<table>
+<thead><tr><th>Group</th><th>Ready</th><th>Count</th><th>Stateful</th></tr></thead>
+<tbody>
+{{range .Groups}}<tr><td>{{.Name}}</td><td>{{.Ready}}</td><td>{{.Count}}</td><td>{{if .Stateful}}yes{{else}}no{{end}}</td></tr>
+{{else}}<tr><td colspan="4">No groups.</td></tr>{{end}}
+</tbody>
+</table>
+{{end}}
+{{end}}

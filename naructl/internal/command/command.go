@@ -18,6 +18,8 @@ import (
 const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-ca|host-client> [flags]
        naructl <version|services|logs|get config|apply|reboot|upgrade> --config <client file> [--node <ip[:port]>] [flags]
        naructl topology [kubernetes]                 print the services a Node runs, and which signs, as JSON
+       naructl console --orch <url> --identity <person file> --passphrase-file <file> [--listen 127.0.0.1:8484] [--ca <file>]
+              serve a web console on this workstation; it signs admissions with your key, which stays in this process
 
   gen api-ca  --ca-dir <dir>                    write the Node API authority, <dir>/api/ca.pem and ca.key
   gen api-client --ca-dir <dir> --role admin|reader --endpoint <ip[:port]> --out <file>
@@ -88,6 +90,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			return upgradeCmd(args[1:], stdout, stderr)
 		case "host":
 			return hostCmd(args[1:], stdout, stderr)
+		case "console":
+			return consoleCmd(args[1:], stdout, stderr)
 		case "microvm":
 			return microvm(args[1:], stdout, stderr)
 		case "get":
