@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
@@ -35,16 +36,25 @@ const upgradeTimeout = 6 * time.Minute
 const storeFile = node.DataMount + "/config/store.yaml"
 
 // startUpgradeNode boots a one-Node cluster that runs gaon, with the Node API, on a copy of the boot
-// disk with its ESP writable. It returns the Node and the admin's client file once the Node answers.
+// disk of the build with its ESP writable, with the user-data of the naructl of the checkout. It
+// returns the Node and the admin's client file once the Node answers.
 func startUpgradeNode(t *testing.T) (*node.Node, string) {
+	t.Helper()
+	return startUpgradeNodeOn(t, tool, inputs, copyBootDisk(t))
+}
+
+// startUpgradeNodeOn is startUpgradeNode for the naructl bin, which writes the authorities, the
+// admin's client and the user-data, the inputs the data disk carries, and the boot disk to boot,
+// which the Node writes to.
+func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, disk string) (*node.Node, string) {
 	t.Helper()
 	dir := t.TempDir()
 	caDir := filepath.Join(dir, "ca")
 	apiPort, hostPort := freeLoopbackPort(t), freeLoopbackPort(t)
 	admin := filepath.Join(dir, "admin.yaml")
-	require.NoError(t, tool.GenCA(caDir))
-	require.NoError(t, tool.GenAPICA(caDir))
-	require.NoError(t, tool.GenAPIClient(caDir, "admin", "127.0.0.1:"+strconv.Itoa(apiPort), admin))
+	require.NoError(t, bin.GenCA(caDir))
+	require.NoError(t, bin.GenAPICA(caDir))
+	require.NoError(t, bin.GenAPIClient(caDir, "admin", "127.0.0.1:"+strconv.Itoa(apiPort), admin))
 	guest := filepath.Join(dir, "guest.json")
 	manifest, err := json.Marshal(inputs.Guest)
 	require.NoError(t, err)
@@ -62,7 +72,7 @@ func startUpgradeNode(t *testing.T) (*node.Node, string) {
 		ServingAddresses: []string{"127.0.0.1"}, ExtraNIC: cfg.HostMAC() + "=" + node.HostNICPrefix, Binaries: map[string]string{},
 		Out: filepath.Join(nodeDir, "naru.yaml"), NetworkConfig: filepath.Join(nodeDir, "network-config"),
 	}
-	require.NoError(t, tool.GenNode(gen))
+	require.NoError(t, bin.GenNode(gen))
 	userData, err := os.ReadFile(gen.Out)
 	require.NoError(t, err)
 	networkConfig, err := os.ReadFile(gen.NetworkConfig)
@@ -70,7 +80,7 @@ func startUpgradeNode(t *testing.T) (*node.Node, string) {
 	require.NoError(t, os.RemoveAll(caDir), "the authorities' keys are not kept")
 
 	nd, err := node.Start(node.Spec{
-		Config: cfg, Disk: copyBootDisk(t), WritableDisk: true, Dir: nodeDir,
+		Config: cfg, Disk: disk, WritableDisk: true, Dir: nodeDir,
 		Mcast: fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000)), NaruYAML: userData, NetworkConfig: networkConfig, //nolint:gosec // a port, not a secret
 	})
 	require.NoError(t, err)
@@ -78,7 +88,7 @@ func startUpgradeNode(t *testing.T) (*node.Node, string) {
 		nd.Stop()
 		t.Logf("console of %s:\n%s", nd.Name, nd.Console())
 	})
-	eventually(t, "the Node API answers an admin", func() bool { return ctl(admin, "version").Err == nil })
+	eventually(t, "the Node API answers an admin", func() bool { return ctlWith(bin, admin, "version").Err == nil })
 	return nd, admin
 }
 
@@ -100,8 +110,8 @@ func bundleFor(t *testing.T, kind, version string) (bundle, sums string) {
 // upgradeState is what `naructl upgrade --status` prints.
 type upgradeState struct{ Version, BootID, Slot, Outcome, Reason string }
 
-func statusOf(admin string) (upgradeState, error) {
-	r := ctl(admin, "upgrade", "--status")
+func statusOf(bin naructl.Tool, admin string) (upgradeState, error) {
+	r := ctlWith(bin, admin, "upgrade", "--status")
 	if r.Err != nil {
 		return upgradeState{}, r.Err
 	}
@@ -159,7 +169,7 @@ func TestNode_UpgradeReplacesTheKernelOfARunningNodeAndKeepsItWhenItIsHealthyWit
 	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
 	next := want + "-next"
 	nd, admin := startUpgradeNode(t)
-	before, err := statusOf(admin)
+	before, err := statusOf(tool, admin)
 	require.NoError(t, err)
 	require.Equal(t, want, before.Version)
 	require.Equal(t, "default", before.Slot)
@@ -174,10 +184,10 @@ func TestNode_UpgradeReplacesTheKernelOfARunningNodeAndKeepsItWhenItIsHealthyWit
 	require.NoError(t, r.Err, r.refusal())
 	assert.Contains(t, r.Stdout, "the Node accepted the upgrade")
 	awaitRestarting(t, nd, "the Node runs the upgraded kernel and has promoted it", func() bool {
-		s, err := statusOf(admin)
+		s, err := statusOf(tool, admin)
 		return err == nil && s.Version == next && s.Slot == "default" && strings.Contains(s.Outcome, "promoted")
 	})
-	after, err := statusOf(admin)
+	after, err := statusOf(tool, admin)
 	require.NoError(t, err)
 	assert.Equal(t, next, after.Version, "the version changed")
 	status := documentOf(t, admin).Status
@@ -193,7 +203,7 @@ func TestNode_UpgradeReplacesTheKernelOfARunningNodeAndKeepsItWhenItIsHealthyWit
 	// Promotion is the rename of the slot: a power cycle boots the new kernel from the default slot.
 	require.NoError(t, nd.Reboot())
 	awaitRestarting(t, nd, "the new kernel boots from the default slot", func() bool {
-		s, err := statusOf(admin)
+		s, err := statusOf(tool, admin)
 		return err == nil && s.Version == next && s.Slot == "default" && s.BootID != after.BootID
 	})
 	assert.NotContains(t, nd.Console(), "upgrade rolled back")
@@ -204,7 +214,7 @@ func TestNode_UpgradeToAKernelThatRefusesIsRolledBackByTheNodeToTheVersionBefore
 	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
 	refusing := want + "-refuse"
 	nd, admin := startUpgradeNode(t)
-	before, err := statusOf(admin)
+	before, err := statusOf(tool, admin)
 	require.NoError(t, err)
 	require.Equal(t, want, before.Version)
 	require.NoError(t, ctl(admin, "apply", "-f", patchFile(t, idle("1m"))).Err)
@@ -217,10 +227,10 @@ func TestNode_UpgradeToAKernelThatRefusesIsRolledBackByTheNodeToTheVersionBefore
 	// Nothing is done to the Node from here: the trial kernel cannot read its configuration, init
 	// gives up on it and reboots, and the default slot boots again.
 	awaitRestarting(t, nd, "the Node is back on its old version and says the upgrade rolled back", func() bool {
-		s, err := statusOf(admin)
+		s, err := statusOf(tool, admin)
 		return err == nil && strings.Contains(s.Outcome, "rolled back")
 	})
-	after, err := statusOf(admin)
+	after, err := statusOf(tool, admin)
 	require.NoError(t, err)
 	assert.Equal(t, want, after.Version, "the Node runs the version before")
 	assert.Equal(t, "default", after.Slot)

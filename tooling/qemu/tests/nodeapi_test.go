@@ -21,6 +21,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
+	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
@@ -42,14 +43,17 @@ func nodeAPI(t *testing.T) *node.Cluster {
 
 // ctl runs the naructl of the checkout as the client file names, as an operator does: its first
 // argument is the command, and the rest follow --config.
-func ctl(file string, args ...string) (r result) {
+func ctl(file string, args ...string) result { return ctlWith(tool, file, args...) }
+
+// ctlWith is ctl for the naructl bin: the one an operator who installed a release has.
+func ctlWith(bin naructl.Tool, file string, args ...string) (r result) {
 	// `get config` and `extension add` are two words, and the flags follow both.
 	n := 1
 	if args[0] == "get" || args[0] == "extension" {
 		n = 2
 	}
 	cmd := append(append(append([]string{}, args[:n]...), "--config", file), args[n:]...)
-	res := tool.Run(cmd...)
+	res := bin.Run(cmd...)
 	return result{Stdout: res.Stdout, Stderr: res.Stderr, Err: res.Err}
 }
 
