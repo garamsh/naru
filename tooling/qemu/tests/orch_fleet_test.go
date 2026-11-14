@@ -295,7 +295,7 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 	bundle := filepath.Join(f.dir, "signer.bundle")
 	f.must(nrun("signer", "bundle", "--admin", f.root.file, "--passphrase-file", f.pass, "--socket", f.socks[1], "--out", bundle), "signer bundle")
 	f.must(f.orch("orch", "backup"), "orch backup")
-	snap := f.snapshot(1)
+	snap := f.snapshot(1) // GET /v1/snapshots/latest, root only, the sealed bytes
 
 	// Every control host loses its disk. The recovery key and its passphrase go to the first one as
 	// files, for the signer's restore, which reads them on the signer's host.
@@ -326,11 +326,13 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 		return seed.Set(file, spec, "spec", "orch")
 	})
 	eventually(t, "the empty orch takes the snapshot", func() bool {
-		return nrun("orch", "restore", "--in", snap, "--recovery-key", f.rec.key, "--passphrase-file", f.pass,
+		return nrun("orch", "restore", "--snapshot", snap, "--recovery-key", f.rec.key, "--passphrase-file", f.pass,
 			"--push", "https://"+f.forward(1, orchPort), "--orch-ca", f.rootCertFile, "--admin", f.root.file).Err == nil
 	})
 
-	// The other two join as new members, their signers as replicas of the restored one.
+	// The other two join as new members, their signers as replicas of the restored one: spec.orch.join
+	// is a running member's client URL, which init passes as --join with the state "existing", and each
+	// member adds itself to the cluster.
 	auth := map[int]string{}
 	for _, i := range f.controls()[1:] {
 		auth[i] = f.authorise(i)
@@ -341,7 +343,9 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 			if err := f.joinSigner(file, auth[i]); err != nil {
 				return err
 			}
-			return seed.Set(file, f.orchSpec(i, f.controls(), "existing", crt), "spec", "orch")
+			spec := f.orchSpec(i, f.controls(), "existing", crt)
+			spec["join"] = "https://" + nodeIP(1) + ":" + orchClientPort
+			return seed.Set(file, spec, "spec", "orch")
 		})
 	}
 	for _, i := range f.controls() {

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
@@ -31,6 +33,11 @@ type Cluster struct {
 	Members []*orchd.Orchd
 	Log     *slog.Logger
 	dir     string
+	opts    Options
+	// clientURLs are the members' etcd client URLs, by index.
+	clientURLs []string
+	cfgs       []orchd.Config
+	deps       []orchd.Deps
 }
 
 // Options tunes a cluster.
@@ -56,6 +63,12 @@ type Options struct {
 	// sync the list every CRLSyncInterval.
 	CRLPeers        []crlsync.Peer
 	CRLSyncInterval time.Duration
+	// Restore starts one member with --restore and an empty data directory, which waits for a
+	// restore; AddMember then grows the cluster.
+	Restore bool
+	// Metrics is the registry every member registers its request counter on, so it is for a
+	// one-member cluster: a second member would register the same counter again.
+	Metrics prometheus.Registerer
 }
 
 func freePorts(t testing.TB, n int) []int {
@@ -82,6 +95,9 @@ func Start(t testing.TB, o Options) *Cluster {
 	if o.Members == 0 {
 		o.Members = 3
 	}
+	if o.Restore {
+		o.Members = 1
+	}
 	if o.LeaderTTL == 0 {
 		o.LeaderTTL = 3 * time.Second
 	}
@@ -98,7 +114,7 @@ func Start(t testing.TB, o Options) *Cluster {
 	if ca == nil {
 		ca = NewCA(t)
 	}
-	c := &Cluster{CA: ca, Signer: &Signer{CA: ca}, Clock: NewClock(), Log: o.Log, dir: t.TempDir()}
+	c := &Cluster{CA: ca, Signer: &Signer{CA: ca}, Clock: NewClock(), Log: o.Log, dir: t.TempDir(), opts: o}
 
 	ports := freePorts(t, 2*o.Members)
 	var initial []string
@@ -111,24 +127,10 @@ func Start(t testing.TB, o Options) *Cluster {
 	}
 	results := make(chan result, o.Members)
 	for i := range o.Members {
-		name := fmt.Sprintf("m%d", i)
-		dir := filepath.Join(c.dir, name)
-		files := ca.IssueFiles(t, c.dir, name)
-		cfg := orchd.Config{
-			Config: member.Config{
-				Name: name, DataDir: filepath.Join(dir, "etcd"),
-				PeerURL:        fmt.Sprintf("https://127.0.0.1:%d", ports[2*i]),
-				ClientURL:      fmt.Sprintf("https://127.0.0.1:%d", ports[2*i+1]),
-				InitialCluster: strings.Join(initial, ","), State: member.StateNew,
-				Cert: files.Cert, Key: files.Key, CA: files.CA,
-			},
-			Listen: "127.0.0.1:0", ClientCA: files.CA, SnapshotDir: filepath.Join(dir, "snapshots"),
-			LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval, GroupInterval: o.GroupInterval, NetworkInterval: o.NetworkInterval,
-		}
-		deps := orchd.Deps{Signer: c.Signer, Auth: &auth.Revocations{Source: c.Signer, Key: ca.RevocationKey(), Now: time.Now, Log: o.Log}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, Clock: c.Clock, Log: o.Log.With("member", name)}
-		if i < len(o.CRLPeers) {
-			deps.CRLPeer, deps.RevocationKey = o.CRLPeers[i], ca.RevocationKey()
-		}
+		cfg, deps := c.member(t, i, ports[2*i], ports[2*i+1])
+		cfg.InitialCluster, cfg.State, cfg.Restore = strings.Join(initial, ","), member.StateNew, o.Restore
+		c.clientURLs = append(c.clientURLs, cfg.ClientURL)
+		c.cfgs, c.deps = append(c.cfgs, cfg), append(c.deps, deps)
 		go func() {
 			m, err := orchd.Start(context.Background(), cfg, deps)
 			results <- result{m, err}
@@ -148,6 +150,64 @@ func Start(t testing.TB, o Options) *Cluster {
 		}
 	})
 	return c
+}
+
+// member is member i's configuration and parts; the cluster it starts in is left to the caller.
+func (c *Cluster) member(t testing.TB, i, peerPort, clientPort int) (orchd.Config, orchd.Deps) {
+	t.Helper()
+	o, name := c.opts, fmt.Sprintf("m%d", i)
+	dir := filepath.Join(c.dir, name)
+	files := c.CA.IssueFiles(t, c.dir, name)
+	cfg := orchd.Config{
+		Config: member.Config{
+			Name: name, DataDir: filepath.Join(dir, "etcd"),
+			PeerURL:   fmt.Sprintf("https://127.0.0.1:%d", peerPort),
+			ClientURL: fmt.Sprintf("https://127.0.0.1:%d", clientPort),
+			Cert:      files.Cert, Key: files.Key, CA: files.CA,
+		},
+		Listen: "127.0.0.1:0", ClientCA: files.CA, SnapshotDir: filepath.Join(dir, "snapshots"),
+		LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval, GroupInterval: o.GroupInterval, NetworkInterval: o.NetworkInterval,
+	}
+	deps := orchd.Deps{Signer: c.Signer, Auth: &auth.Revocations{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name)}
+	if i < len(o.CRLPeers) {
+		deps.CRLPeer, deps.RevocationKey = o.CRLPeers[i], c.CA.RevocationKey()
+	}
+	return cfg, deps
+}
+
+// AddMember starts a member that joins the running cluster through member 0, as naru-orchd does
+// with --initial-cluster-state existing and --join, and returns its index once it has a quorum.
+func (c *Cluster) AddMember(t testing.TB) int {
+	t.Helper()
+	i := len(c.Members)
+	ports := freePorts(t, 2)
+	cfg, deps := c.member(t, i, ports[0], ports[1])
+	cfg.State, cfg.Join = member.StateExisting, c.clientURLs[0]
+	m, err := orchd.Start(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	c.Members = append(c.Members, m)
+	c.clientURLs = append(c.clientURLs, cfg.ClientURL)
+	c.cfgs, c.deps = append(c.cfgs, cfg), append(c.deps, deps)
+	return i
+}
+
+// RestartRestoring stops member i and starts it again on the same data directory with --restore,
+// and returns it. Only a one-member cluster restarts alone.
+func (c *Cluster) RestartRestoring(t testing.TB, i int) *orchd.Orchd {
+	t.Helper()
+	if err := c.Members[i].Stop(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := c.cfgs[i]
+	cfg.Restore = true
+	m, err := orchd.Start(context.Background(), cfg, c.deps[i])
+	if err != nil {
+		t.Fatalf("restart member: %v", err)
+	}
+	c.Members[i] = m
+	return m
 }
 
 // Client returns a client of member i's API that presents id, or no certificate when id is nil.

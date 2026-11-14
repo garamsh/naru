@@ -34,7 +34,7 @@ type fakeSigner struct {
 
 func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 	t.Helper()
-	f := &fakeSigner{socket: filepath.Join(t.TempDir(), "s.sock"), roots: roots, got: map[string]json.RawMessage{}, who: map[string]identity.Identity{}, status: http.StatusOK}
+	f := &fakeSigner{socket: shortSocketPath(t), roots: roots, got: map[string]json.RawMessage{}, who: map[string]identity.Identity{}, status: http.StatusOK}
 	l, err := net.Listen("unix", f.socket)
 	require.NoError(t, err)
 	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/revoke": identity.ActionRevoke}

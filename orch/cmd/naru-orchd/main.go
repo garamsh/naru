@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
 	"github.com/garamsh/naru/orch/internal/groups"
@@ -38,6 +40,8 @@ func main() {
 		clientURL   = flag.String("client-url", "", "https URL this member's etcd serves clients on")
 		initial     = flag.String("initial-cluster", "", "name=peer-url,... of the members of a new cluster")
 		state       = flag.String("initial-cluster-state", member.StateNew, "new, or existing when this member joins a cluster")
+		join        = flag.String("join", "", "client URL of a running member: with --initial-cluster-state existing, this member adds itself to that cluster and takes --initial-cluster from it")
+		restore     = flag.Bool("restore", false, "with no etcd member in --data-dir, serve only PUT /v1/restore and start etcd on the snapshot it receives")
 		listen      = flag.String("listen", "0.0.0.0:7500", "address of the HTTPS API")
 		certFile    = flag.String("cert", "/var/lib/naru/orch/tls/orch.crt", "orch's certificate, followed by the authority's")
 		keyFile     = flag.String("key", "/var/lib/naru/orch/tls/orch.key", "orch's key")
@@ -61,7 +65,7 @@ func main() {
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if err := run(log, runFlags{
-		name: *name, dataDir: *dataDir, peerURL: *peerURL, clientURL: *clientURL, initial: *initial, state: *state,
+		name: *name, dataDir: *dataDir, peerURL: *peerURL, clientURL: *clientURL, initial: *initial, state: *state, join: *join, restore: *restore,
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sans: *sans, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
 		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, metricsAddr: *metricsAddr,
@@ -78,10 +82,16 @@ type runFlags struct {
 	hostCert, hostKey, hostCA                                 string
 	snapKeep                                                  int
 	metricsAddr                                               string
+	join                                                      string
+	restore                                                   bool
 }
 
 func run(log *slog.Logger, f runFlags) error {
-	for flagName, v := range map[string]string{"name": f.name, "peer-url": f.peerURL, "client-url": f.clientURL, "initial-cluster": f.initial} {
+	required := map[string]string{"name": f.name, "peer-url": f.peerURL, "client-url": f.clientURL}
+	if f.join == "" {
+		required["initial-cluster"] = f.initial
+	}
+	for flagName, v := range required {
 		if v == "" {
 			return fmt.Errorf("--%s is required", flagName)
 		}
@@ -106,15 +116,21 @@ func run(log *slog.Logger, f runFlags) error {
 	if err != nil {
 		return err
 	}
+	var reg *prometheus.Registry
+	var registerer prometheus.Registerer
+	if f.metricsAddr != "" {
+		reg = newRegistry(f.name)
+		registerer = reg
+	}
 	o, err := orchd.Start(ctx, orchd.Config{
 		Config: member.Config{
 			Name: f.name, DataDir: f.dataDir, PeerURL: f.peerURL, ClientURL: f.clientURL,
-			InitialCluster: f.initial, State: f.state, Cert: f.cert, Key: f.key, CA: f.ca,
+			InitialCluster: f.initial, State: f.state, Join: f.join, Cert: f.cert, Key: f.key, CA: f.ca,
 		},
 		Listen: f.listen, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
-		GroupInterval: f.groupEach, NetworkInterval: f.netEach,
+		GroupInterval: f.groupEach, NetworkInterval: f.netEach, Restore: f.restore,
 	}, orchd.Deps{
-		Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey,
+		Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
 		NewHosts: func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP) },
 		NewNetworkHosts: func(inv inventory.Service) netrec.Hosts {
 			return hostclient.NewNetHosts(inv, hostclient.DialNetAPI(hostHTTP))
@@ -123,8 +139,8 @@ func run(log *slog.Logger, f runFlags) error {
 	if err != nil {
 		return err
 	}
-	if f.metricsAddr != "" {
-		go serveMetrics(ctx, log, f.metricsAddr, f.name)
+	if reg != nil {
+		go serveMetrics(ctx, log, f.metricsAddr, reg)
 	}
 	log.Info("naru-orchd serving", "member", f.name, "api", o.Addr())
 	<-ctx.Done()

@@ -41,7 +41,11 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
               as a boot set with no reboot, or remove one
               all of these take the same flags; create, stop, start, delete and boot-set need the provisioner role
   orch init --out-dir <dir> --passphrase-file <file>    write the recovery key, encrypted, and its public half
-  orch backup | orch restore --snapshot <file> --recovery-key <file> --passphrase-file <file> --out <file>
+  orch backup [--out <file>]                            take a sealed snapshot now; with --out, also fetch it
+  orch restore --snapshot <file> --recovery-key <file> --passphrase-file <file> [--out <file>]
+              [--push <orch URL> --orch-ca <file> --admin <root person file> [--admin-passphrase-file <file>]]
+              open the sealed snapshot; --out writes the plain etcd snapshot, --push sends it to a naru-orchd
+              started with --restore (the plain snapshot is not written to disk without --out)
   enroll-key create [--ttl d] | enroll-key revoke <id>  | host pending | host admit <id> --code <code> --region <r> [--label k=v]
   host label <id> --region <r> [--label k=v] | group apply -f <spec> | group get <name> | group list | group delete <name>
               these take --orch-url, --orch-ca, --identity and --passphrase-file

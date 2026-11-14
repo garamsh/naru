@@ -21,7 +21,7 @@ func TestServeMetrics_ServesTheMemberAndProcessMetrics(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go serveMetrics(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), addr, "host-1")
+	go serveMetrics(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), addr, newRegistry("host-1"))
 
 	var body string
 	require.Eventually(t, func() bool {
