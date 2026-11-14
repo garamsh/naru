@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
@@ -15,6 +16,9 @@ import (
 
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
+	"github.com/garamsh/naru/orch/internal/groups"
+	"github.com/garamsh/naru/orch/internal/hostclient"
+	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/member"
 	"github.com/garamsh/naru/orch/internal/orchd"
 	"github.com/garamsh/naru/orch/internal/signer"
@@ -46,6 +50,10 @@ func main() {
 		maxAge    = flag.Duration("revocation-max-age", auth.DefaultMaxAge, "how long a revocation list that cannot be refreshed is used before callers are refused with 503")
 		crlEvery  = flag.Duration("revocation-sync-interval", crlsync.DefaultInterval, "how often the revocation list is synced between the signers")
 		snapKeep  = flag.Int("snapshot-keep", snapshot.DefaultKeep, "how many snapshots are kept")
+		hostCert  = flag.String("host-client-cert", "", "the certificate orch presents to the hosts' APIs; defaults to --cert")
+		hostKey   = flag.String("host-client-key", "", "the key of --host-client-cert; defaults to --key")
+		hostCA    = flag.String("host-ca", "", "the authority that issued the hosts' API certificates; defaults to --ca")
+		groupEach = flag.Duration("group-interval", groups.DefaultInterval, "the pause between the groups engine's passes")
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -53,6 +61,7 @@ func main() {
 		name: *name, dataDir: *dataDir, peerURL: *peerURL, clientURL: *clientURL, initial: *initial, state: *state,
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sans: *sans, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
+		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach,
 	}); err != nil {
 		log.Error("naru-orchd stopped", "err", err.Error())
 		os.Exit(1)
@@ -62,7 +71,8 @@ func main() {
 type runFlags struct {
 	name, dataDir, peerURL, clientURL, initial, state, listen string
 	cert, key, ca, sans, sock, snapDir, revoke, recovery      string
-	snapEvery, maxAge, crlEvery                               time.Duration
+	snapEvery, maxAge, crlEvery, groupEach                    time.Duration
+	hostCert, hostKey, hostCA                                 string
 	snapKeep                                                  int
 }
 
@@ -88,13 +98,21 @@ func run(log *slog.Logger, f runFlags) error {
 	if err != nil {
 		return err
 	}
+	hostHTTP, err := newHostHTTP(cmp.Or(f.hostCert, f.cert), cmp.Or(f.hostKey, f.key), cmp.Or(f.hostCA, f.ca))
+	if err != nil {
+		return err
+	}
 	o, err := orchd.Start(ctx, orchd.Config{
 		Config: member.Config{
 			Name: f.name, DataDir: f.dataDir, PeerURL: f.peerURL, ClientURL: f.clientURL,
 			InitialCluster: f.initial, State: f.state, Cert: f.cert, Key: f.key, CA: f.ca,
 		},
 		Listen: f.listen, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
-	}, orchd.Deps{Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey})
+		GroupInterval: f.groupEach,
+	}, orchd.Deps{
+		Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey,
+		NewHosts: func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP) },
+	})
 	if err != nil {
 		return err
 	}

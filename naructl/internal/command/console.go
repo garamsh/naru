@@ -35,7 +35,8 @@ func consoleCmd(args []string, stdout, stderr io.Writer) error {
 	}
 	defer func() { _ = ln.Close() }()
 	srv, err := console.New(console.Config{
-		Orch: orch,
+		Orch:  orch,
+		Fleet: console.NewFleet(orch),
 		Sign: func(a identity.Admission) ([]byte, error) {
 			return identity.SignAdmission(a, person.Key, person.Cert)
 		},

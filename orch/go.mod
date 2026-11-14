@@ -2,9 +2,12 @@ module github.com/garamsh/naru/orch
 
 go 1.26.0
 
+replace github.com/garamsh/naru/lib/hostapi => ../lib/hostapi
+
 replace github.com/garamsh/naru/lib/orchapi => ../lib/orchapi
 
 require (
+	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/orchapi v0.0.0-00010101000000-000000000000
 	go.etcd.io/etcd/client/pkg/v3 v3.6.16
 	go.etcd.io/etcd/client/v3 v3.6.16

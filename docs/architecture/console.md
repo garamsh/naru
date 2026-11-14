@@ -23,7 +23,7 @@ What `naructl console` is: the operator's local web console, what it shows of or
   - A per-process token on the admit form, checked on every POST.
   - The key is held by the signing function the command passes in; the server and its pages never touch it.
   - Pages carry a content security policy that allows only the console's own stylesheet and script.
-- **orch's client** is `lib/orchapi`'s: hosts, pending, events and admit over TLS 1.3 with the operator's certificate ([orch.md](./orch.md)). orch's API does not carry microVMs or groups yet, so the console reads them through a small interface (`Fleet`) of its own; built without one, the two pages say orch does not serve them.
+- **orch's client** is `lib/orchapi`'s: hosts, pending, events and admit over TLS 1.3 with the operator's certificate ([orch.md](./orch.md)). The microVMs and groups pages read `GET /v1/microvms` and `GET /v1/groups` through a small interface (`Fleet`); a console built without one says orch does not serve them. orch lists microVMs by asking each admitted host, so a microVM's image is not shown.
 
 ## Rationale
 
