@@ -2,7 +2,7 @@
 
 How a Node's configuration and network reach init in P0, and the shape of the files.
 
-Claims about garamsh/gaon hold at commit `c2b42f91724cae39a4f6824517c278150cf4695f`, and about garamsh/mvmd at `191326aca748a0e6e365578016ab87455107164e`, the pin the PM moved to for garamsh/naru#110 ([ADR 0038](./adr/0038-the-host-api-stops-and-starts-a-microvm-and-restart-on-boot-brings-a-microvm-back-after-its-host-restarts-and-naructl-takes-the-os-forms-flags.md)); they promise nothing about later versions. Those about mvmd were read at `d189133bba8d842d2bcb20046f39fe03161efeb1`, and were not read again at the new commit. They were read at those commits when they replaced `d643b1cb6a6cc01ea587dd7c967bdfd07280fe0b` and `f08e9130c57c0d71e2bb21ac1deb048563ec3ef8`: gaon's `resource-api.md` §Common rules and mvmd's `runtime.md` §Network and `daemon/internal/app/config.go`.
+Claims about garamsh/gaon hold at commit `c2b42f91724cae39a4f6824517c278150cf4695f`, and about garamsh/mvmd at `b1a60cd649673a6db5fa72ca8cc23f088fd83639`, the pin the PM moved to for aurora#811 from `191326aca748a0e6e365578016ab87455107164e` ([ADR 0038](./adr/0038-the-host-api-stops-and-starts-a-microvm-and-restart-on-boot-brings-a-microvm-back-after-its-host-restarts-and-naructl-takes-the-os-forms-flags.md)); they promise nothing about later versions. Those about mvmd were read at `d189133bba8d842d2bcb20046f39fe03161efeb1`, and were not read again at the new commit. They were read at those commits when they replaced `d643b1cb6a6cc01ea587dd7c967bdfd07280fe0b` and `f08e9130c57c0d71e2bb21ac1deb048563ec3ef8`: gaon's `resource-api.md` §Common rules and mvmd's `runtime.md` §Network and `daemon/internal/app/config.go`.
 
 ## Current decisions
 
