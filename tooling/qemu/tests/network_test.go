@@ -32,7 +32,7 @@ import (
 // network shows what crosses between the hosts.
 
 const (
-	probePort  = "8080"
+	probePort  = "8080" // where naru-entry serves probe when a microVM runs it with no arguments
 	prefixA    = "10.201.0.0/16"
 	prefixB    = "10.202.0.0/16"
 	netA, netB = "neta", "netb"
@@ -51,7 +51,6 @@ func probeBody(t *testing.T, name, network string) string {
 	body, err := json.Marshal(map[string]any{
 		"name": name, "image": inputs.Image.Repository + "@" + inputs.Image.Digest,
 		"cpu": 1, "memory": 256 << 20, "rootDiskBytes": 1 << 30, "network": network,
-		"command": []string{"/bin/entry", "probe", "0.0.0.0:" + probePort},
 	})
 	require.NoError(t, err)
 	p := filepath.Join(t.TempDir(), name+".json")
@@ -76,8 +75,16 @@ func (f *fleet) netVMOn(i int, name, network string) netVM {
 	t := f.t
 	h := f.hostOfNode(i)
 	file := probeBody(t, name, network)
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log("the last answer of microvm create: " + last)
+		}
+	})
 	eventually(t, name+" is created once orch has declared "+network+" on node-"+fmt.Sprint(i), func() bool {
-		return hctl(h.Provisioner, []string{"microvm", "create"}, "-f", file).Err == nil
+		r := hctl(h.Provisioner, []string{"microvm", "create"}, "-f", file)
+		last = fmt.Sprintf("%v: %s %s", r.Err, r.Stdout, r.Stderr)
+		return r.Err == nil
 	})
 	var ip string
 	eventually(t, name+" runs and has an address", func() bool {

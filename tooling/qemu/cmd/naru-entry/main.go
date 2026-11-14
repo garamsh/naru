@@ -1,5 +1,6 @@
 // Command naru-entry is the entrypoint of the test image a Machine or a Pod runs. With no arguments
-// it prints one line and stays running, as mvmd's own end-to-end entrypoint does.
+// it prints one line, serves probe on defaultProbe and stays running: hostd refuses a command for a
+// microVM, so a microVM of the network tests (docs/architecture/harness.md) runs probe by default.
 //
 // The Kubernetes test (ADR 0031) gives it arguments, so that one image is the server and the client:
 //
@@ -19,9 +20,14 @@ import (
 // answer is what serve replies, and what dial looks for.
 const answer = "naru91-entry-answer"
 
+// defaultProbe is where probe listens when the image runs with no arguments.
+const defaultProbe = "0.0.0.0:8080"
+
 func main() {
 	fmt.Println("hello from the entrypoint")
 	switch {
+	case len(os.Args) == 1:
+		probe(defaultProbe)
 	case len(os.Args) == 3 && os.Args[1] == "serve":
 		serve(os.Args[2])
 	case len(os.Args) == 3 && os.Args[1] == "probe":
