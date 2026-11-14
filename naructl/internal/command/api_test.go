@@ -239,6 +239,11 @@ type fakeNode struct {
 	upgradeQuery string
 	// lastUpgrade is the outcome GET /v1/version reports, when it is not nil.
 	lastUpgrade map[string]any
+	// extensionPath and extensionBody are what the last PUT /v1/extensions/ carried.
+	extensionPath string
+	extensionBody []byte
+	// extensionRemoved is the path of the last DELETE /v1/extensions/.
+	extensionRemoved string
 }
 
 func newFakeNode(t *testing.T, dep deployment) *fakeNode { return newFakeNodeTLS(t, dep, 0) }
@@ -267,7 +272,34 @@ func newFakeNodeTLS(t *testing.T, dep deployment, maxTLS uint16) *fakeNode {
 		writeJSON(w, 200, map[string]any{"services": []map[string]any{
 			{"name": "etcd", "state": "running", "pid": 42, "restarts": 1, "startedAt": "2026-11-13T01:02:03Z"},
 			{"name": "registry", "state": "stopped", "pid": 0, "restarts": 0},
+			{"name": "naru-orchd", "state": "running", "pid": 7, "restarts": 0, "startedAt": "2026-11-13T01:02:04Z", "extension": "naru-orch"},
 		}})
+	})
+	mux.HandleFunc("GET /v1/extensions", func(w http.ResponseWriter, r *http.Request) {
+		f.note(r)
+		writeJSON(w, 200, map[string]any{"extensions": []map[string]any{
+			{"sha256": strings.Repeat("a", 64), "size": 1234, "name": "naru-orch", "version": "v9.9.9", "services": []string{"naru-orchd", "naru-signer"}, "mounted": true, "mountPoint": "/usr/lib/naru/extensions/naru-orch"},
+			{"sha256": strings.Repeat("b", 64), "size": 99, "name": "naru-orch", "version": "v9.9.8", "services": []string{"naru-orchd"}, "mounted": false},
+		}})
+	})
+	mux.HandleFunc("PUT /v1/extensions/{sha256}", func(w http.ResponseWriter, r *http.Request) {
+		f.note(r)
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.extensionPath, f.extensionBody = r.URL.Path, body
+		f.mu.Unlock()
+		writeJSON(w, 200, map[string]any{"sha256": r.PathValue("sha256"), "size": len(body), "name": "naru-orch", "version": "v9.9.9", "services": []string{"naru-orchd"}, "mounted": false})
+	})
+	mux.HandleFunc("DELETE /v1/extensions/{sha256}", func(w http.ResponseWriter, r *http.Request) {
+		f.note(r)
+		f.mu.Lock()
+		f.extensionRemoved = r.URL.Path
+		f.mu.Unlock()
+		if r.PathValue("sha256") == strings.Repeat("a", 64) {
+			writeJSON(w, 409, map[string]any{"error": "the extension is mounted"})
+			return
+		}
+		w.WriteHeader(204)
 	})
 	mux.HandleFunc("GET /v1/services/{name}/logs", func(w http.ResponseWriter, r *http.Request) {
 		f.note(r)
@@ -414,10 +446,11 @@ func TestServices_PrintsEachServicesState(t *testing.T) {
 
 	require.NoError(t, err, out)
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	require.Len(t, lines, 3)
-	assert.Equal(t, []string{"NAME", "STATE", "PID", "RESTARTS", "STARTED"}, strings.Fields(lines[0]))
+	require.Len(t, lines, 4)
+	assert.Equal(t, []string{"NAME", "STATE", "PID", "RESTARTS", "STARTED", "EXTENSION"}, strings.Fields(lines[0]))
 	assert.Equal(t, []string{"etcd", "running", "42", "1", "2026-11-13T01:02:03Z"}, strings.Fields(lines[1]))
 	assert.Equal(t, []string{"registry", "stopped", "0", "0"}, strings.Fields(lines[2]))
+	assert.Equal(t, []string{"naru-orchd", "running", "7", "0", "2026-11-13T01:02:04Z", "naru-orch"}, strings.Fields(lines[3]), "a service names its extension")
 }
 
 func TestLogs_PrintsTheKeptLinesAndFollowAsksTheNodeToStream(t *testing.T) {

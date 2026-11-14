@@ -60,7 +60,9 @@ type Deps struct {
 	Reboot func()
 	// Upgrades is the in-place upgrade; nil on a Node that has none.
 	Upgrades Upgrades
-	Log      *slog.Logger
+	// Extensions is the store of system extension images.
+	Extensions Extensions
+	Log        *slog.Logger
 }
 
 // Upgrades is the Node's in-place A/B upgrade.

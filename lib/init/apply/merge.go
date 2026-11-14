@@ -17,6 +17,7 @@ var keyed = map[string]string{
 	"spec.network.routes":   "to",
 	"spec.registries":       "host",
 	"spec.storage":          "name",
+	"spec.extensions":       "name",
 }
 
 // merge applies patch to target as a JSON merge patch (RFC 7386) with keyed

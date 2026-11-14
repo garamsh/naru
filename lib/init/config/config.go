@@ -71,6 +71,9 @@ type Spec struct {
 	Orch *Orch `yaml:"orch,omitempty"`
 	// Signer makes init run naru-signer. It is nil when the Node runs no signer.
 	Signer *SignerSection `yaml:"signer,omitempty"`
+	// Extensions are the system extension images init mounts read-only before any service starts
+	// (docs/architecture/adr/0055-orch-and-the-signer-are-delivered-as-a-system-extension-a-squashfs-image-init-mounts-read-only.md).
+	Extensions []Extension `yaml:"extensions,omitempty"`
 	// Metrics makes init serve /metrics and gives each daemon its --metrics-addr. It is nil when none serves metrics.
 	Metrics *Metrics `yaml:"metrics,omitempty"`
 }

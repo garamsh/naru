@@ -144,6 +144,8 @@ type Service struct {
 	PID       int    `json:"pid"`
 	Restarts  int    `json:"restarts"`
 	StartedAt string `json:"startedAt"`
+	// Extension is the system extension the service's binary comes from, and empty for a service of the image.
+	Extension string `json:"extension"`
 }
 
 // Services returns each service's state.

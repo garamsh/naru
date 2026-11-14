@@ -294,7 +294,7 @@ func (f *fleet) lose(i int, extraFiles ...map[string]any) {
 	nc, err := os.ReadFile(filepath.Join(filepath.Dir(file), "network-config"))
 	require.NoError(f.t, err)
 	require.NoError(f.t, nd.ReplaceUserData(ud, nc))
-	require.NoError(f.t, nd.ResetData(inputs.Dir))
+	require.NoError(f.t, nd.ResetData(inputs))
 }
 
 func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot(t *testing.T) {

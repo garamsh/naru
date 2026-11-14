@@ -37,7 +37,7 @@ type Release struct {
 }
 
 // ReadRelease reads the assets `make release` writes into dir (naru-<v>.qcow2, naru-data-<v>.qcow2,
-// naru-guest-<v>.json and naru-inputs-<v>.json) and prepares what a Node boots from them in work:
+// naru-guest-<v>.json, naru-inputs-<v>.json and naru-orch-ext-<v>.sqfs with its .json) and prepares what a Node boots from them in work:
 // naru.img, the boot disk as a raw file, and inputs/, the tree of the data disk. It needs
 // qemu-img and /sbin/debugfs, which the Nodes need as well.
 func ReadRelease(dir, work string) (Release, error) {
@@ -76,9 +76,17 @@ func ReadRelease(dir, work string) (Release, error) {
 	if out, err := exec.Command("/sbin/debugfs", "-R", "rdump /inputs "+work, data).CombinedOutput(); err != nil { //nolint:gosec // arguments built here
 		return Release{}, fmt.Errorf("read the data disk's inputs: %w: %s", err, out)
 	}
+	info, err := ReadExtensionInfo(filepath.Join(dir, ReleaseExtensionName(r.Version, ".json")))
+	if err != nil {
+		return Release{}, err
+	}
+	ext, err := writeStore(info, filepath.Join(dir, ReleaseExtensionName(r.Version, ".sqfs")), ExtensionStore(filepath.Join(work, "inputs")))
+	if err != nil {
+		return Release{}, err
+	}
 	r.Inputs = Inputs{
 		Dir: filepath.Join(work, "inputs"), FirecrackerSHA256: ri.FirecrackerSHA256, Guest: m,
-		Image: Image{Repository: ri.ImageRepository, Digest: ri.ImageDigest},
+		Image: Image{Repository: ri.ImageRepository, Digest: ri.ImageDigest}, Extension: ext,
 	}
 	if r.Naructl, err = StageNaructl(dir, work); err != nil {
 		return Release{}, err

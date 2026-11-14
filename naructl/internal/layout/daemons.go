@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
 )
 
 // spec.host.network, spec.signer, spec.orch and spec.metrics, which make init run the virtual
@@ -78,6 +79,21 @@ type Orch struct {
 	Join string
 }
 
+// OrchExtension is the extension that carries naru-orchd and naru-signer.
+const OrchExtension = "naru-orch"
+
+// Extension is one entry of spec.extensions.
+type Extension struct {
+	Name, SHA256 string
+}
+
+type extensionSpec struct {
+	Name   string `yaml:"name"`
+	SHA256 string `yaml:"sha256"`
+}
+
+var extensionDigestRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 type hostOrchSpec struct {
 	URL       string `yaml:"url"`
 	CASHA256  string `yaml:"caSHA256"`
@@ -141,6 +157,21 @@ type fileOwner struct {
 // checkDaemons reports the first thing init would refuse in the sections above, which would stop
 // the Node booting or leave it without what orch needs.
 func (n Node) checkDaemons() error {
+	seen := map[string]bool{}
+	for _, e := range n.Extensions {
+		switch {
+		case e.Name == "":
+			return errors.New("an extension needs a name")
+		case !extensionDigestRE.MatchString(e.SHA256):
+			return fmt.Errorf("the extension %q needs the lowercase hex SHA-256 of its image, not %q", e.Name, e.SHA256)
+		case seen[e.Name]:
+			return fmt.Errorf("the extension %q is given twice", e.Name)
+		}
+		seen[e.Name] = true
+	}
+	if (n.Signer != nil || n.Orch != nil) && !seen[OrchExtension] {
+		return fmt.Errorf("the signer and orch run from the %s extension: give --extension %s=<SHA-256 of its image>", OrchExtension, OrchExtension)
+	}
 	if h := n.HostNetwork; h != nil {
 		if n.Host == nil {
 			return errors.New("the host network needs the host API: give the host authority and a region")
@@ -213,6 +244,9 @@ func (n Node) checkDaemons() error {
 
 // daemonSpecs sets the sections and the orch key into the configuration.
 func (n Node) daemonSpecs(c *nodeConfig) {
+	for _, e := range n.Extensions {
+		c.Spec.Extensions = append(c.Spec.Extensions, extensionSpec{Name: e.Name, SHA256: e.SHA256})
+	}
 	if h := n.HostNetwork; h != nil && c.Spec.Host != nil {
 		c.Spec.Host.Network = &hostNetworkSpec{ManagementPrefix: h.ManagementPrefix.String(), EgressInterface: h.EgressInterface, TunnelPort: h.TunnelPort}
 	}

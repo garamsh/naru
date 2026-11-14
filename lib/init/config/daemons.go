@@ -25,8 +25,8 @@ const (
 	SignerService = "naru-signer"
 
 	hostdBinary   = "/bin/naru-hostd"
-	orchBinary    = "/bin/naru-orchd"
-	signerBinary  = "/bin/naru-signer"
+	orchBinary    = ExtensionsRoot + "/" + OrchExtension + "/bin/naru-orchd"
+	signerBinary  = ExtensionsRoot + "/" + OrchExtension + "/bin/naru-signer"
 	defaultTunnel = 51820
 
 	// SignerUID is the user and group naru-signer runs as, and the group orch joins to reach its

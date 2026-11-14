@@ -18,6 +18,9 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// orchExtension is the value of --extension for the image that carries orch and the signer.
+var orchExtension = "naru-orch=" + d("e")
+
 // daemonInputs are the files the flags of gen node name, made from throwaway keys.
 type daemonInputs struct {
 	dir                                                                  string
@@ -108,6 +111,10 @@ type daemonsData struct {
 		Metrics *struct {
 			Listen string `yaml:"listen"`
 		} `yaml:"metrics"`
+		Extensions []struct {
+			Name   string `yaml:"name"`
+			SHA256 string `yaml:"sha256"`
+		} `yaml:"extensions"`
 		Files []struct {
 			Path    string `yaml:"path"`
 			Mode    string `yaml:"mode"`
@@ -139,7 +146,7 @@ func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 	flags := append(hostFlags,
 		"--host-management-prefix", "192.168.0.0/24", "--host-egress-interface", "eth0", "--host-tunnel-port", "51821",
 		"--host-orch-url", "https://192.168.0.10:7500", "--host-orch-ca-sha256", d("a"), "--host-orch-enroll-key", in.enroll,
-		"--signer", "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10",
+		"--signer", "--extension", orchExtension, "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10",
 		"--signer-recovery-public", in.recovery, "--signer-root-csr", in.csr,
 		"--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
 		"--orch-member", "naru-node-1=https://192.168.0.10:2380", "--orch-member", "node-2=https://192.168.0.20:2380",
@@ -153,6 +160,9 @@ func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 
 	validate(t, path)
 	got := parseDaemons(t, path)
+	require.Len(t, got.Spec.Extensions, 1)
+	assert.Equal(t, "naru-orch", got.Spec.Extensions[0].Name)
+	assert.Equal(t, d("e"), got.Spec.Extensions[0].SHA256)
 	require.NotNil(t, got.Spec.Host.Network)
 	assert.Equal(t, "192.168.0.0/24", got.Spec.Host.Network.ManagementPrefix)
 	assert.Equal(t, "eth0", got.Spec.Host.Network.EgressInterface)
@@ -207,13 +217,13 @@ func TestGenNode_ASignerReplicaMakesItsJoinKeyFirstAndJoinsOnceAuthorised(t *tes
 	dep := newDeployment(t)
 	in := newDaemonInputs(t)
 
-	first := parseDaemons(t, dep.node(t, "node-1", "--signer", "--signer-replica", "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10"))
+	first := parseDaemons(t, dep.node(t, "node-1", "--signer", "--extension", orchExtension, "--signer-replica", "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10"))
 	require.NotNil(t, first.Spec.Signer)
 	require.NotNil(t, first.Spec.Signer.Replica, "a replica: {} makes the join key at the first start")
 	assert.Nil(t, first.Spec.Signer.Replica.Join)
 	assert.Nil(t, first.Spec.Signer.Bootstrap)
 
-	path := dep.node(t, "node-1", "--signer", "--signer-replica", "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10",
+	path := dep.node(t, "node-1", "--signer", "--extension", orchExtension, "--signer-replica", "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10",
 		"--signer-join-peer", "192.168.0.20:7600", "--signer-join-peer-ca", in.cert, "--signer-join-authorisation", in.authorisation)
 	validate(t, path)
 	second := parseDaemons(t, path)
@@ -245,15 +255,17 @@ func TestGenNode_DaemonFlagsRefuseWhatInitWouldRefuseOrWhatDoesNothing(t *testin
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"),
 	}
 	orch := []string{
-		"--signer", "--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
+		"--signer", "--extension", orchExtension, "--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
 		"--orch-member", "naru-node-1=https://192.168.0.10:2380", "--orch-certificate", in.cert, "--orch-ca", in.cert,
 		"--orch-revocation-public-key", in.pub, "--orch-key", in.key,
 	}
-	without := func(drop string) []string {
+	without := func(drop ...string) []string {
 		var out []string
 		for i := 0; i < len(orch); i++ {
-			if orch[i] == drop {
-				if drop != "--signer" {
+			if orch[i] == drop[0] {
+				if len(drop) > 1 && orch[i+1] == drop[1] {
+					i++
+				} else if drop[0] != "--signer" {
 					i++
 				}
 				continue
@@ -273,6 +285,10 @@ func TestGenNode_DaemonFlagsRefuseWhatInitWouldRefuseOrWhatDoesNothing(t *testin
 		{"host orch without the host API", []string{"--host-orch-url", "https://192.168.0.10:7500", "--host-orch-ca-sha256", d("a"), "--host-orch-enroll-key", in.enroll}, "needs the host API"},
 		{"host orch without a key", append([]string{"--host-orch-url", "https://192.168.0.10:7500", "--host-orch-ca-sha256", d("a")}, host...), "--host-orch-enroll-key"},
 		{"orch without the signer", without("--signer"), "run the signer here"},
+		{"signer without the naru-orch extension", without("--extension", orchExtension), "run from the naru-orch extension"},
+		{"extension that is not name=digest", []string{"--extension", "naru-orch"}, "is not <name>=<SHA-256"},
+		{"extension with a short digest", []string{"--extension", "naru-orch=abcd"}, "lowercase hex SHA-256"},
+		{"extension given twice", []string{"--extension", "tools=" + d("1"), "--extension", "tools=" + d("2")}, "given twice"},
 		{"orch without its key", without("--orch-key"), "needs its certificate"},
 		{"orch cluster without this member", append(without("--orch-member"), "--orch-member", "node-2=https://192.168.0.20:2380"), "initial cluster holds"},
 		{"orch host authority not a certificate", append(append([]string{}, orch...), "--orch-host-ca", in.key), "not a PEM certificate"},
@@ -280,9 +296,9 @@ func TestGenNode_DaemonFlagsRefuseWhatInitWouldRefuseOrWhatDoesNothing(t *testin
 		{"host client authority not a certificate", append([]string{"--host-client-ca", in.key}, host...), "not a PEM certificate"},
 		{"host client authority without the host API", []string{"--host-client-ca", in.cert}, "--host-client-ca has no effect without --host-region"},
 		{"orch flag without --orch-peer-url", []string{"--orch-ca", in.cert}, "--orch-ca has no effect without --orch-peer-url"},
-		{"bootstrap beside replica", []string{"--signer", "--signer-replica", "--signer-recovery-public", in.recovery, "--signer-root-csr", in.csr}, "not both"},
-		{"bootstrap with one half", []string{"--signer", "--signer-root-csr", in.csr}, "both the recovery public key and the root request"},
-		{"join without replica", []string{"--signer", "--signer-join-peer", "192.168.0.20:7600"}, "--signer-join-peer has no effect without --signer-replica"},
+		{"bootstrap beside replica", []string{"--signer", "--extension", orchExtension, "--signer-replica", "--signer-recovery-public", in.recovery, "--signer-root-csr", in.csr}, "not both"},
+		{"bootstrap with one half", []string{"--signer", "--extension", orchExtension, "--signer-root-csr", in.csr}, "both the recovery public key and the root request"},
+		{"join without replica", []string{"--signer", "--extension", orchExtension, "--signer-join-peer", "192.168.0.20:7600"}, "--signer-join-peer has no effect without --signer-replica"},
 		{"signer flag without --signer", []string{"--signer-peer-listen", "192.168.0.10:7600"}, "--signer-peer-listen has no effect without --signer"},
 		{"metrics listen not an address", []string{"--metrics-listen", "example.com"}, "not an IP address"},
 	}
@@ -303,7 +319,7 @@ func TestGenNode_TheOrchKeyAndTheEnrollmentKeyAreNeverPrinted(t *testing.T) {
 	args := []string{
 		"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out,
-		"--signer", "--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
+		"--signer", "--extension", orchExtension, "--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
 		"--orch-member", "naru-node-1=https://192.168.0.10:2380", "--orch-certificate", in.cert, "--orch-ca", in.cert,
 		"--orch-revocation-public-key", in.pub, "--orch-key", in.key,
 	}
@@ -322,7 +338,7 @@ func TestGenNode_OrchJoinWritesTheRunningMemberInsteadOfTheClusterAndInitAccepts
 	dep := newDeployment(t)
 	in := newDaemonInputs(t)
 	orch := []string{
-		"--signer", "--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
+		"--signer", "--extension", orchExtension, "--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
 		"--orch-certificate", in.cert, "--orch-ca", in.cert, "--orch-revocation-public-key", in.pub, "--orch-key", in.key,
 	}
 
