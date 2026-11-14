@@ -301,18 +301,18 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen node", stderr)
 	var (
 		nameservers, serving, binaries, disable, timeServers, peers, members, registries, storage, noMasquerade list
-		awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion                                string
-		hostLabels, orchCluster, orchSANs, signerPeerNames                                        list
-		hostMgmt, hostEgress, signerPeer, signerRecovery, signerRootCSR, metricsListen            string
-		orchPeerURL, orchClientURL, orchState, orchListen, orchCert, orchCA, orchRevocation       string
-		orchRecovery, orchKey, orchHostCA, hostClientCA, orchJoin                                 string
-		hostTunnelPort                                                                            int
-		hostOrchURL, hostOrchCA, hostOrchKey, signerJoinPeer, signerJoinPeerCA, signerJoinAuthz   string
-		n                                                                                         layout.Node
-		caDir, address, gateway, apiServer                                                        string
-		machinePrefix, guest, extraNIC                                                            string
-		out, networkConfig                                                                        string
-		controlPlane, pairsAsFiles, runSigner, signerReplica, orchRestore                         bool
+		awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion                                              string
+		hostLabels, orchCluster, orchSANs, signerPeerNames                                                      list
+		hostMgmt, hostEgress, signerPeer, signerRecovery, signerRootCSR, metricsListen                          string
+		orchPeerURL, orchClientURL, orchState, orchListen, orchCert, orchCA, orchRevocation                     string
+		orchRecovery, orchKey, orchHostCA, hostClientCA, orchJoin                                               string
+		hostTunnelPort                                                                                          int
+		hostOrchURL, hostOrchCA, hostOrchKey, signerJoinPeer, signerJoinPeerCA, signerJoinAuthz                 string
+		n                                                                                                       layout.Node
+		caDir, address, gateway, apiServer                                                                      string
+		machinePrefix, guest, extraNIC                                                                          string
+		out, networkConfig                                                                                      string
+		controlPlane, pairsAsFiles, runSigner, signerReplica, orchRestore                                       bool
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")

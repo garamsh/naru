@@ -302,7 +302,7 @@ func joinKeyOn(console string) string {
 			continue
 		}
 		// naru-signer join-key prints a line that names the key and the key on the line after it.
-		for _, l := range lines[i : min(i+2, len(lines))] {
+		for _, l := range lines[i:min(i+2, len(lines))] {
 			for _, tok := range base64Token.FindAllString(l, -1) {
 				if len(tok) > len(best) {
 					best = tok
