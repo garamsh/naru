@@ -93,7 +93,10 @@ type fleet struct {
 	// orchCA is the orch authority's certificate, PEM, which signs orch's certificate and which the
 	// operator reads from the signer's GET /v1/ca; orchCAFile holds it and caSHA is its SHA-256.
 	orchCA, orchCAFile, caSHA string
-	rootKey, rootCSR          string
+	// orchTrust is the authorities spec.orch.ca holds: the orch authority, which signs the members'
+	// certificates, and the operator authority, which signs the callers'.
+	orchTrust        string
+	rootKey, rootCSR string
 }
 
 type recovery struct{ key, pub string }
@@ -209,7 +212,8 @@ func (f *fleet) readOrchCA() {
 		},
 	}}
 	var auth struct {
-		Orch []byte `json:"orch"`
+		Orch     []byte `json:"orch"`
+		Operator []byte `json:"operator"`
 	}
 	eventually(f.t, "the first signer answers GET /v1/ca", func() bool {
 		resp, err := cl.Get("http://signer/v1/ca")
@@ -217,11 +221,14 @@ func (f *fleet) readOrchCA() {
 			return false
 		}
 		defer func() { _ = resp.Body.Close() }()
-		return resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&auth) == nil && len(auth.Orch) > 0
+		return resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&auth) == nil && len(auth.Orch) > 0 && len(auth.Operator) > 0
 	})
 	cert, err := x509.ParseCertificate(auth.Orch)
 	require.NoError(f.t, err, "the orch authority's certificate is DER")
+	operator, err := x509.ParseCertificate(auth.Operator)
+	require.NoError(f.t, err, "the operator authority's certificate is DER")
 	f.orchCA = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
+	f.orchTrust = f.orchCA + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operator.Raw}))
 	f.orchCAFile = f.file("orch-ca.pem", f.orchCA)
 	sum := sha256.Sum256(cert.Raw)
 	f.caSHA = hex.EncodeToString(sum[:])
@@ -302,7 +309,7 @@ func (f *fleet) orchSpec(i int, members []int, state string, crt string) map[str
 	spec := map[string]any{
 		"name": orchName(i), "peerURL": "https://" + nodeIP(i) + ":" + orchPeerPort, "clientURL": "https://" + nodeIP(i) + ":" + orchClientPort,
 		"initialCluster": cluster, "initialClusterState": state, "listen": "0.0.0.0:" + orchPort,
-		"sans": []string{"127.0.0.1", nodeIP(i), node.HostNICAddress}, "certificate": crt + f.orchCA, "ca": f.orchCA,
+		"sans": []string{"127.0.0.1", nodeIP(i), node.HostNICAddress}, "certificate": crt + f.orchCA, "ca": f.orchTrust,
 		"revocationPublicKey": f.revPub, "recoveryPublicKey": string(recPub), "hostCA": string(hostCA),
 	}
 	if f.opts.orchExtra != nil {
@@ -371,9 +378,16 @@ func (f *fleet) startOrch() {
 			return seed.Set(file, f.orchSpec(i, members, "new", crt), "spec", "orch")
 		})
 	}
+	var last string
+	f.t.Cleanup(func() {
+		if f.t.Failed() {
+			f.t.Log("the last answer of orch: " + last)
+		}
+	})
 	eventually(f.t, "orch answers root on every control Node", func() bool {
 		for _, i := range members {
-			if f.orchAs(f.root, i, "host", "pending").Err != nil {
+			if r := f.orchAs(f.root, i, "host", "pending"); r.Err != nil {
+				last = fmt.Sprintf("control Node %d: %v: %s", i, r.Err, strings.TrimSpace(r.Stderr))
 				return false
 			}
 		}
