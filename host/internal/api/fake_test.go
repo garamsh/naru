@@ -23,6 +23,8 @@ type fakeRuntime struct {
 	calls    []string
 	failAt   map[string]error
 	contents map[string][]byte
+	// stops counts the StopMachine calls that reached mvmd.
+	stops int
 }
 
 // step records a call that changes mvmd and returns the error a test set for it.
@@ -129,7 +131,7 @@ func (f *fakeRuntime) CreateMachine(_ context.Context, c mvmd.Create) (mvmd.Mach
 		return mvmd.Machine{}, f.err
 	}
 	m := mvmd.Machine{
-		BootSet: c.BootSet, Cmdline: c.Cmdline, RoutedPrefixes: c.RoutedPrefixes,
+		BootSet: c.BootSet, Cmdline: c.Cmdline, RoutedPrefixes: c.RoutedPrefixes, RestartOnBoot: c.RestartOnBoot,
 		ID: c.ID, State: mvmd.StateCreated, ImageDigest: c.ImageDigest, CPU: c.CPU, MemoryBytes: c.MemoryBytes,
 		RootDiskBytes: c.RootDiskBytes, Disks: c.Disks, Policy: c.Policy, Addresses: []string{"10.1.0.5"},
 	}
@@ -155,6 +157,7 @@ func (f *fakeRuntime) StartMachine(_ context.Context, id string) (mvmd.Machine, 
 func (f *fakeRuntime) StopMachine(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.stops++
 	m, ok := f.machines[id]
 	if !ok {
 		return mvmd.ErrNotFound

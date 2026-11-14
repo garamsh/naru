@@ -154,7 +154,7 @@ func printJSON(w io.Writer, v any) error {
 // microvm runs the subcommands of naructl microvm.
 func microvm(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("microvm needs create, get, list or delete")
+		return errors.New("microvm needs create, get, list, stop, start or delete")
 	}
 	switch args[0] {
 	case "create":
@@ -163,6 +163,10 @@ func microvm(args []string, stdout, stderr io.Writer) error {
 		return microvmGet(args[1:], stdout, stderr)
 	case "list":
 		return microvmList(args[1:], stdout, stderr)
+	case "stop":
+		return microvmLifecycle("stop", args[1:], stdout, stderr)
+	case "start":
+		return microvmLifecycle("start", args[1:], stdout, stderr)
 	case "delete":
 		return microvmDelete(args[1:], stdout, stderr)
 	}
@@ -179,6 +183,12 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 		cpu    = c.fs.Uint("cpu", 1, "virtual CPUs")
 		memory = c.fs.Uint64("memory", 256<<20, "memory in bytes")
 		root   = c.fs.Uint64("root-disk", 1<<30, "root disk in bytes")
+
+		bootSet   = c.fs.String("boot-set", "", "the OS form: the boot set the Node offers, in place of --image")
+		cmdline   = c.fs.String("cmdline", "", "the OS form: kernel command line added to the boot set's")
+		seed      = c.fs.String("seed", "", "the OS form: a file of the NoCloud user-data")
+		dataDisk  = c.fs.Uint64("data-disk", 0, "the OS form: the data disk in bytes")
+		podPrefix = c.fs.String("pod-prefix", "", "the OS form: an IPv4 prefix of /16 to /32 routed to the microVM")
 	)
 	c.fs.Var(&disks, "disk", "<name>=<bytes>, with ,ro for a read-only disk, repeatable")
 	if _, err := c.parse(args, 0); err != nil {
@@ -188,7 +198,7 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 	if *file != "" {
 		set := map[string]bool{}
 		c.fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-		for _, f := range []string{"name", "image", "cpu", "memory", "root-disk", "disk"} {
+		for _, f := range []string{"name", "image", "cpu", "memory", "root-disk", "disk", "boot-set", "cmdline", "seed", "data-disk", "pod-prefix"} {
 			if set[f] {
 				return fmt.Errorf("-f carries the whole request, so --%s has no effect with it", f)
 			}
@@ -201,6 +211,25 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&spec); err != nil {
 			return errors.New(*file + " is not a microVM request: " + err.Error())
+		}
+	} else if osForm := *bootSet != "" || *cmdline != "" || *seed != "" || *dataDisk != 0 || *podPrefix != ""; osForm {
+		set := map[string]bool{}
+		c.fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		for _, f := range []string{"image", "root-disk", "disk"} {
+			if set[f] {
+				return fmt.Errorf("--%s is the image form's: a microVM has an image or a boot set, not both", f)
+			}
+		}
+		if err := require(c.fs, "name", "boot-set", "seed", "data-disk"); err != nil {
+			return err
+		}
+		userData, err := os.ReadFile(*seed)
+		if err != nil {
+			return err
+		}
+		spec = client.MicroVMSpec{ //nolint:gosec // flags, bounded by the API's own validation
+			Name: *name, CPU: uint32(*cpu), Memory: *memory, BootSet: *bootSet, Cmdline: *cmdline,
+			Seed: userData, DataDisk: *dataDisk, PodPrefix: *podPrefix,
 		}
 	} else {
 		if err := require(c.fs, "name", "image"); err != nil {
@@ -283,6 +312,31 @@ func microvmList(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n", m.Name, m.State, strings.Join(m.Addresses, ","), m.CPU, m.Memory)
 	}
 	return w.Flush()
+}
+
+// microvmLifecycle is stop or start: it asks the host and prints the microVM as it is after.
+func microvmLifecycle(verb string, args []string, stdout, stderr io.Writer) error {
+	c := newHostCall("microvm "+verb, stderr)
+	rest, err := c.parse(args, 1)
+	if err != nil {
+		return err
+	}
+	cl, err := c.dial()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hostCallTimeout)
+	defer cancel()
+	act := cl.Stop
+	if verb == "start" {
+		act = cl.Start
+	}
+	m, err := act(ctx, rest[0])
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "%s %s: %s\n", verb, m.Name, m.State)
+	return printJSON(stdout, m)
 }
 
 func microvmDelete(args []string, stdout, stderr io.Writer) error {

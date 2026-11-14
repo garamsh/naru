@@ -97,7 +97,7 @@ func validateOS(r CreateRequest) (plan, []string, string) {
 		userData: r.Seed,
 		create: mvmd.Create{
 			ID: r.Name, CPU: r.CPU, MemoryBytes: r.Memory, Policy: r.NetworkPolicy,
-			BootSet: r.BootSet, Cmdline: r.Cmdline, RoutedPrefixes: routed,
+			BootSet: r.BootSet, Cmdline: r.Cmdline, RoutedPrefixes: routed, RestartOnBoot: restartOnBoot(r.RestartOnBoot, true),
 			Disks: []mvmd.Attachment{{ID: diskID(r.Name, dataDiskName)}},
 		},
 	}

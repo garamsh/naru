@@ -85,15 +85,25 @@ type Disk struct {
 	ReadOnly  bool   `json:"readOnly,omitempty"`
 }
 
-// MicroVMSpec is the body of POST /v1/microvms.
+// MicroVMSpec is the body of POST /v1/microvms: the image form (Image, RootDiskBytes, Disks) or
+// the OS form (BootSet, Cmdline, Seed, DataDisk, PodPrefix), not both.
 type MicroVMSpec struct {
 	Name          string        `json:"name"`
-	Image         string        `json:"image"`
+	Image         string        `json:"image,omitempty"`
 	CPU           uint32        `json:"cpu"`
 	Memory        uint64        `json:"memory"`
-	RootDiskBytes uint64        `json:"rootDiskBytes"`
+	RootDiskBytes uint64        `json:"rootDiskBytes,omitempty"`
 	Disks         []Disk        `json:"disks,omitempty"`
 	NetworkPolicy NetworkPolicy `json:"networkPolicy"`
+	BootSet       string        `json:"bootSet,omitempty"`
+	Cmdline       string        `json:"cmdline,omitempty"`
+	// Seed is the user-data of the NoCloud seed, sent in base64.
+	Seed      []byte `json:"seed,omitempty"`
+	DataDisk  uint64 `json:"dataDisk,omitempty"`
+	PodPrefix string `json:"podPrefix,omitempty"`
+	// RestartOnBoot is whether mvmd starts the microVM again after the host reboots; absent, the
+	// host decides by the form (true for the OS form, false for the image form).
+	RestartOnBoot *bool `json:"restartOnBoot,omitempty"`
 }
 
 // MicroVM is a microVM as the host API shows it.
@@ -109,6 +119,10 @@ type MicroVM struct {
 	RootDiskBytes uint64        `json:"rootDiskBytes"`
 	Disks         []Disk        `json:"disks"`
 	NetworkPolicy NetworkPolicy `json:"networkPolicy"`
+	BootSet       string        `json:"bootSet,omitempty"`
+	Cmdline       string        `json:"cmdline,omitempty"`
+	PodPrefix     string        `json:"podPrefix,omitempty"`
+	RestartOnBoot bool          `json:"restartOnBoot"`
 }
 
 // HostInfo is GET /v1/host.
@@ -166,6 +180,30 @@ func (h *HostClient) List(ctx context.Context) ([]MicroVM, error) {
 	}
 	err := h.c.getJSON(ctx, "/v1/microvms", &body)
 	return body.MicroVMs, err
+}
+
+// Stop stops the microVM, and returns it as it is; a stopped one is returned as it is.
+func (h *HostClient) Stop(ctx context.Context, name string) (MicroVM, error) {
+	return h.lifecycle(ctx, name, "stop")
+}
+
+// Start starts the microVM, and returns it as it is; a running one is returned as it is.
+func (h *HostClient) Start(ctx context.Context, name string) (MicroVM, error) {
+	return h.lifecycle(ctx, name, "start")
+}
+
+func (h *HostClient) lifecycle(ctx context.Context, name, verb string) (MicroVM, error) {
+	path := "/v1/microvms/" + url.PathEscape(name) + "/" + verb
+	resp, err := h.c.do(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return MicroVM{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var v MicroVM
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(&v); err != nil {
+		return MicroVM{}, fmt.Errorf("POST %s: the answer is not what the host API sends: %w", path, err)
+	}
+	return v, nil
 }
 
 // Delete stops and deletes the microVM and its disks.

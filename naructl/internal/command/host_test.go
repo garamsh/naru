@@ -139,6 +139,12 @@ func TestMicrovm_CreateGetListDeleteSpeakTheHostAPIOverMutualTLS(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"microvms": []any{vm}})
 	})
 	mux.HandleFunc("GET /v1/microvms/web", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(vm) })
+	mux.HandleFunc("POST /v1/microvms/web/stop", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "web", "state": "stopped"})
+	})
+	mux.HandleFunc("POST /v1/microvms/web/start", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "web", "state": "running"})
+	})
 	mux.HandleFunc("DELETE /v1/microvms/web", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /v1/host", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"region": "eu-1", "labels": map[string]string{"disk": "ssd"}})
@@ -160,6 +166,12 @@ func TestMicrovm_CreateGetListDeleteSpeakTheHostAPIOverMutualTLS(t *testing.T) {
 	out, err = run(t, "microvm", "get", "--config", cfg, "web")
 	require.NoError(t, err, out)
 	assert.Contains(t, out, `"state": "running"`)
+	out, err = run(t, "microvm", "stop", "--config", cfg, "web")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "stop web: stopped")
+	out, err = run(t, "microvm", "start", "--config", cfg, "web")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "start web: running")
 	out, err = run(t, "microvm", "delete", "--config", cfg, "web")
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "deleted web")
@@ -183,4 +195,36 @@ func servingPair(t *testing.T, dep deployment, ip net.IP) tls.Certificate {
 	c, err := tls.X509KeyPair(p.CertPEM, p.KeyPEM)
 	require.NoError(t, err)
 	return c
+}
+
+func TestMicrovmCreate_TheOSFormFlagsSendTheBootSetAndTheSeedAndRefuseTheImageFormsFlags(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "host-ca", "--ca-dir", dep.ca)
+	var got map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/microvms", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "vm", "state": "running"})
+	})
+	addr := hostServer(t, dep, mux)
+	cfg := filepath.Join(t.TempDir(), "c.yaml")
+	mustRun(t, "gen", "host-client", "--ca-dir", dep.ca, "--role", "provisioner", "--endpoint", addr, "--out", cfg)
+	seed := filepath.Join(t.TempDir(), "user-data")
+	require.NoError(t, os.WriteFile(seed, []byte("#cloud-config\n"), 0o600))
+
+	out, err := run(t, "microvm", "create", "--config", cfg, "--name", "vm", "--boot-set", "alpine", "--cmdline", "quiet",
+		"--seed", seed, "--data-disk", "4096", "--pod-prefix", "10.9.0.0/24")
+	require.NoError(t, err, out)
+	assert.EqualValues(t, "alpine", got["bootSet"])
+	assert.EqualValues(t, "quiet", got["cmdline"])
+	assert.EqualValues(t, "I2Nsb3VkLWNvbmZpZwo=", got["seed"], "the user-data in base64")
+	assert.EqualValues(t, 4096, got["dataDisk"])
+	assert.EqualValues(t, "10.9.0.0/24", got["podPrefix"])
+	assert.NotContains(t, got, "image")
+
+	_, err = run(t, "microvm", "create", "--config", cfg, "--name", "vm", "--boot-set", "alpine", "--seed", seed, "--data-disk", "4096", "--image", "x")
+	assert.Error(t, err, "an image and a boot set do not mix")
+	_, err = run(t, "microvm", "create", "--config", cfg, "--name", "vm", "--boot-set", "alpine", "--data-disk", "4096")
+	assert.Error(t, err, "the OS form needs a seed")
 }

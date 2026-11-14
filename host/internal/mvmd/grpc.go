@@ -199,6 +199,7 @@ func (g *GRPC) CreateMachine(ctx context.Context, cr Create) (Machine, error) {
 		MachineId: cr.ID, RequestId: createRequestID, ImageDigest: cr.ImageDigest,
 		Resources:     &v1alpha2.Resources{CpuCount: cr.CPU, MemoryBytes: cr.MemoryBytes},
 		RootDiskBytes: cr.RootDiskBytes, NetworkPolicy: policyToProto(cr.Policy), RoutedPrefixes: cr.RoutedPrefixes,
+		RestartOnBoot: cr.RestartOnBoot,
 	}
 	if cr.BootSet != "" {
 		req.OsBoot = &v1alpha2.OsBoot{BootSet: cr.BootSet, KernelCmdline: cr.Cmdline}
@@ -296,6 +297,7 @@ func machineFromProto(m *v1alpha2.Machine) Machine {
 		ImageDigest: m.GetImageDigest(), CPU: m.GetResources().GetCpuCount(), MemoryBytes: m.GetResources().GetMemoryBytes(),
 		RootDiskBytes: m.GetRootDiskBytes(), Policy: policyFromProto(m.GetNetworkPolicy()),
 		BootSet: m.GetOsBoot().GetBootSet(), Cmdline: m.GetOsBoot().GetKernelCmdline(), RoutedPrefixes: m.GetRoutedPrefixes(),
+		RestartOnBoot: m.GetRestartOnBoot(),
 	}
 	if out.State == "" {
 		out.State = strings.ToLower(strings.TrimPrefix(m.GetState().String(), "MACHINE_STATE_"))

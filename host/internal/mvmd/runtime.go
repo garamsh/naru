@@ -80,6 +80,8 @@ type Machine struct {
 	BootSet        string
 	Cmdline        string
 	RoutedPrefixes []string
+	// RestartOnBoot is whether mvmd starts the Machine again after the host reboots, when it ran.
+	RestartOnBoot bool
 }
 
 // Create is what CreateMachine takes.
@@ -96,6 +98,10 @@ type Create struct {
 	BootSet        string
 	Cmdline        string
 	RoutedPrefixes []string
+	// RestartOnBoot makes mvmd start the Machine again at the first fencing deadline of a new host
+	// boot when it ran when the host went down and was not stopped since. It is fixed for the
+	// Machine's life.
+	RestartOnBoot bool
 }
 
 // Kernel is a guest kernel the node offers.
