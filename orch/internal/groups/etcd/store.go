@@ -15,12 +15,16 @@ import (
 	"github.com/garamsh/naru/orch/internal/groups"
 	"github.com/garamsh/naru/orch/internal/groups/wire"
 	"github.com/garamsh/naru/orch/internal/inventory"
+	netetcd "github.com/garamsh/naru/orch/internal/networks/etcd"
 )
 
 // Prefixes of the records. A group is kept under its name and a member under its ID.
 const (
 	groupPrefix  = "/naru/orch/groups/"
 	memberPrefix = "/naru/orch/group-members/"
+	// A Pod prefix is claimed under its network and its address, so a second claim of the same
+	// prefix finds the key taken. The claim's value is the ID of the member that holds it.
+	claimPrefix = "/naru/orch/pod-prefix-claims/"
 )
 
 // member is a stored member record. Revision is the key's modification revision, so it is not
@@ -31,6 +35,8 @@ type member struct {
 	Host          string    `json:"host"`
 	MachineID     string    `json:"machineId"`
 	TemplateHash  string    `json:"templateHash"`
+	Network       string    `json:"network,omitempty"`
+	PodPrefix     string    `json:"podPrefix,omitempty"`
 	Phase         string    `json:"phase"`
 	LastSeen      time.Time `json:"lastSeen,omitzero"`
 	FenceDeadline time.Time `json:"fenceDeadline,omitzero"`
@@ -123,14 +129,34 @@ func (s *Store) ListMembers(ctx context.Context) ([]groups.Member, error) {
 		}
 		out = append(out, groups.Member{
 			ID: r.ID, Group: r.Group, Host: r.Host, MachineID: r.MachineID, TemplateHash: r.TemplateHash,
-			Phase: groups.Phase(r.Phase), LastSeen: r.LastSeen, FenceDeadline: r.FenceDeadline, Revision: kv.ModRevision,
+			Network: r.Network, PodPrefix: r.PodPrefix, Phase: groups.Phase(r.Phase), LastSeen: r.LastSeen, FenceDeadline: r.FenceDeadline, Revision: kv.ModRevision,
 		})
 	}
 	return out, nil
 }
 
+// ListNetworks returns the networks, in name order.
+func (s *Store) ListNetworks(ctx context.Context) ([]groups.Network, error) {
+	all, err := netetcd.New(s.kv).List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]groups.Network, len(all))
+	for i, n := range all {
+		out[i] = groups.Network{Name: n.Name, Prefix: n.Prefix}
+	}
+	return out, nil
+}
+
+// claimKey is where the claim of a Pod prefix of a network is kept.
+func claimKey(network, podPrefix string) string {
+	return claimPrefix + network + "/" + strings.ReplaceAll(podPrefix, "/", "_")
+}
+
 // PutMember writes m when m.Revision is the stored revision, and returns the record with its new
-// one. A Revision of 0 creates the record, and fails with groups.ErrConflict when it exists.
+// one. A Revision of 0 creates the record, and fails with groups.ErrConflict when it exists or when
+// another member holds the Pod prefix m asks for: the record and the claim are written in one
+// step. Writing a member that is gone ends its claim.
 func (s *Store) PutMember(ctx context.Context, m groups.Member) (groups.Member, error) {
 	if m.ID == "" || strings.Contains(m.ID, "/") {
 		return groups.Member{}, fmt.Errorf("member ID %q cannot be a key", m.ID)
@@ -138,12 +164,23 @@ func (s *Store) PutMember(ctx context.Context, m groups.Member) (groups.Member, 
 	key := memberPrefix + m.ID
 	rec := member{
 		ID: m.ID, Group: m.Group, Host: m.Host, MachineID: m.MachineID, TemplateHash: m.TemplateHash,
+		Network: m.Network, PodPrefix: m.PodPrefix,
 		Phase: string(m.Phase), LastSeen: m.LastSeen, FenceDeadline: m.FenceDeadline,
 	}
-	resp, err := s.kv.Txn(ctx).
-		If(clientv3.Compare(clientv3.ModRevision(key), "=", m.Revision)).
-		Then(clientv3.OpPut(key, encode(rec))).
-		Commit()
+	cond := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", m.Revision)}
+	ops := []clientv3.Op{clientv3.OpPut(key, encode(rec))}
+	if m.PodPrefix != "" {
+		claim := claimKey(m.Network, m.PodPrefix)
+		switch {
+		case m.Phase == groups.PhaseGone:
+			// Only the holder ends a claim: the prefix may be another member's by now.
+			ops = append(ops, clientv3.OpTxn([]clientv3.Cmp{clientv3.Compare(clientv3.Value(claim), "=", m.ID)}, []clientv3.Op{clientv3.OpDelete(claim)}, nil))
+		case m.Revision == 0:
+			cond = append(cond, clientv3.Compare(clientv3.CreateRevision(claim), "=", 0))
+			ops = append(ops, clientv3.OpPut(claim, m.ID))
+		}
+	}
+	resp, err := s.kv.Txn(ctx).If(cond...).Then(ops...).Commit()
 	if err != nil {
 		return groups.Member{}, err
 	}

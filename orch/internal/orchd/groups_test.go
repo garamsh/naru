@@ -18,7 +18,7 @@ const image = "registry.example/web@sha256:0000000000000000000000000000000000000
 func webGroup() orchapi.GroupSpec {
 	return orchapi.GroupSpec{
 		Name: "web", Count: 3, Region: "kr-seoul",
-		Template: orchapi.GroupTemplate{Form: "image", CPUs: 1, MemoryMiB: 128, Version: image},
+		Template: orchapi.GroupTemplate{Form: "image", CPUs: 1, MemoryMiB: 128, Version: image, RootDiskBytes: 1 << 30},
 		Rollout:  orchapi.GroupRollout{MaxUnavailable: 1},
 	}
 }

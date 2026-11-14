@@ -17,9 +17,12 @@ import (
 )
 
 type store struct {
-	groups  map[string]groups.GroupSpec
-	members map[string]groups.Member
+	groups   map[string]groups.GroupSpec
+	members  map[string]groups.Member
+	networks []groups.Network
 }
+
+func (s *store) ListNetworks(context.Context) ([]groups.Network, error) { return s.networks, nil }
 
 func (s *store) ListGroups(context.Context) ([]groups.GroupSpec, error) {
 	var out []groups.GroupSpec
@@ -78,7 +81,7 @@ func (deadHosts) List(context.Context) ([]groups.Host, error) { return nil, erro
 func spec() orchapi.GroupSpec {
 	return orchapi.GroupSpec{
 		Name: "web", Count: 2, Region: "kr-seoul",
-		Template: orchapi.GroupTemplate{Form: "image", CPUs: 1, MemoryMiB: 128, Version: "r@sha256:abc"},
+		Template: orchapi.GroupTemplate{Form: "image", CPUs: 1, MemoryMiB: 128, Version: "r@sha256:abc", RootDiskBytes: 1 << 30},
 		Rollout:  orchapi.GroupRollout{MaxUnavailable: 1},
 	}
 }
@@ -108,6 +111,40 @@ func TestApplyRefusesAnInvalidSpecAndStoresAndLogsAValidOne(t *testing.T) {
 	require.Equal(t, "alice", l.events[0].Detail["by"])
 }
 
+func TestApplyChecksTheNetworkTheTemplateJoins(t *testing.T) {
+	svc, st, _ := newSvc(nil)
+	joined := spec()
+	joined.Template.Network, joined.Template.PodPrefixBits = "lab", 26
+
+	_, err := svc.Apply(t.Context(), "alice", joined)
+	require.ErrorIs(t, err, inventory.ErrInvalid, "a network orch does not keep")
+	require.ErrorContains(t, err, `network "lab" is not declared`)
+	require.Empty(t, st.groups)
+
+	st.networks = []groups.Network{{Name: "lab", Prefix: "10.9.0.0/24"}}
+	joined.Template.PodPrefixBits = 24
+	_, err = svc.Apply(t.Context(), "alice", joined)
+	require.ErrorIs(t, err, inventory.ErrInvalid, "a Pod prefix as large as the network")
+	require.Empty(t, st.groups)
+
+	joined.Template.PodPrefixBits = 26
+	_, err = svc.Apply(t.Context(), "alice", joined)
+	require.NoError(t, err)
+	require.Contains(t, st.groups, "web")
+}
+
+func TestApplyRefusesAnImageTemplateWithoutARootDisk(t *testing.T) {
+	svc, _, _ := newSvc(nil)
+	s := spec()
+	s.Template.RootDiskBytes = 0
+	_, err := svc.Apply(t.Context(), "alice", s)
+	require.ErrorIs(t, err, inventory.ErrInvalid)
+
+	s.Template.RootDiskBytes = 1 << 30
+	_, err = svc.Apply(t.Context(), "alice", s)
+	require.NoError(t, err, "the control: the same spec with a root disk is accepted")
+}
+
 func TestDeleteIsRefusedWhileAMemberIsNotGone(t *testing.T) {
 	svc, st, l := newSvc(nil)
 	_, err := svc.Apply(t.Context(), "alice", spec())
@@ -131,14 +168,14 @@ func TestMicroVMsListWhatTheHostsReportAndNameTheGroupOfAMembersMicroVM(t *testi
 	fh := orchtest.NewFakeHosts("h1", "h2")
 	svc, st, _ := newSvc(fh)
 	st.members["web-1"] = groups.Member{ID: "web-1", Group: "web", Host: "h1", MachineID: "web-1", Phase: groups.PhaseRunning}
-	require.NoError(t, fh.Create(t.Context(), "h1", groups.MachineSpec{ID: "web-1"}))
-	require.NoError(t, fh.Create(t.Context(), "h2", groups.MachineSpec{ID: "adhoc"}))
+	require.NoError(t, fh.Create(t.Context(), "h1", groups.MachineSpec{ID: "web-1", PodPrefix: "10.9.0.0/26", Template: groups.Template{Form: groups.FormImage, Version: "r@sha256:abc", Network: "lab"}}))
+	require.NoError(t, fh.Create(t.Context(), "h2", groups.MachineSpec{ID: "adhoc", Template: groups.Template{Form: groups.FormOS, NodeVersion: "node-2"}}))
 
 	got, err := svc.MicroVMs(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, []orchapi.MicroVM{
-		{Host: "h1", Name: "web-1", State: "running", Group: "web"},
-		{Host: "h2", Name: "adhoc", State: "running"},
+		{Host: "h1", Name: "web-1", State: "running", Group: "web", Image: "r@sha256:abc", Network: "lab"},
+		{Host: "h2", Name: "adhoc", State: "running", BootSet: "node-2"},
 	}, got)
 
 	none, _, _ := newSvc(nil)

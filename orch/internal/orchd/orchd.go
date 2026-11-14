@@ -1,5 +1,5 @@
 // Package orchd composes one naru-orchd member: its etcd member, leader election, inventory, groups
-// API and engine, and snapshots.
+// and networks APIs, the groups engine and the network reconciler, and snapshots.
 package orchd
 
 import (
@@ -26,6 +26,9 @@ import (
 	invetcd "github.com/garamsh/naru/orch/internal/inventory/etcd"
 	"github.com/garamsh/naru/orch/internal/leader"
 	"github.com/garamsh/naru/orch/internal/member"
+	"github.com/garamsh/naru/orch/internal/netrec"
+	"github.com/garamsh/naru/orch/internal/networks"
+	netetcd "github.com/garamsh/naru/orch/internal/networks/etcd"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
 
@@ -50,7 +53,10 @@ type Config struct {
 	CRLSyncInterval time.Duration
 	// GroupInterval is the pause between the groups engine's passes; it defaults to groups.DefaultInterval.
 	GroupInterval time.Duration
-	Limits        inventory.Config
+	// NetworkInterval is the pause between the network reconciler's passes; it defaults to
+	// netrec.DefaultInterval.
+	NetworkInterval time.Duration
+	Limits          inventory.Config
 }
 
 // Deps are the parts the binary's main chooses.
@@ -62,6 +68,9 @@ type Deps struct {
 	// it the leader runs the groups engine; without it, and without a Reconciler, no group is
 	// reconciled.
 	NewHosts func(inv inventory.Service) groups.Hosts
+	// NewNetworkHosts returns the network reconciler's view of the hosts. With it the leader runs
+	// the network reconciler beside the groups engine; without it no host is told its networks.
+	NewNetworkHosts func(inv inventory.Service) netrec.Hosts
 	// Reconciler replaces the groups engine, for a test of the leader seam.
 	Reconciler Reconciler
 	Clock      inventory.Clock
@@ -121,7 +130,15 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 			Hosts: hosts, Store: groupStore, Clock: groupClock{d.Clock}, Events: groupsetcd.NewEvents(invStore), Interval: c.GroupInterval,
 		})
 	}
-	handler := api.New(api.Deps{Inventory: svc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Log: d.Log})
+	networkStore := netetcd.New(m.Client())
+	var reconcilers []Reconciler
+	if d.Reconciler != nil {
+		reconcilers = append(reconcilers, d.Reconciler)
+	}
+	if d.NewNetworkHosts != nil {
+		reconcilers = append(reconcilers, netrec.New(netrec.Config{Hosts: d.NewNetworkHosts(svc), Networks: networkStore, Interval: c.NetworkInterval, Log: d.Log}))
+	}
+	handler := api.New(api.Deps{Inventory: svc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Log: d.Log})
 
 	o.wg.Add(4)
 	go func() {
@@ -148,7 +165,7 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	}()
 	go func() {
 		defer o.wg.Done()
-		leader.Run(runCtx, m.Client(), c.Name, c.LeaderTTL, d.Log, o.lead(d))
+		leader.Run(runCtx, m.Client(), c.Name, c.LeaderTTL, d.Log, o.lead(d, reconcilers))
 	}()
 	return o, nil
 }
@@ -158,23 +175,33 @@ type groupClock struct{ inventory.Clock }
 
 func (groupClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
-// lead is what the leader does: note itself, then run the reconciler until leadership ends.
-func (o *Orchd) lead(d Deps) func(context.Context) {
+// lead is what the leader does: note itself, then run the reconcilers until leadership ends.
+func (o *Orchd) lead(d Deps, reconcilers []Reconciler) func(context.Context) {
 	return func(ctx context.Context) {
 		o.leading.Store(true)
 		defer o.leading.Store(false)
 		d.Log.Info("leading", "member", o.name)
-		if d.Reconciler == nil {
-			<-ctx.Done()
-			return
+		var wg sync.WaitGroup
+		for _, r := range reconcilers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				o.keepRunning(ctx, d, r)
+			}()
 		}
-		for ctx.Err() == nil {
-			if err := d.Reconciler.Run(ctx); err != nil && ctx.Err() == nil {
-				d.Log.Error("reconciler failed", "err", err.Error())
-				select {
-				case <-ctx.Done():
-				case <-time.After(time.Second):
-				}
+		wg.Wait()
+		<-ctx.Done()
+	}
+}
+
+// keepRunning runs the reconciler again after a failure, while the member still leads.
+func (o *Orchd) keepRunning(ctx context.Context, d Deps, r Reconciler) {
+	for ctx.Err() == nil {
+		if err := r.Run(ctx); err != nil && ctx.Err() == nil {
+			d.Log.Error("reconciler failed", "err", err.Error())
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
 			}
 		}
 	}

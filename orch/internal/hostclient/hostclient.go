@@ -20,12 +20,6 @@ import (
 	"github.com/garamsh/naru/orch/internal/groups"
 )
 
-// RootDiskBytes is the root disk of an image-form microVM: a group template does not size it.
-const RootDiskBytes = 10 << 30
-
-// seed is the user-data of an OS-form microVM: a group template carries none yet.
-const seed = "#cloud-config\n"
-
 const (
 	probeTimeout = 10 * time.Second
 	callTimeout  = 5 * time.Minute
@@ -90,7 +84,10 @@ func (c *Client) probe(ctx context.Context, h orchapi.Host, out *groups.Host) {
 		out.NodeVersions = append(out.NodeVersions, k.Name)
 	}
 	for _, m := range vms {
-		out.Machines = append(out.Machines, groups.Machine{ID: m.Name, State: machineState(m.State)})
+		out.Machines = append(out.Machines, groups.Machine{
+			ID: m.Name, State: machineState(m.State), Image: m.ImageDigest, BootSet: m.BootSet,
+			Network: m.Network, PodPrefix: m.PodPrefix, Addresses: m.Addresses,
+		})
 	}
 }
 
@@ -121,11 +118,15 @@ func request(spec groups.MachineSpec) (hostapi.CreateRequest, error) {
 	t := spec.Template
 	r := hostapi.CreateRequest{
 		Name: spec.ID, CPU: uint32(t.CPUs), Memory: uint64(t.MemoryMiB) << 20, Fenced: spec.Fenced,
-		NetworkPolicy: hostapi.Policy{Egress: rules(t.Network.Egress), Ingress: rules(t.Network.Ingress)},
+		Network: t.Network, PodPrefix: spec.PodPrefix,
+		NetworkPolicy: hostapi.Policy{Egress: rules(t.Policy.Egress), Ingress: rules(t.Policy.Ingress)},
 	}
 	switch t.Form {
 	case groups.FormImage:
-		r.Image, r.RootDiskBytes = t.Version, RootDiskBytes
+		if t.RootDiskBytes <= 0 {
+			return hostapi.CreateRequest{}, errors.New("an image-form template needs rootDiskBytes above zero")
+		}
+		r.Image, r.RootDiskBytes = t.Version, uint64(t.RootDiskBytes)
 		for _, d := range t.Disks {
 			r.Disks = append(r.Disks, hostapi.DiskSpec{Name: d.Name, SizeBytes: uint64(d.SizeBytes), ReadOnly: d.ReadOnly})
 		}
@@ -133,7 +134,11 @@ func request(spec groups.MachineSpec) (hostapi.CreateRequest, error) {
 		if len(t.Disks) == 0 {
 			return hostapi.CreateRequest{}, errors.New("an OS-form template needs a disk: its first is the microVM's data disk")
 		}
-		r.BootSet, r.Seed, r.DataDisk = t.NodeVersion, []byte(seed), uint64(t.Disks[0].SizeBytes)
+		userData := t.UserData
+		if userData == "" {
+			userData = groups.DefaultUserData
+		}
+		r.BootSet, r.Seed, r.DataDisk = t.NodeVersion, []byte(userData), uint64(t.Disks[0].SizeBytes)
 	default:
 		return hostapi.CreateRequest{}, fmt.Errorf("template form %q is neither image nor os", t.Form)
 	}

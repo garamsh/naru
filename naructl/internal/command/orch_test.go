@@ -35,6 +35,15 @@ type fakeOrch struct {
 	revoked []string
 	groups  []orchapi.GroupSpec
 	deleted []string
+	// networks and deletedNetworks are what the network commands sent.
+	networks        []sentNetwork
+	deletedNetworks []string
+}
+
+// sentNetwork is a network as a PUT carried it.
+type sentNetwork struct {
+	name string
+	spec orchapi.NetworkSpec
 }
 
 func (f *fakeOrch) lastAdmit(t *testing.T) orchapi.AdmitRequest {
@@ -90,6 +99,29 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 	mux.HandleFunc("DELETE /v1/groups/{name}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.deleted = append(f.deleted, r.PathValue("name"))
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("PUT /v1/networks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		var spec orchapi.NetworkSpec
+		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		f.networks = append(f.networks, sentNetwork{r.PathValue("name"), spec})
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(orchapi.Network{Name: r.PathValue("name"), Prefix: spec.Prefix, APIEndpoint: spec.APIEndpoint})
+	})
+	mux.HandleFunc("GET /v1/networks", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]orchapi.Network{{Name: "edge", Prefix: "10.8.0.0/24"}, {Name: "lab", Prefix: "10.9.0.0/24", APIEndpoint: "10.9.0.2"}})
+	})
+	mux.HandleFunc("GET /v1/networks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(orchapi.Network{Name: r.PathValue("name"), Prefix: "10.9.0.0/24", APIEndpoint: "10.9.0.2"})
+	})
+	mux.HandleFunc("DELETE /v1/networks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.deletedNetworks = append(f.deletedNetworks, r.PathValue("name"))
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})

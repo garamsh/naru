@@ -20,7 +20,7 @@ import (
 	"github.com/garamsh/naru/lib/orchapi"
 )
 
-// orchCommands runs the commands that talk to orch: orch, enroll-key, and host pending, admit and
+// orchCommands runs the commands that talk to orch: orch, enroll-key, group, network, and host pending, admit and
 // label. It reports false when args are not one of them, so the other host command is left alone.
 func orchCommands(args []string, stdout, stderr io.Writer) (bool, error) {
 	if len(args) == 0 {
@@ -33,6 +33,8 @@ func orchCommands(args []string, stdout, stderr io.Writer) (bool, error) {
 		return true, enrollKeyCmd(args[1:], stdout, stderr)
 	case "group":
 		return true, groupCmd(args[1:], stdout, stderr)
+	case "network":
+		return true, networkCmd(args[1:], stdout, stderr)
 	case "host":
 		if len(args) > 1 {
 			switch args[1] {

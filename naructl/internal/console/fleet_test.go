@@ -23,14 +23,14 @@ func (s source) Groups(context.Context) ([]orchapi.Group, error)     { return s.
 
 func TestFleet_MicroVMsAreThoseOfTheAskedHost(t *testing.T) {
 	f := console.NewFleet(source{vms: []orchapi.MicroVM{
-		{Host: "a", Name: "web-1", State: "running", Group: "web"},
+		{Host: "a", Name: "web-1", State: "running", Group: "web", Image: "reg/web@sha256:aa", Network: "lab"},
 		{Host: "b", Name: "web-2", State: "stopped", Group: "web"},
-		{Host: "a", Name: "adhoc", State: "running"},
+		{Host: "a", Name: "adhoc", State: "running", BootSet: "node-1.2"},
 	}})
 
 	got, err := f.MicroVMs(t.Context(), "a")
 	require.NoError(t, err)
-	assert.Equal(t, []console.MicroVM{{Name: "web-1", State: "running", Group: "web"}, {Name: "adhoc", State: "running"}}, got)
+	assert.Equal(t, []console.MicroVM{{Name: "web-1", State: "running", Group: "web", Image: "reg/web@sha256:aa", Network: "lab"}, {Name: "adhoc", State: "running", Image: "node-1.2"}}, got)
 
 	got, err = f.MicroVMs(t.Context(), "none")
 	require.NoError(t, err)

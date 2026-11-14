@@ -9,10 +9,10 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
 - **What an operator declares (`GroupSpec`).**
   - Identity and size: `name`, `count`, `region`.
   - Constraints: `requiredLabels` (a host must carry each), `preferredLabels` (key, value and weight; a host scores the weights it matches).
-  - `template`: form, CPUs, memory, version, disks, network policy and, for an OS-form microVM, the node version.
+  - `template`: form, CPUs, memory, version, disks, `policy` (the egress and ingress rules), the `network` the members join with the `podPrefixBits` of each member's Pod prefix, `rootDiskBytes` (above zero for the image form) and, for an OS-form microVM, the node version and `userData`, its seed (`#cloud-config` when empty).
   - `rollout{maxUnavailable, maxSurge}` and `minAvailable`.
   - `stateful` and `fenceTTL`.
-- **A member** is the record of one microVM: `id` (`<group>-<n>`, also its machine ID), `group`, `host`, `templateHash`, a stored `phase` (pending or gone), `lastSeen` and the last fence deadline orch armed. The live phase (pending, running, draining, fenced-waiting, gone) is computed from observation on every pass.
+- **A member** is the record of one microVM: `id` (`<group>-<n>`, also its machine ID), `group`, `host`, `network`, `podPrefix`, `templateHash`, a stored `phase` (pending or gone), `lastSeen` and the last fence deadline orch armed. The live phase (pending, running, draining, fenced-waiting, gone) is computed from observation on every pass.
 - **What the engine keeps true.**
 
   | Behaviour | Rule |
@@ -25,6 +25,10 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
   | Node version | A template naming a node version the host does not list (its N and N-1) is refused for that host. |
   | Count lowered | Surplus members are retired by the same bound. |
 
+- **A member's Pod prefix is its own** ([ADR 0049](./adr/0049-orch-keeps-the-networks-and-allocates-each-members-pod-prefix-by-compare-and-swap-and-the-leader-tells-every-host-its-networks-members-and-peers.md)).
+  - The plan gives a new member the first subnet of `podPrefixBits` bits of the network's prefix that no member of that network that is not gone holds, across groups. A network orch does not keep, or one with no subnet left, holds the group.
+  - Creating the record is an etcd transaction with a claim key under `/naru/orch/pod-prefix-claims/<network>/<prefix>`; losing it is a conflict, and the next pass plans again. The claim is deleted when the member is written as gone, only if it still names that member.
+  - The engine reads the networks from the store. The network reconciler ([orch.md](./orch.md) §Networks) declares them on the hosts; a create that reaches a host before that fails and is made by the next pass.
 - **Stateful members are fenced.**
   - Created with `fenced=true`; the engine renews the member's deadline through the host API while its host is ready, when less than half of `fenceTTL` is left, and records the deadline on the member.
   - A voluntary move (drain, template change) stops the member, then deletes it, then creates its replacement: a stateful group may not surge.

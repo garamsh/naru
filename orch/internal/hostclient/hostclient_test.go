@@ -2,6 +2,7 @@ package hostclient_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -50,7 +51,7 @@ func newHost(t *testing.T) *fakeHost {
 		case "GET /v1/host":
 			_, _ = w.Write([]byte(`{"free":{"cpu":6,"memory":8589934592},"mvmd":{"kernels":[{"name":"node-1"},{"name":"node-2"}]}}`))
 		case "GET /v1/microvms":
-			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","state":"running"},{"name":"b","state":"stopped"},{"name":"c","state":"created"}]}`))
+			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","state":"running","network":"lab","podPrefix":"10.9.0.64/26","addresses":["10.9.0.2"]},{"name":"b","state":"stopped"},{"name":"c","state":"created"}]}`))
 		case "GET /v1/microvms/db-1/fence":
 			_, _ = w.Write([]byte(`{"phase":"armed","remainingSeconds":90}`))
 		case "GET /v1/microvms/db-1":
@@ -93,7 +94,7 @@ func TestListReportsReadinessCapacityKernelsAndMachines(t *testing.T) {
 	require.Equal(t, []string{"node-1", "node-2"}, h.NodeVersions)
 	require.Equal(t, map[string]string{"rack": "a"}, h.Labels)
 	require.Equal(t, []groups.Machine{
-		{ID: "a", State: groups.MachineRunning}, {ID: "b", State: groups.MachineStopped}, {ID: "c", State: groups.MachineCreated},
+		{ID: "a", State: groups.MachineRunning, Network: "lab", PodPrefix: "10.9.0.64/26", Addresses: []string{"10.9.0.2"}}, {ID: "b", State: groups.MachineStopped}, {ID: "c", State: groups.MachineCreated},
 	}, h.Machines)
 }
 
@@ -101,19 +102,21 @@ func TestCreateSendsTheImageForm(t *testing.T) {
 	h := newHost(t)
 	c := client(inventory{{ID: "h", Address: h.addr()}})
 	err := c.Create(t.Context(), "h", groups.MachineSpec{ID: "web-1", Template: groups.Template{
-		Form: groups.FormImage, CPUs: 2, MemoryMiB: 256, Version: "r@sha256:abc",
-		Disks:   []groups.Disk{{Name: "data", SizeBytes: 1 << 30}},
-		Network: groups.NetworkPolicy{Egress: []groups.Rule{{Prefix: "10.0.0.0/8", Protocol: "tcp", Ports: []int{443}}}},
-	}})
+		Form: groups.FormImage, CPUs: 2, MemoryMiB: 256, Version: "r@sha256:abc", RootDiskBytes: 8 << 30, Network: "lab",
+		Disks:  []groups.Disk{{Name: "data", SizeBytes: 1 << 30}},
+		Policy: groups.NetworkPolicy{Egress: []groups.Rule{{Prefix: "10.0.0.0/8", Protocol: "tcp", Ports: []int{443}}}},
+	}, PodPrefix: "10.9.0.0/26"})
 	require.NoError(t, err)
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(h.bodies["POST /v1/microvms"], &got))
 	require.Equal(t, "web-1", got["name"])
+	require.Equal(t, "lab", got["network"])
+	require.Equal(t, "10.9.0.0/26", got["podPrefix"])
 	require.Equal(t, "r@sha256:abc", got["image"])
 	require.EqualValues(t, 2, got["cpu"])
 	require.EqualValues(t, 256<<20, got["memory"])
-	require.EqualValues(t, hostclient.RootDiskBytes, got["rootDiskBytes"])
+	require.EqualValues(t, 8<<30, got["rootDiskBytes"])
 	require.Equal(t, []any{map[string]any{"name": "data", "sizeBytes": float64(1 << 30)}}, got["disks"])
 	require.NotContains(t, got, "bootSet")
 	egress := got["networkPolicy"].(map[string]any)["egress"]
@@ -132,12 +135,31 @@ func TestCreateSendsTheOSForm(t *testing.T) {
 	require.NoError(t, json.Unmarshal(h.bodies["POST /v1/microvms"], &got))
 	require.Equal(t, "node-2", got["bootSet"])
 	require.EqualValues(t, 2<<30, got["dataDisk"])
-	require.NotEmpty(t, got["seed"])
+	require.Equal(t, base64.StdEncoding.EncodeToString([]byte(groups.DefaultUserData)), got["seed"], "no user-data gives the default")
 	require.Empty(t, got["image"])
+
+	// User-data the template gives is sent as written.
+	err = c.Create(t.Context(), "h", groups.MachineSpec{ID: "db-3", Template: groups.Template{
+		Form: groups.FormOS, CPUs: 1, MemoryMiB: 128, NodeVersion: "node-2", Disks: []groups.Disk{{Name: "data", SizeBytes: 2 << 30}},
+		UserData: "#cloud-config\nhostname: db\n",
+	}})
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(h.bodies["POST /v1/microvms"], &got))
+	require.Equal(t, base64.StdEncoding.EncodeToString([]byte("#cloud-config\nhostname: db\n")), got["seed"])
 
 	// An OS-form template with no disk has no data disk to size.
 	err = c.Create(t.Context(), "h", groups.MachineSpec{ID: "db-2", Template: groups.Template{Form: groups.FormOS, CPUs: 1, MemoryMiB: 128, NodeVersion: "node-2"}})
 	require.Error(t, err)
+}
+
+func TestCreateRefusesAnImageTemplateWithoutARootDisk(t *testing.T) {
+	h := newHost(t)
+	c := client(inventory{{ID: "h", Address: h.addr()}})
+	tpl := groups.Template{Form: groups.FormImage, CPUs: 1, MemoryMiB: 128, Version: "r@sha256:abc", RootDiskBytes: 1 << 30}
+	require.NoError(t, c.Create(t.Context(), "h", groups.MachineSpec{ID: "ok-1", Template: tpl}), "control: the same template with a root disk is created")
+
+	tpl.RootDiskBytes = 0
+	require.Error(t, c.Create(t.Context(), "h", groups.MachineSpec{ID: "bad-1", Template: tpl}))
 }
 
 func TestFencedCreateAsksForAFenceAndRenewalSendsLengthAndRenewalNumber(t *testing.T) {
@@ -146,7 +168,7 @@ func TestFencedCreateAsksForAFenceAndRenewalSendsLengthAndRenewalNumber(t *testi
 	now := time.Date(2026, 11, 14, 1, 0, 0, 0, time.UTC)
 	c.Now = func() time.Time { return now }
 
-	err := c.Create(t.Context(), "h", groups.MachineSpec{ID: "db-1", Fenced: true, Template: groups.Template{Form: groups.FormImage, CPUs: 1, MemoryMiB: 128, Version: "r@sha256:abc"}})
+	err := c.Create(t.Context(), "h", groups.MachineSpec{ID: "db-1", Fenced: true, Template: groups.Template{Form: groups.FormImage, CPUs: 1, MemoryMiB: 128, Version: "r@sha256:abc", RootDiskBytes: 1 << 30}})
 	require.NoError(t, err)
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(h.bodies["POST /v1/microvms"], &got))

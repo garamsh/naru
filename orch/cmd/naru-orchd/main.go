@@ -20,6 +20,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/hostclient"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/member"
+	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/orchd"
 	"github.com/garamsh/naru/orch/internal/signer"
 	"github.com/garamsh/naru/orch/internal/snapshot"
@@ -54,6 +55,7 @@ func main() {
 		hostKey   = flag.String("host-client-key", "", "the key of --host-client-cert; defaults to --key")
 		hostCA    = flag.String("host-ca", "", "the authority that issued the hosts' API certificates; defaults to --ca")
 		groupEach = flag.Duration("group-interval", groups.DefaultInterval, "the pause between the groups engine's passes")
+		netEach   = flag.Duration("network-interval", netrec.DefaultInterval, "the pause between the network reconciler's passes")
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -61,7 +63,7 @@ func main() {
 		name: *name, dataDir: *dataDir, peerURL: *peerURL, clientURL: *clientURL, initial: *initial, state: *state,
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sans: *sans, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
-		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach,
+		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach,
 	}); err != nil {
 		log.Error("naru-orchd stopped", "err", err.Error())
 		os.Exit(1)
@@ -71,7 +73,7 @@ func main() {
 type runFlags struct {
 	name, dataDir, peerURL, clientURL, initial, state, listen string
 	cert, key, ca, sans, sock, snapDir, revoke, recovery      string
-	snapEvery, maxAge, crlEvery, groupEach                    time.Duration
+	snapEvery, maxAge, crlEvery, groupEach, netEach           time.Duration
 	hostCert, hostKey, hostCA                                 string
 	snapKeep                                                  int
 }
@@ -108,10 +110,13 @@ func run(log *slog.Logger, f runFlags) error {
 			InitialCluster: f.initial, State: f.state, Cert: f.cert, Key: f.key, CA: f.ca,
 		},
 		Listen: f.listen, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
-		GroupInterval: f.groupEach,
+		GroupInterval: f.groupEach, NetworkInterval: f.netEach,
 	}, orchd.Deps{
 		Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey,
 		NewHosts: func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP) },
+		NewNetworkHosts: func(inv inventory.Service) netrec.Hosts {
+			return hostclient.NewNetHosts(inv, hostclient.DialNetAPI(hostHTTP))
+		},
 	})
 	if err != nil {
 		return err

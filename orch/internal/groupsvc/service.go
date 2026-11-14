@@ -5,6 +5,7 @@ package groupsvc
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"sort"
 
 	"github.com/garamsh/naru/lib/orchapi"
@@ -48,6 +49,9 @@ func (s *service) Apply(ctx context.Context, by string, a orchapi.GroupSpec) (or
 	if err := spec.Validate(); err != nil {
 		return orchapi.Group{}, fmt.Errorf("%w: %v", inventory.ErrInvalid, err)
 	}
+	if err := s.checkNetwork(ctx, spec.Template); err != nil {
+		return orchapi.Group{}, err
+	}
 	if err := s.store.PutGroup(ctx, spec); err != nil {
 		return orchapi.Group{}, err
 	}
@@ -56,6 +60,28 @@ func (s *service) Apply(ctx context.Context, by string, a orchapi.GroupSpec) (or
 		return orchapi.Group{}, err
 	}
 	return s.one(ctx, spec)
+}
+
+// checkNetwork refuses a template that joins a network orch does not keep, or whose Pod prefixes
+// do not fit in the network's prefix.
+func (s *service) checkNetwork(ctx context.Context, t groups.Template) error {
+	if t.Network == "" {
+		return nil
+	}
+	all, err := s.store.ListNetworks(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range all {
+		if n.Name != t.Network {
+			continue
+		}
+		if p, err := netip.ParsePrefix(n.Prefix); err == nil && t.PodPrefixBits > 0 && t.PodPrefixBits <= p.Bits() {
+			return fmt.Errorf("%w: podPrefixBits %d does not fit inside %s of network %s", inventory.ErrInvalid, t.PodPrefixBits, n.Prefix, n.Name)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: network %q is not declared; apply it first", inventory.ErrInvalid, t.Network)
 }
 
 func (s *service) Get(ctx context.Context, name string) (orchapi.Group, error) {
@@ -122,7 +148,10 @@ func (s *service) MicroVMs(ctx context.Context) ([]orchapi.MicroVM, error) {
 	}
 	for _, h := range hosts {
 		for _, m := range h.Machines {
-			out = append(out, orchapi.MicroVM{Host: h.ID, Name: m.ID, State: string(m.State), Group: groupOf[key{h.ID, m.ID}]})
+			out = append(out, orchapi.MicroVM{
+				Host: h.ID, Name: m.ID, State: string(m.State), Group: groupOf[key{h.ID, m.ID}],
+				Image: m.Image, BootSet: m.BootSet, Network: m.Network,
+			})
 		}
 	}
 	return out, nil
@@ -153,7 +182,7 @@ func (s *service) views(ctx context.Context, specs []groups.GroupSpec) ([]orchap
 			if observed {
 				phase = m.Phase
 			}
-			g.Members = append(g.Members, orchapi.GroupMember{ID: m.ID, Host: m.Host, TemplateHash: m.TemplateHash, Phase: string(phase), LastSeen: m.LastSeen})
+			g.Members = append(g.Members, orchapi.GroupMember{ID: m.ID, Host: m.Host, TemplateHash: m.TemplateHash, Phase: string(phase), LastSeen: m.LastSeen, PodPrefix: m.PodPrefix})
 		}
 		out = append(out, g)
 	}
