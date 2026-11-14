@@ -23,6 +23,8 @@ const operatorRequestTTL = 2 * time.Minute
 
 const operatorUsage = `usage: naructl operator add --admin <person file> --passphrase-file <file> --csr <file> --name <name> --role operator|reader|automation --socket <path> --out <cert file>
        naructl operator revoke --admin <person file> --passphrase-file <file> --serial <hex> --socket <path>
+       naructl operator request --name <name> --key-out <file> --csr-out <file> [--der]
+       naructl operator person --key <file> --cert <file> --passphrase-file <file> --out <file>
 
   The admin file is root's (to add) or an operator's (to revoke) encrypted person file; the signer's
   socket is the one naru-signer serves. The CSR is a DER or PEM PKCS #10 request the person made.
@@ -31,16 +33,20 @@ const operatorUsage = `usage: naructl operator add --admin <person file> --passp
 func operatorCmd(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		_, _ = fmt.Fprint(stderr, operatorUsage)
-		return errors.New("operator add or revoke is required")
+		return errors.New("operator add, revoke, request or person is required")
 	}
 	switch args[0] {
 	case "add":
 		return operatorAdd(args[1:], stdout, stderr)
 	case "revoke":
 		return operatorRevoke(args[1:], stdout, stderr)
+	case "request":
+		return operatorRequest(args[1:], stdout, stderr)
+	case "person":
+		return operatorPerson(args[1:], stdout, stderr)
 	}
 	_, _ = fmt.Fprint(stderr, operatorUsage)
-	return fmt.Errorf("operator %q: add or revoke", args[0])
+	return fmt.Errorf("operator %q: add, revoke, request or person", args[0])
 }
 
 func operatorAdd(args []string, stdout, stderr io.Writer) error {
@@ -140,6 +146,11 @@ func readCSR(path string) ([]byte, error) {
 // signerCall sends body to the signer on its unix socket and returns the answer's body, or the
 // signer's refusal.
 func signerCall(socket, method, path string, body []byte) ([]byte, error) {
+	return signerDo(socket, method, path, body, nil)
+}
+
+// signerDo is signerCall with request headers, for the endpoint that takes its request on a GET.
+func signerDo(socket, method, path string, body []byte, header map[string]string) ([]byte, error) {
 	client := &http.Client{
 		Timeout: callTimeout,
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -149,6 +160,9 @@ func signerCall(socket, method, path string, body []byte) ([]byte, error) {
 	req, err := http.NewRequest(method, "http://naru-signer"+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
+	}
+	for k, v := range header {
+		req.Header.Set(k, v)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

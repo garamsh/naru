@@ -19,6 +19,9 @@ const (
 	NodeAPIPort = "50000"
 	// HostAPIPort is the port naru-hostd serves the host API on, which naructl's layout fixes (ADR 0028).
 	HostAPIPort = "7443"
+	// RoutePort is the port naru-mvmroute listens on at HostNICAddress, which the forward of a cluster
+	// with Host reaches (docs/architecture/harness.md).
+	RoutePort = "7480"
 )
 
 // HostMAC is the address of the second NIC: the form of the first, in the next block of the

@@ -30,6 +30,16 @@ func TestQemuArgs_TheHostNICForwardsLoopbackToTheAPIServer(t *testing.T) {
 	assert.Contains(t, line, "virtio-net-pci,netdev=net1,mac=02:00:00:01:00:01")
 }
 
+func TestQemuArgs_ARouteHostPortForwardsLoopbackToTheRouteOnTheHostNIC(t *testing.T) {
+	c := cfg(1, 2, true, false)
+	c.HostPort, c.RouteHostPort = 41234, 41235
+
+	assert.Contains(t, qemuLine(t, c), ",hostfwd=tcp:127.0.0.1:41235-10.0.2.15:7480")
+
+	c.RouteHostPort = 0
+	assert.NotContains(t, qemuLine(t, c), "7480")
+}
+
 func TestQemuArgs_ANodeWithoutAHostPortHasOneNIC(t *testing.T) {
 	assert.NotContains(t, qemuLine(t, cfg(2, 2, false, false)), "net1")
 }

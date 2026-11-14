@@ -29,6 +29,12 @@ What `naru-signer` is: the one process that holds the keys of naru's authorities
 - **No authority key leaves the directory unencrypted.** The bundle and the replication answer are sealed; the operator's key is in its encrypted person file; the recovery key is encrypted. A test scans a bootstrap's temporary root for private keys outside the directory.
 - **`naructl operator add|revoke`** signs a request with the person file given by `--admin` (opened with `--passphrase-file`) and sends it to the socket; `add` takes the certificate request by path and writes the issued certificate.
 
+### Making and using identities with naructl
+
+- **`naructl operator request`** writes a new ECDSA key (0600, never printed) and the certificate request for it; `--der` writes the DER that `naru-signer init --root-csr` reads. **`naructl operator person`** joins that key and its issued certificate into the encrypted person file, and removes the plain key.
+- **`naructl orch csr`** does the same for orch, with the DNS names and IP addresses its certificate serves; **`naructl orch issue`** has the signer issue orch's certificate with root's person file.
+- **`naructl signer authorise-replica`** signs root's authorisation for a host's signer and its join key; **`bundle`** writes the authorities sealed to the recovery key; **`restore`** fills a blank signer from that bundle. All are root's.
+
 ## Why
 
 - **A separate process with a private directory** is what keeps orch from minting identities: orch asks, and the signer verifies a signature orch cannot make. ([ADR 0040](./adr/0040-naru-signer-alone-holds-the-authority-keys-in-a-private-directory-and-issues-certificates-over-a-unix-socket-against-signed-requests-and-a-recovery-key-opens-the-bundle-that-restores-them.md))
@@ -41,4 +47,4 @@ What `naru-signer` is: the one process that holds the keys of naru's authorities
 - **aurora#811 A4 is not built:** `naructl login` with a second factor and short-lived certificates, re-confirmation of dangerous actions, passkeys, hardware keys and single sign-on.
 - **Renewal of a host certificate,** and a subject alternative name for it.
 - **Placing the signer in a deployment:** its user, its socket's group and its place in the image are not decided.
-- **A command to make an operator's key, certificate request and person file,** to authorise a replica, and to reissue root from the recovery key, does not exist; the library calls do.
+- **Reissuing root from the recovery key alone** has no signer endpoint: `restore` needs root's signed authorisation, so a lost root person file is not recovered by the commands above.

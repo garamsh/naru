@@ -19,8 +19,8 @@ import (
 // The test of the Node boot set (ADR 0046) boots one Node that runs naru-hostd, takes a release's
 // boot set from the files make image wrote, adds it to the host through `naructl host boot-set add`
 // with no reboot, creates a Node microVM from it with the user-data `naructl gen kubernetes-node`
-// writes for the control-plane role, and removes both. It does not reach the microVM's API server:
-// the harness has no route from the test host to a microVM's address.
+// writes for the control-plane role, and removes both. It does not wait for Ready: the harness route
+// reaches the microVM in bootset_ready_test.go.
 
 func TestNode_HostAPITakesAReleasesNodeBootSetWithNoRebootAndCreatesAControlPlaneNodeMicroVMFromIt(t *testing.T) {
 	c := hostCluster(t)
