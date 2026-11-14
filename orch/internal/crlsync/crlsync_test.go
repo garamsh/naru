@@ -103,6 +103,19 @@ func TestTheStoredListIsPushedToTheSignerAndAMergeIsStored(t *testing.T) {
 	assert.True(t, a.Has(y), "and the other signer takes the merge at its next sync")
 }
 
+func TestAReissueNonceTravelsWithTheListToTheOtherSigner(t *testing.T) {
+	ca := orchtest.NewCA(t)
+	a, b := orchtest.NewCRLReplica(t, ca), orchtest.NewCRLReplica(t, ca)
+	require.NoError(t, a.UseNonce("n1", time.Now().Add(time.Hour)))
+	st := &memStore{}
+	require.NoError(t, syncer(ca, st, a).Once(t.Context()))
+	require.Contains(t, st.crl(t, ca).Nonces, "n1")
+
+	require.NoError(t, syncer(ca, st, b).Once(t.Context()))
+	assert.True(t, b.HasNonce("n1"), "the stored list's nonce reached the other signer")
+	assert.Contains(t, st.crl(t, ca).Nonces, "n1", "and the merge kept it")
+}
+
 func TestALostCompareAndSwapIsNotAnErrorAndTheNextSyncConverges(t *testing.T) {
 	ca := orchtest.NewCA(t)
 	a, b := orchtest.NewCRLReplica(t, ca), orchtest.NewCRLReplica(t, ca)

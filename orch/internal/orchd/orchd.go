@@ -7,14 +7,19 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
 
 	"github.com/garamsh/naru/orch/internal/api"
 	"github.com/garamsh/naru/orch/internal/auth"
@@ -29,6 +34,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/networks"
 	netetcd "github.com/garamsh/naru/orch/internal/networks/etcd"
+	"github.com/garamsh/naru/orch/internal/restore"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
 
@@ -57,6 +63,10 @@ type Config struct {
 	// netrec.DefaultInterval.
 	NetworkInterval time.Duration
 	Limits          inventory.Config
+	// Restore, when the data directory holds no etcd member, starts no etcd: the member serves only
+	// PUT /v1/restore until a snapshot is restored into it. With a member in the directory it is
+	// ignored.
+	Restore bool
 }
 
 // Deps are the parts the binary's main chooses.
@@ -79,21 +89,37 @@ type Deps struct {
 	// is the local signer. Without it the list is not synced.
 	CRLPeer       crlsync.Peer
 	RevocationKey ed25519.PublicKey
+	// Metrics is the registry the API's request counter is registered on; nil counts none.
+	Metrics prometheus.Registerer
 }
 
 // Orchd is a running member.
 type Orchd struct {
+	metrics *api.Metrics
 	name    string
-	member  *member.Member
 	addr    string
 	leading atomic.Bool
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
-	stop    sync.Once
 	log     *slog.Logger
+	cfg     Config
+	deps    Deps
+	runCtx  context.Context
+	// handler is the API's current handler: the one that waits for a restore, then the full one.
+	handler   atomic.Pointer[handlerBox]
+	restoring atomic.Bool
+	// mu guards member and stopped, so a restore that finishes after Stop starts nothing.
+	mu      sync.Mutex
+	member  *member.Member
+	stopped bool
 }
 
-// Start runs the member and returns once its etcd has a quorum and its API listens.
+// handlerBox lets an atomic pointer hold an http.Handler.
+type handlerBox struct{ http.Handler }
+
+// Start runs the member and returns once its etcd has a quorum and its API listens. A member
+// started with Restore over an empty data directory returns once its API listens and runs etcd when
+// a snapshot has been restored into it.
 func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	if c.LeaderTTL == 0 {
 		c.LeaderTTL = DefaultLeaderTTL
@@ -105,18 +131,83 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	if err != nil {
 		return nil, err
 	}
-	m, err := member.Start(ctx, c.Config)
-	if err != nil {
+	awaitRestore := c.Restore && !member.HasData(c.DataDir)
+	if c.Restore && !awaitRestore {
+		d.Log.Warn("--restore ignored: the data directory holds a member", "data_dir", c.DataDir)
+	}
+	var m *member.Member
+	if awaitRestore {
+		if err := c.restoreConfig().Check(); err != nil {
+			return nil, err
+		}
+	} else if m, err = member.Start(ctx, c.Config); err != nil {
 		return nil, err
 	}
 	l, err := tls.Listen("tcp", c.Listen, tlsConf)
 	if err != nil {
-		m.Close()
+		if m != nil {
+			m.Close()
+		}
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
-	o := &Orchd{name: c.Name, member: m, addr: l.Addr().String(), cancel: cancel, log: d.Log}
+	var metrics *api.Metrics
+	if d.Metrics != nil {
+		metrics = api.NewMetrics(d.Metrics)
+	}
+	o := &Orchd{metrics: metrics, name: c.Name, addr: l.Addr().String(), cancel: cancel, log: d.Log, cfg: c, deps: d, runCtx: runCtx}
+	if awaitRestore {
+		o.handler.Store(&handlerBox{api.NewRestoring(api.RestoreDeps{Restorer: o, Auth: d.Auth, Metrics: o.metrics, Log: d.Log})})
+	} else {
+		o.assemble(m)
+	}
+	o.wg.Add(1)
+	go func() {
+		defer o.wg.Done()
+		if err := api.Serve(runCtx, l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { o.handler.Load().ServeHTTP(w, r) })); err != nil {
+			d.Log.Error("api stopped", "err", err.Error())
+		}
+	}()
+	return o, nil
+}
 
+func (c Config) restoreConfig() restore.Config {
+	return restore.Config{Name: c.Name, DataDir: c.DataDir, PeerURL: c.PeerURL, InitialCluster: c.InitialCluster}
+}
+
+// Restore restores the plain snapshot in r into a member that waits for one, starts etcd on it and
+// brings the member up. Only one restore is ever made; a failed one that left nothing behind may be
+// sent again.
+func (o *Orchd) Restore(ctx context.Context, r io.Reader, sha256Hex string) error {
+	if !o.restoring.CompareAndSwap(false, true) {
+		return api.ErrRestored
+	}
+	if err := restore.Apply(o.cfg.restoreConfig(), r, sha256Hex, zap.NewNop()); err != nil {
+		o.restoring.Store(false)
+		return err
+	}
+	m, err := member.Start(ctx, o.cfg.Config)
+	if err != nil {
+		return fmt.Errorf("start etcd on the restored data: %w", err)
+	}
+	if !o.assemble(m) {
+		m.Close()
+		return errors.New("the member is stopping")
+	}
+	o.log.Info("restored a snapshot", "member", o.name)
+	return nil
+}
+
+// assemble builds the services over m, starts what runs beside the API and switches the API to
+// them. It reports false when the member has been stopped.
+func (o *Orchd) assemble(m *member.Member) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.stopped {
+		return false
+	}
+	c, d := o.cfg, o.deps
+	o.member = m
 	taker := &snapshot.Taker{Source: snapshot.ClientSource(m.Client()), Sealer: d.Sealer, Dir: c.SnapshotDir, Keep: c.SnapshotKeep, Now: d.Clock.Now, Log: d.Log}
 	invStore := invetcd.New(m.Client())
 	svc := inventory.NewService(invStore, d.Signer, d.Clock, c.Limits)
@@ -138,22 +229,16 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	if d.NewNetworkHosts != nil {
 		reconcilers = append(reconcilers, netrec.New(netrec.Config{Hosts: d.NewNetworkHosts(svc), Networks: networkStore, Interval: c.NetworkInterval, Log: d.Log}))
 	}
-	handler := api.New(api.Deps{Inventory: svc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Log: d.Log})
+	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
 
-	o.wg.Add(4)
-	go func() {
-		defer o.wg.Done()
-		if err := api.Serve(runCtx, l, handler); err != nil {
-			d.Log.Error("api stopped", "err", err.Error())
-		}
-	}()
+	o.wg.Add(3)
 	go func() {
 		defer o.wg.Done()
 		if d.Sealer == nil {
 			d.Log.Warn("no recovery public key: scheduled snapshots are off")
 			return
 		}
-		taker.Run(runCtx, c.SnapshotInterval)
+		taker.Run(o.runCtx, c.SnapshotInterval)
 	}()
 	go func() {
 		defer o.wg.Done()
@@ -161,13 +246,13 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 			d.Log.Warn("no revocation list peer: the signers' lists are not synced")
 			return
 		}
-		(&crlsync.Syncer{Store: crlsync.EtcdStore{Client: m.Client()}, Peer: d.CRLPeer, Key: d.RevocationKey, Interval: c.CRLSyncInterval, Log: d.Log}).Run(runCtx)
+		(&crlsync.Syncer{Store: crlsync.EtcdStore{Client: m.Client()}, Peer: d.CRLPeer, Key: d.RevocationKey, Interval: c.CRLSyncInterval, Log: d.Log}).Run(o.runCtx)
 	}()
 	go func() {
 		defer o.wg.Done()
-		leader.Run(runCtx, m.Client(), c.Name, c.LeaderTTL, d.Log, o.lead(d, reconcilers))
+		leader.Run(o.runCtx, m.Client(), c.Name, c.LeaderTTL, d.Log, o.lead(d, reconcilers))
 	}()
-	return o, nil
+	return true
 }
 
 // groupClock gives the engine the deployment's clock and real waits.
@@ -226,24 +311,44 @@ func serverTLS(c Config) (*tls.Config, error) {
 // Addr is the address the API listens on.
 func (o *Orchd) Addr() string { return o.addr }
 
-// Etcd is the member's etcd client, for a test that reads what orch stored.
-func (o *Orchd) Etcd() *clientv3.Client { return o.member.Client() }
+// Etcd is the member's etcd client, for a test that reads what orch stored. It is nil while the
+// member waits for a restore.
+func (o *Orchd) Etcd() *clientv3.Client {
+	if m := o.etcdMember(); m != nil {
+		return m.Client()
+	}
+	return nil
+}
+
+func (o *Orchd) etcdMember() *member.Member {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.member
+}
 
 // IsLeader reports whether this member currently leads.
 func (o *Orchd) IsLeader() bool { return o.leading.Load() }
 
 // Leader returns the name of the member that leads, as etcd records it.
 func (o *Orchd) Leader(ctx context.Context) (string, error) {
-	return leader.Current(ctx, o.member.Client())
+	return leader.Current(ctx, o.Etcd())
 }
 
 // Stop ends the member and waits for its goroutines. It resigns nothing: the lease lapses.
 func (o *Orchd) Stop() error {
-	o.stop.Do(func() {
-		o.cancel()
-		o.wg.Wait()
-		o.member.Close()
-	})
+	o.mu.Lock()
+	already := o.stopped
+	o.stopped = true
+	m := o.member
+	o.mu.Unlock()
+	if already {
+		return nil
+	}
+	o.cancel()
+	o.wg.Wait()
+	if m != nil {
+		m.Close()
+	}
 	return nil
 }
 

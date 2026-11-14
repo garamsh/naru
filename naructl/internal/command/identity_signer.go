@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/garamsh/naru/lib/identity"
@@ -65,7 +66,7 @@ func signerAuthoriseReplica(args []string, stdout, stderr io.Writer) error {
 	if err := require(fs, "admin", "passphrase-file", "host-id", "join-key", "out"); err != nil {
 		return err
 	}
-	pub, err := os.ReadFile(*joinKey)
+	pub, err := readJoinKey(*joinKey)
 	if err != nil {
 		return err
 	}
@@ -78,6 +79,26 @@ func signerAuthoriseReplica(args []string, stdout, stderr io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: wrote root's authorisation for the signer of %s to %s; it expires in %s\n", *hostID, *out, operatorRequestTTL)
 	return nil
+}
+
+// x25519Size is the length of an X25519 public key.
+const x25519Size = 32
+
+// readJoinKey reads a join key as naru-signer join-key writes it, 32 raw bytes, or as base64 text of
+// them, as it is when copied between hosts.
+func readJoinKey(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) == x25519Size {
+		return b, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
+	if err != nil || len(decoded) != x25519Size {
+		return nil, fmt.Errorf("%s is neither a 32-byte X25519 public key nor its base64 text", path)
+	}
+	return decoded, nil
 }
 
 func signerBundle(args []string, stdout, stderr io.Writer) error {

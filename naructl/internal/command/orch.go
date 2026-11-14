@@ -1,6 +1,8 @@
 package command
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -79,7 +81,12 @@ func orchCmd(args []string, stdout, stderr io.Writer) error {
 type orchFlags struct {
 	fs                  *flag.FlagSet
 	url, ca, id, passfn *string
+	// timeout bounds a call; zero is callTimeout.
+	timeout time.Duration
 }
+
+// restoreTimeout bounds the send of a snapshot, which is megabytes and is checked before orch answers.
+const restoreTimeout = 10 * time.Minute
 
 func newOrchFlags(name string, stderr io.Writer) orchFlags {
 	fs := newFlags(name, stderr)
@@ -141,7 +148,7 @@ func (o orchFlags) dial(p identity.Person) (*orchapi.Client, error) {
 		return nil, errors.New("the authority file holds no certificate")
 	}
 	cert := tls.Certificate{Certificate: [][]byte{p.Cert.Raw}, PrivateKey: p.Key, Leaf: p.Cert}
-	return orchapi.New(*o.url, orchapi.HTTPClient(orchapi.TrustCA(pool, &cert), callTimeout))
+	return orchapi.New(*o.url, orchapi.HTTPClient(orchapi.TrustCA(pool, &cert), cmp.Or(o.timeout, callTimeout)))
 }
 
 // connect opens the person file and dials orch with it.
@@ -201,6 +208,7 @@ func orchInit(args []string, stdout, stderr io.Writer) error {
 
 func orchBackup(args []string, stdout, stderr io.Writer) error {
 	o := newOrchFlags("orch backup", stderr)
+	out := o.fs.String("out", "", "also fetch the sealed snapshot orch just wrote, and write it here (0600)")
 	if _, err := o.parse(args, 0); err != nil {
 		return err
 	}
@@ -215,6 +223,17 @@ func orchBackup(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: orch wrote the sealed snapshot %s (%d bytes) on its member's snapshot directory\n", res.File, res.Size)
+	if *out == "" {
+		return nil
+	}
+	sealed, err := cl.LatestSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(*out, sealed, 0o600); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "naructl: wrote the sealed snapshot to %s; only the recovery key opens it\n", *out)
 	return nil
 }
 
@@ -223,12 +242,24 @@ func orchRestore(args []string, stdout, stderr io.Writer) error {
 	snap := fs.String("snapshot", "", "a sealed snapshot file orch wrote")
 	recKey := fs.String("recovery-key", "", "the recovery key file orch init wrote")
 	passfn := fs.String("passphrase-file", "", "a file holding the recovery key's passphrase")
-	out := fs.String("out", "", "the etcd snapshot to write (0600), for etcdutl snapshot restore")
+	out := fs.String("out", "", "write the plain etcd snapshot here (0600), for etcdutl snapshot restore; required without --push")
+	push := fs.String("push", "", "the https URL of a naru-orchd started with --restore: send the plain snapshot to it")
+	orchCA := fs.String("orch-ca", "", "with --push, the authority's certificate, PEM")
+	admin := fs.String("admin", "", "with --push, root's person file")
+	adminPass := fs.String("admin-passphrase-file", "", "with --push, a file holding the person file's passphrase; defaults to --passphrase-file")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := require(fs, "snapshot", "recovery-key", "passphrase-file", "out"); err != nil {
+	if err := require(fs, "snapshot", "recovery-key", "passphrase-file"); err != nil {
 		return err
+	}
+	if *push == "" && *out == "" {
+		return errors.New("--out or --push is required: the plain snapshot goes nowhere else")
+	}
+	if *push != "" {
+		if err := require(fs, "orch-ca", "admin"); err != nil {
+			return err
+		}
 	}
 	pass, err := passphrase(*passfn)
 	if err != nil {
@@ -250,10 +281,31 @@ func orchRestore(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(*out, plain, 0o600); err != nil {
+	if *out != "" {
+		if err := os.WriteFile(*out, plain, 0o600); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "naructl: wrote %s; restore it into a new member with etcdutl snapshot restore\n", *out)
+	}
+	if *push == "" {
+		return nil
+	}
+	o := orchFlags{fs: fs, url: push, ca: orchCA, id: admin, passfn: adminPass, timeout: restoreTimeout}
+	if *adminPass == "" {
+		o.passfn = passfn
+	}
+	_, cl, err := o.connect()
+	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(stdout, "naructl: wrote %s; restore it into a new member with etcdutl snapshot restore\n", *out)
+	// A restore is many megabytes and etcd's own check runs before it answers.
+	ctx, cancel := context.WithTimeout(context.Background(), restoreTimeout)
+	defer cancel()
+	sum := sha256.Sum256(plain)
+	if err := cl.Restore(ctx, bytes.NewReader(plain), hex.EncodeToString(sum[:])); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "naructl: %s restored the snapshot (sha256 %x) and runs; start the other members with --join\n", *push, sum)
 	return nil
 }
 

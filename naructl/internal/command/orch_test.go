@@ -1,6 +1,7 @@
 package command_test
 
 import (
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +40,12 @@ type fakeOrch struct {
 	// networks and deletedNetworks are what the network commands sent.
 	networks        []sentNetwork
 	deletedNetworks []string
+	// restored is the body and the hash header of the last PUT /v1/restore, and restoreStatus the
+	// status it is answered with (zero is 204). latest is what GET /v1/snapshots/latest returns.
+	restored      []byte
+	restoredSHA   string
+	restoreStatus int
+	latest        []byte
 }
 
 // sentNetwork is a network as a PUT carried it.
@@ -124,6 +132,25 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 		f.deletedNetworks = append(f.deletedNetworks, r.PathValue("name"))
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("PUT /v1/restore", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.restored, f.restoredSHA = body, r.Header.Get(orchapi.HeaderSnapshotSHA256)
+		status := f.restoreStatus
+		f.mu.Unlock()
+		if status != 0 {
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(orchapi.Error{Message: "this member is not waiting for a restore"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /v1/snapshot", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(orchapi.SnapshotResult{File: "etcd-1.snap.sealed", Size: int64(len(f.latest))})
+	})
+	mux.HandleFunc("GET /v1/snapshots/latest", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(f.latest)
 	})
 	f.srv = httptest.NewTLSServer(mux)
 	t.Cleanup(f.srv.Close)
@@ -327,4 +354,122 @@ func TestOrchRestore_OpensASealedSnapshotWithTheRecoveryKey(t *testing.T) {
 	require.Error(t, err)
 	_, err = os.Stat(out2)
 	assert.True(t, os.IsNotExist(err))
+}
+
+// sealedSnapshot writes a recovery key in dir, encrypted under the passphrase in pass, and a sealed
+// snapshot of plain, and returns the snapshot's path.
+func sealedSnapshot(t *testing.T, dir, pass string, plain []byte) string {
+	t.Helper()
+	mustRun(t, "orch", "init", "--out-dir", dir, "--passphrase-file", pass)
+	sealed, err := identity.Seal(sealKey(t, dir), plain, []byte(orchapi.SnapshotInfo))
+	require.NoError(t, err)
+	snap := filepath.Join(dir, "etcd.snap.sealed")
+	require.NoError(t, os.WriteFile(snap, sealed, 0o600))
+	return snap
+}
+
+func sealKey(t *testing.T, dir string) *ecdh.PublicKey {
+	t.Helper()
+	pubData, err := os.ReadFile(filepath.Join(dir, "recovery.pub"))
+	require.NoError(t, err)
+	pub, err := identity.ParseRecoveryPublic(pubData)
+	require.NoError(t, err)
+	seal, err := pub.SealKey()
+	require.NoError(t, err)
+	return seal
+}
+
+func TestOrchRestore_PushSendsThePlainSnapshotWithItsHashAndWritesNoFile(t *testing.T) {
+	f := newFakeOrch(t)
+	op := newOperator(t, f, "root")
+	dir := t.TempDir()
+	recPass := filepath.Join(dir, "recovery-pass")
+	require.NoError(t, os.WriteFile(recPass, []byte("a long passphrase\n"), 0o600))
+	plain := []byte("the etcd snapshot, plain")
+	snap := sealedSnapshot(t, dir, recPass, plain)
+	before, err := os.ReadDir(dir)
+	require.NoError(t, err)
+
+	out, err := run(t, "orch", "restore", "--snapshot", snap, "--recovery-key", filepath.Join(dir, "recovery.key"), "--passphrase-file", recPass,
+		"--push", f.srv.URL, "--orch-ca", op.orchAuth, "--admin", op.person, "--admin-passphrase-file", op.passphrase)
+	require.NoError(t, err, out)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	assert.Equal(t, plain, f.restored, "orch got the plain snapshot, not the sealed one")
+	sum := sha256.Sum256(plain)
+	assert.Equal(t, hex.EncodeToString(sum[:]), f.restoredSHA)
+	after, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, after, len(before), "the plain snapshot was written nowhere")
+}
+
+func TestOrchRestore_PushWithOutAlsoWritesThePlainSnapshot(t *testing.T) {
+	f := newFakeOrch(t)
+	op := newOperator(t, f, "root")
+	dir := t.TempDir()
+	// One passphrase file serves both keys: --admin-passphrase-file is left out.
+	plain := []byte("the etcd snapshot, plain")
+	snap := sealedSnapshot(t, dir, op.passphrase, plain)
+	out := filepath.Join(dir, "etcd.db")
+
+	_, err := run(t, "orch", "restore", "--snapshot", snap, "--recovery-key", filepath.Join(dir, "recovery.key"), "--passphrase-file", op.passphrase,
+		"--out", out, "--push", f.srv.URL, "--orch-ca", op.orchAuth, "--admin", op.person)
+	require.NoError(t, err)
+	got, err := os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Equal(t, plain, got)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	assert.Equal(t, plain, f.restored, "and the one passphrase file opened the person file too")
+}
+
+func TestOrchRestore_PushRefusals(t *testing.T) {
+	f := newFakeOrch(t)
+	op := newOperator(t, f, "root")
+	dir := t.TempDir()
+	snap := sealedSnapshot(t, dir, op.passphrase, []byte("the etcd snapshot, plain"))
+	base := []string{"orch", "restore", "--snapshot", snap, "--recovery-key", filepath.Join(dir, "recovery.key"), "--passphrase-file", op.passphrase}
+	push := []string{"--push", f.srv.URL, "--orch-ca", op.orchAuth, "--admin", op.person}
+
+	_, err := run(t, base...)
+	require.Error(t, err, "neither --out nor --push: the plain snapshot would go nowhere")
+	_, err = run(t, append(append([]string{}, base...), "--push", f.srv.URL)...)
+	require.ErrorContains(t, err, "orch-ca", "--push without the authority and the person file")
+
+	f.mu.Lock()
+	f.restoreStatus = http.StatusConflict
+	f.mu.Unlock()
+	_, err = run(t, append(append([]string{}, base...), push...)...)
+	require.ErrorContains(t, err, "not waiting for a restore", "orch's refusal is the command's error")
+
+	other, err := identity.Seal(sealKey(t, dir), []byte("x"), []byte("another purpose"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(snap, other, 0o600))
+	f.mu.Lock()
+	f.restored, f.restoreStatus = nil, 0
+	f.mu.Unlock()
+	_, err = run(t, append(append([]string{}, base...), push...)...)
+	require.Error(t, err, "a snapshot that does not open is not sent")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	assert.Nil(t, f.restored)
+}
+
+func TestOrchBackup_OutFetchesTheSealedSnapshot(t *testing.T) {
+	f := newFakeOrch(t)
+	op := newOperator(t, f, "root")
+	f.latest = []byte("sealed bytes")
+	out := filepath.Join(t.TempDir(), "latest.sealed")
+
+	_, err := run(t, op.args(f, "orch", "backup")...)
+	require.NoError(t, err)
+	_, err = os.Stat(out)
+	assert.True(t, os.IsNotExist(err), "without --out nothing is written")
+
+	_, err = run(t, op.args(f, "orch", "backup", "--out", out)...)
+	require.NoError(t, err)
+	got, err := os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("sealed bytes"), got)
 }

@@ -14,6 +14,7 @@ require (
 	github.com/garamsh/naru/lib/orchapi v0.0.0-00010101000000-000000000000
 	go.etcd.io/etcd/client/pkg/v3 v3.6.16
 	go.etcd.io/etcd/client/v3 v3.6.16
+	go.etcd.io/etcd/etcdutl/v3 v3.6.16
 	go.etcd.io/etcd/server/v3 v3.6.16
 )
 
@@ -52,7 +53,7 @@ require (
 	github.com/tmc/grpc-websocket-proxy v0.0.0-20201229170055-e5319fda7802 // indirect
 	github.com/xiang90/probing v0.0.0-20190116061207-43a291ad63a2 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
-	go.etcd.io/etcd/api/v3 v3.6.16 // indirect
+	go.etcd.io/etcd/api/v3 v3.6.16
 	go.etcd.io/etcd/pkg/v3 v3.6.16 // indirect
 	go.etcd.io/raft/v3 v3.6.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
@@ -65,7 +66,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.27.0 // indirect
+	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect

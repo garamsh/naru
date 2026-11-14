@@ -136,10 +136,20 @@ func TestOrchCSR_AsksForTheDNSNamesAndIPsAndRefusesNone(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// shortSocketPath is a socket path in a directory removed with the test. t.TempDir carries the test's
+// name, which with a long TMPDIR passes the 107 bytes a unix socket path may have.
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "s")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
+}
+
 // serveSocket serves handler on a unix socket as naru-signer does.
 func serveSocket(t *testing.T, handler http.HandlerFunc) string {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "s.sock")
+	socket := shortSocketPath(t)
 	l, err := net.Listen("unix", socket)
 	require.NoError(t, err)
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: time.Minute}
@@ -218,6 +228,29 @@ func TestSignerAuthoriseReplica_WritesRootsSignedRequestForTheHostAndItsJoinKey(
 	require.NoError(t, json.Unmarshal(body, &req))
 	assert.Equal(t, "ctl-2", req.HostID)
 	assert.Equal(t, pub, req.X25519)
+}
+
+func TestSignerAuthoriseReplica_AcceptsTheJoinKeyAsBase64Text(t *testing.T) {
+	admin, pass := adminFile(t, identity.RoleRoot, "pw")
+	dir := t.TempDir()
+	pub := []byte("0123456789abcdef0123456789abcdef")
+	join := filepath.Join(dir, "join.b64")
+	require.NoError(t, os.WriteFile(join, []byte(base64.StdEncoding.EncodeToString(pub)+"\n"), 0o644))
+	out := filepath.Join(dir, "authz")
+
+	text, err := run(t, "signer", "authorise-replica", "--admin", admin, "--passphrase-file", pass, "--host-id", "ctl-2", "--join-key", join, "--out", out)
+	require.NoError(t, err, text)
+	signed, err := os.ReadFile(out)
+	require.NoError(t, err)
+	_, body, err := identity.VerifyRequest(signed, identity.ActionReplicate, rootPool(t), &identity.CRL{}, time.Now())
+	require.NoError(t, err)
+	var req identity.ReplicateRequest
+	require.NoError(t, json.Unmarshal(body, &req))
+	assert.Equal(t, pub, req.X25519)
+
+	require.NoError(t, os.WriteFile(join, []byte("not a key"), 0o644))
+	_, err = run(t, "signer", "authorise-replica", "--admin", admin, "--passphrase-file", pass, "--host-id", "ctl-2", "--join-key", join, "--out", out)
+	assert.ErrorContains(t, err, "neither")
 }
 
 func TestSignerBundle_AsksOnAGETWithRootsRequestInTheHeaderAndWritesTheBundle(t *testing.T) {

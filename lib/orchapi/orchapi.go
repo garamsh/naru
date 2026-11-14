@@ -107,3 +107,6 @@ func (e *Error) Error() string { return fmt.Sprintf("orch answered %d: %s", e.St
 
 // SnapshotInfo binds a sealed snapshot to its purpose: lib/identity's Open fails under any other.
 const SnapshotInfo = "naru orch snapshot v1"
+
+// HeaderSnapshotSHA256 carries the hex SHA-256 of the plain snapshot a restore sends.
+const HeaderSnapshotSHA256 = "X-Naru-Snapshot-Sha256"

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -17,7 +18,11 @@ import (
 // serve listens on a unix socket with h and returns a client of it.
 func serve(t *testing.T, h http.Handler) *signer.Client {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "s.sock")
+	// t.TempDir carries the test's name, which with a long TMPDIR passes the 107 bytes of a socket path.
+	dir, err := os.MkdirTemp("", "s")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "s.sock")
 	l, err := net.Listen("unix", path)
 	require.NoError(t, err)
 	srv := &http.Server{Handler: h}
