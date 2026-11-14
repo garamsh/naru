@@ -1,6 +1,6 @@
 #!/bin/bash
-# Builds the host image's initramfs: host/cmd/naru-init as /init, naru-hostd, naru-signer and
-# naru-orchd (ADR 0050), mvmd and mvmd-supervisor from the pinned mvmd commit, the Firecracker
+# Builds the host image's initramfs: host/cmd/naru-init as /init, naru-hostd (naru-signer and
+# naru-orchd are in the naru-orch extension, image/host/extension/build.sh, ADR 0055), mvmd and mvmd-supervisor from the pinned mvmd commit, the Firecracker
 # binary mvmd's fetch.sh verifies, gaon's services, and what the boot disk's own Node form runs
 # (ADR 0007, 0031, 0054): the stand-in service the tests configure, naru-vip and naru-fence, mke2fs
 # as mkfs.ext4 (ADR 0011), mkfs.xfs (ADR 0027), etcd, the two credential helpers and the public
@@ -79,8 +79,6 @@ gobuild "$root/tooling/qemu" "$bin/naru-standin" ./cmd/naru-standin
 gobuild "$root/node" "$bin/naru-vip" ./cmd/naru-vip
 gobuild "$root/node" "$bin/naru-fence" ./cmd/naru-fence
 gobuild "$root/host" "$bin/naru-hostd" ./cmd/naru-hostd
-gobuild "$root/host" "$bin/naru-signer" ./cmd/naru-signer
-gobuild "$root/orch" "$bin/naru-orchd" ./cmd/naru-orchd
 
 # mvmd is fetched at its pinned commit and nowhere else.
 src=$build/mvmd
@@ -108,7 +106,7 @@ done
 sed "s#=$build/inputs/#=$out/#" "$build/inputs/inputs.env" >"$out/inputs.env"
 
 # shellcheck disable=SC2086
-require_static "$bin" naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 mkfs.xfs naru-standin naru-vip naru-fence naru-hostd naru-signer naru-orchd gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd docker-credential-ecr-login aws_signing_helper $k8s_programs
+require_static "$bin" naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 mkfs.xfs naru-standin naru-vip naru-fence naru-hostd gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd docker-credential-ecr-login aws_signing_helper $k8s_programs
 
 build_gen_init_cpio "$2" "$build/tools"
 tools=$build/tools
