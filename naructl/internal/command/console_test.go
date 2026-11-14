@@ -59,6 +59,7 @@ func TestConsole_RefusesBeforeServing(t *testing.T) {
 		{"wrong passphrase", []string{"console", "--orch-url", f.srv.URL, "--orch-ca", op.orchAuth, "--identity", op.person, "--passphrase-file", wrong}, "passphrase"},
 		{"missing passphrase file", []string{"console", "--orch-url", f.srv.URL, "--orch-ca", op.orchAuth, "--identity", op.person, "--passphrase-file", wrong + ".none"}, "passphrase file"},
 		{"remote address", append(append([]string{}, full...), "--listen", "0.0.0.0:0"), "loopback"},
+		{"no remote flag", append(append([]string{}, full...), "--allow-remote"), "allow-remote"},
 		{"zero ttl", append(append([]string{}, full...), "--admission-ttl", "0s"), "positive"},
 	}
 	for _, tc := range tests {

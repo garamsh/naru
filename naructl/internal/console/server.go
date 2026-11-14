@@ -137,17 +137,16 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	return <-done
 }
 
-// Listen opens addr. Unless allowRemote, addr must be a loopback IP address.
-func Listen(addr string, allowRemote bool) (net.Listener, error) {
-	if !allowRemote {
-		host, _, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, fmt.Errorf("listen address %q: %w", addr, err)
-		}
-		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
-			return nil, fmt.Errorf("listen address %q is not a loopback IP address; the console serves loopback unless --allow-remote is given", addr)
-		}
+// Listen opens addr, which must be a loopback IP address: the admit form has no authentication of
+// the browser's, so only the operator's own machine may reach it.
+func Listen(addr string) (net.Listener, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen address %q: %w", addr, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return nil, fmt.Errorf("listen address %q is not a loopback IP address; reach the console from another machine through an SSH tunnel", addr)
 	}
 	return net.Listen("tcp", addr)
 }

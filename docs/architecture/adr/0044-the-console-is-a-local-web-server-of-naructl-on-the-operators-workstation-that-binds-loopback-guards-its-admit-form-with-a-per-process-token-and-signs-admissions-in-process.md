@@ -32,3 +32,7 @@ Plan #113 decision 9 gives operators a console. An operator admits a pending hos
 - A page of another origin posts an admission, which would show the token or the `Host` check is not enough.
 - Operators keep the passphrase file next to the person file, which would show the passphrase protects nothing and a prompt is wanted.
 - The pages outgrow plain HTML and a script that refreshes, which would show the build-free form was the wrong one.
+
+## Note, 2026-11-14
+
+The decision's `--allow-remote` is removed (garamsh/naru#121). It served the admit form with no authentication of the browser, so anyone who could reach it could admit a host with the operator's key. The console now always listens on loopback and refuses any other address; an operator on another machine uses an SSH tunnel. The `Host` check stays, and no longer has a case in which it is dropped.

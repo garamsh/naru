@@ -5,7 +5,7 @@ What `naructl console` is: the operator's local web console, what it shows of or
 ## Current decisions
 
 - **It runs on the operator's workstation**, as `naructl console` in the module `naructl/` (package `naructl/internal/console`). It is not a daemon on the hosts ([ADR 0044](./adr/0044-the-console-is-a-local-web-server-of-naructl-on-the-operators-workstation-that-binds-loopback-guards-its-admit-form-with-a-per-process-token-and-signs-admissions-in-process.md)).
-- **Flags.** The ones every naructl command that calls orch takes (`--orch-url`, `--orch-ca`, `--identity`, `--passphrase-file`), and `--listen` (default `127.0.0.1:8484`), `--admission-ttl` (default 1 h) and `--allow-remote`.
+- **Flags.** The ones every naructl command that calls orch takes (`--orch-url`, `--orch-ca`, `--identity`, `--passphrase-file`), and `--listen` (default `127.0.0.1:8484`), and `--admission-ttl` (default 1 h). There is no flag to serve beyond loopback.
 - **Pages.** Every page is rendered by the server from orch's answers; nothing is cached.
 
   | Page | Shows |
@@ -19,7 +19,7 @@ What `naructl console` is: the operator's local web console, what it shows of or
   A page that cannot reach orch answers 502 with the reason. The microVM page shows a host's failure beside the hosts that answered.
 - **Admitting.** The operator types the pairing code read from the host's console, a region and labels. The server looks the host up in orch's pending list, compares the typed code with the code of that listed key, builds the admission (the key's full SHA-256, region, labels, expiry at now plus the TTL), signs it with the operator's key in this process and posts it to orch with the typed code, region and labels (`POST /v1/admit`, where orch compares the code against its own key again). The form never carries a key, and a code that does not match, a host orch does not list as pending, an empty region or a malformed label is refused before anything is signed.
 - **What guards it.**
-  - Loopback only unless `--allow-remote`; on a loopback listener a request's `Host` must be the server's own address or `localhost` on its port.
+  - Loopback only: an address that is not a loopback IP address is refused, since the admit form has no authentication of the browser's. An operator on another machine reaches the console through an SSH tunnel to the workstation that runs it. A request's `Host` must be the server's own address or `localhost` on its port.
   - A per-process token on the admit form, checked on every POST.
   - The key is held by the signing function the command passes in; the server and its pages never touch it.
   - Pages carry a content security policy that allows only the console's own stylesheet and script.
