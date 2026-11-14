@@ -173,7 +173,7 @@ func (f *fleet) networkFile(name, prefix string) string {
 }
 
 func TestFleet_NetworksAreSeparateMembershipSetsAndOnlyWireGuardCrossesBetweenTheHosts(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1024, capture: true, services: []node.ExtraService{{Name: "naru94-nftprobe", Binary: nftProbe}}})
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1024, capture: true, services: []node.ExtraService{{Name: "naru94-nftprobe", Binary: nftProbe, Env: map[string]string{"PATH": "/bin"}}}})
 	f.startOrch()
 	f.enrollAndAdmit("eu-1", "disk=ssd")
 	h1, h2 := 2, 3

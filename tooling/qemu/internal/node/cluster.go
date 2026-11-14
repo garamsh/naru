@@ -266,6 +266,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 type ExtraService struct {
 	Name, Binary string
 	Args         []string
+	Env          map[string]string
 }
 
 // controlPlane reports whether Node i is a control-plane Node.
@@ -474,6 +475,9 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 		svc := map[string]any{"name": e.Name, "binary": e.Binary}
 		if len(e.Args) > 0 {
 			svc["args"] = e.Args
+		}
+		if len(e.Env) > 0 {
+			svc["env"] = e.Env
 		}
 		if err := appendService(a.Out, svc); err != nil {
 			return nil, nil, err
