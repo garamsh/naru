@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
@@ -41,11 +43,31 @@ func (c *Client) Run(ctx context.Context, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// Apply writes manifest to a file in dir and runs `gaon apply -f` on it.
+const (
+	// conflictTries is how many times Apply runs the CLI while the object keeps changing under it.
+	conflictTries = 10
+	// conflictDelay is the wait between two of them.
+	conflictDelay = time.Second
+)
+
+// Apply writes manifest to a file in dir and runs `gaon apply -f` on it. The CLI reads the object and
+// writes it back with the version it read, so it refuses with a Conflict when a controller or an
+// agent wrote the object in between, as the controllers do right after a Node turns Ready. That is
+// the CLI telling its operator to run it again, so Apply does, up to conflictTries times.
 func (c *Client) Apply(ctx context.Context, dir, manifest string) (string, error) {
 	p := filepath.Join(dir, "apply.yaml")
 	if err := os.WriteFile(p, []byte(manifest), 0o600); err != nil {
 		return "", err
 	}
-	return c.Run(ctx, "apply", "-f", p)
+	for try := 1; ; try++ {
+		out, err := c.Run(ctx, "apply", "-f", p)
+		if err == nil || try == conflictTries || !strings.Contains(out, "Conflict:") {
+			return out, err
+		}
+		select {
+		case <-ctx.Done():
+			return out, err
+		case <-time.After(conflictDelay):
+		}
+	}
 }

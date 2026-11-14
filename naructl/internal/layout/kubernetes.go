@@ -172,6 +172,9 @@ func (n Node) kubeUserData() ([]byte, error) {
 	c.Spec.ControlPlane = k.ControlPlane
 	c.Spec.DataDisk.Label = DataLabel
 	c.Spec.DataDisk.MountPoint = DataMount
+	// A Kubernetes Node may be a microVM, whose host gives it a data disk it cannot format; a disk
+	// already labelled is left as it is (docs/architecture/init.md).
+	c.Spec.DataDisk.FormatBlank = true
 	c.Spec.Network.Forwarding = []string{"ipv4"}
 	for _, p := range k.Peers {
 		c.Spec.Network.Routes = append(c.Spec.Network.Routes, route{To: p.PodPrefix, Via: p.Address})

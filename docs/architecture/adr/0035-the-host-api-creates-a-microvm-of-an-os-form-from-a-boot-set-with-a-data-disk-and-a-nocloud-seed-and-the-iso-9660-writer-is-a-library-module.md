@@ -37,3 +37,7 @@ Drafted for garamsh/naru#98, part B (decisions 1 and 2 of the PM's comment on th
 - mvmd reports the gateway in its API: the flag goes and hostd reads it from the Machine.
 - A seed needs more than 1 MiB, or a nameserver: the limit moves with mvmd's, and the request gets a field for the resolver.
 - A crash between the Machine and the seed is met in practice: the retry completes the seed in place of answering 409.
+
+## Errata
+
+- 2026-11-15: decision 2 names the data disk `<name>.data` without saying what is on it. hostd created it with `CreateDisk`, which makes mvmd put an ext4 file system on it, so init found no blank disk to format and the microVM did not boot. The data disk is created raw (`CreateRawDisk`, no file system), and init formats it because the Node's user-data carries `spec.dataDisk.formatBlank` (`naructl gen kubernetes-node` writes it). The decision stands.

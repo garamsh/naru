@@ -4,11 +4,13 @@ package tests_test
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostcli"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
@@ -52,6 +55,23 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 	assert.Contains(t, added.Stdout, "added boot set "+set)
 
 	dir := t.TempDir()
+	// A microVM's console is its vmm.log in mvmd's data, which the host reads from a copy of the
+	// Node's data disk; a failed run shows it, as the Machine test does.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		sn, err := nd.SnapshotData(filepath.Join(dir, "data.img"))
+		if err != nil {
+			t.Logf("snapshot of the data disk: %v", err)
+			return
+		}
+		ids, _ := sn.List(node.DataMount + "/mvmd/machines")
+		for _, id := range ids {
+			b, err := sn.Read(node.DataMount + "/mvmd/machines/" + id + "/run/vmm.log")
+			t.Logf("microVM %s console (%v):\n%s", id, err, b)
+		}
+	})
 	ca := filepath.Join(dir, "ca")
 	require.NoError(t, tool.GenCA(ca))
 	require.NoError(t, tool.GenAPICA(ca))
@@ -60,10 +80,25 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 	ctx := context.Background()
 
 	const name = "kcp"
+	// A microVM admits no traffic it has no rule for, so the request allows the API server's port and
+	// the Node API's, which the harness's route reaches from node-1.
 	create := func(seedFile string) {
 		t.Helper()
-		made := hctl(prov, []string{"microvm", "create"}, "--name", name, "--boot-set", set, "--seed", seedFile,
-			"--cpu", "2", "--memory", "4294967296", "--data-disk", "2147483648", "--pod-prefix", node.KubePodPrefix(1))
+		user, err := os.ReadFile(seedFile)
+		require.NoError(t, err)
+		allow := func(port string) hostapi.Rule {
+			n, err := strconv.ParseUint(port, 10, 32)
+			require.NoError(t, err)
+			return hostapi.Rule{Prefix: "0.0.0.0/0", Protocol: "tcp", Ports: []hostapi.PortRange{{First: uint32(n), Last: uint32(n)}}}
+		}
+		request, err := json.Marshal(hostapi.CreateRequest{
+			Name: name, CPU: 2, Memory: 4 << 30, BootSet: set, Seed: user, DataDisk: 2 << 30, PodPrefix: node.KubePodPrefix(1),
+			NetworkPolicy: hostapi.Policy{Ingress: []hostapi.Rule{allow("6443"), allow(node.NodeAPIPort)}},
+		})
+		require.NoError(t, err)
+		file := filepath.Join(dir, "microvm.json")
+		require.NoError(t, os.WriteFile(file, request, 0o600))
+		made := hctl(prov, []string{"microvm", "create"}, "-f", file)
 		require.NoError(t, made.Err, made.refusal())
 	}
 	addressOf := func() netip.Addr {
@@ -110,9 +145,12 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 	kube, stopKube, err := c.Host.RouteTo(ctx, net.JoinHostPort(addr.String(), "6443"))
 	require.NoError(t, err)
 	defer stopKube()
+	var last string
+	defer func() { t.Logf("the last kubectl answer: %s", last) }()
 	require.Eventually(t, func() bool {
 		out, err := exec.Command("kubectl", "--kubeconfig", filepath.Join(ca, "admin.conf"), "--server", "https://"+kube,
 			"--tls-server-name", addr.String(), "--request-timeout=20s", "get", "nodes", "--no-headers").CombinedOutput()
+		last = string(out)
 		if err != nil {
 			return false
 		}

@@ -125,6 +125,9 @@ func TestNode_ANodeHasNoLoginPathNoShellNoGettyNoLoginNoSSHDNoReaderOfTheConsole
 	probe := node.ExtraService{Name: "loginprobe", Binary: path.Join(fixture.GuestRoot, "bin/naru-loginprobe")}
 	c := start(t, node.ClusterSpec{N: 1, Gaon: true, NodeAPI: true, ExtraServices: []node.ExtraService{probe}})
 	nd := c.Nodes[0]
+	// pids and documentOf fail the test on an error, which a poll must not do while the Node is still
+	// booting and its API refuses the connection, so the poll below starts once the API answers.
+	eventually(t, "the Node API answers an admin", func() bool { return ctl(c.API.Admin, "version").Err == nil })
 	eventually(t, "every service of node-1 is running", func() bool {
 		return len(pids(t, c.API.Admin)) >= len(documentOf(t, c.API.Admin).Status.Services)
 	})
