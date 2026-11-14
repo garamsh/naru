@@ -1,0 +1,9 @@
+{{define "content"}}
+<table>
+<thead><tr><th>Time</th><th>Type</th><th>Subject</th><th>Detail</th></tr></thead>
+<tbody>
+{{range .Events}}<tr><td>{{.Time.Format "2006-01-02 15:04:05 MST"}}</td><td>{{.Type}}</td><td>{{.Subject}}</td><td>{{range $k, $v := .Detail}}{{$k}}={{$v}} {{end}}</td></tr>
+{{else}}<tr><td colspan="4">No events.</td></tr>{{end}}
+</tbody>
+</table>
+{{end}}

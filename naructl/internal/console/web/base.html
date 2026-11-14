@@ -1,0 +1,27 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} - naru console</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body{{if .Refresh}} data-refresh="10"{{end}}>
+<nav>
+<strong>naru</strong>
+<a href="/hosts"{{if eq .Active "hosts"}} class="active"{{end}}>Hosts</a>
+<a href="/microvms"{{if eq .Active "microvms"}} class="active"{{end}}>MicroVMs</a>
+<a href="/groups"{{if eq .Active "groups"}} class="active"{{end}}>Groups</a>
+<a href="/events"{{if eq .Active "events"}} class="active"{{end}}>Events</a>
+<a href="/pending"{{if eq .Active "pending"}} class="active"{{end}}>Pending hosts</a>
+</nav>
+<main>
+<h1>{{.Title}}</h1>
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+{{template "content" .}}
+</main>
+</body>
+</html>
+{{end}}

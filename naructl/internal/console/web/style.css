@@ -1,0 +1,13 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; }
+nav { display: flex; gap: 1rem; align-items: baseline; padding: .6rem 1rem; border-bottom: 1px solid #8884; }
+nav a { text-decoration: none; }
+nav a.active { font-weight: 600; text-decoration: underline; }
+main { padding: 0 1rem 2rem; max-width: 70rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid #8884; }
+.label { font-family: monospace; font-size: .85em; }
+.error { color: #b00020; }
+.notice { color: #1b7a3a; }
+form.admit { display: grid; gap: .5rem; max-width: 28rem; margin: 1rem 0; padding: 1rem; border: 1px solid #8884; }
+form.admit label { display: grid; gap: .2rem; }

@@ -1,0 +1,13 @@
+{{define "content"}}
+<table>
+<thead><tr><th>Host</th><th>Region</th><th>Labels</th><th>Address</th><th>Last seen</th><th></th></tr></thead>
+<tbody>
+{{range .Hosts}}<tr>
+<td>{{.ID}}</td><td>{{.Region}}</td>
+<td>{{range $k, $v := .Labels}}<span class="label">{{$k}}={{$v}}</span> {{end}}</td>
+<td>{{.Address}}</td><td>{{if .LastSeen.IsZero}}never{{else}}{{.LastSeen.Format "2006-01-02 15:04:05 MST"}}{{end}}</td>
+<td><a href="/microvms?host={{.ID | urlquery}}">microVMs</a></td>
+</tr>{{else}}<tr><td colspan="6">No admitted hosts.</td></tr>{{end}}
+</tbody>
+</table>
+{{end}}
