@@ -72,6 +72,15 @@ func TestClient_EachCallSendsItsMethodPathAndBody(t *testing.T) {
 			_, err := c.PutNetwork(ctx, "a", hostapi.NetworkRequest{Prefix: "10.1.0.0/16"})
 			return err
 		}, "PUT", "/v1/networks/a", `"prefix":"10.1.0.0/16"`, hostapi.Network{}},
+		{"network put with remote members", func(c *hostapi.Client) error {
+			_, err := c.PutNetwork(ctx, "a", hostapi.NetworkRequest{Prefix: "10.1.0.0/16", RemoteMembers: []string{"10.0.2.7/32"}})
+			return err
+		}, "PUT", "/v1/networks/a", `"remoteMembers":["10.0.2.7/32"]`, hostapi.Network{}},
+		{"tunnel", func(c *hostapi.Client) error { _, err := c.Tunnel(ctx); return err }, "GET", "/v1/tunnel", "", hostapi.Tunnel{}},
+		{"resume on a network", func(c *hostapi.Client) error {
+			_, err := c.ResumeSnapshot(ctx, "s", hostapi.ResumeRequest{Name: "web2", Network: "a"})
+			return err
+		}, "POST", "/v1/snapshots/s/resume", `"network":"a"`, hostapi.MicroVM{}},
 		{"network get", func(c *hostapi.Client) error { _, err := c.Network(ctx, "a"); return err }, "GET", "/v1/networks/a", "", hostapi.Network{}},
 		{"networks", func(c *hostapi.Client) error { _, err := c.Networks(ctx); return err }, "GET", "/v1/networks", "", map[string]any{"networks": []any{}}},
 		{"network delete", func(c *hostapi.Client) error { return c.DeleteNetwork(ctx, "a") }, "DELETE", "/v1/networks/a", "", nil},
@@ -110,6 +119,28 @@ func TestClient_DecodesTheAnswers(t *testing.T) {
 	all, err := c.Snapshots(t.Context())
 	require.NoError(t, err)
 	assert.Len(t, all, 2)
+}
+
+func TestClient_DecodesTheTunnelAndTheMembership(t *testing.T) {
+	c, _, _ := serve(t, http.StatusOK, hostapi.Tunnel{PublicKey: "K", ListenPort: 51820, MachinePrefixes: []string{"10.0.0.0/24"}})
+	tun, err := c.Tunnel(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, hostapi.Tunnel{PublicKey: "K", ListenPort: 51820, MachinePrefixes: []string{"10.0.0.0/24"}}, tun)
+
+	c, _, _ = serve(t, http.StatusOK, hostapi.MicroVM{Name: "web", Network: "a", PodPrefix: "10.8.1.0/24"})
+	m, err := c.MicroVM(t.Context(), "web")
+	require.NoError(t, err)
+	assert.Equal(t, "a", m.Network)
+	assert.Equal(t, "10.8.1.0/24", m.PodPrefix)
+
+	c, _, _ = serve(t, http.StatusOK, hostapi.Network{Name: "a", Prefix: "10.8.0.0/16", RemoteMembers: []string{"10.0.2.7/32"}})
+	n, err := c.Network(t.Context(), "a")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"10.0.2.7/32"}, n.RemoteMembers)
+
+	raw, err := json.Marshal(hostapi.MicroVM{Name: "web"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), `"network":`, "a microVM on no network omits the field")
 }
 
 func TestClient_ARefusalIsATypedError(t *testing.T) {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -91,14 +92,68 @@ func (s *Server) getSnapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snapshotView(sn))
 }
 
-// deleteSnapshot deletes a snapshot; an absent one is 204. One a microVM is being resumed from is
-// 409.
+// snapshotDisks returns the disks the snapshots hold references to, which are the disks they need
+// to resume, except those of the snapshot named except.
+func (s *Server) snapshotDisks(ctx context.Context, except string) (map[string]bool, error) {
+	snaps, err := s.deps.Runtime.ListSnapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, sn := range snaps {
+		if sn.ID == except {
+			continue
+		}
+		for _, d := range sn.Disks {
+			out[d.ID] = true
+		}
+	}
+	return out, nil
+}
+
+// deleteSnapshot deletes a snapshot and the disks it was holding for a resume that no other
+// snapshot and no microVM needs; an absent one is 204. One a microVM is being resumed from is 409.
 func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := s.deps.Runtime.DeleteSnapshot(ctx, r.PathValue("name")); err != nil {
+	rt := s.deps.Runtime
+	name := r.PathValue("name")
+	sn, err := s.findSnapshot(ctx, name)
+	if err != nil && !errors.Is(err, mvmd.ErrNotFound) {
 		s.fail(w, err)
 		return
+	}
+	if err := rt.DeleteSnapshot(ctx, name); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if len(sn.Disks) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	needed, err := s.snapshotDisks(ctx, name)
+	if err == nil {
+		var machines []mvmd.Machine
+		if machines, err = rt.ListMachines(ctx); err == nil {
+			for _, m := range machines {
+				for _, d := range m.Disks {
+					needed[d.ID] = true
+				}
+			}
+		}
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	for _, d := range sn.Disks {
+		if needed[d.ID] {
+			continue
+		}
+		if err := rt.DeleteDisk(ctx, d.ID); err != nil && !errors.Is(err, mvmd.ErrNotFound) {
+			s.fail(w, err)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -124,10 +179,16 @@ func (s *Server) resumeSnapshot(w http.ResponseWriter, r *http.Request) {
 			fields = append(fields, "podPrefix")
 		}
 	}
+	if req.Network != "" && !dnsLabel.MatchString(req.Network) {
+		fields = append(fields, "network")
+	}
 	fields = append(fields, checkRules("networkPolicy.egress", req.NetworkPolicy.Egress)...)
 	fields = append(fields, checkRules("networkPolicy.ingress", req.NetworkPolicy.Ingress)...)
 	if len(fields) > 0 {
 		invalid(w, fields...)
+		return
+	}
+	if req.Network != "" && !s.checkNetwork(w, req.Network, req.PodPrefix) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), callTimeout)
@@ -139,10 +200,17 @@ func (s *Server) resumeSnapshot(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	if err := s.attach(ctx, req.Network, req.PodPrefix, m); err != nil {
+		// The microVM runs; delete it and keep its disks, which are the snapshot's.
+		_ = s.deps.Runtime.StopMachine(ctx, m.ID)
+		_ = s.deps.Runtime.DeleteMachine(ctx, m.ID)
+		s.networkFail(w, err)
+		return
+	}
 	sizes, err := diskSizes(ctx, s.deps.Runtime)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, view(m, sizes))
+	writeJSON(w, http.StatusCreated, s.view(m, sizes))
 }

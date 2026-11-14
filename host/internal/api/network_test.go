@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/hostapi"
 )
 
@@ -20,21 +21,21 @@ func TestNetwork_DeclareListGetDelete(t *testing.T) {
 
 	code, b := e.do(t, p, "PUT", "/v1/networks/a", hostapi.NetworkRequest{Prefix: "10.1.0.0/16", APIEndpoint: "10.1.0.2"})
 	require.Equal(t, 200, code, string(b))
-	assert.Contains(t, e.nft.ruleset(), "ip saddr 10.1.0.0/16 ip daddr 10.1.0.0/16 accept")
+	assert.Contains(t, e.nft.ruleset(), "ip saddr @net_a ip daddr @net_a accept")
 	assert.Contains(t, e.nft.ruleset(), "ip saddr 172.16.0.0/24 ip daddr 10.1.0.2 accept", "management reaches the API endpoint")
 
 	code, b = e.do(t, r, "GET", "/v1/networks", nil)
 	require.Equal(t, 200, code, string(b))
 	var list struct{ Networks []hostapi.Network }
 	require.NoError(t, json.Unmarshal(b, &list))
-	assert.Equal(t, []hostapi.Network{{Name: "a", Prefix: "10.1.0.0/16", APIEndpoint: "10.1.0.2"}}, list.Networks)
+	assert.Equal(t, []hostapi.Network{{Name: "a", Prefix: "10.1.0.0/16", APIEndpoint: "10.1.0.2", RemoteMembers: []string{}}}, list.Networks)
 
 	code, b = e.do(t, r, "GET", "/v1/networks/a", nil)
 	require.Equal(t, 200, code, string(b))
 
 	code, _ = e.do(t, p, "PUT", "/v1/networks/b", hostapi.NetworkRequest{Prefix: "10.2.0.0/16"})
 	require.Equal(t, 200, code)
-	assert.Contains(t, e.nft.ruleset(), "ip saddr 10.1.0.0/16 ip daddr { 10.2.0.0/16 } counter drop", "a network does not reach another")
+	assert.Contains(t, e.nft.ruleset(), "ip saddr @net_a ip daddr @networks counter drop", "a network does not reach another")
 
 	code, _ = e.do(t, p, "DELETE", "/v1/networks/b", nil)
 	assert.Equal(t, 204, code)
@@ -105,7 +106,8 @@ func TestNetwork_AMicroVMIsAttachedAtCreateAndDetachedAtDelete(t *testing.T) {
 	body["network"] = "a"
 	code, b := e.do(t, p, "POST", "/v1/microvms", body)
 	require.Equal(t, 201, code, string(b))
-	assert.Contains(t, e.nft.ruleset(), "elements = { 10.1.0.5 }", "the address mvmd gave is a known source of the network")
+	assert.Contains(t, e.nft.ruleset(), "elements = { 10.1.0.0/16 }", "the address mvmd gave is in the prefix already")
+	assert.Equal(t, []network.Member{{Network: "a", Address: netip.MustParseAddr("10.1.0.5")}}, e.nets.Members())
 
 	code, _ = e.do(t, p, "DELETE", "/v1/microvms/web", nil)
 	require.Equal(t, 204, code)
@@ -121,14 +123,24 @@ func TestNetwork_ACreateThatCannotAttachIsRefusedAndRemoved(t *testing.T) {
 	assert.Equal(t, 422, code, string(b))
 	assert.NotContains(t, e.rt.calls, "create web", "an undeclared network is refused before mvmd is called")
 
-	// The address mvmd gives (10.1.0.5) is outside this network.
+	// The address mvmd gives (10.1.0.5) need not be inside the prefix: only the pod prefix is.
 	code, _ = e.do(t, p, "PUT", "/v1/networks/far", hostapi.NetworkRequest{Prefix: "10.9.0.0/16"})
 	require.Equal(t, 200, code)
 	body["network"] = "far"
 	code, b = e.do(t, p, "POST", "/v1/microvms", body)
+	assert.Equal(t, 201, code, string(b))
+	assert.Equal(t, []network.Member{{Network: "far", Address: netip.MustParseAddr("10.1.0.5")}}, e.nets.Members())
+
+	// A pod prefix outside it is refused, and no microVM is made.
+	code, _ = e.do(t, p, "DELETE", "/v1/microvms/web", nil)
+	require.Equal(t, 204, code)
+	pod := osBody()
+	pod["network"] = "far"
+	pod["podPrefix"] = "10.7.0.0/24"
+	code, b = e.do(t, p, "POST", "/v1/microvms", pod)
 	assert.Equal(t, 422, code, string(b))
 	code, _ = e.do(t, p, "GET", "/v1/microvms/web", nil)
-	assert.Equal(t, 404, code, "the microVM that could not be attached was removed")
+	assert.Equal(t, 404, code, "no microVM was made")
 }
 
 func TestNetwork_PodPrefixMustBeInsideTheNetwork(t *testing.T) {
@@ -136,11 +148,17 @@ func TestNetwork_PodPrefixMustBeInsideTheNetwork(t *testing.T) {
 	p := e.as(t, ProvisionerOrganization)
 	code, _ := e.do(t, p, "PUT", "/v1/networks/a", hostapi.NetworkRequest{Prefix: "10.1.0.0/16"})
 	require.Equal(t, 200, code)
-	body := createBody()
+	body := osBody()
 	body["network"] = "a"
 	body["podPrefix"] = "10.7.0.0/24"
 	code, b := e.do(t, p, "POST", "/v1/microvms", body)
 	assert.Equal(t, 422, code, string(b))
+	assert.Contains(t, string(b), "podPrefix")
+	assert.NotContains(t, e.rt.calls, "createMachine web", "refused before mvmd is called")
+
+	body["podPrefix"] = "10.1.7.0/24"
+	code, b = e.do(t, p, "POST", "/v1/microvms", body)
+	assert.Equal(t, 201, code, string(b))
 }
 
 func TestPeers_SetGetAndRefusals(t *testing.T) {
@@ -156,15 +174,11 @@ func TestPeers_SetGetAndRefusals(t *testing.T) {
 	require.NoError(t, json.Unmarshal(b, &got))
 	assert.Equal(t, peers, got.Peers)
 
-	var wg []string
+	assert.Equal(t, []network.Peer{{Name: "h2", PublicKey: keyOne, Endpoint: netip.MustParseAddrPort("192.0.2.2:51820"), Prefixes: []netip.Prefix{netip.MustParsePrefix("10.1.1.0/24"), netip.MustParsePrefix("10.2.0.0/24")}}}, e.tunnel.peers,
+		"the tunnel is given the peer with only the prefixes it holds")
 	for _, c := range e.nft.calls {
-		if c[0] == "wg" && c[1] == "set" {
-			wg = c
-		}
+		assert.NotEqual(t, "wg", c[0], "the host no longer runs wg")
 	}
-	assert.Contains(t, wg, "allowed-ips")
-	assert.Contains(t, wg, "10.1.1.0/24,10.2.0.0/24", "the tunnel allows the peer only the prefixes it holds")
-	assert.Contains(t, wg, "/run/naru-hostd/wg.key", "the key is read from its file")
 
 	code, b = e.do(t, r, "GET", "/v1/peers", nil)
 	require.Equal(t, 200, code, string(b))

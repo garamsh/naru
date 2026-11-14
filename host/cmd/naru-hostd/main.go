@@ -42,11 +42,12 @@ func main() {
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 
 		management = flag.String("management-prefix", "", "prefix of the management plane; set, it turns the virtual networks on")
-		hostAddrs  = flag.String("host-addrs", "", "comma-separated addresses of this host that no network may reach")
+		_          = flag.String("host-addrs", "", "ignored: the input chain drops a new connection from any microVM to any address of this host")
 		tapPrefix  = flag.String("tap-prefix", "tap", "name prefix of the microVMs' tap devices, for the forged-source rule")
 		egress     = flag.String("egress-interface", "", "interface the networks' egress leaves by; empty gives them none")
-		tunnel     = flag.String("tunnel", "wg-naru", "name of the WireGuard interface, which must exist; empty turns the tunnel off")
-		tunnelKey  = flag.String("tunnel-key", "/run/naru-hostd/wg.key", "file of the tunnel's private key, mode 0600")
+		tunnel     = flag.String("tunnel", "wg-naru", "name of the WireGuard interface, which hostd creates; empty turns the tunnel off")
+		tunnelKey  = flag.String("tunnel-key", "/var/lib/naru/hostd/wg.key", "the tunnel's private key, generated 0600 on first start")
+		netState   = flag.String("networks-state", "/var/lib/naru/hostd/networks.json", "file the networks, members and peers are kept in across restarts, mode 0600")
 		tunnelPort = flag.Int("tunnel-port", 51820, "UDP port the tunnel listens on")
 	)
 	flag.Parse()
@@ -54,7 +55,10 @@ func main() {
 
 	var nets api.Networks
 	if *management != "" {
-		m, err := networkManager(*management, *hostAddrs, *tapPrefix, *egress, *tunnel, *tunnelKey, *tunnelPort)
+		m, err := networkManager(context.Background(), networkConfig{
+			management: *management, tapPrefix: *tapPrefix, egress: *egress,
+			tunnel: *tunnel, tunnelKey: *tunnelKey, tunnelPort: *tunnelPort, state: *netState,
+		})
 		if err != nil {
 			log.Error("cannot set up the virtual networks", "err", err.Error())
 			os.Exit(1)

@@ -121,9 +121,11 @@ type Snapshot struct {
 }
 
 // ResumeRequest is the body of POST /v1/snapshots/{name}/resume: the new microVM's name, its
-// network policy and its routed prefix, which the snapshot does not carry.
+// network policy, its routed prefix and the network it is attached to, which the snapshot does
+// not carry. As in a create, the pod prefix must be inside the network's prefix.
 type ResumeRequest struct {
 	Name          string `json:"name"`
 	NetworkPolicy Policy `json:"networkPolicy"`
+	Network       string `json:"network,omitempty"`
 	PodPrefix     string `json:"podPrefix,omitempty"`
 }

@@ -46,10 +46,20 @@ replace github.com/garamsh/naru/lib/metrics => ../lib/metrics
 
 replace github.com/garamsh/naru/lib/init => ../lib/init
 
-require github.com/garamsh/naru/lib/init v0.0.0-00010101000000-000000000000
+require (
+	github.com/garamsh/naru/lib/init v0.0.0-00010101000000-000000000000
+	github.com/vishvananda/netlink v1.3.1
+	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
+)
 
 require (
-	github.com/vishvananda/netlink v1.3.1 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/josharian/native v1.1.0 // indirect
+	github.com/mdlayher/genetlink v1.3.2 // indirect
+	github.com/mdlayher/netlink v1.7.2 // indirect
+	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173 // indirect
 )
