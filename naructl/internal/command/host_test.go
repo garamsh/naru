@@ -164,6 +164,19 @@ func TestMicrovm_CreateGetListDeleteSpeakTheHostAPIOverMutualTLS(t *testing.T) {
 	assert.EqualValues(t, 2, got["cpu"])
 	assert.Equal(t, []any{map[string]any{"name": "data", "sizeBytes": float64(1024), "readOnly": true}}, got["disks"])
 
+	assert.NotContains(t, got, "network", "a microVM is on no network unless it is asked to be")
+
+	out, err = run(t, "microvm", "create", "--config", cfg, "--name", "web", "--image", "r.example/app@sha256:"+d("1"), "--network", "neta")
+	require.NoError(t, err, out)
+	assert.EqualValues(t, "neta", got["network"])
+	body := filepath.Join(t.TempDir(), "r.json")
+	require.NoError(t, os.WriteFile(body, []byte(`{"name":"web","image":"r.example/app@sha256:`+d("1")+`","cpu":1,"memory":1024,"network":"netb"}`), 0o600))
+	out, err = run(t, "microvm", "create", "--config", cfg, "-f", body)
+	require.NoError(t, err, out)
+	assert.EqualValues(t, "netb", got["network"], "the file's request names the network too")
+	_, err = run(t, "microvm", "create", "--config", cfg, "-f", body, "--network", "neta")
+	assert.Error(t, err, "-f and --network do not mix")
+
 	out, err = run(t, "microvm", "list", "--config", cfg)
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "10.200.1.2")

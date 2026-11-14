@@ -101,6 +101,8 @@ type MicroVMSpec struct {
 	Seed      []byte `json:"seed,omitempty"`
 	DataDisk  uint64 `json:"dataDisk,omitempty"`
 	PodPrefix string `json:"podPrefix,omitempty"`
+	// Network is the declared network the microVM is created on; absent, it is on none.
+	Network string `json:"network,omitempty"`
 	// RestartOnBoot is whether mvmd starts the microVM again after the host reboots; absent, the
 	// host decides by the form (true for the OS form, false for the image form).
 	RestartOnBoot *bool `json:"restartOnBoot,omitempty"`
