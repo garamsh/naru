@@ -120,6 +120,11 @@ func (g groupJSON) count(phase string) int {
 
 // groupFile is the group's spec as the operator's file, with the knobs the scenarios change.
 func (f *fleet) groupFile(name string, count, memoryMiB int, extra string) string {
+	// A stateful group may not surge: two instances would run at once.
+	surge := 1
+	if strings.Contains(extra, "stateful: true") {
+		surge = 0
+	}
 	return f.file(fmt.Sprintf("%s-%d-%d.yaml", name, count, memoryMiB), fmt.Sprintf(`name: %s
 count: %d
 region: eu-1
@@ -129,9 +134,9 @@ template:
   memoryMiB: %d
   version: %s@%s
   rootDiskBytes: 1073741824
-rollout: {maxUnavailable: 1, maxSurge: 1}
+rollout: {maxUnavailable: 1, maxSurge: %d}
 minAvailable: %d
-%s`, name, count, memoryMiB, inputs.Image.Repository, inputs.Image.Digest, max(count-1, 0), extra))
+%s`, name, count, memoryMiB, inputs.Image.Repository, inputs.Image.Digest, surge, max(count-1, 0), extra))
 }
 
 func TestFleet_OrchLeaderLossElectsAnotherAndEnrollmentKeepsTheRegionLabelsAndTheCodeIsTheConsoles(t *testing.T) {
@@ -380,7 +385,7 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 }
 
 func TestFleet_GroupsKeepTheCountRollDrainReplaceOnALabelChangeAndFenceAStatefulMember(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1536})
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1536, vmCPUs: 4})
 	f.startOrch()
 	key := f.enrollmentKey()
 	ids := map[int]string{}
