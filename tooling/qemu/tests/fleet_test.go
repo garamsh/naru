@@ -252,7 +252,15 @@ func (f *fleet) personOf(name, key, certFile string, cert *x509.Certificate) per
 func (f *fleet) genFlags(c node.Config) []string {
 	flags := []string{"--metrics-listen", node.HostNICAddress}
 	if c.Index > f.opts.controls {
-		return append(flags, "--host-management-prefix", managementPrefix, "--host-egress-interface", "eth0", "--host-tunnel-port", "51820")
+		flags = append(flags, "--host-management-prefix", managementPrefix, "--host-egress-interface", "eth0", "--host-tunnel-port", "51820")
+		// mvmd masquerades a Machine's traffic that leaves the Node, which the tunnel's peer refuses as a
+		// source it does not hold: another host's Machine prefix keeps the source address.
+		for _, h := range f.hosts() {
+			if h != c.Index {
+				flags = append(flags, "--no-masquerade", fmt.Sprintf("10.77.%d.0/24", h))
+			}
+		}
+		return flags
 	}
 	flags = append(flags, "--signer", "--signer-peer-listen", nodeIP(c.Index)+":"+signerPeerPort,
 		"--signer-peer-name", nodeIP(c.Index), "--signer-peer-name", fmt.Sprintf("node-%d", c.Index))
