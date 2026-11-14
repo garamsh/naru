@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -63,6 +64,9 @@ type Orch struct {
 	// Certificate is orch's certificate then the authority's, CA the authority's and
 	// RevocationPublicKey the PKIX PEM of the revocation key: all PEM.
 	Certificate, CA, RevocationPublicKey string
+	// HostCA is the PEM of the authority the hosts' API certificates chain to, which orch trusts
+	// for them; orch presents its own certificate to the hosts. Empty leaves orch trusting CA.
+	HostCA string
 	// RecoveryPublicKey is the recovery key's public half, a JSON document; empty writes no snapshot.
 	RecoveryPublicKey string
 	// Key is the PEM of orch's private key. It is written to the file and never printed.
@@ -115,6 +119,7 @@ type orchSpec struct {
 	Certificate         string            `yaml:"certificate"`
 	CA                  string            `yaml:"ca"`
 	RevocationPublicKey string            `yaml:"revocationPublicKey"`
+	HostCA              string            `yaml:"hostCA,omitempty"`
 	RecoveryPublicKey   string            `yaml:"recoveryPublicKey,omitempty"`
 	Restore             bool              `yaml:"restore,omitempty"`
 }
@@ -173,6 +178,9 @@ func (n Node) checkDaemons() error {
 		if o.Certificate == "" || o.CA == "" || o.RevocationPublicKey == "" || o.Key == "" {
 			return errors.New("orch needs its certificate, the authority, the revocation public key and its key")
 		}
+		if o.HostCA != "" && !x509.NewCertPool().AppendCertsFromPEM([]byte(o.HostCA)) {
+			return errors.New("the host authority orch trusts is not a PEM certificate")
+		}
 		if s := o.State; s != "" && s != "new" && s != "existing" {
 			return fmt.Errorf(`the initial cluster state is "new" or "existing", not %q`, s)
 		}
@@ -217,7 +225,7 @@ func (n Node) daemonSpecs(c *nodeConfig) {
 		c.Spec.Orch = &orchSpec{
 			PeerURL: o.PeerURL, ClientURL: o.ClientURL, InitialCluster: o.InitialCluster, InitialClusterState: o.State,
 			Listen: o.Listen, SANs: o.SANs, Certificate: o.Certificate, CA: o.CA,
-			RevocationPublicKey: o.RevocationPublicKey, RecoveryPublicKey: o.RecoveryPublicKey, Restore: o.Restore,
+			RevocationPublicKey: o.RevocationPublicKey, HostCA: o.HostCA, RecoveryPublicKey: o.RecoveryPublicKey, Restore: o.Restore,
 		}
 		c.Spec.Files = append(c.Spec.Files, file{Path: OrchKeyFile, Mode: "0600", Content: o.Key, Owner: &fileOwner{UID: OrchUID, GID: OrchUID}})
 	}

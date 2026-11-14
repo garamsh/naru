@@ -59,10 +59,16 @@ func newAuthority(t *testing.T, cn string) authority {
 // issue returns a certificate signed by the authority, as a tls pair.
 func (a authority) issue(t *testing.T, orgs []string, server bool) (tls.Certificate, []byte, []byte) {
 	t.Helper()
+	return a.issueSubject(t, pkix.Name{CommonName: "t", Organization: orgs}, server)
+}
+
+// issueSubject is issue for a certificate of the given subject.
+func (a authority) issueSubject(t *testing.T, subject pkix.Name, server bool) (tls.Certificate, []byte, []byte) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	tpl := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: "t", Organization: orgs},
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: subject,
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}

@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/netip"
@@ -30,6 +31,9 @@ type Host struct {
 	CA     *pki.CA
 	Region string
 	Labels map[string]string
+	// ClientCA is the PEM of the authority orch's certificate chains to, which naru-hostd trusts
+	// for its clients beside the host authority; empty trusts the host authority alone.
+	ClientCA string
 }
 
 var (
@@ -45,6 +49,9 @@ func (h Host) check() error {
 	}
 	if !dnsLabel.MatchString(h.Region) {
 		return fmt.Errorf("the host region %q is not a DNS label", h.Region)
+	}
+	if h.ClientCA != "" && !x509.NewCertPool().AppendCertsFromPEM([]byte(h.ClientCA)) {
+		return fmt.Errorf("the authority naru-hostd trusts for orch is not a PEM certificate")
 	}
 	for k, v := range h.Labels {
 		prefix, name, found := strings.Cut(k, "/")
@@ -94,10 +101,16 @@ func (n Node) hostFiles() ([]file, error) {
 	if err != nil {
 		return nil, fmt.Errorf("issue naru-hostd's serving pair: %w", err)
 	}
+	// The clients are checked against a bundle: the host authority's certificate, then orch's
+	// authority when orch reaches this host with its own pair.
+	clientCA := string(n.Host.CA.CertPEM)
+	if n.Host.ClientCA != "" {
+		clientCA = strings.TrimSuffix(clientCA, "\n") + "\n" + n.Host.ClientCA
+	}
 	return []file{
 		{Path: path.Join(HostDir, "tls.crt"), Mode: "0644", Content: string(pair.CertPEM)},
 		{Path: path.Join(HostDir, "tls.key"), Mode: "0600", Content: string(pair.KeyPEM)},
-		{Path: path.Join(HostDir, "client-ca.crt"), Mode: "0644", Content: string(n.Host.CA.CertPEM)},
+		{Path: path.Join(HostDir, "client-ca.crt"), Mode: "0644", Content: clientCA},
 	}, nil
 }
 

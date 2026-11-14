@@ -23,6 +23,7 @@ type daemonFlags struct {
 	signerPeerNames                                                        list
 	orchPeerURL, orchClientURL, orchState, orchListen                      string
 	orchCert, orchCA, orchRevocation, orchRecovery, orchKey, metricsListen string
+	orchHostCA                                                             string
 	orchRestore                                                            bool
 	orchCluster, orchSANs                                                  list
 }
@@ -88,7 +89,7 @@ func genNodeDaemons(n *layout.Node, f daemonFlags) error {
 			flag, path string
 			into       *string
 		}{
-			{"orch-certificate", f.orchCert, &o.Certificate}, {"orch-ca", f.orchCA, &o.CA},
+			{"orch-certificate", f.orchCert, &o.Certificate}, {"orch-ca", f.orchCA, &o.CA}, {"orch-host-ca", f.orchHostCA, &o.HostCA},
 			{"orch-revocation-public-key", f.orchRevocation, &o.RevocationPublicKey},
 			{"orch-recovery-public", f.orchRecovery, &o.RecoveryPublicKey}, {"orch-key", f.orchKey, &o.Key},
 		} {
