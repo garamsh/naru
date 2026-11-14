@@ -18,7 +18,7 @@ const (
 )
 
 // BundleName is the name of the upgrade bundle asset of a release.
-func BundleName(version string) string { return "naru-upgrade-" + version + ".tar" }
+func BundleName(version string) string { return "naru-host-upgrade-" + version + ".tar" }
 
 // BundleManifestJSON is the manifest of an upgrade bundle.
 type BundleManifestJSON struct {

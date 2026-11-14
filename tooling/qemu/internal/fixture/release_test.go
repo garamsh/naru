@@ -27,7 +27,7 @@ func fakeRelease(t *testing.T) string {
 	require.NoError(t, err)
 	boot := filepath.Join(work, "boot.img")
 	require.NoError(t, os.WriteFile(boot, make([]byte, 1<<20), 0o644))
-	for from, to := range map[string]string{raw: "naru-data-v1.qcow2", boot: "naru-v1.qcow2"} {
+	for from, to := range map[string]string{raw: "naru-data-v1.qcow2", boot: fixture.BootDiskName("v1")} {
 		out, err := exec.Command("qemu-img", "convert", "-f", "raw", "-O", "qcow2", from, filepath.Join(dir, to)).CombinedOutput()
 		require.NoError(t, err, string(out))
 	}
@@ -68,6 +68,45 @@ func TestReadRelease_ReadsTheInputsTreeFromTheDataDiskAndTheFirecrackerDigestAnd
 	info, err = os.Stat(r.Naructl)
 	require.NoError(t, err, "the release's naructl asset")
 	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm(), "a downloaded asset is made executable")
+}
+
+func TestBootDiskName_IsNaruHostAndTheVersion(t *testing.T) {
+	assert.Equal(t, "naru-host-v1.qcow2", fixture.BootDiskName("v1"))
+}
+
+func TestReadRelease_ReadsTheBootDiskOfAReleaseMadeBeforeTheRename(t *testing.T) {
+	dir := fakeRelease(t)
+	require.NoError(t, os.Rename(filepath.Join(dir, "naru-host-v1.qcow2"), filepath.Join(dir, "naru-v1.qcow2")))
+
+	r, err := fixture.ReadRelease(dir, t.TempDir())
+
+	require.NoError(t, err)
+	assert.FileExists(t, r.BootDisk)
+}
+
+func TestReadRelease_PrefersTheNaruHostBootDiskWhenBothNamesExist(t *testing.T) {
+	dir := fakeRelease(t)
+	big := filepath.Join(t.TempDir(), "big.img")
+	require.NoError(t, os.WriteFile(big, make([]byte, 2<<20), 0o644))
+	out, err := exec.Command("qemu-img", "convert", "-f", "raw", "-O", "qcow2", big, filepath.Join(dir, "naru-v1.qcow2")).CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	r, err := fixture.ReadRelease(dir, t.TempDir())
+
+	require.NoError(t, err)
+	info, err := os.Stat(r.BootDisk)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1<<20), info.Size(), "the 1 MiB naru-host disk, not the 2 MiB legacy one")
+}
+
+func TestReadRelease_NamesBothBootDiskNamesAReleaseLacks(t *testing.T) {
+	dir := fakeRelease(t)
+	require.NoError(t, os.Remove(filepath.Join(dir, "naru-host-v1.qcow2")))
+
+	_, err := fixture.ReadRelease(dir, t.TempDir())
+
+	assert.ErrorContains(t, err, "naru-host-v1.qcow2")
+	assert.ErrorContains(t, err, "naru-v1.qcow2")
 }
 
 func TestReadRelease_NamesTheAssetAReleaseLacks(t *testing.T) {

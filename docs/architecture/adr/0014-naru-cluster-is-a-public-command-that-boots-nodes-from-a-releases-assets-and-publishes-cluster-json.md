@@ -40,3 +40,7 @@ Drafted for garamsh/naru#38, part of goal garamsh/naru#34. It adds to [ADR 0012]
 
 - A harness needs a field `cluster.json` lacks often enough that adding fields is routine, which says the file should be derived from the Nodes and not stated by hand.
 - The release's inputs asset drifts from what the tests stage, which would say the tests should read the release too.
+
+## Errata
+
+- 2026-11-15: renamed in [ADR 0056](./0056-the-hosts-release-assets-are-named-naru-host-the-boot-disk-naru-host-version-qcow2-and-the-upgrade-bundle-naru-host-upgrade-version-tar.md): the boot disk is `naru-host-<version>.qcow2` from the release after `v0.1.0-dev.8`, and `naru-cluster` reads `naru-<version>.qcow2` only when the release has no file under the new name.
