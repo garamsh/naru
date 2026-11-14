@@ -1,5 +1,6 @@
 // Package release writes the assets a deployment of naru Nodes is made from: the boot disk, the
-// upgrade bundle (the kernel with its initramfs, for A/B boot), one
+// upgrade bundle (the kernel with its initramfs, for A/B boot), the Node boot set (a kernel and an
+// initramfs a host takes with no reboot, and the manifest that names them), one
 // data disk that carries the test inputs and nothing of any Node, the guest manifest (the names
 // and SHA-256 of the guest kernels and initrds the boot disk carries), the inputs file (the Firecracker
 // digest and the test image's reference), a test-only NoCloud
@@ -170,6 +171,10 @@ type Options struct {
 	// says the release's notes tell those Nodes to be recreated (ADR 0037).
 	PrevManifest       string
 	RequiresRecreation bool
+	// Figures is the path of a file Build writes the figures of the release's notes to (the ESP
+	// size and the largest in-place upgrade kernel), or empty for none. It is outside Out, whose
+	// every file is an asset.
+	Figures string
 }
 
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
@@ -230,6 +235,14 @@ func Build(o Options) ([]Asset, error) {
 		return nil, fmt.Errorf("the upgrade bundle (make image): %w", err)
 	}
 	names = append(names, bundle)
+
+	// The Node boot set: the kernel and initramfs of the guest form that runs a naru Node as a
+	// microVM, with a manifest a host is given by name (ADR 0046).
+	bsKernel, bsInitramfs, bsManifest := BootSetAssets(o.Version)
+	if err := WriteBootSet(o.Out, o.Version, filepath.Join(o.GuestDir, "boot-sets", NodeBootSet, "vmlinux"), filepath.Join(o.ImageDir, "node-initrd.cpio.gz")); err != nil {
+		return nil, fmt.Errorf("the Node boot set (make image): %w", err)
+	}
+	names = append(names, bsKernel, bsInitramfs, bsManifest)
 
 	data := "naru-data-" + o.Version + ".qcow2"
 	if out, err := exec.Command("qemu-img", "convert", "-f", "raw", "-O", "qcow2", raw, filepath.Join(o.Out, data)).CombinedOutput(); err != nil { //nolint:gosec // paths built here
@@ -310,6 +323,15 @@ func Build(o Options) ([]Asset, error) {
 	}
 	if err := os.WriteFile(filepath.Join(o.Out, "SHA256SUMS"), []byte(sums.String()), 0o644); err != nil { //nolint:gosec // published with the assets
 		return nil, err
+	}
+	if o.Figures != "" {
+		info, err := os.Stat(kernel)
+		if err != nil {
+			return nil, err
+		}
+		if err := WriteFigures(o.Figures, FiguresOf(info.Size(), esp)); err != nil {
+			return nil, err
+		}
 	}
 	return assets, nil
 }

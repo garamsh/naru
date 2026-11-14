@@ -1,14 +1,18 @@
 package command_test
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -227,4 +231,105 @@ func TestMicrovmCreate_TheOSFormFlagsSendTheBootSetAndTheSeedAndRefuseTheImageFo
 	assert.Error(t, err, "an image and a boot set do not mix")
 	_, err = run(t, "microvm", "create", "--config", cfg, "--name", "vm", "--boot-set", "alpine", "--data-disk", "4096")
 	assert.Error(t, err, "the OS form needs a seed")
+}
+
+// release writes the files of a release's boot set into a directory and returns the manifest's path.
+func releaseBootSet(t *testing.T, kernel, initramfs string) string {
+	t.Helper()
+	dir := t.TempDir()
+	sum := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "naru-node-kernel-v1"), []byte(kernel), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "naru-node-initramfs-v1"), []byte(initramfs), 0o600))
+	manifest := `{"name":"naru-node-v1","version":"v1",` +
+		`"kernel":{"file":"naru-node-kernel-v1","sha256":"` + sum(kernel) + `","bytes":` + strconv.Itoa(len(kernel)) + `},` +
+		`"initramfs":{"file":"naru-node-initramfs-v1","sha256":"` + sum(initramfs) + `","bytes":` + strconv.Itoa(len(initramfs)) + `}}`
+	p := filepath.Join(dir, "naru-node-v1.json")
+	require.NoError(t, os.WriteFile(p, []byte(manifest), 0o600))
+	return p
+}
+
+func TestHostBootSet_AddStreamsTheManifestsFilesInOrderAndRemoveNamesTheSet(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "host-ca", "--ca-dir", dep.ca)
+	got := map[string]string{}
+	var order []string
+	var removed string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/boot-sets", func(w http.ResponseWriter, r *http.Request) {
+		mr, err := r.MultipartReader()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		for {
+			p, err := mr.NextPart()
+			if err != nil {
+				break
+			}
+			b, _ := io.ReadAll(p)
+			got[p.FormName()] = string(b)
+			order = append(order, p.FormName())
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	mux.HandleFunc("DELETE /v1/boot-sets/{name}", func(w http.ResponseWriter, r *http.Request) {
+		removed = r.PathValue("name")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	addr := hostServer(t, dep, mux)
+	cfg := filepath.Join(t.TempDir(), "c.yaml")
+	mustRun(t, "gen", "host-client", "--ca-dir", dep.ca, "--role", "provisioner", "--endpoint", addr, "--out", cfg)
+	manifest := releaseBootSet(t, "the kernel", "the initramfs")
+
+	out, err := run(t, "host", "boot-set", "add", manifest, "--config", cfg)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "added boot set naru-node-v1")
+	assert.Equal(t, []string{"boot-set", "kernel", "initramfs"}, order)
+	assert.Equal(t, "the kernel", got["kernel"])
+	assert.Equal(t, "the initramfs", got["initramfs"])
+	var req map[string]string
+	require.NoError(t, json.Unmarshal([]byte(got["boot-set"]), &req))
+	assert.Equal(t, map[string]string{
+		"name": "naru-node-v1", "kernelSha256": sha256Hex("the kernel"), "initramfsSha256": sha256Hex("the initramfs"),
+	}, req)
+
+	out, err = run(t, "host", "boot-set", "remove", "naru-node-v1", "--config", cfg)
+	require.NoError(t, err, out)
+	assert.Equal(t, "naru-node-v1", removed)
+
+	_, err = run(t, "host", "boot-set", "add", "--config", cfg)
+	assert.Error(t, err, "add needs a manifest")
+	_, err = run(t, "host", "boot-set", "frob", "--config", cfg)
+	assert.Error(t, err)
+}
+
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+func TestHostBootSet_AddReportsTheHostsRefusalAndRefusesAManifestThatNamesAPath(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "host-ca", "--ca-dir", dep.ca)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/boot-sets", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"error":"the kernel's SHA-256 is not the one named"}`))
+	})
+	addr := hostServer(t, dep, mux)
+	cfg := filepath.Join(t.TempDir(), "c.yaml")
+	mustRun(t, "gen", "host-client", "--ca-dir", dep.ca, "--role", "provisioner", "--endpoint", addr, "--out", cfg)
+
+	out, err := run(t, "host", "boot-set", "add", releaseBootSet(t, "k", "i"), "--config", cfg)
+	require.Error(t, err)
+	assert.Contains(t, out, "422")
+	assert.Contains(t, out, "SHA-256")
+
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "naru-node-v1.json")
+	require.NoError(t, os.WriteFile(bad, []byte(`{"name":"x","version":"v1","kernel":{"file":"../etc/passwd","sha256":"`+d("a")+`","bytes":1},"initramfs":{"file":"i","sha256":"`+d("b")+`","bytes":1}}`), 0o600))
+	out, err = run(t, "host", "boot-set", "add", bad, "--config", cfg)
+	require.Error(t, err)
+	assert.Contains(t, out, "not a file name")
 }

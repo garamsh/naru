@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -442,4 +443,70 @@ func policyToProto(p Policy) *v1alpha2.NetworkPolicy {
 
 func policyFromProto(p *v1alpha2.NetworkPolicy) Policy {
 	return Policy{Egress: rulesFromProto(p.GetEgress()), Ingress: rulesFromProto(p.GetIngress())}
+}
+
+// bootSetChunk is the size of one message of an AddBootSet stream.
+const bootSetChunk = 1 << 20
+
+func (g *GRPC) AddBootSet(ctx context.Context, set BootSet, kernel, initrd io.Reader) error {
+	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.AddBootSetResponse, error) {
+		stream, err := c.AddBootSet(ctx)
+		if err != nil {
+			return nil, err
+		}
+		start := &v1alpha2.AddBootSetRequest{Part: &v1alpha2.AddBootSetRequest_Start{Start: &v1alpha2.AddBootSetStart{
+			Name: set.Name, KernelDigest: set.KernelDigest, InitrdDigest: set.InitrdDigest,
+		}}}
+		if err := sendBootSet(stream, start, kernel, func(b []byte) *v1alpha2.AddBootSetRequest {
+			return &v1alpha2.AddBootSetRequest{Part: &v1alpha2.AddBootSetRequest_KernelChunk{KernelChunk: b}}
+		}, initrd, func(b []byte) *v1alpha2.AddBootSetRequest {
+			return &v1alpha2.AddBootSetRequest{Part: &v1alpha2.AddBootSetRequest_InitrdChunk{InitrdChunk: b}}
+		}); err != nil {
+			// A send that fails with io.EOF means the server ended the stream: its status is the reason.
+			if errors.Is(err, io.EOF) {
+				_, err = stream.CloseAndRecv()
+			}
+			return nil, err
+		}
+		return stream.CloseAndRecv()
+	})
+	return err
+}
+
+// sendBootSet sends start, then the kernel's chunks, then the initrd's, each as wrapped.
+func sendBootSet(stream v1alpha2.RuntimeService_AddBootSetClient, start *v1alpha2.AddBootSetRequest,
+	kernel io.Reader, kernelMsg func([]byte) *v1alpha2.AddBootSetRequest,
+	initrd io.Reader, initrdMsg func([]byte) *v1alpha2.AddBootSetRequest,
+) error {
+	if err := stream.Send(start); err != nil {
+		return err
+	}
+	for _, part := range []struct {
+		r   io.Reader
+		msg func([]byte) *v1alpha2.AddBootSetRequest
+	}{{kernel, kernelMsg}, {initrd, initrdMsg}} {
+		buf := make([]byte, bootSetChunk)
+		for {
+			n, err := part.r.Read(buf)
+			if n > 0 {
+				if err := stream.Send(part.msg(buf[:n])); err != nil {
+					return err
+				}
+			}
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return fmt.Errorf("read the boot set's file: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (g *GRPC) RemoveBootSet(ctx context.Context, name string) error {
+	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.RemoveBootSetResponse, error) {
+		return c.RemoveBootSet(ctx, &v1alpha2.RemoveBootSetRequest{Name: name})
+	})
+	return err
 }

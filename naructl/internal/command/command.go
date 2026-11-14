@@ -34,7 +34,10 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
   microvm create --name <name> --boot-set <set> --seed <user-data file> --data-disk <bytes> [--cmdline <args>] [--pod-prefix <cidr>] [--cpu n] [--memory bytes]
               the OS form, in place of --image, --root-disk and --disk
   microvm stop <name> | microvm start <name> | microvm delete <name>
-              the same flags; create, stop, start and delete need the provisioner role
+  host boot-set add <naru-node-<version>.json> | host boot-set remove <name>
+              add a release's kernel and initramfs (the files its manifest names, beside it) to the host
+              as a boot set with no reboot, or remove one
+              all of these take the same flags; create, stop, start, delete and boot-set need the provisioner role
   orch init --out-dir <dir> --passphrase-file <file>    write the recovery key, encrypted, and its public half
   orch backup | orch restore --snapshot <file> --recovery-key <file> --passphrase-file <file> --out <file>
   enroll-key create [--ttl d] | enroll-key revoke <id>  | host pending | host admit <id> --code <code> --region <r> [--label k=v]
