@@ -4,7 +4,7 @@ What `naru-signer` is: the one process that holds the keys of naru's authorities
 
 ## Current decisions
 
-- **`naru-signer` is a binary of the `host/` module,** with its code in `host/internal/signer` and its composition in `host/cmd/naru-signer`. It imports `lib/identity` and no other unit. The image does not carry it yet.
+- **`naru-signer` is a binary of the `host/` module,** with its code in `host/internal/signer` and its composition in `host/cmd/naru-signer`. It imports `lib/identity` and no other unit. The image carries it as `/bin/naru-signer` ([ADR 0050](./adr/0050-the-image-carries-orch-and-the-signer-and-init-runs-them-as-separate-users-from-spec-orch-spec-signer-and-spec-metrics.md)).
 - **Its directory holds every key and is private.** `--dir` (default `/var/lib/naru/signer`) must be mode 0700 and owned by the user the signer runs as, or it refuses to start. Each file is 0600; a key file with a wider mode, or a directory with some of the authorities and not all, is refused at start.
 - **What `init` makes.** The host, operator and orch authorities (ECDSA P-256, ten years), the revocation key (Ed25519), the first root certificate for a certificate request the caller supplies, and the empty revocation list at sequence 1. It records the recovery key's public half and writes the revocation key's public half as a PKIX PEM (`--revocation-public-key`), which orch verifies the list with. A directory that holds authorities is not initialised again.
 - **Roles and who may do what.**
@@ -31,6 +31,7 @@ What `naru-signer` is: the one process that holds the keys of naru's authorities
 - **No authority key leaves the directory unencrypted.** The bundle and the replication answer are sealed; the operator's key is in its encrypted person file; the recovery key is encrypted. A test scans a bootstrap's temporary root for private keys outside the directory.
 - **`naructl operator add|revoke`** signs a request with the person file given by `--admin` (opened with `--passphrase-file`) and sends it to the socket; `add` takes the certificate request by path and writes the issued certificate.
 
+- **Deployment.** A Node runs it from `spec.signer` ([config.md](./config.md)): init runs `naru-signer serve` as user and group 6001 with `--dir=/var/lib/naru/signer` (0700, owned by 6001) and its socket `/run/naru-signer/signer.sock`, whose group is 6001; orch's user is 6002 with 6001 as a supplementary group, so it reaches the socket and cannot read the directory. A `bootstrap` makes init run `naru-signer init` once, while the directory has no `recovery-public.json`. A `replica` makes it run `join-key` at the first start, printing the public join key (base64 of the 32 bytes) on the console, and, once root has authorised the key for the host ID `metadata.name`, `join` against `replica.join.peer` pinned to `replica.join.peerCA`; neither runs again once the directory holds authorities. `--metrics-addr` serves `naru_signer_http_requests_total` by listener, method and code. ([ADR 0050](./adr/0050-the-image-carries-orch-and-the-signer-and-init-runs-them-as-separate-users-from-spec-orch-spec-signer-and-spec-metrics.md))
 ### Making and using identities with naructl
 
 - **`naructl operator request`** writes a new ECDSA key (0600, never printed) and the certificate request for it; `--der` writes the DER that `naru-signer init --root-csr` reads. **`naructl operator person`** joins that key and its issued certificate into the encrypted person file, and removes the plain key.
@@ -49,4 +50,3 @@ What `naru-signer` is: the one process that holds the keys of naru's authorities
 
 - **aurora#811 A4 is not built:** `naructl login` with a second factor and short-lived certificates, re-confirmation of dangerous actions, passkeys, hardware keys and single sign-on.
 - **Renewal of a host certificate,** and a subject alternative name for it.
-- **Placing the signer in a deployment:** its user, its socket's group and its place in the image are not decided.
