@@ -192,7 +192,7 @@ func sampleOrch() *fakeOrch {
 		},
 		fleet: &fakeFleet{
 			vms: map[string][]console.MicroVM{
-				"host-a": {{Name: "web-1", State: "running", Group: "web", Image: "reg/web@sha256:aa"}},
+				"host-a": {{Name: "web-1", State: "running", Group: "web", Image: "reg/web@sha256:aa", Network: "lab"}},
 				"host-b": {{Name: "db-0", State: "stopped", Group: "db", Image: "reg/db@sha256:bb"}},
 			},
 			groups: []console.Group{{Name: "web", Count: 3, Ready: 2}, {Name: "db", Count: 1, Ready: 1, Stateful: true}},
@@ -211,7 +211,7 @@ func TestPages_RenderWhatOrchHolds(t *testing.T) {
 		want []string
 	}{
 		{"/hosts", []string{"host-a", "kr-1", "rack=r1", "10.0.0.1", "host-b", "kr-2"}},
-		{"/microvms", []string{"host-a", "web-1", "reg/web@sha256:aa", "host-b", "db-0", "stopped"}},
+		{"/microvms", []string{"host-a", "web-1", "reg/web@sha256:aa", ">lab<", "host-b", "db-0", "stopped"}},
 		{"/groups", []string{"web", "db", ">2<", ">3<", "yes"}},
 		{"/events", []string{"host.enrolled", "host.admitted", "region=kr-2"}},
 		{"/pending", []string{"No pending hosts."}},

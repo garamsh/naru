@@ -23,7 +23,7 @@ What `naructl console` is: the operator's local web console, what it shows of or
   - A per-process token on the admit form, checked on every POST.
   - The key is held by the signing function the command passes in; the server and its pages never touch it.
   - Pages carry a content security policy that allows only the console's own stylesheet and script.
-- **orch's client** is `lib/orchapi`'s: hosts, pending, events and admit over TLS 1.3 with the operator's certificate ([orch.md](./orch.md)). The microVMs and groups pages read `GET /v1/microvms` and `GET /v1/groups` through a small interface (`Fleet`); a console built without one says orch does not serve them. orch lists microVMs by asking each admitted host, so a microVM's image is not shown.
+- **orch's client** is `lib/orchapi`'s: hosts, pending, events and admit over TLS 1.3 with the operator's certificate ([orch.md](./orch.md)). The microVMs and groups pages read `GET /v1/microvms` and `GET /v1/groups` through a small interface (`Fleet`); a console built without one says orch does not serve them. orch lists microVMs by asking each admitted host, and reports each one's image digest or, for an OS-form microVM, its boot set, and its network; the microVMs page shows the network and the image in a column each.
 
 ## Rationale
 
@@ -32,6 +32,6 @@ What `naructl console` is: the operator's local web console, what it shows of or
 
 ## Open questions
 
-- **microVMs and groups.** The `Fleet` interface is filled when `lib/orchapi` gains the group types (the groups wiring of garamsh/naru#119) and a way to list a host's microVMs; until then the pages are empty of data.
+- **Networks.** The console lists no networks: `naructl network list` does. A page of the networks and their members is not decided.
 - **A prompt for the passphrase.** The passphrase comes from a file; whether a terminal prompt is wanted waits for operators' use.
 - **Actions beyond admit.** The console reads, and admits; revoking a host or changing a group is not built.

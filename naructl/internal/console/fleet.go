@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 
 	"github.com/garamsh/naru/lib/orchapi"
@@ -15,7 +16,7 @@ type FleetSource interface {
 type fleet struct{ src FleetSource }
 
 // NewFleet returns the Fleet that reads microVMs and groups from orch's API. A microVM's image is
-// not reported by orch, so it is left empty.
+// the image digest orch reports, or the boot set for an OS-form microVM.
 func NewFleet(src FleetSource) Fleet { return fleet{src} }
 
 func (f fleet) MicroVMs(ctx context.Context, hostID string) ([]MicroVM, error) {
@@ -26,7 +27,7 @@ func (f fleet) MicroVMs(ctx context.Context, hostID string) ([]MicroVM, error) {
 	var out []MicroVM
 	for _, m := range all {
 		if m.Host == hostID {
-			out = append(out, MicroVM{Name: m.Name, State: m.State, Group: m.Group})
+			out = append(out, MicroVM{Name: m.Name, State: m.State, Group: m.Group, Image: cmp.Or(m.Image, m.BootSet), Network: m.Network})
 		}
 	}
 	return out, nil

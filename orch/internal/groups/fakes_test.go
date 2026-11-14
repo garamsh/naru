@@ -42,8 +42,10 @@ type world struct {
 	hosts   map[string]*fakeHost
 	groups  []groups.GroupSpec
 	members map[string]groups.Member
-	rev     int64
-	events  []groups.Event
+	// networks are what the store lists as declared networks.
+	networks []groups.Network
+	rev      int64
+	events   []groups.Event
 
 	// check runs after every call that changes a machine.
 	check func()
@@ -215,9 +217,22 @@ func (w *world) ListMembers(context.Context) ([]groups.Member, error) {
 	return out, nil
 }
 
+func (w *world) ListNetworks(context.Context) ([]groups.Network, error) {
+	return slices.Clone(w.networks), nil
+}
+
+// PutMember keeps a member's Pod prefix to itself the way the real store does: a member created
+// with a prefix another member that is not gone holds is a conflict.
 func (w *world) PutMember(_ context.Context, m groups.Member) (groups.Member, error) {
 	if w.members[m.ID].Revision != m.Revision {
 		return groups.Member{}, groups.ErrConflict
+	}
+	if m.Revision == 0 && m.PodPrefix != "" {
+		for _, o := range w.members {
+			if o.Phase != groups.PhaseGone && o.Network == m.Network && o.PodPrefix == m.PodPrefix {
+				return groups.Member{}, groups.ErrConflict
+			}
+		}
 	}
 	w.rev++
 	m.Revision = w.rev
@@ -338,7 +353,7 @@ func (w *world) InspectFence(_ context.Context, hostID, id string) (time.Time, t
 func spec(name string, count int) groups.GroupSpec {
 	return groups.GroupSpec{
 		Name: name, Count: count, Region: "kr-1",
-		Template: groups.Template{Form: groups.FormImage, CPUs: 1, MemoryMiB: 512, Version: "v1"},
+		Template: groups.Template{Form: groups.FormImage, CPUs: 1, MemoryMiB: 512, Version: "v1", RootDiskBytes: 1 << 30},
 		Rollout:  groups.Rollout{MaxUnavailable: 1},
 	}
 }

@@ -33,10 +33,19 @@ type Snapshots interface {
 	Take(ctx context.Context) (orchapi.SnapshotResult, error)
 }
 
+// Networks is the networks service the handlers call.
+type Networks interface {
+	Apply(ctx context.Context, by, name string, spec orchapi.NetworkSpec) (orchapi.Network, error)
+	Get(ctx context.Context, name string) (orchapi.Network, error)
+	List(ctx context.Context) ([]orchapi.Network, error)
+	Delete(ctx context.Context, by, name string) error
+}
+
 // Deps is what the handlers call.
 type Deps struct {
 	Inventory inventory.Service
 	Groups    groupsvc.Service
+	Networks  Networks
 	Signer    inventory.Signer
 	Auth      auth.Authenticator
 	Snapshots Snapshots
@@ -61,6 +70,10 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/groups/{name}", h.guard(auth.Read, h.groupGet))
 	mux.HandleFunc("PUT /v1/groups/{name}", h.guard(auth.Operate, h.groupApply))
 	mux.HandleFunc("DELETE /v1/groups/{name}", h.guard(auth.Operate, h.groupDelete))
+	mux.HandleFunc("GET /v1/networks", h.guard(auth.Read, h.networkList))
+	mux.HandleFunc("GET /v1/networks/{name}", h.guard(auth.Read, h.networkGet))
+	mux.HandleFunc("PUT /v1/networks/{name}", h.guard(auth.Operate, h.networkApply))
+	mux.HandleFunc("DELETE /v1/networks/{name}", h.guard(auth.Operate, h.networkDelete))
 	mux.HandleFunc("GET /v1/crl", h.guard(auth.Any, h.crl))
 	mux.HandleFunc("POST /v1/admit", h.guard(auth.Operate, h.admit))
 	mux.HandleFunc("POST /v1/enrollment-keys", h.guard(auth.Operate, h.createKey))
@@ -269,6 +282,33 @@ func (h *handler) groupApply(w http.ResponseWriter, r *http.Request, who identit
 
 func (h *handler) groupDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
 	if err := h.Groups.Delete(r.Context(), who.Subject, r.PathValue("name")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *handler) networkList(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Networks.List(r.Context())
+	reply(w, r, out, err)
+}
+
+func (h *handler) networkGet(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Networks.Get(r.Context(), r.PathValue("name"))
+	reply(w, r, out, err)
+}
+
+func (h *handler) networkApply(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	var spec orchapi.NetworkSpec
+	if !decode(w, r, &spec) {
+		return
+	}
+	out, err := h.Networks.Apply(r.Context(), who.Subject, r.PathValue("name"), spec)
+	reply(w, r, out, err)
+}
+
+func (h *handler) networkDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	if err := h.Networks.Delete(r.Context(), who.Subject, r.PathValue("name")); err != nil {
 		writeError(w, r, err)
 		return
 	}

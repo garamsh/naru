@@ -21,8 +21,8 @@ type GroupRule struct {
 	Ports    []int  `json:"ports,omitempty"`
 }
 
-// GroupNetwork is the egress and ingress rules of a group's microVMs.
-type GroupNetwork struct {
+// GroupPolicy is the egress and ingress rules of a group's microVMs.
+type GroupPolicy struct {
 	Egress  []GroupRule `json:"egress,omitempty"`
 	Ingress []GroupRule `json:"ingress,omitempty"`
 }
@@ -30,14 +30,23 @@ type GroupNetwork struct {
 // GroupTemplate is the microVM every member of a group is made from. Form is "image" or "os".
 // Version names what boots: for the image form an image as repository@sha256:digest. NodeVersion
 // is the naru-node version an OS-form microVM boots.
+//
+// Network names the virtual network the members join, or is empty for none. PodPrefixBits above
+// zero gives each member a Pod prefix of that length out of the network's prefix. RootDiskBytes
+// sizes the root disk of an image-form microVM and is required for it. UserData is the user-data
+// of an OS-form microVM, used as written; empty gives "#cloud-config\n".
 type GroupTemplate struct {
-	Form        string       `json:"form"`
-	CPUs        int          `json:"cpus"`
-	MemoryMiB   int          `json:"memoryMiB"`
-	Version     string       `json:"version,omitempty"`
-	Disks       []GroupDisk  `json:"disks,omitempty"`
-	Network     GroupNetwork `json:"network,omitzero"`
-	NodeVersion string       `json:"nodeVersion,omitempty"`
+	Form          string      `json:"form"`
+	CPUs          int         `json:"cpus"`
+	MemoryMiB     int         `json:"memoryMiB"`
+	Version       string      `json:"version,omitempty"`
+	Disks         []GroupDisk `json:"disks,omitempty"`
+	Policy        GroupPolicy `json:"policy,omitzero"`
+	NodeVersion   string      `json:"nodeVersion,omitempty"`
+	Network       string      `json:"network,omitempty"`
+	PodPrefixBits int         `json:"podPrefixBits,omitempty"`
+	RootDiskBytes int64       `json:"rootDiskBytes,omitempty"`
+	UserData      string      `json:"userData,omitempty"`
 }
 
 // PreferredLabel scores a host that carries Key=Value by Weight when a member is placed.
@@ -86,6 +95,8 @@ type GroupMember struct {
 	// phase (pending or gone) when it is false.
 	Phase    string    `json:"phase"`
 	LastSeen time.Time `json:"lastSeen,omitzero"`
+	// PodPrefix is the Pod prefix of the member's network that the member holds, or empty.
+	PodPrefix string `json:"podPrefix,omitempty"`
 }
 
 // Group is a group with its members.
@@ -125,6 +136,11 @@ type MicroVM struct {
 	State string `json:"state"`
 	// Group is the group whose member the microVM is; empty for one no group made.
 	Group string `json:"group,omitempty"`
+	// Image is the digest of the image an image-form microVM runs and BootSet the boot set an
+	// OS-form one boots, as the host reports them; Network is the network the microVM is on.
+	Image   string `json:"image,omitempty"`
+	BootSet string `json:"bootSet,omitempty"`
+	Network string `json:"network,omitempty"`
 }
 
 // MicroVMs lists the microVMs of every admitted host that answers.

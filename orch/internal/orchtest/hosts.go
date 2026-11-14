@@ -20,6 +20,8 @@ type FakeHosts struct {
 type fakeHost struct {
 	down     bool
 	machines map[string]groups.MachineState
+	// specs are what each machine was made from.
+	specs map[string]groups.MachineSpec
 }
 
 var _ groups.Hosts = (*FakeHosts)(nil)
@@ -28,7 +30,7 @@ var _ groups.Hosts = (*FakeHosts)(nil)
 func NewFakeHosts(ids ...string) *FakeHosts {
 	f := &FakeHosts{hosts: map[string]*fakeHost{}}
 	for _, id := range ids {
-		f.hosts[id] = &fakeHost{machines: map[string]groups.MachineState{}}
+		f.hosts[id] = &fakeHost{machines: map[string]groups.MachineState{}, specs: map[string]groups.MachineSpec{}}
 	}
 	return f
 }
@@ -45,6 +47,7 @@ func (f *FakeHosts) Remove(hostID, machineID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.hosts[hostID].machines, machineID)
+	delete(f.hosts[hostID].specs, machineID)
 }
 
 // Running returns the microVMs that run on hosts that answer, as "<host>/<machine>" in order.
@@ -89,7 +92,14 @@ func (f *FakeHosts) List(context.Context) ([]groups.Host, error) {
 		g := groups.Host{ID: id, Region: "kr-seoul", Labels: map[string]string{}, Ready: !h.down, Capacity: groups.Capacity{CPUs: 64, MemoryMiB: 65536}}
 		if !h.down {
 			for m, st := range h.machines {
-				g.Machines = append(g.Machines, groups.Machine{ID: m, State: st})
+				t := h.specs[m].Template
+				mc := groups.Machine{ID: m, State: st, Network: t.Network, PodPrefix: h.specs[m].PodPrefix}
+				if t.Form == groups.FormImage {
+					mc.Image = t.Version
+				} else {
+					mc.BootSet = t.NodeVersion
+				}
+				g.Machines = append(g.Machines, mc)
 			}
 		}
 		out = append(out, g)
@@ -116,6 +126,7 @@ func (f *FakeHosts) Create(_ context.Context, hostID string, spec groups.Machine
 	}
 	if _, ok := h.machines[spec.ID]; !ok {
 		h.machines[spec.ID] = groups.MachineRunning
+		h.specs[spec.ID] = spec
 	}
 	return nil
 }
@@ -132,6 +143,7 @@ func (f *FakeHosts) set(hostID, machineID string, st groups.MachineState, remove
 	}
 	if remove {
 		delete(h.machines, machineID)
+		delete(h.specs, machineID)
 		return nil
 	}
 	h.machines[machineID] = st

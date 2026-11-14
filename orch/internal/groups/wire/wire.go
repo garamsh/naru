@@ -18,7 +18,8 @@ func Spec(a orchapi.GroupSpec) groups.GroupSpec {
 		Template: groups.Template{
 			Form: groups.Form(a.Template.Form), CPUs: a.Template.CPUs, MemoryMiB: a.Template.MemoryMiB,
 			Version: a.Template.Version, NodeVersion: a.Template.NodeVersion,
-			Network: groups.NetworkPolicy{Egress: rules(a.Template.Network.Egress), Ingress: rules(a.Template.Network.Ingress)},
+			Policy:  groups.NetworkPolicy{Egress: rules(a.Template.Policy.Egress), Ingress: rules(a.Template.Policy.Ingress)},
+			Network: a.Template.Network, PodPrefixBits: a.Template.PodPrefixBits, RootDiskBytes: a.Template.RootDiskBytes, UserData: a.Template.UserData,
 		},
 	}
 	for _, p := range a.PreferredLabels {
@@ -47,7 +48,8 @@ func API(g groups.GroupSpec) orchapi.GroupSpec {
 		Template: orchapi.GroupTemplate{
 			Form: string(g.Template.Form), CPUs: g.Template.CPUs, MemoryMiB: g.Template.MemoryMiB,
 			Version: g.Template.Version, NodeVersion: g.Template.NodeVersion,
-			Network: orchapi.GroupNetwork{Egress: apiRules(g.Template.Network.Egress), Ingress: apiRules(g.Template.Network.Ingress)},
+			Policy:  orchapi.GroupPolicy{Egress: apiRules(g.Template.Policy.Egress), Ingress: apiRules(g.Template.Policy.Ingress)},
+			Network: g.Template.Network, PodPrefixBits: g.Template.PodPrefixBits, RootDiskBytes: g.Template.RootDiskBytes, UserData: g.Template.UserData,
 		},
 	}
 	for _, p := range g.PreferredLabels {
