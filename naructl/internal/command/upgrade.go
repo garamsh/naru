@@ -19,7 +19,7 @@ const upgradeTimeout = 10 * time.Minute
 // It is not named upgrade because the package of that name is imported here.
 func upgradeCmd(args []string, stdout, stderr io.Writer) error {
 	c := newCall("upgrade", stderr)
-	bundle := c.fs.String("bundle", "", "the upgrade bundle, naru-upgrade-<version>.tar")
+	bundle := c.fs.String("bundle", "", "the upgrade bundle, naru-host-upgrade-<version>.tar")
 	sums := c.fs.String("sums", "", "the release's SHA256SUMS, which lists the bundle")
 	status := c.fs.Bool("status", false, "print the Node's slot and the outcome of its last upgrade, and send nothing")
 	if _, err := c.parse(args, 0); err != nil {

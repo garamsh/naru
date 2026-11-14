@@ -101,9 +101,11 @@ func TestReadRelease_PrefersTheNaruHostBootDiskWhenBothNamesExist(t *testing.T) 
 
 func TestReadRelease_NamesBothBootDiskNamesAReleaseLacks(t *testing.T) {
 	dir := fakeRelease(t)
+	_, err := fixture.ReadRelease(dir, t.TempDir())
+	require.NoError(t, err, "control: the release is readable with its boot disk")
 	require.NoError(t, os.Remove(filepath.Join(dir, "naru-host-v1.qcow2")))
 
-	_, err := fixture.ReadRelease(dir, t.TempDir())
+	_, err = fixture.ReadRelease(dir, t.TempDir())
 
 	assert.ErrorContains(t, err, "naru-host-v1.qcow2")
 	assert.ErrorContains(t, err, "naru-v1.qcow2")

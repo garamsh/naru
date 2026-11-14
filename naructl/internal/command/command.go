@@ -54,7 +54,7 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
   apply -f <patch> [--mode no-reboot|staged|reboot] [--dry-run]
               merge a patch into the Node's configuration
   reboot      stop the Node's services and reboot it
-  upgrade --bundle <naru-upgrade-<version>.tar> --sums <SHA256SUMS>
+  upgrade --bundle <naru-host-upgrade-<version>.tar> --sums <SHA256SUMS>
               check the bundle against the sums file, then send it: the Node reboots into it once, and keeps it when healthy
   upgrade --status                              print the Node's boot slot and how its last upgrade ended
   extension add <naru-orch-ext-<tag>.sqfs>      store a system extension image on the Node (the admin role); spec.extensions names it by SHA-256
