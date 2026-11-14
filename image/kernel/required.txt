@@ -77,8 +77,11 @@ CONFIG_NFT_REJECT_IPV6=y
 CONFIG_BRIDGE=y
 CONFIG_BRIDGE_NETFILTER=y
 CONFIG_VETH=y
-## What naru-hostd's ruleset and its tunnel need (ADR 0050).
-CONFIG_NFT_COUNTER=y
+## What naru-hostd's ruleset and its tunnel need (ADR 0050). The ruleset's sets, interval sets,
+## counters, input and forward hooks and iifname/oifname are built into nf_tables in Linux 6.18 and
+## have no symbol to require; its ct state and inet family are CONFIG_NFT_CT and
+## CONFIG_NF_TABLES_INET above, and CONFIG_NF_TABLES_INET selects the IPv4 and IPv6 tables.
+CONFIG_NF_TABLES_IPV4=y
 CONFIG_WIREGUARD=y
 CONFIG_CPUSETS=y
 CONFIG_BLK_CGROUP=y
