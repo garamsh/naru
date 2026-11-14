@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/host/internal/api"
+	"github.com/garamsh/naru/host/internal/enroll"
 	"github.com/garamsh/naru/host/internal/fence"
 	"github.com/garamsh/naru/host/internal/mvmd"
 )
@@ -29,6 +30,13 @@ func main() {
 		gateway  = flag.String("machine-gateway", "", "gateway of the microVMs' network, written into the seed of an OS-form microVM")
 		length   = flag.Duration("fence-length", 10*time.Minute, "how long each renewal arms mvmd's fencing deadline")
 		interval = flag.Duration("fence-interval", time.Minute, "how often the deadline is renewed")
+
+		orchURL   = flag.String("orch-url", "", "https URL of naru-orchd; empty turns enrollment off")
+		orchCA    = flag.String("orch-ca-sha256", "", "hex SHA-256 of the authority orch's certificate chains to")
+		enrollKey = flag.String("enroll-key-file", "", "file holding the enrollment key")
+		hostKey   = flag.String("host-key", "/var/lib/naru/hostd/host.key", "the host's own key, generated 0600 on first start; its certificate is written beside it")
+		hostID    = flag.String("host-id", "", "the name this host enrolls under (default: the hostname)")
+		advertise = flag.String("advertise", "", "address orch lists for this host (default: --listen)")
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -57,6 +65,26 @@ func main() {
 	r := &fence.Renewer{Runtime: rt, Length: *length, Interval: *interval, Retry: 5 * time.Second, Log: log}
 	go r.Run(ctx)
 	go func() { <-ctx.Done(); _ = ln.Close() }()
+
+	if *orchURL != "" {
+		id := *hostID
+		if id == "" {
+			if id, err = os.Hostname(); err != nil {
+				log.Error("cannot read the hostname; pass --host-id", "err", err.Error())
+				os.Exit(1)
+			}
+		}
+		addr := *advertise
+		if addr == "" {
+			addr = *listen
+		}
+		agent := enroll.New(enroll.Config{OrchURL: *orchURL, CASHA256: *orchCA, EnrollKeyFile: *enrollKey, KeyFile: *hostKey, HostID: id, Address: addr, Out: os.Stdout, Log: log})
+		go func() {
+			if err := agent.Run(ctx); err != nil && ctx.Err() == nil {
+				log.Error("enrollment with orch ended", "err", err.Error())
+			}
+		}()
+	}
 
 	log.Info("naru-hostd serving", "addr", *listen)
 	if err := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Log: log}).Serve(ln, conf); err != nil && ctx.Err() == nil {
