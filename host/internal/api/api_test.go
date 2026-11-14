@@ -90,6 +90,8 @@ type env struct {
 	metrics  *prometheus.Registry
 	nets     *network.Manager
 	nft      *recorder
+	tunnel   *fakeTunnel
+	state    string
 }
 
 // recorder is the network.Runner of the tests: it records what the host would have run.
@@ -145,13 +147,9 @@ func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
 	e.hostFile = write("host.json", []byte(`{"region":"eu-1","labels":{"disk":"ssd"}}`))
 	e.metrics = prometheus.NewRegistry()
 	e.nft = &recorder{}
-	e.nets = &network.Manager{
-		Run: e.nft, KeyFile: "/run/naru-hostd/wg.key", Port: 51820,
-		Base: network.Config{
-			Management: netip.MustParsePrefix("172.16.0.0/24"), HostAddrs: []netip.Addr{netip.MustParseAddr("192.0.2.1")},
-			TapPrefix: "tap", Egress: "eth0", Tunnel: "wg-naru",
-		},
-	}
+	e.tunnel = &fakeTunnel{}
+	e.state = filepath.Join(dir, "networks.json")
+	e.nets = e.manager()
 	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics}
 	if networks {
 		deps.Networks = e.nets
@@ -160,6 +158,14 @@ func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
 	go func() { _ = srv.Serve(ln, conf) }()
 	t.Cleanup(func() { _ = ln.Close() })
 	return e
+}
+
+// manager is a Manager over the env's recorder, tunnel and state file, as the daemon builds it at start.
+func (e *env) manager() *network.Manager {
+	return &network.Manager{
+		Run: e.nft, Tunnel: e.tunnel, State: e.state,
+		Base: network.Config{Management: netip.MustParsePrefix("172.16.0.0/24"), TapPrefix: "tap", Egress: "eth0"},
+	}
 }
 
 func (e *env) client(pair tls.Certificate) *http.Client {

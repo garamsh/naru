@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -24,27 +25,32 @@ type Networks interface {
 	Detach(ctx context.Context, a netip.Addr) error
 	SetPeers(ctx context.Context, peers []network.Peer) error
 	Peers() []network.Peer
+	Members() []network.Member
+	TunnelInfo() (network.TunnelInfo, bool)
 }
 
 const (
 	maxNetworks = 1024
 	maxPeers    = 256
 	maxPeerNets = 1024
+	// maxRemoteMembers bounds the remote members of one network: every microVM on the other hosts.
+	maxRemoteMembers = 65536
 )
 
-// checkNetwork refuses a create on a network that is not declared, and one whose pod prefix is
-// outside the network's prefix. It answers and returns false on a refusal.
-func (s *Server) checkNetwork(w http.ResponseWriter, req hostapi.CreateRequest) bool {
+// checkNetwork refuses a create or resume on a network that is not declared, and one whose pod
+// prefix is outside the network's prefix. It answers and returns false on a refusal. The
+// microVM's address is not checked: mvmd chose it, from the host's Machine prefix.
+func (s *Server) checkNetwork(w http.ResponseWriter, name, podPrefix string) bool {
 	if s.noNetworks(w) {
 		return false
 	}
-	n, ok := s.deps.Networks.Network(req.Network)
+	n, ok := s.deps.Networks.Network(name)
 	if !ok {
 		invalid(w, "network")
 		return false
 	}
-	if req.PodPrefix != "" {
-		if pf, err := netip.ParsePrefix(req.PodPrefix); err != nil || !n.Prefix.Contains(pf.Addr()) || pf.Bits() < n.Prefix.Bits() {
+	if podPrefix != "" {
+		if pf, err := netip.ParsePrefix(podPrefix); err != nil || !n.Prefix.Contains(pf.Addr()) || pf.Bits() < n.Prefix.Bits() {
 			invalid(w, "podPrefix")
 			return false
 		}
@@ -52,10 +58,10 @@ func (s *Server) checkNetwork(w http.ResponseWriter, req hostapi.CreateRequest) 
 	return true
 }
 
-// attach puts the microVM on the network the request names, by the address mvmd gave it and the
-// pod prefix routed to it. It does nothing for a request with no network.
-func (s *Server) attach(ctx context.Context, req hostapi.CreateRequest, m mvmd.Machine) error {
-	if req.Network == "" {
+// attach puts the microVM on the named network, by the address mvmd gave it and the pod prefix
+// routed to it. It does nothing for a request with no network.
+func (s *Server) attach(ctx context.Context, name, podPrefix string, m mvmd.Machine) error {
+	if name == "" {
 		return nil
 	}
 	if len(m.Addresses) == 0 {
@@ -65,11 +71,24 @@ func (s *Server) attach(ctx context.Context, req hostapi.CreateRequest, m mvmd.M
 	if err != nil {
 		return err
 	}
-	member := network.Member{Network: req.Network, Address: a}
-	if req.PodPrefix != "" {
-		member.Routed = netip.MustParsePrefix(req.PodPrefix)
+	member := network.Member{Network: name, Address: a}
+	if podPrefix != "" {
+		member.Routed = netip.MustParsePrefix(podPrefix)
 	}
 	return s.deps.Networks.Attach(ctx, member)
+}
+
+// memberOf returns the membership of the Machine, by any address it has.
+func (s *Server) memberOf(m mvmd.Machine) (network.Member, bool) {
+	if s.deps.Networks == nil {
+		return network.Member{}, false
+	}
+	for _, x := range s.deps.Networks.Members() {
+		if slices.Contains(m.Addresses, x.Address.String()) {
+			return x, true
+		}
+	}
+	return network.Member{}, false
 }
 
 // detach takes a deleted microVM off its network. A failure is logged: the microVM is gone, and
@@ -88,7 +107,10 @@ func (s *Server) detach(ctx context.Context, m mvmd.Machine) {
 }
 
 func networkView(n network.Network) hostapi.Network {
-	v := hostapi.Network{Name: n.Name, Prefix: n.Prefix.String()}
+	v := hostapi.Network{Name: n.Name, Prefix: n.Prefix.String(), RemoteMembers: []string{}}
+	for _, p := range n.Remote {
+		v.RemoteMembers = append(v.RemoteMembers, p.String())
+	}
 	if n.Endpoint.IsValid() {
 		v.APIEndpoint = n.Endpoint.String()
 	}
@@ -122,7 +144,8 @@ func (s *Server) networkFail(w http.ResponseWriter, err error) {
 }
 
 // putNetwork declares the network of the path's name, or replaces it: a network of that name keeps
-// its microVMs. Its prefix is an IPv4 prefix that does not overlap another network's.
+// its microVMs. Its prefix is an IPv4 prefix that does not overlap another network's, and its
+// remote members are the IPv4 prefixes (/32 for an address) of its microVMs on other hosts.
 func (s *Server) putNetwork(w http.ResponseWriter, r *http.Request) {
 	if s.noNetworks(w) {
 		return
@@ -147,6 +170,18 @@ func (s *Server) putNetwork(w http.ResponseWriter, r *http.Request) {
 			fields = append(fields, "apiEndpoint")
 		}
 	}
+	var remote []netip.Prefix
+	if len(req.RemoteMembers) > maxRemoteMembers {
+		fields = append(fields, "remoteMembers")
+	}
+	for i, x := range req.RemoteMembers {
+		p, err := netip.ParsePrefix(x)
+		if err != nil || !p.Addr().Is4() || p.Masked() != p {
+			fields = append(fields, fmt.Sprintf("remoteMembers[%d]", i))
+			continue
+		}
+		remote = append(remote, p)
+	}
 	if len(fields) == 0 && len(s.deps.Networks.Networks()) >= maxNetworks {
 		if _, ok := s.deps.Networks.Network(name); !ok {
 			writeJSON(w, http.StatusConflict, hostapi.ErrorBody{Error: "the host holds the most networks it takes"})
@@ -159,7 +194,7 @@ func (s *Server) putNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	n := network.Network{Name: name, Prefix: prefix, Endpoint: endpoint}
+	n := network.Network{Name: name, Prefix: prefix, Endpoint: endpoint, Remote: remote}
 	if err := s.deps.Networks.Declare(ctx, n); err != nil {
 		s.networkFail(w, err)
 		return
@@ -307,4 +342,29 @@ func validWireGuardKey(k string) bool {
 		}
 	}
 	return strings.ContainsRune("AEIMQUYcgkosw048", rune(k[42]))
+}
+
+// getTunnel reports what a peer needs to reach this host: the tunnel's public key and port, and
+// the prefixes the host's microVMs have addresses in. The private key is never reported.
+func (s *Server) getTunnel(w http.ResponseWriter, r *http.Request) {
+	if s.noNetworks(w) {
+		return
+	}
+	t, ok := s.deps.Networks.TunnelInfo()
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, hostapi.ErrorBody{Error: "this host was started without a tunnel"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	info, err := s.deps.Runtime.Info(ctx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	prefixes := info.MachinePrefixes
+	if prefixes == nil {
+		prefixes = []string{}
+	}
+	writeJSON(w, http.StatusOK, hostapi.Tunnel{PublicKey: t.PublicKey, ListenPort: t.Port, MachinePrefixes: prefixes})
 }

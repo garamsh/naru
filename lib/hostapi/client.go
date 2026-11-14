@@ -129,6 +129,14 @@ func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
 	return out.Peers, err
 }
 
+// Tunnel returns the host's tunnel public key and port, and the Machine prefixes its microVMs'
+// addresses are in.
+func (c *Client) Tunnel(ctx context.Context) (Tunnel, error) {
+	var t Tunnel
+	err := c.do(ctx, http.MethodGet, "/v1/tunnel", nil, &t)
+	return t, err
+}
+
 // Host returns the host's region, labels, capacity and mvmd's version.
 func (c *Client) Host(ctx context.Context) (Host, error) {
 	var h Host

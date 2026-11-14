@@ -24,7 +24,9 @@ const callTimeout = 5 * time.Minute
 // seed volume may be as large as mvmd takes (1 MiB), which is more than a quarter larger here.
 const maxBody = 4 << 20
 
-func view(m mvmd.Machine, sizes map[string]uint64) hostapi.MicroVM {
+// view is the API's form of a Machine. The network and pod prefix are those of hostd's persisted
+// membership, which a microVM attached to a network has whoever made it.
+func (s *Server) view(m mvmd.Machine, sizes map[string]uint64) hostapi.MicroVM {
 	v := hostapi.MicroVM{
 		Name: m.ID, MachineID: m.ID, State: m.State, Failure: m.Failure, Addresses: m.Addresses,
 		ImageDigest: m.ImageDigest, CPU: m.CPU, Memory: m.MemoryBytes, RootDiskBytes: m.RootDiskBytes,
@@ -36,6 +38,12 @@ func view(m mvmd.Machine, sizes map[string]uint64) hostapi.MicroVM {
 	}
 	if v.Addresses == nil {
 		v.Addresses = []string{}
+	}
+	if x, ok := s.memberOf(m); ok {
+		v.Network = x.Network
+		if x.Routed.IsValid() {
+			v.PodPrefix = x.Routed.String()
+		}
 	}
 	for _, d := range m.Disks {
 		v.Disks = append(v.Disks, hostapi.DiskSpec{Name: diskName(m.ID, d.ID), SizeBytes: sizes[d.ID], ReadOnly: d.ReadOnly})
@@ -93,7 +101,7 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotImplemented, hostapi.ErrorBody{Error: "this host was started with no --machine-gateway, so it cannot write the network-config of an OS-form microVM"})
 		return
 	}
-	if req.Network != "" && !s.checkNetwork(w, req) {
+	if req.Network != "" && !s.checkNetwork(w, req.Network, req.PodPrefix) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), callTimeout)
@@ -121,11 +129,11 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		// A repeat attaches again, which a host that restarted since needs.
-		if err := s.attach(ctx, req, existing); err != nil {
+		if err := s.attach(ctx, req.Network, req.PodPrefix, existing); err != nil {
 			s.networkFail(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, view(existing, sizes))
+		writeJSON(w, http.StatusOK, s.view(existing, sizes))
 		return
 	case !errors.Is(err, mvmd.ErrNotFound):
 		s.fail(w, err)
@@ -137,7 +145,7 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if err := s.attach(ctx, req, m); err != nil {
+	if err := s.attach(ctx, req.Network, req.PodPrefix, m); err != nil {
 		ids := make([]string, 0, len(sizes))
 		for id := range sizes {
 			ids = append(ids, id)
@@ -150,7 +158,7 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		s.networkFail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, view(m, sizes))
+	writeJSON(w, http.StatusCreated, s.view(m, sizes))
 }
 
 // provision makes what the plan describes and starts the Machine, unless it is fenced. The image form pulls the image,
@@ -320,7 +328,7 @@ func (s *Server) getMicroVM(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, view(m, sizes))
+	writeJSON(w, http.StatusOK, s.view(m, sizes))
 }
 
 func (s *Server) listMicroVMs(w http.ResponseWriter, r *http.Request) {
@@ -338,7 +346,7 @@ func (s *Server) listMicroVMs(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]hostapi.MicroVM, 0, len(machines))
 	for _, m := range machines {
-		out = append(out, view(m, sizes))
+		out = append(out, s.view(m, sizes))
 	}
 	slices.SortFunc(out, func(a, b hostapi.MicroVM) int { return strings.Compare(a.Name, b.Name) })
 	writeJSON(w, http.StatusOK, map[string]any{"microvms": out})
@@ -405,7 +413,7 @@ func (s *Server) answerMicroVM(ctx context.Context, w http.ResponseWriter, m mvm
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, view(m, sizes))
+	writeJSON(w, http.StatusOK, s.view(m, sizes))
 }
 
 // deleteMicroVM stops the Machine if it runs, deletes it, and deletes the disks that were made
@@ -437,8 +445,13 @@ func (s *Server) deleteMicroVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.detach(ctx, m)
+	kept, err := s.snapshotDisks(ctx, "")
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 	for _, d := range m.Disks {
-		if !strings.HasPrefix(d.ID, name+".") {
+		if kept[d.ID] {
 			continue
 		}
 		if err := rt.DeleteDisk(ctx, d.ID); err != nil && !errors.Is(err, mvmd.ErrNotFound) {
@@ -449,14 +462,19 @@ func (s *Server) deleteMicroVM(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// removeOrphans deletes the unattached disks that carry the name's prefix.
+// removeOrphans deletes the unattached disks that carry the name's prefix and that no snapshot
+// needs.
 func (s *Server) removeOrphans(ctx context.Context, name string) {
 	disks, err := s.deps.Runtime.ListDisks(ctx)
 	if err != nil {
 		return
 	}
+	kept, err := s.snapshotDisks(ctx, "")
+	if err != nil {
+		return
+	}
 	for _, d := range disks {
-		if strings.HasPrefix(d.ID, name+".") && d.Holder == "" {
+		if strings.HasPrefix(d.ID, name+".") && d.Holder == "" && !kept[d.ID] {
 			if err := s.deps.Runtime.DeleteDisk(ctx, d.ID); err != nil {
 				s.deps.Log.Error("cannot remove a disk left by a delete", "disk", d.ID, "err", err.Error())
 			}

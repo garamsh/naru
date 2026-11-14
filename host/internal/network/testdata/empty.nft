@@ -3,6 +3,8 @@ delete table inet naru
 table inet naru {
 	chain input {
 		type filter hook input priority 0; policy accept;
+		ct state established,related accept
+		iifname "tap*" counter drop comment "microVM to the host"
 	}
 	chain forward {
 		type filter hook forward priority 0; policy drop;

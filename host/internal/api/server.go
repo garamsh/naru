@@ -79,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/networks/{name}", s.deleteNetwork)
 	mux.HandleFunc("PUT /v1/peers", s.putPeers)
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
+	mux.HandleFunc("GET /v1/tunnel", s.getTunnel)
 	s.routeBootSets(mux)
 	return s.recovering(s.logged(s.authorised(mux)))
 }

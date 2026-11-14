@@ -52,9 +52,12 @@ type MicroVM struct {
 	RootDiskBytes uint64     `json:"rootDiskBytes"`
 	Disks         []DiskSpec `json:"disks"`
 	NetworkPolicy Policy     `json:"networkPolicy"`
-	// BootSet, Cmdline and PodPrefix are an OS-form microVM's.
-	BootSet   string `json:"bootSet,omitempty"`
-	Cmdline   string `json:"cmdline,omitempty"`
+	// BootSet and Cmdline are an OS-form microVM's.
+	BootSet string `json:"bootSet,omitempty"`
+	Cmdline string `json:"cmdline,omitempty"`
+	// Network and PodPrefix are the microVM's membership, as the host keeps it: the network it is
+	// attached to and the prefix routed to it. They are absent for a microVM on no network.
+	Network   string `json:"network,omitempty"`
 	PodPrefix string `json:"podPrefix,omitempty"`
 	// RestartOnBoot is whether mvmd starts the microVM again after the host reboots.
 	RestartOnBoot bool `json:"restartOnBoot"`
