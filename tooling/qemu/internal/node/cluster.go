@@ -70,6 +70,8 @@ type ClusterSpec struct {
 	EtcdProbeOn int
 	// SerialSocket gives every Node's serial port a socket nothing reads (Spec.SerialSocket).
 	SerialSocket bool
+	// ExtraServices, with Gaon, are services appended to every Node's user-data, after naructl's.
+	ExtraServices []ExtraService
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
 	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
@@ -202,6 +204,12 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		c.Nodes = append(c.Nodes, n)
 	}
 	return c, nil
+}
+
+// ExtraService is a test's own service: a name and the guest path of a program the Inputs tree carries.
+type ExtraService struct {
+	Name, Binary string
+	Args         []string
 }
 
 // controlPlane reports whether Node i is a control-plane Node.
@@ -357,6 +365,15 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	}
 	if spec.EditUserData != nil {
 		if err := spec.EditUserData(c, a.Out); err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, e := range spec.ExtraServices {
+		svc := map[string]any{"name": e.Name, "binary": e.Binary}
+		if len(e.Args) > 0 {
+			svc["args"] = e.Args
+		}
+		if err := appendService(a.Out, svc); err != nil {
 			return nil, nil, err
 		}
 	}
