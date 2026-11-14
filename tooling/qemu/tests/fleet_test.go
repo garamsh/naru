@@ -292,17 +292,21 @@ func (f *fleet) edit(i int, change func(file string) error) {
 var base64Token = regexp.MustCompile(`[A-Za-z0-9+/=]{40,}`)
 
 // joinKeyOn is the public join key a replica signer logged on its first boot: the longest base64
-// token of the console line that names a join key.
+// token of the console line that names a join key and of the line after it, where the key is printed.
 func joinKeyOn(console string) string {
+	lines := strings.Split(console, "\n")
 	best := ""
-	for _, line := range strings.Split(console, "\n") {
+	for i, line := range lines {
 		low := strings.ToLower(line)
 		if !strings.Contains(low, "join") || !strings.Contains(low, "key") {
 			continue
 		}
-		for _, tok := range base64Token.FindAllString(line, -1) {
-			if len(tok) > len(best) {
-				best = tok
+		// naru-signer join-key prints a line that names the key and the key on the line after it.
+		for _, l := range lines[i : min(i+2, len(lines))] {
+			for _, tok := range base64Token.FindAllString(l, -1) {
+				if len(tok) > len(best) {
+					best = tok
+				}
 			}
 		}
 	}
@@ -354,13 +358,14 @@ func (f *fleet) issueOrch(i int) string {
 }
 
 // authorise has root authorise the signer of replica Node i from the join key its first boot logged,
-// and returns the authorisation text.
+// and returns the authorisation text. The host ID is the Node's metadata.name, "naru-" and the harness's
+// name, which `naru-signer join` presents and the bundle is sealed to.
 func (f *fleet) authorise(i int) string {
 	nd := f.node(i)
 	eventually(f.t, nd.Name+"'s signer logs its join key", func() bool { return joinKeyOn(nd.Console()) != "" })
 	jk := f.file(fmt.Sprintf("join-%d.key", i), joinKeyOn(nd.Console())+"\n")
 	out := filepath.Join(f.dir, fmt.Sprintf("authorisation-%d", i))
-	f.must(nrun("signer", "authorise-replica", "--admin", f.root.file, "--passphrase-file", f.pass, "--host-id", nd.Name, "--join-key", jk, "--out", out), "authorise "+nd.Name)
+	f.must(nrun("signer", "authorise-replica", "--admin", f.root.file, "--passphrase-file", f.pass, "--host-id", "naru-"+nd.Name, "--join-key", jk, "--out", out), "authorise "+nd.Name)
 	b, err := os.ReadFile(out)
 	require.NoError(f.t, err)
 	return string(b)
