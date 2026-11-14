@@ -72,6 +72,9 @@ type ClusterSpec struct {
 	SerialSocket bool
 	// ExtraServices, with Gaon, are services appended to every Node's user-data, after naructl's.
 	ExtraServices []ExtraService
+	// MemoryMiB, when not 0, is every Node's memory in place of the default (Config.MemoryMiB): a host
+	// that runs a Kubernetes Node as a microVM needs the microVM's memory and its own.
+	MemoryMiB int
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
 	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
@@ -119,6 +122,9 @@ type HostAPI struct {
 	// host authority. Foreign is Provisioner's file with the certificate and key of a provisioner of
 	// another authority: the server's certificate is still trusted, and the client's is not.
 	Provisioner, Reader, Foreign string
+	// Route is "127.0.0.1:port", the host side of the forward to node-1's naru-mvmroute: the route
+	// to the addresses of the microVMs on node-1's Machine prefix (see Cluster.RouteTo).
+	Route string
 }
 
 // NodeAPI is how the test host reaches node-1's Node API: the address of the forward and naructl
@@ -168,7 +174,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 	for i := 1; i <= spec.N; i++ {
 		name := fmt.Sprintf("node-%d", i)
 		cfg := Config{
-			Name: name, Index: i, Total: spec.N, ControlPlane: spec.controlPlane(i), Probe: i == spec.ProbeOn, Inputs: spec.Inputs,
+			Name: name, Index: i, Total: spec.N, ControlPlane: spec.controlPlane(i), Probe: i == spec.ProbeOn, Inputs: spec.Inputs, MemoryMiB: spec.MemoryMiB,
 		}
 		if !spec.Gaon {
 			ca, err := os.ReadFile(filepath.Join(spec.Inputs.Dir, "registry", "ca.pem"))
@@ -187,6 +193,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 				if i == 1 {
 					start.Config.APIHostPort = gen.apiPort
 					start.Config.HostAPIHostPort = gen.hostPort
+					start.Config.RouteHostPort = gen.routePort
 					start.Config.HostReach = len(spec.TimeServers) > 0
 				}
 			}
@@ -251,6 +258,8 @@ type gaonFiles struct {
 	// host and hostPort are set when the cluster has a host API.
 	host     *HostAPI
 	hostPort int
+	// routePort is the host port forwarded to naru-mvmroute, set with host.
+	routePort int
 }
 
 func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
@@ -380,6 +389,12 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	if spec.Host && c.Index == 1 {
 		if err := appendService(a.Out, map[string]any{
 			"name": "naru88-mvmdlist", "binary": path.Join(fixture.GuestRoot, "bin/naru-mvmdlist"),
+		}); err != nil {
+			return nil, nil, err
+		}
+		if err := appendService(a.Out, map[string]any{
+			"name": "naru88-mvmroute", "binary": path.Join(fixture.GuestRoot, "bin/naru-mvmroute"),
+			"args": []string{"--listen", HostNICAddress + ":" + RoutePort, "--prefix", fmt.Sprintf("10.77.%d.0/24", c.Index)},
 		}); err != nil {
 			return nil, nil, err
 		}
@@ -554,6 +569,9 @@ func (g *gaonFiles) hostAPIFiles(spec ClusterSpec) error {
 		return fmt.Errorf("pick a host port for the host API: %w", err)
 	}
 	g.hostPort = port
+	if g.routePort, err = freePort(); err != nil {
+		return fmt.Errorf("pick a host port for the route: %w", err)
+	}
 	addr := "127.0.0.1:" + strconv.Itoa(port)
 	dir := filepath.Join(spec.Dir, "host-client")
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
@@ -583,6 +601,7 @@ func (g *gaonFiles) hostAPIFiles(spec ClusterSpec) error {
 	if err := os.Remove(foreign); err != nil {
 		return err
 	}
+	h.Route = "127.0.0.1:" + strconv.Itoa(g.routePort)
 	g.host = h
 	return nil
 }

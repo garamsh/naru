@@ -49,6 +49,7 @@ type Sources struct {
 //	bin/naru-netecho                   sends, receives and reports routes
 //	bin/naru-etcdprobe                 (ADR 0024)
 //	bin/naru-mvmdlist                  prints the Machines mvmd holds (ADR 0028)
+//	bin/naru-mvmroute                  the test host's route to the microVMs' addresses (harness.md)
 //	bin/naru-credstub                  the interpreter of a stand-in credential helper (ADR 0026)
 //	bin/naru-storageprobe              reports on a storage disk (ADR 0027)
 //	bin/naru-loginprobe                reports a Node's listeners, shells and terminal readers (ADR 0047)
@@ -91,6 +92,7 @@ func Stage(src Sources, out string) (Inputs, error) {
 		{"tooling/qemu", "./cmd/naru-storageprobe", filepath.Join(bin, "naru-storageprobe")},
 		{"tooling/qemu", "./cmd/naru-loginprobe", filepath.Join(bin, "naru-loginprobe")},
 		{"tooling/qemu", "./cmd/naru-mvmdlist", filepath.Join(bin, "naru-mvmdlist")},
+		{"tooling/qemu", "./cmd/naru-mvmroute", filepath.Join(bin, "naru-mvmroute")},
 		{"tooling/probe", "./cmd/naru-probe", filepath.Join(bin, "naru-probe")},
 	} {
 		if err := goBuild(filepath.Join(src.Root, b.module), b.pkg, b.out); err != nil {

@@ -10,6 +10,7 @@ require (
 )
 
 require (
+	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/iso9660 v0.0.0-00010101000000-000000000000
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
@@ -20,3 +21,5 @@ require (
 )
 
 replace github.com/garamsh/naru/lib/iso9660 => ../../lib/iso9660
+
+replace github.com/garamsh/naru/lib/hostapi => ../../lib/hostapi
