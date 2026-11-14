@@ -35,7 +35,12 @@ func (s *Server) config() (int, config.NodeConfig) {
 
 func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 	revision, cfg := s.config()
-	doc, err := document(redact(cfg))
+	info, err := s.versionInfo()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "the boot ID cannot be read"})
+		return
+	}
+	doc, err := configDocument(redact(cfg), s.status(revision, info))
 	if err != nil {
 		s.deps.Log.Error("encode the configuration", "err", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "the configuration cannot be encoded"})
@@ -45,6 +50,34 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 		Revision int `json:"revision"`
 		Config   any `json:"config"`
 	}{revision, doc})
+}
+
+// status is what the Node observes of itself: its version, boot, slot, last upgrade, the
+// revision of the configuration and each service's state and restarts.
+func (s *Server) status(revision int, info versionBody) config.Status {
+	st := config.Status{Version: info.Version, BootID: info.BootID, Slot: info.Slot, Revision: revision, Services: []config.ServiceStatus{}}
+	if l := info.LastUpgrade; l != nil {
+		st.LastUpgrade = &config.UpgradeStatus{From: l.From, To: l.To, Result: l.Result, Reason: l.Reason, Time: l.Time}
+	}
+	for _, b := range s.serviceList() {
+		st.Services = append(st.Services, config.ServiceStatus{Name: b.Name, State: b.State, Restarts: b.Restarts})
+	}
+	return st
+}
+
+// configDocument is the one document GET /v1/config returns: the configuration and, beside its
+// spec, the status.
+func configDocument(cfg config.NodeConfig, st config.Status) (any, error) {
+	doc, err := document(cfg)
+	if err != nil {
+		return nil, err
+	}
+	stDoc, err := document(st)
+	if err != nil {
+		return nil, err
+	}
+	doc.(map[string]any)[config.StatusKey] = stDoc
+	return doc, nil
 }
 
 // redact returns cfg with private material replaced by REDACTED: spec.api.key, each
@@ -81,10 +114,10 @@ func redact(cfg config.NodeConfig) config.NodeConfig {
 	return cfg
 }
 
-// document returns cfg as the generic document its YAML form decodes to, which JSON encodes
+// document returns v as the generic document its YAML form decodes to, which JSON encodes
 // with the field names a patch uses.
-func document(cfg config.NodeConfig) (any, error) {
-	data, err := yaml.Dump(cfg)
+func document(v any) (any, error) {
+	data, err := yaml.Dump(v)
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +164,13 @@ func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "the body is not an apply request: " + err.Error()})
 		return
+	}
+
+	for _, doc := range []map[string]any{body.Patch, body.Config} {
+		if _, named := doc[config.StatusKey]; named {
+			s.writeApplyError(w, &apply.InvalidError{Fields: []string{config.StatusKey}, Message: "status is observed, not declared: no apply may name it"})
+			return
+		}
 	}
 
 	s.mu.Lock()

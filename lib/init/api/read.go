@@ -20,12 +20,12 @@ type versionBody struct {
 	LastUpgrade *upgrade.Outcome `json:"lastUpgrade,omitempty"`
 }
 
-func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
+// versionInfo reads what GET /v1/version and the status of GET /v1/config both report.
+func (s *Server) versionInfo() (versionBody, error) {
 	bootID, err := s.deps.BootID()
 	if err != nil {
 		s.deps.Log.Error("read the boot ID", "err", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "the boot ID cannot be read"})
-		return
+		return versionBody{}, err
 	}
 	body := versionBody{Version: s.deps.Version, BootID: bootID, UptimeSeconds: s.deps.Uptime().Seconds(), Slot: upgrade.SlotDefault}
 	if u := s.deps.Upgrades; u != nil {
@@ -33,6 +33,15 @@ func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 		if last, ok := u.Last(); ok {
 			body.LastUpgrade = &last
 		}
+	}
+	return body, nil
+}
+
+func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
+	body, err := s.versionInfo()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "the boot ID cannot be read"})
+		return
 	}
 	writeJSON(w, http.StatusOK, body)
 }

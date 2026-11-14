@@ -96,16 +96,10 @@ func pids(t *testing.T, file string) map[string]string {
 	return out
 }
 
-// revisionOf is the revision `naructl get config` prints.
+// revisionOf is the revision `naructl get config` prints in the status of its document.
 func revisionOf(t *testing.T, file string) int {
 	t.Helper()
-	r := ctl(file, "get", "config")
-	require.NoError(t, r.Err, r.refusal())
-	var got struct {
-		Revision int `json:"revision"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(r.Stdout), &got), r.Stdout)
-	return got.Revision
+	return documentOf(t, file).Status.Revision
 }
 
 // patchFile writes a merge patch the way an operator keeps one.
