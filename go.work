@@ -3,17 +3,19 @@ go 1.26.0
 toolchain go1.26.11
 
 use (
-	./controlplane
 	./host
-	./init
 	./lib/hostapi
 	./lib/identity
+	./lib/init
 	./lib/iso9660
-	./lib/orchapi
 	./lib/metrics
+	./lib/orchapi
+	./lib/vip
 	./naructl
+	./node
 	./orch
 	./tooling/disk
+	./tooling/importcheck
 	./tooling/probe
 	./tooling/qemu
 )

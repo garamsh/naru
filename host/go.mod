@@ -29,7 +29,7 @@ require (
 	github.com/garamsh/naru/lib/orchapi v0.0.0-00010101000000-000000000000
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 )
@@ -43,3 +43,13 @@ replace github.com/garamsh/naru/lib/iso9660 => ../lib/iso9660
 replace github.com/garamsh/naru/lib/orchapi => ../lib/orchapi
 
 replace github.com/garamsh/naru/lib/metrics => ../lib/metrics
+
+replace github.com/garamsh/naru/lib/init => ../lib/init
+
+require github.com/garamsh/naru/lib/init v0.0.0-00010101000000-000000000000
+
+require (
+	github.com/vishvananda/netlink v1.3.1 // indirect
+	github.com/vishvananda/netns v0.0.5 // indirect
+	go.yaml.in/yaml/v4 v4.0.0 // indirect
+)

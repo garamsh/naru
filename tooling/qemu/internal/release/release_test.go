@@ -111,12 +111,12 @@ func userDataFiles(t *testing.T) (map[string][]byte, error) {
 // testCA is the registry authority of the user-data the tests last asked for.
 var testCA string
 
-// buildInit builds naru-init from the init module alone, as a release would, and returns its path.
+// buildInit builds naru-init from the node module alone, as a release would, and returns its path.
 func buildInit(t *testing.T) string {
 	t.Helper()
 	initBin := filepath.Join(t.TempDir(), "naru-init")
 	build := exec.Command("go", "build", "-o", initBin, "./cmd/naru-init") //nolint:gosec // fixed arguments
-	build.Dir = filepath.Join(repoRoot(t), "init")
+	build.Dir = filepath.Join(repoRoot(t), "node")
 	build.Env = append(os.Environ(), "GOWORK=off")
 	out, err := build.CombinedOutput()
 	require.NoError(t, err, string(out))
