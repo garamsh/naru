@@ -28,6 +28,55 @@ func Append(file string, value any, path ...string) error {
 	})
 }
 
+// SetFile sets the content of the spec.files entry of the user-data in file whose path is filePath, which
+// has to be there: a scenario that learns after the first boot what a file of gen node's output holds,
+// such as the authority naru-hostd trusts for orch's certificate.
+func SetFile(file, filePath, content string) error {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return err
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("%s is not a user-data mapping", file)
+	}
+	spec := field(doc.Content[0], "spec")
+	var files *yaml.Node
+	if spec != nil && spec.Kind == yaml.MappingNode {
+		files = field(spec, "files")
+	}
+	if files == nil || files.Kind != yaml.SequenceNode {
+		return fmt.Errorf("%s has no spec.files", file)
+	}
+	for _, entry := range files.Content {
+		if entry.Kind != yaml.MappingNode {
+			continue
+		}
+		if p := field(entry, "path"); p == nil || p.Value != filePath {
+			continue
+		}
+		var v yaml.Node
+		if err := v.Encode(content); err != nil {
+			return err
+		}
+		c := field(entry, "content")
+		if c == nil {
+			entry.Content = append(entry.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "content"}, &v)
+		} else {
+			*c = v
+		}
+		out, err := yaml.Marshal(&doc)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(file, out, 0o600)
+	}
+	return fmt.Errorf("%s: spec.files has no entry for %s", file, filePath)
+}
+
 // Delete removes the field at path of the user-data in file, and does nothing when it is not there: a
 // scenario that boots a Node again without part of its first spec, such as a control host that lost its
 // disk and starts without spec.orch.

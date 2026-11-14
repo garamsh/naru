@@ -120,6 +120,9 @@ type Cluster struct {
 	Host *HostAPI
 	// Hosts is the host API of each Node that runs naru-hostd, in the order of ClusterSpec.Hosts.
 	Hosts []*HostAPI
+	// HostCA is the certificate file of the authority the hosts' API certificates chain to, which orch
+	// trusts for them (spec.orch.hostCA). It is set when the cluster has hosts.
+	HostCA string
 	// Forwards is, by Node name and guest port, the "127.0.0.1:port" of each ClusterSpec.Forward.
 	Forwards map[string]map[string]string
 }
@@ -185,6 +188,9 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		}
 		c.Client, c.HostAddr, c.API = gen.client, "127.0.0.1:"+strconv.Itoa(gen.ports[1]), gen.api
 		c.Hosts, c.Forwards = gen.hostList, gen.forwarded
+		if len(gen.hostList) > 0 {
+			c.HostCA = filepath.Join(gen.caDir, "host", "ca.pem")
+		}
 		if h := gen.hosts[1]; h != nil {
 			c.Host = h.api
 		}

@@ -62,7 +62,7 @@ type fleetOpts struct {
 	// services are added to every Node.
 	services []node.ExtraService
 	// orchExtra, when set, gives control Node i's spec.orch fields besides the ones this file sets: the
-	// seam for orch's host-client identity (W9) and for what orch's restore adds.
+	// seam for what orch's restore adds.
 	orchExtra func(i int) map[string]any
 }
 
@@ -260,11 +260,13 @@ func (f *fleet) orchSpec(i int, members []int, state string, crt string) map[str
 	}
 	recPub, err := os.ReadFile(f.rec.pub)
 	require.NoError(f.t, err)
+	hostCA, err := os.ReadFile(f.c.HostCA)
+	require.NoError(f.t, err)
 	spec := map[string]any{
 		"name": orchName(i), "peerURL": "https://" + nodeIP(i) + ":" + orchPeerPort, "clientURL": "https://" + nodeIP(i) + ":" + orchClientPort,
 		"initialCluster": cluster, "initialClusterState": state, "listen": "0.0.0.0:" + orchPort,
 		"sans": []string{"127.0.0.1", nodeIP(i), node.HostNICAddress}, "certificate": crt + f.rootCert, "ca": f.rootCert,
-		"revocationPublicKey": f.revPub, "recoveryPublicKey": string(recPub),
+		"revocationPublicKey": f.revPub, "recoveryPublicKey": string(recPub), "hostCA": string(hostCA),
 	}
 	if f.opts.orchExtra != nil {
 		for k, v := range f.opts.orchExtra(i) {
@@ -381,10 +383,21 @@ var (
 	secretLine  = regexp.MustCompile(`(?m)^secret\s+(\S+)`)
 )
 
+// hostClientCA is the file of naru-hostd's trust of its clients: the host authority's certificate, then
+// the authority orch's certificate chains to, which gen node's --host-client-ca writes when that
+// authority exists at generation. The signer's root is made after the Nodes' first boot, so enroll sets it.
+const hostClientCA = "/run/naru-hostd/client-ca.crt"
+
 // enroll has host Node i enroll with the enrollment key: its spec.host.orch carries orch's address, the
-// authority's SHA-256 and the key. It returns the pairing code the host's console shows.
+// authority's SHA-256 and the key, and naru-hostd trusts the orch authority for orch's own certificate.
+// It returns the pairing code the host's console shows.
 func (f *fleet) enroll(i int, key string) string {
+	hostCA, err := os.ReadFile(f.c.HostCA)
+	require.NoError(f.t, err)
 	f.edit(i, func(file string) error {
+		if err := seed.SetFile(file, hostClientCA, strings.TrimSuffix(string(hostCA), "\n")+"\n"+f.rootCert); err != nil {
+			return err
+		}
 		return seed.Set(file, map[string]any{"url": "https://" + nodeIP(1) + ":" + orchPort, "caSHA256": f.caSHA, "enrollKey": key}, "spec", "host", "orch")
 	})
 	nd := f.node(i)

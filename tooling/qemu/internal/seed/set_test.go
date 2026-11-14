@@ -74,3 +74,17 @@ func TestAppend_RefusesAFieldThatIsNotAList(t *testing.T) {
 
 	assert.Error(t, seed.Append(f, 1, "spec", "services"))
 }
+
+func TestSetFile_ReplacesTheContentOfTheEntryOfThatPathAndOnlyThatOne(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "naru.yaml")
+	require.NoError(t, os.WriteFile(f, []byte("spec:\n  files:\n    - path: /a\n      content: one\n    - path: /b\n      content: two\n      mode: \"0644\"\n"), 0o600))
+
+	require.NoError(t, seed.SetFile(f, "/b", "three\n"))
+
+	var got map[string]map[string][]map[string]any
+	b, err := os.ReadFile(f)
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(b, &got))
+	assert.Equal(t, []map[string]any{{"path": "/a", "content": "one"}, {"path": "/b", "content": "three\n", "mode": "0644"}}, got["spec"]["files"])
+	assert.Error(t, seed.SetFile(f, "/missing", "x"), "an entry that is not there is an error, not a new file")
+}
