@@ -89,6 +89,7 @@ type env struct {
 	rootID       person
 	recoveryFile string
 	passFile     string
+	recovery     identity.Recovery
 }
 
 func newEnv(t *testing.T) *env {
@@ -99,6 +100,7 @@ func newEnv(t *testing.T) *env {
 
 	rec, err := identity.GenerateRecovery()
 	require.NoError(t, err)
+	e.recovery = rec
 	e.passFile = filepath.Join(e.root, "pass")
 	require.NoError(t, os.WriteFile(e.passFile, []byte("recovery passphrase\n"), 0o600))
 	sealed, err := rec.Encrypt("recovery passphrase")

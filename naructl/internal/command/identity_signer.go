@@ -2,14 +2,17 @@ package command
 
 import (
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/garamsh/naru/lib/identity"
 )
@@ -19,29 +22,34 @@ const signerRequestHeader = "X-Naru-Request"
 
 const signerUsage = `usage: naructl signer authorise-replica --admin <person file> --passphrase-file <file> --host-id <id> --join-key <file> --out <file>
        naructl signer bundle --admin <person file> --passphrase-file <file> --socket <path> --out <file>
+       naructl signer reissue-root --recovery-key <file> --passphrase-file <file> --csr <file> --socket <path> --out <file>
        naructl signer restore --admin <person file> --passphrase-file <file> --bundle <file> --recovery-key <path> --recovery-passphrase-file <path> --socket <path>
 
   authorise-replica signs root's authorisation for the signer of a host to receive the authorities: pass the
   file to naru-signer join. bundle writes the authorities sealed to the recovery key. restore fills a blank
   signer from that bundle; the recovery key and its passphrase file are paths on the signer's host.
-  All three are root's.
+  Those three are root's. reissue-root is the recovery key's, for an operator who lost root's person file:
+  it signs on this machine a once-only request for a new root certificate for the request --csr names,
+  and the signer revokes the old root. Its --recovery-key and --passphrase-file are local files.
 `
 
 func signerCmd(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		_, _ = fmt.Fprint(stderr, signerUsage)
-		return errors.New("signer authorise-replica, bundle or restore is required")
+		return errors.New("signer authorise-replica, bundle, reissue-root or restore is required")
 	}
 	switch args[0] {
 	case "authorise-replica":
 		return signerAuthoriseReplica(args[1:], stdout, stderr)
 	case "bundle":
 		return signerBundle(args[1:], stdout, stderr)
+	case "reissue-root":
+		return signerReissueRoot(args[1:], stdout, stderr)
 	case "restore":
 		return signerRestore(args[1:], stdout, stderr)
 	}
 	_, _ = fmt.Fprint(stderr, signerUsage)
-	return fmt.Errorf("signer %q: authorise-replica, bundle or restore", args[0])
+	return fmt.Errorf("signer %q: authorise-replica, bundle, reissue-root or restore", args[0])
 }
 
 func signerAuthoriseReplica(args []string, stdout, stderr io.Writer) error {
@@ -130,5 +138,64 @@ func signerRestore(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: the signer restored the authorities from %s\n", *bundleFile)
+	return nil
+}
+
+// signerReissueRoot has the holder of the recovery key ask the signer for a new root certificate.
+// The key is opened here and signs the request; it is never printed or written unencrypted.
+func signerReissueRoot(args []string, stdout, stderr io.Writer) error {
+	fs := newFlags("signer reissue-root", stderr)
+	recKey := fs.String("recovery-key", "", "the encrypted recovery key file")
+	pass := fs.String("passphrase-file", "", "file holding the recovery key's passphrase")
+	csrFile := fs.String("csr", "", "the certificate request for the new root key, DER or PEM")
+	socket := fs.String("socket", "", "naru-signer's unix socket")
+	out := fs.String("out", "", "the file the new root certificate is written to, PEM")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := require(fs, "recovery-key", "passphrase-file", "csr", "socket", "out"); err != nil {
+		return err
+	}
+	pw, err := passphrase(*pass)
+	if err != nil {
+		return err
+	}
+	keyFile, err := os.ReadFile(*recKey)
+	if err != nil {
+		return fmt.Errorf("read the recovery key: %w", err)
+	}
+	recovery, err := identity.DecryptRecovery(pw, keyFile)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", *recKey, err)
+	}
+	csr, err := readCSR(*csrFile)
+	if err != nil {
+		return err
+	}
+	nonce, err := identity.NewNonce()
+	if err != nil {
+		return err
+	}
+	signed, err := identity.SignRecoveryRequest(identity.ActionReissueRoot, identity.ReissueRootRequest{Nonce: nonce, CSR: csr},
+		time.Now().Add(operatorRequestTTL), recovery.Ed25519)
+	if err != nil {
+		return err
+	}
+	body, err := signerCall(*socket, http.MethodPost, "/v1/reissue-root", signed)
+	if err != nil {
+		return err
+	}
+	var issued identity.Issued
+	if err := json.Unmarshal(body, &issued); err != nil {
+		return fmt.Errorf("the signer's answer: %w", err)
+	}
+	if _, err := x509.ParseCertificate(issued.Certificate); err != nil {
+		return fmt.Errorf("the signer's certificate: %w", err)
+	}
+	if err := os.WriteFile(*out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issued.Certificate}), 0o644); err != nil { //nolint:gosec // a certificate holds nothing secret
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "naructl: the signer issued a new root certificate, serial %s, valid until %s, and revoked the old root; wrote %s\n",
+		issued.Serial, issued.NotAfter.Format(time.RFC3339), *out)
 	return nil
 }
