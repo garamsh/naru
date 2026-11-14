@@ -9,6 +9,7 @@ use (
 	./lib/identity
 	./lib/iso9660
 	./naructl
+	./orch
 	./tooling/disk
 	./tooling/probe
 	./tooling/qemu
