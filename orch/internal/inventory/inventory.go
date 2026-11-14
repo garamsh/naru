@@ -27,6 +27,8 @@ const (
 	EventEnrolling   = "host.enrolling"
 	EventAdmitted    = "host.admitted"
 	EventLabeled     = "host.labeled"
+	EventDrained     = "host.drained"
+	EventUndrained   = "host.undrained"
 	EventKeyCreated  = "enrollment-key.created"
 	EventKeyRevoked  = "enrollment-key.revoked"
 	EventCodeRefused = "host.admission-refused"
@@ -62,6 +64,7 @@ type Host struct {
 	Address     string            `json:"address"`
 	AdmittedAt  time.Time         `json:"admittedAt"`
 	LastSeen    time.Time         `json:"lastSeen,omitzero"`
+	Draining    bool              `json:"draining,omitempty"`
 }
 
 func (h Host) api() orchapi.Host {
@@ -69,5 +72,5 @@ func (h Host) api() orchapi.Host {
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	return orchapi.Host{ID: h.ID, Region: h.Region, Labels: labels, Address: h.Address, AdmittedAt: h.AdmittedAt, LastSeen: h.LastSeen}
+	return orchapi.Host{ID: h.ID, Region: h.Region, Labels: labels, Address: h.Address, AdmittedAt: h.AdmittedAt, LastSeen: h.LastSeen, Draining: h.Draining}
 }

@@ -37,6 +37,8 @@ type fakeOrch struct {
 	revoked []string
 	groups  []orchapi.GroupSpec
 	deleted []string
+	// drains are the calls "drain <id>" and "undrain <id>", in order.
+	drains []string
 	// networks and deletedNetworks are what the network commands sent.
 	networks        []sentNetwork
 	deletedNetworks []string
@@ -152,6 +154,14 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 	mux.HandleFunc("GET /v1/snapshots/latest", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(f.latest)
 	})
+	for _, verb := range []string{"drain", "undrain"} {
+		mux.HandleFunc("POST /v1/hosts/{id}/"+verb, func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			f.drains = append(f.drains, verb+" "+r.PathValue("id"))
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(orchapi.Host{ID: r.PathValue("id"), Draining: verb == "drain"})
+		})
+	}
 	f.srv = httptest.NewTLSServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f

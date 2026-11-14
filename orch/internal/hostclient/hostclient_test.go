@@ -98,6 +98,25 @@ func TestListReportsReadinessCapacityKernelsAndMachines(t *testing.T) {
 	}, h.Machines)
 }
 
+func TestListCarriesTheInventorysDrainingFlagWhetherOrNotTheHostAnswers(t *testing.T) {
+	up, down := newHost(t), newHost(t)
+	down.status["GET /v1/microvms"] = 500
+	c := client(inventory{
+		{ID: "a-up", Address: up.addr(), Draining: true},
+		{ID: "b-down", Address: down.addr(), Draining: true},
+		{ID: "c-control", Address: up.addr()},
+	})
+	hosts, err := c.List(t.Context())
+	require.NoError(t, err)
+	require.Len(t, hosts, 3)
+
+	require.True(t, hosts[0].Ready)
+	require.True(t, hosts[0].Draining, "a host that answers")
+	require.False(t, hosts[1].Ready)
+	require.True(t, hosts[1].Draining, "a host that does not")
+	require.False(t, hosts[2].Draining, "control: a host that is not draining")
+}
+
 func TestCreateSendsTheImageForm(t *testing.T) {
 	h := newHost(t)
 	c := client(inventory{{ID: "h", Address: h.addr()}})

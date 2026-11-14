@@ -191,6 +191,18 @@ func (c *Client) SetLabels(ctx context.Context, hostID string, req SetLabelsRequ
 	return out, c.do(ctx, http.MethodPut, "/v1/hosts/"+url.PathEscape(hostID)+"/labels", nil, req, &out)
 }
 
+// Drain marks the host draining: the groups engine moves its members off it and places nothing on it.
+func (c *Client) Drain(ctx context.Context, hostID string) (Host, error) {
+	var out Host
+	return out, c.do(ctx, http.MethodPost, "/v1/hosts/"+url.PathEscape(hostID)+"/drain", nil, nil, &out)
+}
+
+// Undrain lets the host be placed on again.
+func (c *Client) Undrain(ctx context.Context, hostID string) (Host, error) {
+	var out Host
+	return out, c.do(ctx, http.MethodPost, "/v1/hosts/"+url.PathEscape(hostID)+"/undrain", nil, nil, &out)
+}
+
 // Events lists the event log, oldest first.
 func (c *Client) Events(ctx context.Context) ([]Event, error) {
 	var out []Event

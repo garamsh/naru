@@ -22,8 +22,8 @@ import (
 	"github.com/garamsh/naru/lib/orchapi"
 )
 
-// orchCommands runs the commands that talk to orch: orch, enroll-key, group, network, and host pending, admit and
-// label. It reports false when args are not one of them, so the other host command is left alone.
+// orchCommands runs the commands that talk to orch: orch, enroll-key, group, network, and host pending, admit,
+// label, drain and undrain. It reports false when args are not one of them, so the other host command is left alone.
 func orchCommands(args []string, stdout, stderr io.Writer) (bool, error) {
 	if len(args) == 0 {
 		return false, nil
@@ -46,6 +46,10 @@ func orchCommands(args []string, stdout, stderr io.Writer) (bool, error) {
 				return true, hostAdmit(args[2:], stdout, stderr)
 			case "label":
 				return true, hostLabel(args[2:], stdout, stderr)
+			case "drain":
+				return true, hostDrain("drain", args[2:], stdout, stderr)
+			case "undrain":
+				return true, hostDrain("undrain", args[2:], stdout, stderr)
 			}
 		}
 	}

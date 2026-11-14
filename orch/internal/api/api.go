@@ -105,6 +105,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("POST /v1/enrollment-keys", h.guard(auth.Operate, h.createKey))
 	mux.HandleFunc("DELETE /v1/enrollment-keys/{id}", h.guard(auth.Operate, h.revokeKey))
 	mux.HandleFunc("PUT /v1/hosts/{id}/labels", h.guard(auth.Operate, h.labels))
+	mux.HandleFunc("POST /v1/hosts/{id}/drain", h.guard(auth.Operate, h.drain))
+	mux.HandleFunc("POST /v1/hosts/{id}/undrain", h.guard(auth.Operate, h.undrain))
 	mux.HandleFunc("POST /v1/snapshot", h.guard(auth.Administer, h.snapshot))
 	mux.HandleFunc("GET /v1/snapshots/latest", h.guard(auth.Administer, h.latestSnapshot))
 	mux.HandleFunc("PUT /v1/restore", h.guard(auth.Administer, h.alreadyRestored))
@@ -293,6 +295,16 @@ func (h *handler) labels(w http.ResponseWriter, r *http.Request, who identity.Id
 		return
 	}
 	out, err := h.Inventory.SetLabels(r.Context(), who.Subject, r.PathValue("id"), req)
+	reply(w, r, out, err)
+}
+
+func (h *handler) drain(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	out, err := h.Inventory.Drain(r.Context(), who.Subject, r.PathValue("id"))
+	reply(w, r, out, err)
+}
+
+func (h *handler) undrain(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	out, err := h.Inventory.Undrain(r.Context(), who.Subject, r.PathValue("id"))
 	reply(w, r, out, err)
 }
 

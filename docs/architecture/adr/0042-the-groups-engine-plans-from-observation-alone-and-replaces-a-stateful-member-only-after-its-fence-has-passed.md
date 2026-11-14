@@ -31,3 +31,11 @@ orch keeps groups of microVMs on hosts it reaches through the host API (aurora#8
 - A stateful member runs on two hosts at once, which would show that the deadline wait is shorter than the host's own fence, for instance through clock skew between orch and a host.
 - Operators need a stateful rollout that never drops below its count, which `maxSurge` 0 cannot give.
 - The tombstone records outgrow the store's comfortable size.
+
+## Note of 2026-11-14: the drain trigger
+
+This note appends to the decision above and supersedes its statement that no host is draining until the inventory has a drain.
+
+- The host record in the etcd store gains `draining`. An operator sets it with `POST /v1/hosts/{id}/drain` and clears it with `POST /v1/hosts/{id}/undrain`; both are events; `GET /v1/hosts` reports it; `naructl host drain` and `host undrain` call them.
+- The host client sets `groups.Host.Draining` from that record on every pass, also for a host that does not answer. The engine is unchanged: the rules this decision fixed (members leave within `minAvailable`, a stateful member only after its stop and fence, no placement on a draining host) now run on a flag an operator can set.
+- Nothing is removed from the host by orch when it is drained; its microVMs leave as the engine retires them, and `undrain` makes the host placeable again without moving anything back.

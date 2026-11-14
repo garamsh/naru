@@ -21,6 +21,9 @@ type Host struct {
 	Address    string            `json:"address"`
 	AdmittedAt time.Time         `json:"admittedAt"`
 	LastSeen   time.Time         `json:"lastSeen,omitzero"`
+	// Draining is whether an operator drained the host: its members move off it and nothing is
+	// placed on it until it is undrained.
+	Draining bool `json:"draining"`
 }
 
 // Pending is an enrollment waiting for a person's admission. Code is orch's own computation from

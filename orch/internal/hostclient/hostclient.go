@@ -53,7 +53,7 @@ func (c *Client) List(ctx context.Context) ([]groups.Host, error) {
 	out := make([]groups.Host, len(admitted))
 	var wg sync.WaitGroup
 	for i, h := range admitted {
-		out[i] = groups.Host{ID: h.ID, Region: h.Region, Labels: h.Labels}
+		out[i] = groups.Host{ID: h.ID, Region: h.Region, Labels: h.Labels, Draining: h.Draining}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
