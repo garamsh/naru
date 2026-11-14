@@ -114,10 +114,10 @@ func (n Node) hostFiles() ([]file, error) {
 	}, nil
 }
 
-// hostService is naru-hostd, which dials mvmd's socket.
+// hostService is naru-hostd, which dials mvmd's socket and runs nft from the image's /bin.
 func (n Node) hostService() service {
 	return service{
-		Name: HostService, Binary: HostBinary,
+		Name: HostService, Binary: HostBinary, Env: map[string]string{"PATH": "/bin"},
 		Args: []string{
 			"--listen", "0.0.0.0:" + HostPort,
 			"--cert", path.Join(HostDir, "tls.crt"), "--key", path.Join(HostDir, "tls.key"),
