@@ -2,6 +2,7 @@ package signer_test
 
 import (
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
@@ -40,7 +41,11 @@ func TestIssueHostSendsTheStatementAndTheRequestAndReturnsTheCertificate(t *test
 	}))
 	cert, err := c.IssueHost(t.Context(), []byte("stmt"), []byte("csr"))
 	require.NoError(t, err)
-	require.Equal(t, "CERT", string(cert))
+	block, rest := pem.Decode(cert)
+	require.NotNil(t, block, "the signer's DER certificate is returned as PEM")
+	require.Empty(t, rest)
+	require.Equal(t, "CERTIFICATE", block.Type)
+	require.Equal(t, "CERT", string(block.Bytes))
 	require.Equal(t, "stmt", string(got.Statement))
 	require.Equal(t, "csr", string(got.CSR))
 }

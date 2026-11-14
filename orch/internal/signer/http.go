@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -92,7 +93,8 @@ func (c *Client) IssueHost(ctx context.Context, statement, csr []byte) ([]byte, 
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("the signer's certificate answer: %w", err)
 	}
-	return out.Certificate, nil
+	// The signer answers the certificate as DER; the Signer interface, and the host after it, take PEM.
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: out.Certificate}), nil
 }
 
 // CRL returns the signed revocation list.
