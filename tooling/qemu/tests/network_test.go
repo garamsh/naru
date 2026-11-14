@@ -51,6 +51,12 @@ func probeBody(t *testing.T, name, network string) string {
 	body, err := json.Marshal(map[string]any{
 		"name": name, "image": inputs.Image.Repository + "@" + inputs.Image.Digest,
 		"cpu": 1, "memory": 256 << 20, "rootDiskBytes": 1 << 30, "network": network,
+		// A microVM carries no network policy by default and mvmd drops its ingress: every source may reach it, and
+		// the microVM may send anywhere, so that the drops the scenario counts are hostd's table's.
+		"networkPolicy": map[string]any{
+			"ingress": []map[string]any{{"prefix": "0.0.0.0/0", "protocol": "any"}},
+			"egress":  []map[string]any{{"prefix": "0.0.0.0/0", "protocol": "any"}},
+		},
 	})
 	require.NoError(t, err)
 	p := filepath.Join(t.TempDir(), name+".json")
