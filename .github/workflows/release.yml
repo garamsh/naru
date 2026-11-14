@@ -43,6 +43,8 @@ jobs:
     timeout-minutes: 150
     outputs:
       commit: ${{ steps.commit.outputs.commit }}
+      esp_bytes: ${{ steps.figures.outputs.esp_bytes }}
+      upgrade_kernel_bytes: ${{ steps.figures.outputs.upgrade_kernel_bytes }}
     steps:
       - name: Check the tag names a file
         run: |
@@ -138,6 +140,16 @@ jobs:
           RECREATE: ${{ inputs.requires_recreation && '1' || '' }}
         run: make release VERSION="$TAG"
 
+      # make release writes the two figures the notes state beside the assets, not in them: every file
+      # of build/release is an asset.
+      - name: Read the figures of the notes
+        id: figures
+        run: |
+          . build/release-figures.env
+          [ -n "$ESP_BYTES" ] && [ -n "$LARGEST_UPGRADE_KERNEL_BYTES" ] || { echo "release: build/release-figures.env has no figures" >&2; exit 1; }
+          echo "esp_bytes=$ESP_BYTES" >>"$GITHUB_OUTPUT"
+          echo "upgrade_kernel_bytes=$LARGEST_UPGRADE_KERNEL_BYTES" >>"$GITHUB_OUTPUT"
+
       - name: List the assets
         run: |
           ls -l build/release
@@ -161,6 +173,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RECREATE: ${{ inputs.requires_recreation && '1' || '' }}
+      ESP_BYTES: ${{ needs.build.outputs.esp_bytes }}
+      UPGRADE_KERNEL_BYTES: ${{ needs.build.outputs.upgrade_kernel_bytes }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -173,16 +187,17 @@ jobs:
           sha256sum --check SHA256SUMS
           n=$(ls | wc -l)
           echo "release: $n file(s), SHA256SUMS lists $(wc -l <SHA256SUMS)"
-          [ "$n" -eq 9 ] || { echo "release: expected 9 files" >&2; exit 1; }
+          [ "$n" -eq 12 ] || { echo "release: expected 12 files" >&2; exit 1; }
 
       - name: Write the release notes
         run: |
           cat >notes.md <<'NOTES'
           naru @TAG@, built from commit @COMMIT@ by the release workflow on a GitHub-hosted ubuntu-24.04 runner.
 
-          Assets: `naru-@TAG@.qcow2` (the boot disk), `naru-upgrade-@TAG@.tar` (the upgrade bundle: the kernel with its initramfs inside, and a manifest that names its version and SHA-256, which an A/B upgrade writes to the boot disk's trial slot), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-inputs-@TAG@.json` (the Firecracker digest and the test image reference that `naru-cluster` reads), `naructl-@TAG@-linux-amd64` (the operator's tool: it generates a cluster CA, each Node's user-data and client certificates, and it is the Node API's client; a static binary), `naru-node-1.test.yaml` and `naru-node-2.test.yaml` (test-only user-data for Proxmox that runs gaon) and `SHA256SUMS` of the first eight.
+          Assets: `naru-@TAG@.qcow2` (the boot disk), `naru-upgrade-@TAG@.tar` (the upgrade bundle: the kernel with its initramfs inside, and a manifest that names its version and SHA-256, which an A/B upgrade writes to the boot disk's trial slot), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-node-kernel-@TAG@`, `naru-node-initramfs-@TAG@` and `naru-node-@TAG@.json` (the Node boot set: the kernel and initramfs of the guest form that runs a Node as a microVM, and the manifest that names them with their SHA-256), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-inputs-@TAG@.json` (the Firecracker digest and the test image reference that `naru-cluster` reads), `naructl-@TAG@-linux-amd64` (the operator's tool: it generates a cluster CA, each Node's user-data and client certificates, and it is the Node API's client; a static binary), `naru-node-1.test.yaml` and `naru-node-2.test.yaml` (test-only user-data for Proxmox that runs gaon) and `SHA256SUMS` of the other eleven.
 
           - **What this release carries beyond v0.3.0.** init serves the Node API (version, services, service logs, the stored configuration, and applying a change live or staged for the next boot) over mutual TLS on `spec.api.listen`, `0.0.0.0:50000` by default, and `naructl` is its client: `version`, `services`, `logs`, `get config` and `apply`. `naru-init` reports the release's tag as its version. A Node whose user-data has no `spec.api` serves no API and logs that the Node API is off, and user-data written for v0.3.0 boots unchanged.
+          - **The Node boot set and the image's room.** `naructl host boot-set add naru-node-@TAG@.json --config <host client config>` adds the boot set to a host that runs mvmd, with no reboot, under the name `naru-node-` and the tag in lower case with each character outside a-z, 0-9 and `-` replaced by `-`; the files it names are read from beside the manifest. The boot disk's ESP is @ESP_BYTES@ bytes, and the largest kernel a Node installed from this image can take as an in-place upgrade is @UPGRADE_KERNEL_BYTES@ bytes.
           - **The test user-data has no `spec.api`.** `naru-node-1.test.yaml` and `naru-node-2.test.yaml` leave the Node API off. To enable it, make the API's authority and write the user-data from the same directory: `naructl gen api-ca --ca-dir <ca-dir>` (the cluster's CA directory, which `gen ca` wrote), then `naructl gen node --ca <ca-dir> ...`, which adds `spec.api` when `<ca-dir>/api/` exists, then `naructl gen api-client --ca-dir <ca-dir> --role admin --endpoint <node-ip> --out client.yaml`, and `naructl version --config client.yaml`. A `reader` role reads and cannot apply.
           - **The data disk carries a test-only TLS authority, private key included.** `inputs/registry/key.pem` is the private key of the CA that `inputs/registry/ca.pem` and `cert.pem` belong to. It is generated for each build, is trusted only by the mvmd on the Node that holds the disk, and the registry that uses it listens on 127.0.0.1. Anyone can read the key from this public asset; do not trust the CA anywhere else.
           - **The user-data assets are test-only and carry private keys.** `naru-node-1.test.yaml` and `naru-node-2.test.yaml` hold the bootstrap tokens of both Nodes in `spec.files`, and `naru-node-1.test.yaml` also holds, in `spec.pki`, a test-only TLS authority, private key included: the CA generated for the build, from which init issues node-1's pairs at boot and gaon's controllers sign the Node Agents' certificate requests. The CA is valid ten years from the build and the certificates one year. Anyone can read that key and those tokens from this public asset: do not trust the CA anywhere else, and use the files on a throwaway deployment only. Two builds of one tree differ in the CA and the tokens.
@@ -194,7 +209,7 @@ jobs:
           - **A Node installed from an earlier image cannot take this release's upgrade bundle, and must be recreated.** This release's kernel is larger than the trial slot of the ESP of the previous release's image. Recreate the Node from `naru-@TAG@.qcow2`. A Node installed from this image has room for a trial copy of a kernel twice the size of this release's own.
           NOTES
           fi
-          sed -i -e "s/@TAG@/$TAG/g" -e "s/@COMMIT@/$COMMIT/g" notes.md
+          sed -i -e "s/@TAG@/$TAG/g" -e "s/@COMMIT@/$COMMIT/g" -e "s/@ESP_BYTES@/$ESP_BYTES/g" -e "s/@UPGRADE_KERNEL_BYTES@/$UPGRADE_KERNEL_BYTES/g" notes.md
           # Each asset's name and SHA-256, from the same build's SHA256SUMS that is attached beside them.
           {
             printf '\n**SHA-256 of each asset** (the same lines as the attached `SHA256SUMS`, which lists every asset but itself):\n\n'

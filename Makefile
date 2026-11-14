@@ -209,11 +209,15 @@ judge-serial:
 
 # release writes the assets of a deployment into $(RELEASE): naru-<version>.qcow2 (the boot disk),
 # naru-upgrade-<version>.tar (the upgrade bundle: the kernel and a manifest of its digest),
-# naru-data-<version>.qcow2 (the one data disk both Nodes attach), naru-guest-<version>.json,
+# naru-node-kernel-<version>, naru-node-initramfs-<version> and naru-node-<version>.json (the Node boot
+# set a host takes with `naructl host boot-set add`, ADR 0046), naru-data-<version>.qcow2 (the one data
+# disk both Nodes attach), naru-guest-<version>.json,
 # naru-inputs-<version>.json (what naru-cluster reads besides the disks), naructl-<version>-linux-amd64
 # (the operator's tool, which also writes the test user-data below from a CA that lives only for the
 # run), naru-node-1.test.yaml and naru-node-2.test.yaml (test-only user-data for Proxmox: they carry
-# gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. VERSION is defined above image.
+# gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. $(BUILD)/release-figures.env,
+# outside $(RELEASE) because every file there is an asset, holds the ESP size and the largest in-place
+# upgrade kernel, which the release workflow puts in the notes. VERSION is defined above image.
 # PREV_MANIFEST is the path of the manifest.json of the previous release's upgrade bundle: the
 # release is refused when its kernel would not fit the trial slot of a Node installed from that
 # release's image (ADR 0037), unless RECREATE=1, which says the release's notes tell those Nodes to
@@ -225,7 +229,7 @@ release: disk
 	rm -rf $(RELEASE)
 	mkdir -p $(BUILD)/naructl
 	cd naructl && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o $(BUILD)/naructl/naructl ./cmd/naructl
-	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -out $(RELEASE) -version $(VERSION) $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
+	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
 
 # test-qemu boots Nodes of the image under QEMU, as the user, and reads their consoles. It needs
 # /dev/kvm with nested virtualization and the host's mkfs.ext4 (for the data disk), and fails,

@@ -5,6 +5,7 @@ package mvmd
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/garamsh/naru/lib/hostapi"
@@ -118,6 +119,14 @@ type Info struct {
 	MachinePrefixes []string
 }
 
+// BootSet is a boot set to add: its name and the SHA-256 digests, in hex, the kernel and the initrd
+// must have.
+type BootSet struct {
+	Name         string
+	KernelDigest string
+	InitrdDigest string
+}
+
 // Deadline is mvmd's fencing deadline.
 type Deadline struct {
 	Armed      bool
@@ -197,4 +206,11 @@ type Runtime interface {
 	DeleteSnapshot(ctx context.Context, id string) error
 	// RestoreMachine creates a new Running Machine from a snapshot.
 	RestoreMachine(ctx context.Context, r Restore) (Machine, error)
+	// AddBootSet streams the kernel and then the initrd to mvmd, which refuses a file whose
+	// SHA-256 is not the set's (ErrInvalid). The same name and digests is success, and the same
+	// name with other digests is ErrConflict.
+	AddBootSet(ctx context.Context, set BootSet, kernel, initrd io.Reader) error
+	// RemoveBootSet removes a set added by AddBootSet. An absent one is success; a set a Machine
+	// names, or one the node's configuration offers, is ErrPrecondition.
+	RemoveBootSet(ctx context.Context, name string) error
 }

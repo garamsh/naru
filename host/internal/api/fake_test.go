@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"slices"
 	"sort"
 	"sync"
@@ -29,6 +32,9 @@ type fakeRuntime struct {
 	// fences is the state of each fenced Machine's own fence; snapshots are the snapshots held.
 	fences    map[string]mvmd.Deadline
 	snapshots map[string]mvmd.Snapshot
+	// bootSets are the boot sets added, and bootFiles the kernel and initrd each was given.
+	bootSets  map[string]mvmd.BootSet
+	bootFiles map[string][2][]byte
 }
 
 // step records a call that changes mvmd and returns the error a test set for it.
@@ -41,6 +47,7 @@ func newFake() *fakeRuntime {
 	return &fakeRuntime{
 		machines: map[string]mvmd.Machine{}, disks: map[string]mvmd.Disk{}, failAt: map[string]error{}, contents: map[string][]byte{},
 		fences: map[string]mvmd.Deadline{}, snapshots: map[string]mvmd.Snapshot{},
+		bootSets: map[string]mvmd.BootSet{}, bootFiles: map[string][2][]byte{},
 		info: mvmd.Info{
 			APIVersion: "v1alpha2", Driver: "fake", CPUs: 8, MemoryBytes: 1 << 33, StateTotalBytes: 100, StateAvailableBytes: 60,
 			MachinePrefixes: []string{"10.1.0.0/24"},
@@ -321,4 +328,54 @@ func (f *fakeRuntime) RestoreMachine(_ context.Context, r mvmd.Restore) (mvmd.Ma
 	}
 	f.machines[r.ID] = m
 	return m, nil
+}
+
+func sha256Of(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// AddBootSet reads both files whole and refuses one whose SHA-256 is not the set's, as mvmd does.
+func (f *fakeRuntime) AddBootSet(_ context.Context, set mvmd.BootSet, kernel, initrd io.Reader) error {
+	k, err := io.ReadAll(kernel)
+	if err != nil {
+		return err
+	}
+	i, err := io.ReadAll(initrd)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("addBootSet " + set.Name); err != nil {
+		return err
+	}
+	if got := sha256Of(k); got != set.KernelDigest {
+		return fmt.Errorf("%w: the kernel's SHA-256 is %s", mvmd.ErrInvalid, got)
+	}
+	if got := sha256Of(i); got != set.InitrdDigest {
+		return fmt.Errorf("%w: the initrd's SHA-256 is %s", mvmd.ErrInvalid, got)
+	}
+	if have, ok := f.bootSets[set.Name]; ok && have != set {
+		return mvmd.ErrConflict
+	}
+	f.bootSets[set.Name] = set
+	f.bootFiles[set.Name] = [2][]byte{k, i}
+	return nil
+}
+
+func (f *fakeRuntime) RemoveBootSet(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("removeBootSet " + name); err != nil {
+		return err
+	}
+	for _, m := range f.machines {
+		if m.BootSet == name {
+			return mvmd.ErrPrecondition
+		}
+	}
+	delete(f.bootSets, name)
+	delete(f.bootFiles, name)
+	return nil
 }

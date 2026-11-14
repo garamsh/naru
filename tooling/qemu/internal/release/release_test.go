@@ -2,10 +2,13 @@ package release_test
 
 import (
 	"archive/tar"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -391,6 +394,9 @@ func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
 	binary.LittleEndian.PutUint64(img[1024+32:], 2048)
 	binary.LittleEndian.PutUint64(img[1024+40:], 2048+4*1024*1024-1)
 	require.NoError(t, os.WriteFile(filepath.Join(diskDir, "naru.img"), img, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(imageDir, "node-initrd.cpio.gz"), []byte("node initramfs"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(guestDir, "boot-sets", release.NodeBootSet), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "boot-sets", release.NodeBootSet, "vmlinux"), []byte("node kernel"), 0o600))
 	d := strings.Repeat("a", 64)
 	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "guest.json"), []byte(`{"kernels":{"naru":{"path":"/k","sha256":"`+d+`"}},"default_kernel":"naru",
 "guest_initrd":{"path":"/g","sha256":"`+d+`"},"converter_initrd":{"path":"/c","sha256":"`+d+`"}}`), 0o600))
@@ -482,6 +488,71 @@ func TestBuild_TheBundleManifestRecordsTheESPOfTheBootDisk(t *testing.T) {
 		assert.EqualValues(t, 2<<30, m.ESP.Bytes, "the partition of the disk's GPT")
 		return
 	}
+}
+
+func hexOf(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+func TestBuild_ShipsTheNodeBootSetAsKernelInitramfsAndAManifestThatNamesTheirDigests(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+
+	assets, err := release.Build(o)
+
+	require.NoError(t, err)
+	kernel, err := os.ReadFile(filepath.Join(o.Out, "naru-node-kernel-v9"))
+	require.NoError(t, err, "the release holds the boot set's kernel")
+	assert.Equal(t, "node kernel", string(kernel))
+	initramfs, err := os.ReadFile(filepath.Join(o.Out, "naru-node-initramfs-v9"))
+	require.NoError(t, err, "the release holds the boot set's initramfs")
+	assert.Equal(t, "node initramfs", string(initramfs))
+	b, err := os.ReadFile(filepath.Join(o.Out, "naru-node-v9.json"))
+	require.NoError(t, err, "the release holds the boot set's manifest")
+	var m release.BootSetJSON
+	require.NoError(t, json.Unmarshal(b, &m))
+	assert.Equal(t, release.BootSetJSON{
+		Name: "naru-node-v9", Version: "v9",
+		Kernel:    release.BootSetFileJSON{File: "naru-node-kernel-v9", SHA256: hexOf(kernel), Bytes: int64(len(kernel))},
+		Initramfs: release.BootSetFileJSON{File: "naru-node-initramfs-v9", SHA256: hexOf(initramfs), Bytes: int64(len(initramfs))},
+	}, m)
+	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
+	require.NoError(t, err)
+	for _, name := range []string{"naru-node-kernel-v9", "naru-node-initramfs-v9", "naru-node-v9.json"} {
+		assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists "+name)
+	}
+	assert.Len(t, assets, 11, "the eight assets of before and the three of the boot set, which SHA256SUMS makes 12 files")
+}
+
+func TestBuild_WritesTheNotesFiguresOutsideTheAssetsWhenAsked(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+	o.Figures = filepath.Join(t.TempDir(), "figures.env")
+
+	_, err := release.Build(o)
+
+	require.NoError(t, err)
+	b, err := os.ReadFile(o.Figures)
+	require.NoError(t, err)
+	esp := int64(2 << 30)
+	want := esp - esp/64 - 1<<20 - int64(len("kernel"))
+	assert.Equal(t, fmt.Sprintf("ESP_BYTES=%d\nLARGEST_UPGRADE_KERNEL_BYTES=%d\n", esp, want), string(b))
+	entries, err := os.ReadDir(o.Out)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotEqual(t, "figures.env", e.Name(), "the figures are not an asset")
+	}
+}
+
+func TestBootSetName_NormalizesAVersionToWhatMvmdTakesAndRefusesOneThatIsTooLong(t *testing.T) {
+	for version, want := range map[string]string{
+		"v0.4.0": "naru-node-v0-4-0", "V1.0.0-RC1": "naru-node-v1-0-0-rc1", "v1+build_2": "naru-node-v1-build-2",
+	} {
+		got, err := release.BootSetName(version)
+		require.NoError(t, err, version)
+		assert.Equal(t, want, got)
+		assert.Regexp(t, `^[a-z0-9-]{1,63}$`, got)
+	}
+	_, err := release.BootSetName(strings.Repeat("a", 54))
+	assert.Error(t, err, "naru-node- and 54 characters is 64")
+	_, err = release.BootSetName(strings.Repeat("a", 53))
+	assert.NoError(t, err, "63 is the longest")
 }
 
 func TestBuild_RefusesAKernelThePreviousReleasesNodesCannotTakeUnlessRecreationIsRequired(t *testing.T) {
