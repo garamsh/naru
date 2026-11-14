@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"time"
 
@@ -27,7 +28,11 @@ type Deps struct {
 	// HostFile is the file init writes from spec.host: the region and labels /v1/host reports. It is
 	// read on every request, so an apply that changes spec.host shows with no restart.
 	HostFile string
-	Log      *slog.Logger
+	// MachineGateway is the gateway of the Machines' network, an address of the prefix mvmd gives
+	// their addresses from. mvmd's API does not report it, and an OS-form microVM's seed names it.
+	// Invalid means unset, and an OS-form request is then refused.
+	MachineGateway netip.Addr
+	Log            *slog.Logger
 }
 
 // Server is the host API.

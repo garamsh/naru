@@ -42,6 +42,15 @@ type CreateRequest struct {
 	NetworkPolicy mvmd.Policy       `json:"networkPolicy"`
 	Env           map[string]string `json:"env,omitempty"`
 	Command       []string          `json:"command,omitempty"`
+
+	// The OS form, in place of Image, RootDiskBytes, Disks, Env and Command: a microVM that boots
+	// BootSet, with Cmdline added to the kernel's command line, a data disk of DataDisk bytes, a
+	// NoCloud seed whose user-data is Seed, and PodPrefix routed to it.
+	BootSet   string `json:"bootSet,omitempty"`
+	Cmdline   string `json:"cmdline,omitempty"`
+	Seed      []byte `json:"seed,omitempty"`
+	DataDisk  uint64 `json:"dataDisk,omitempty"`
+	PodPrefix string `json:"podPrefix,omitempty"`
 }
 
 // plan is a validated request: what to pull and what to create.
@@ -49,6 +58,8 @@ type plan struct {
 	repository string
 	create     mvmd.Create
 	disks      []DiskSpec
+	// userData is the seed's user-data; only the OS form has one.
+	userData []byte
 }
 
 // diskID is the mvmd identifier of a microVM's disk. A name is a DNS label, which has no '.', so
@@ -57,6 +68,9 @@ func diskID(name, disk string) string { return name + "." + disk }
 
 // validate returns the plan for r, or every field that is wrong with it.
 func validate(r CreateRequest) (plan, []string, string) {
+	if r.osForm() {
+		return validateOS(r)
+	}
 	var fields []string
 	bad := func(f string) { fields = append(fields, f) }
 	if !dnsLabel.MatchString(r.Name) {

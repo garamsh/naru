@@ -3,6 +3,7 @@ package layout_test
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -56,6 +57,9 @@ func TestUserData_HostRunsNaruHostdWithAPairFromTheHostAuthorityAndNeverItsKey(t
 		names = append(names, s.Name)
 		if s.Name == "naru-hostd" {
 			assert.Contains(t, s.Args, "/run/naru-hostd/client-ca.crt")
+			i := slices.Index(s.Args, "--machine-gateway")
+			require.GreaterOrEqual(t, i, 0, "naru-hostd is not told the gateway of the Machines' network")
+			assert.Equal(t, "10.200.1.1", s.Args[i+1], "the first address of the Machine prefix, which mvmd's own gateway is")
 		}
 	}
 	require.Contains(t, names, "naru-hostd")

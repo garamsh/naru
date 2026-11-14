@@ -130,6 +130,7 @@ func (g *GRPC) Info(ctx context.Context) (Info, error) {
 	if d := r.GetDrivers(); len(d) > 0 {
 		i.Driver = d[0].GetDriver().GetName() + " " + d[0].GetDriver().GetVersion()
 	}
+	i.MachinePrefixes = r.GetMachinePrefixes()
 	for _, k := range r.GetKernels() {
 		i.Kernels = append(i.Kernels, Kernel{Name: k.GetName(), Digest: k.GetDigest(), Default: k.GetIsDefault()})
 	}
@@ -148,6 +149,28 @@ func (g *GRPC) CreateDisk(ctx context.Context, id string, sizeBytes uint64) erro
 		return c.CreateDisk(ctx, &v1alpha2.CreateDiskRequest{DiskId: id, RequestId: diskRequestID, SizeBytes: sizeBytes})
 	})
 	return err
+}
+
+func (g *GRPC) CreateRawDisk(ctx context.Context, id string, sizeBytes uint64, contents []byte) error {
+	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.CreateDiskResponse, error) {
+		return c.CreateDisk(ctx, &v1alpha2.CreateDiskRequest{
+			DiskId: id, RequestId: diskRequestID, SizeBytes: sizeBytes,
+			Filesystem: v1alpha2.Filesystem_FILESYSTEM_NONE, Contents: contents,
+		})
+	})
+	return err
+}
+
+func (g *GRPC) AttachDisk(ctx context.Context, machineID string, a Attachment) (Machine, error) {
+	r, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.AttachDiskResponse, error) {
+		return c.AttachDisk(ctx, &v1alpha2.AttachDiskRequest{
+			MachineId: machineID, Disk: &v1alpha2.DiskAttachment{DiskId: a.ID, ReadOnly: a.ReadOnly},
+		})
+	})
+	if err != nil {
+		return Machine{}, err
+	}
+	return machineFromProto(r.GetMachine()), nil
 }
 
 func (g *GRPC) DeleteDisk(ctx context.Context, id string) error {
@@ -175,7 +198,10 @@ func (g *GRPC) CreateMachine(ctx context.Context, cr Create) (Machine, error) {
 	req := &v1alpha2.CreateMachineRequest{
 		MachineId: cr.ID, RequestId: createRequestID, ImageDigest: cr.ImageDigest,
 		Resources:     &v1alpha2.Resources{CpuCount: cr.CPU, MemoryBytes: cr.MemoryBytes},
-		RootDiskBytes: cr.RootDiskBytes, NetworkPolicy: policyToProto(cr.Policy),
+		RootDiskBytes: cr.RootDiskBytes, NetworkPolicy: policyToProto(cr.Policy), RoutedPrefixes: cr.RoutedPrefixes,
+	}
+	if cr.BootSet != "" {
+		req.OsBoot = &v1alpha2.OsBoot{BootSet: cr.BootSet, KernelCmdline: cr.Cmdline}
 	}
 	for _, d := range cr.Disks {
 		req.Disks = append(req.Disks, &v1alpha2.DiskAttachment{DiskId: d.ID, ReadOnly: d.ReadOnly})
@@ -269,6 +295,7 @@ func machineFromProto(m *v1alpha2.Machine) Machine {
 		ID: m.GetId(), State: stateNames[m.GetState()], Failure: m.GetLastFailureReason(), Addresses: m.GetAddresses(),
 		ImageDigest: m.GetImageDigest(), CPU: m.GetResources().GetCpuCount(), MemoryBytes: m.GetResources().GetMemoryBytes(),
 		RootDiskBytes: m.GetRootDiskBytes(), Policy: policyFromProto(m.GetNetworkPolicy()),
+		BootSet: m.GetOsBoot().GetBootSet(), Cmdline: m.GetOsBoot().GetKernelCmdline(), RoutedPrefixes: m.GetRoutedPrefixes(),
 	}
 	if out.State == "" {
 		out.State = strings.ToLower(strings.TrimPrefix(m.GetState().String(), "MACHINE_STATE_"))

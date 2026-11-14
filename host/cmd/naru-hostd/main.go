@@ -7,6 +7,7 @@ import (
 	"flag"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,6 +26,7 @@ func main() {
 		clients  = flag.String("client-ca", "/run/naru-hostd/client-ca.crt", "CA of the clients' certificates")
 		hostFile = flag.String("host-file", "/run/naru-hostd/host.json", "region and labels, written by init from spec.host")
 		socket   = flag.String("mvmd-socket", "/run/mvmd.sock", "mvmd's runtime API socket")
+		gateway  = flag.String("machine-gateway", "", "gateway of the microVMs' network, written into the seed of an OS-form microVM")
 		length   = flag.Duration("fence-length", 10*time.Minute, "how long each renewal arms mvmd's fencing deadline")
 		interval = flag.Duration("fence-interval", time.Minute, "how often the deadline is renewed")
 	)
@@ -41,6 +43,13 @@ func main() {
 		log.Error("cannot listen", "addr", *listen, "err", err.Error())
 		os.Exit(1)
 	}
+	var gw netip.Addr
+	if *gateway != "" {
+		if gw, err = netip.ParseAddr(*gateway); err != nil || !gw.Is4() {
+			log.Error("--machine-gateway is not an IPv4 address", "value", *gateway)
+			os.Exit(1)
+		}
+	}
 	rt := mvmd.New(*socket)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -50,7 +59,7 @@ func main() {
 	go func() { <-ctx.Done(); _ = ln.Close() }()
 
 	log.Info("naru-hostd serving", "addr", *listen)
-	if err := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, Log: log}).Serve(ln, conf); err != nil && ctx.Err() == nil {
+	if err := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Log: log}).Serve(ln, conf); err != nil && ctx.Err() == nil {
 		log.Error("the host API stopped", "err", err.Error())
 		os.Exit(1)
 	}

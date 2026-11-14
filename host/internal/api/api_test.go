@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,7 +84,10 @@ type env struct {
 	pool     *x509.CertPool
 }
 
-func start(t *testing.T) *env {
+func start(t *testing.T) *env { return startWith(t, netip.MustParseAddr("10.1.0.1")) }
+
+// startWith starts a server whose machine gateway is gateway.
+func startWith(t *testing.T, gateway netip.Addr) *env {
 	t.Helper()
 	dir := t.TempDir()
 	ca := newAuthority(t, "clients")
@@ -101,7 +105,7 @@ func start(t *testing.T) *env {
 	e := &env{rt: newFake(), addr: ln.Addr().String(), ca: ca, pool: x509.NewCertPool()}
 	e.pool.AppendCertsFromPEM(srvCA.pem)
 	e.hostFile = write("host.json", []byte(`{"region":"eu-1","labels":{"disk":"ssd"}}`))
-	srv := New(Deps{Runtime: e.rt, HostFile: e.hostFile, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	srv := New(Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	go func() { _ = srv.Serve(ln, conf) }()
 	t.Cleanup(func() { _ = ln.Close() })
 	return e
