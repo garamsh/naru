@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -82,6 +83,7 @@ type env struct {
 	ca       authority
 	hostFile string
 	pool     *x509.CertPool
+	metrics  *prometheus.Registry
 }
 
 func start(t *testing.T) *env { return startWith(t, netip.MustParseAddr("10.1.0.1")) }
@@ -105,7 +107,8 @@ func startWith(t *testing.T, gateway netip.Addr) *env {
 	e := &env{rt: newFake(), addr: ln.Addr().String(), ca: ca, pool: x509.NewCertPool()}
 	e.pool.AppendCertsFromPEM(srvCA.pem)
 	e.hostFile = write("host.json", []byte(`{"region":"eu-1","labels":{"disk":"ssd"}}`))
-	srv := New(Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	e.metrics = prometheus.NewRegistry()
+	srv := New(Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics})
 	go func() { _ = srv.Serve(ln, conf) }()
 	t.Cleanup(func() { _ = ln.Close() })
 	return e

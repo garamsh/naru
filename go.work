@@ -9,6 +9,7 @@ use (
 	./lib/identity
 	./lib/iso9660
 	./lib/orchapi
+	./lib/metrics
 	./naructl
 	./orch
 	./tooling/disk
