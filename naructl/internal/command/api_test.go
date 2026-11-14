@@ -288,6 +288,7 @@ func newFakeNodeTLS(t *testing.T, dep deployment, maxTLS uint16) *fakeNode {
 		writeJSON(w, 200, map[string]any{"revision": f.revision, "config": map[string]any{
 			"apiVersion": "naru.garam.sh/v1alpha1",
 			"spec":       map[string]any{"api": map[string]any{"key": "REDACTED", "certificate": "CERT"}},
+			"status":     map[string]any{"version": "v1.2.3", "revision": f.revision},
 		}})
 	})
 	mux.HandleFunc("POST /v1/config", func(w http.ResponseWriter, r *http.Request) {
@@ -451,7 +452,7 @@ func TestLogs_AnUnknownServiceIsOneLineAndExitCode1(t *testing.T) {
 	assert.Error(t, err, "and only one")
 }
 
-func TestGetConfig_PrintsTheRevisionAndTheConfigurationAsTheNodeRedactedIt(t *testing.T) {
+func TestGetConfig_PrintsOneYAMLDocumentOfTheConfigurationAndItsStatusAsTheNodeRedactedIt(t *testing.T) {
 	dep := newDeployment(t)
 	apiAuthority(t, dep)
 	node := newFakeNode(t, dep)
@@ -461,12 +462,18 @@ func TestGetConfig_PrintsTheRevisionAndTheConfigurationAsTheNodeRedactedIt(t *te
 
 	require.NoError(t, err, out)
 	var got struct {
-		Revision int
-		Config   map[string]any
+		APIVersion string `yaml:"apiVersion"`
+		Spec       map[string]any
+		Status     struct {
+			Version  string
+			Revision int
+		}
 	}
-	require.NoError(t, json.Unmarshal([]byte(out), &got))
-	assert.Equal(t, 4, got.Revision)
-	assert.Contains(t, out, `"key": "REDACTED"`)
+	require.NoError(t, yaml.Unmarshal([]byte(out), &got), "the output is one YAML document")
+	assert.Equal(t, "naru.garam.sh/v1alpha1", got.APIVersion)
+	assert.Equal(t, "v1.2.3", got.Status.Version)
+	assert.Equal(t, 4, got.Status.Revision)
+	assert.Contains(t, out, "key: REDACTED")
 	file, err := os.ReadFile(cfg)
 	require.NoError(t, err)
 	var f struct{ Key string }

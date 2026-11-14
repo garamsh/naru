@@ -173,8 +173,8 @@ func (c *Client) Logs(ctx context.Context, service string, follow bool, w io.Wri
 	return nil
 }
 
-// Config is GET /v1/config: the revision and the configuration with private material redacted,
-// left as the JSON the Node sent.
+// Config is GET /v1/config: the revision and the document, the configuration with private material
+// redacted and its status, left as the JSON the Node sent.
 type Config struct {
 	Revision int             `json:"revision"`
 	Config   json.RawMessage `json:"config"`

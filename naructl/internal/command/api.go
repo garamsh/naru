@@ -228,11 +228,16 @@ func getConfig(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	// The document is the configuration and its status, printed as the one YAML document it is.
+	var doc map[string]any
+	if err := json.Unmarshal(cfg.Config, &doc); err != nil {
+		return fmt.Errorf("GET /v1/config: the answer is not what the Node API sends: %w", err)
+	}
+	b, err := yaml.Marshal(doc)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, "%s\n", b)
+	_, err = fmt.Fprintf(stdout, "%s", b)
 	return err
 }
 

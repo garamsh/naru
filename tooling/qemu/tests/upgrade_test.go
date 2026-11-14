@@ -163,6 +163,7 @@ func TestNode_UpgradeReplacesTheKernelOfARunningNodeAndKeepsItWhenItIsHealthyWit
 	require.NoError(t, err)
 	require.Equal(t, want, before.Version)
 	require.Equal(t, "default", before.Slot)
+	require.Equal(t, want, documentOf(t, admin).Status.Version, "the document and `version` agree before the upgrade")
 	require.NoError(t, ctl(admin, "apply", "-f", patchFile(t, idle("1m"))).Err)
 	require.Equal(t, 1, revisionOf(t, admin))
 	stored := storeOf(t, nd)
@@ -179,6 +180,10 @@ func TestNode_UpgradeReplacesTheKernelOfARunningNodeAndKeepsItWhenItIsHealthyWit
 	after, err := statusOf(admin)
 	require.NoError(t, err)
 	assert.Equal(t, next, after.Version, "the version changed")
+	status := documentOf(t, admin).Status
+	assert.Equal(t, next, status.Version, "the document reads the new version too")
+	require.NotNil(t, status.LastUpgrade)
+	assert.Equal(t, "promoted", status.LastUpgrade.Result, "and how the upgrade ended")
 	assert.NotEqual(t, before.BootID, after.BootID, "an upgrade is a new boot")
 	assert.Contains(t, after.Outcome, want+" -> "+next+", promoted")
 	assert.Equal(t, 1, revisionOf(t, admin), "the store revision is the one before")
