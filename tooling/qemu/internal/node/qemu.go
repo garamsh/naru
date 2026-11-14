@@ -200,6 +200,17 @@ func (n *Node) ReplaceUserData(userData, networkConfig []byte) error {
 	return BuildCidata(filepath.Join(n.dir, "cidata.img"), "naru15-"+n.Name, userData, networkConfig)
 }
 
+// ResetData stops the Node, replaces its data disk with a new one that carries only the inputs tree
+// at inputsDir, and boots it again: a control host that lost its disk, whose signer and orch state
+// are gone. The boot disk, the NoCloud drive and the variable store are kept.
+func (n *Node) ResetData(inputsDir string) error {
+	n.Stop()
+	if _, err := BuildDataDiskWith(n.dir, inputsDir, ""); err != nil {
+		return err
+	}
+	return n.launch()
+}
+
 // qemuArgs is the QEMU command line of a Node, laid out as Proxmox lays out a guest: a q35
 // machine under OVMF, the boot and data disks on a virtio-scsi controller, the NoCloud drive as a
 // CD-ROM on the AHCI bus, one virtio NIC, and the serial console written to console.
