@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -20,8 +21,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/garamsh/naru/host/internal/signer"
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/metrics"
 )
 
 const defaultDir = "/var/lib/naru/signer"
@@ -60,7 +66,7 @@ func runInit(log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir, "the signer's directory, mode 0700")
 	recovery := fs.String("recovery-public", "", "file holding the recovery key's public half")
-	csrFile := fs.String("root-csr", "", "file holding the DER certificate request of the first root identity")
+	csrFile := fs.String("root-csr", "", "file holding the certificate request of the first root identity, PEM or DER")
 	out := fs.String("root-cert", "", "file the first root certificate is written to")
 	revPub := fs.String("revocation-public-key", "", "file the revocation key's public half is written to, PKIX PEM, which orch reads")
 	_ = fs.Parse(args)
@@ -75,7 +81,7 @@ func runInit(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	csr, err := os.ReadFile(*csrFile)
+	csr, err := readCSR(*csrFile)
 	if err != nil {
 		return err
 	}
@@ -98,7 +104,29 @@ func runInit(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(*revPub, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0o644) //nolint:gosec // a public key
+	revPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	if err := os.WriteFile(*revPub, revPEM, 0o644); err != nil { //nolint:gosec // a public key
+		return err
+	}
+	// Init runs the first boot as a service whose output is on the console, which is where the
+	// operator reads what spec.orch needs: neither holds a secret.
+	fmt.Printf("root certificate:\n%s\nrevocation public key:\n%s", root.Certificate, revPEM)
+	return nil
+}
+
+// readCSR reads a certificate request that is PEM or DER and returns its DER.
+func readCSR(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if block, _ := pem.Decode(data); block != nil {
+		if block.Type != "CERTIFICATE REQUEST" {
+			return nil, fmt.Errorf("%s holds a PEM %q, not a CERTIFICATE REQUEST", path, block.Type)
+		}
+		return block.Bytes, nil
+	}
+	return data, nil
 }
 
 func runServe(log *slog.Logger, args []string) error {
@@ -108,6 +136,7 @@ func runServe(log *slog.Logger, args []string) error {
 	mode := fs.String("socket-mode", "0660", "octal mode of the socket")
 	peer := fs.String("peer-listen", "", "address of the peer listener other signers replicate from; empty serves none")
 	names := fs.String("peer-name", "", "comma-separated DNS names or IPs of the peer listener's serving certificate")
+	metricsAddr := fs.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 	_ = fs.Parse(args)
 	m, err := strconv.ParseUint(*mode, 8, 32)
 	if err != nil {
@@ -127,7 +156,21 @@ func runServe(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	servers := []*http.Server{{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}}
+	reg := metrics.New()
+	requests := promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+		Name: "naru_signer_http_requests_total", Help: "Requests the signer served, by listener, method and status code.",
+	}, []string{"listener", "method", "code"})
+	count := func(listener string, h http.Handler) http.Handler {
+		return promhttp.InstrumentHandlerCounter(requests.MustCurryWith(prometheus.Labels{"listener": listener}), h)
+	}
+	if *metricsAddr != "" {
+		go func() {
+			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {
+				log.Error("the metrics listener stopped", "addr", *metricsAddr, "err", err.Error())
+			}
+		}()
+	}
+	servers := []*http.Server{{Handler: count("socket", s.Handler()), ReadHeaderTimeout: 10 * time.Second}}
 	listeners := []net.Listener{ln}
 	if *peer != "" {
 		conf, err := s.PeerTLSConfig(strings.Split(*names, ","))
@@ -138,7 +181,7 @@ func runServe(log *slog.Logger, args []string) error {
 		if err != nil {
 			return err
 		}
-		servers = append(servers, &http.Server{Handler: s.PeerHandler(), TLSConfig: conf, ReadHeaderTimeout: 10 * time.Second})
+		servers = append(servers, &http.Server{Handler: count("peer", s.PeerHandler()), TLSConfig: conf, ReadHeaderTimeout: 10 * time.Second})
 		listeners = append(listeners, pl)
 	}
 	errc := make(chan error, len(servers))
@@ -180,7 +223,13 @@ func runJoinKey(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(*out, pub, 0o644) //nolint:gosec // a public key
+	if err := os.WriteFile(*out, pub, 0o644); err != nil { //nolint:gosec // a public key
+		return err
+	}
+	// Init runs this as a setup whose output is on the console, which is where the operator reads
+	// the public key to have root authorise it; naructl signer authorise-replica reads the raw bytes.
+	fmt.Printf("join key (base64, the raw 32 bytes of the public key):\n%s\n", base64.StdEncoding.EncodeToString(pub))
+	return nil
 }
 
 func runJoin(log *slog.Logger, args []string) error {

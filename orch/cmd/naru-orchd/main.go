@@ -32,30 +32,31 @@ func (realClock) Now() time.Time { return time.Now() }
 
 func main() {
 	var (
-		name      = flag.String("name", "", "this member's name in the etcd cluster")
-		dataDir   = flag.String("data-dir", "/var/lib/naru/orch/etcd", "etcd's data directory")
-		peerURL   = flag.String("peer-url", "", "https URL this member's etcd listens on for its peers")
-		clientURL = flag.String("client-url", "", "https URL this member's etcd serves clients on")
-		initial   = flag.String("initial-cluster", "", "name=peer-url,... of the members of a new cluster")
-		state     = flag.String("initial-cluster-state", member.StateNew, "new, or existing when this member joins a cluster")
-		listen    = flag.String("listen", "0.0.0.0:7500", "address of the HTTPS API")
-		certFile  = flag.String("cert", "/var/lib/naru/orch/tls/orch.crt", "orch's certificate, followed by the authority's")
-		keyFile   = flag.String("key", "/var/lib/naru/orch/tls/orch.key", "orch's key")
-		caFile    = flag.String("ca", "/var/lib/naru/orch/tls/ca.crt", "the authority that issues every identity")
-		sans      = flag.String("san", "127.0.0.1", "comma-separated names and addresses of this member, for its certificate")
-		sock      = flag.String("signer-socket", "/run/naru-signer/signer.sock", "naru-signer's unix socket")
-		snapDir   = flag.String("snapshot-dir", "/var/lib/naru/orch/snapshots", "where sealed snapshots are kept")
-		revoke    = flag.String("revocation-public-key", "/var/lib/naru/orch/tls/revocation.pub", "the Ed25519 public key (PKIX, PEM) that verifies the revocation list")
-		recovery  = flag.String("recovery-public-key", "", "the recovery key's public half; without it no snapshot is written")
-		snapEvery = flag.Duration("snapshot-interval", snapshot.DefaultInterval, "how often a snapshot is taken")
-		maxAge    = flag.Duration("revocation-max-age", auth.DefaultMaxAge, "how long a revocation list that cannot be refreshed is used before callers are refused with 503")
-		crlEvery  = flag.Duration("revocation-sync-interval", crlsync.DefaultInterval, "how often the revocation list is synced between the signers")
-		snapKeep  = flag.Int("snapshot-keep", snapshot.DefaultKeep, "how many snapshots are kept")
-		hostCert  = flag.String("host-client-cert", "", "the certificate orch presents to the hosts' APIs; defaults to --cert")
-		hostKey   = flag.String("host-client-key", "", "the key of --host-client-cert; defaults to --key")
-		hostCA    = flag.String("host-ca", "", "the authority that issued the hosts' API certificates; defaults to --ca")
-		groupEach = flag.Duration("group-interval", groups.DefaultInterval, "the pause between the groups engine's passes")
-		netEach   = flag.Duration("network-interval", netrec.DefaultInterval, "the pause between the network reconciler's passes")
+		name        = flag.String("name", "", "this member's name in the etcd cluster")
+		dataDir     = flag.String("data-dir", "/var/lib/naru/orch/etcd", "etcd's data directory")
+		peerURL     = flag.String("peer-url", "", "https URL this member's etcd listens on for its peers")
+		clientURL   = flag.String("client-url", "", "https URL this member's etcd serves clients on")
+		initial     = flag.String("initial-cluster", "", "name=peer-url,... of the members of a new cluster")
+		state       = flag.String("initial-cluster-state", member.StateNew, "new, or existing when this member joins a cluster")
+		listen      = flag.String("listen", "0.0.0.0:7500", "address of the HTTPS API")
+		certFile    = flag.String("cert", "/var/lib/naru/orch/tls/orch.crt", "orch's certificate, followed by the authority's")
+		keyFile     = flag.String("key", "/var/lib/naru/orch/tls/orch.key", "orch's key")
+		caFile      = flag.String("ca", "/var/lib/naru/orch/tls/ca.crt", "the authority that issues every identity")
+		sans        = flag.String("san", "127.0.0.1", "comma-separated names and addresses of this member, for its certificate")
+		sock        = flag.String("signer-socket", "/run/naru-signer/signer.sock", "naru-signer's unix socket")
+		snapDir     = flag.String("snapshot-dir", "/var/lib/naru/orch/snapshots", "where sealed snapshots are kept")
+		revoke      = flag.String("revocation-public-key", "/var/lib/naru/orch/tls/revocation.pub", "the Ed25519 public key (PKIX, PEM) that verifies the revocation list")
+		recovery    = flag.String("recovery-public-key", "", "the recovery key's public half; without it no snapshot is written")
+		snapEvery   = flag.Duration("snapshot-interval", snapshot.DefaultInterval, "how often a snapshot is taken")
+		maxAge      = flag.Duration("revocation-max-age", auth.DefaultMaxAge, "how long a revocation list that cannot be refreshed is used before callers are refused with 503")
+		crlEvery    = flag.Duration("revocation-sync-interval", crlsync.DefaultInterval, "how often the revocation list is synced between the signers")
+		snapKeep    = flag.Int("snapshot-keep", snapshot.DefaultKeep, "how many snapshots are kept")
+		hostCert    = flag.String("host-client-cert", "", "the certificate orch presents to the hosts' APIs; defaults to --cert")
+		hostKey     = flag.String("host-client-key", "", "the key of --host-client-cert; defaults to --key")
+		hostCA      = flag.String("host-ca", "", "the authority that issued the hosts' API certificates; defaults to --ca")
+		groupEach   = flag.Duration("group-interval", groups.DefaultInterval, "the pause between the groups engine's passes")
+		netEach     = flag.Duration("network-interval", netrec.DefaultInterval, "the pause between the network reconciler's passes")
+		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -63,7 +64,7 @@ func main() {
 		name: *name, dataDir: *dataDir, peerURL: *peerURL, clientURL: *clientURL, initial: *initial, state: *state,
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sans: *sans, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
-		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach,
+		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, metricsAddr: *metricsAddr,
 	}); err != nil {
 		log.Error("naru-orchd stopped", "err", err.Error())
 		os.Exit(1)
@@ -76,6 +77,7 @@ type runFlags struct {
 	snapEvery, maxAge, crlEvery, groupEach, netEach           time.Duration
 	hostCert, hostKey, hostCA                                 string
 	snapKeep                                                  int
+	metricsAddr                                               string
 }
 
 func run(log *slog.Logger, f runFlags) error {
@@ -120,6 +122,9 @@ func run(log *slog.Logger, f runFlags) error {
 	})
 	if err != nil {
 		return err
+	}
+	if f.metricsAddr != "" {
+		go serveMetrics(ctx, log, f.metricsAddr, f.name)
 	}
 	log.Info("naru-orchd serving", "member", f.name, "api", o.Addr())
 	<-ctx.Done()

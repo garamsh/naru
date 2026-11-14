@@ -43,6 +43,7 @@ func Parse(data []byte) (NodeConfig, error) {
 		return NodeConfig{}, err
 	}
 	cfg.Spec.Files = withHostFile(cfg.Spec.Files, cfg.Spec.Host)
+	cfg = derive(cfg)
 	return cfg, nil
 }
 
@@ -109,7 +110,7 @@ func validate(cfg NodeConfig) error {
 	v.services(cfg.Spec.Services)
 	v.dataDisk(cfg.Spec.DataDisk)
 	v.network(cfg.Spec.Network)
-	v.files(cfg.Spec.Files, cfg.Spec.Services)
+	v.files(cfg.Spec.Files, named(cfg.Spec))
 	v.storage(cfg.Spec.Storage, cfg.Spec.DataDisk)
 	v.api(cfg.Spec.API)
 	v.time(cfg.Spec.Time)
@@ -117,6 +118,12 @@ func validate(cfg NodeConfig) error {
 	v.registries(cfg.Spec.Registries)
 	v.aws(cfg.Spec.AWS)
 	v.host(cfg.Spec.Host, cfg.Spec.Files)
+	v.hostNetwork(cfg.Spec)
+	v.hostOrch(cfg.Spec)
+	v.hostdArgs(cfg.Spec.Services)
+	v.signer(cfg.Spec.Signer)
+	v.orch(cfg)
+	v.metrics(cfg.Spec.Metrics)
 	return errors.Join(v.errs...)
 }
 
@@ -160,6 +167,7 @@ func (v *validation) services(services []Service) {
 				}
 			}
 		}
+		v.serviceRuntime(field, s)
 		for k := range s.Env {
 			if k == "" || strings.ContainsAny(k, "=\x00") {
 				v.fail(field+".env", "has the invalid variable name %q", k)

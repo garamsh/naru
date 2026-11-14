@@ -71,15 +71,19 @@ test-cgroup:
 	echo "$@: $$n test(s) passed, selected by -test.run '^TestCgroups_' in a delegated cgroup"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
-# The two naru-init are static: each runs in an initramfs with no libc. naructl is static too: it is a release
+# The two naru-init, naru-signer and naru-orchd are static: each is carried by an initramfs with no libc. naructl is static too: it is a release
 # asset an operator runs on any Linux amd64 host.
 build:
 	$(call each_module, $(count_packages); (cd "$$dir" && go build ./...))
 	CGO_ENABLED=0 go build -trimpath -o $(BIN)/host/naru-init ./host/cmd/naru-init
 	CGO_ENABLED=0 go build -trimpath -o $(BIN)/node/naru-init ./node/cmd/naru-init
+	CGO_ENABLED=0 go build -trimpath -o $(BIN)/host/naru-signer ./host/cmd/naru-signer
+	CGO_ENABLED=0 go build -trimpath -o $(BIN)/orch/naru-orchd ./orch/cmd/naru-orchd
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o $(BIN)/naructl ./naructl/cmd/naructl
 	@echo "build: $(BIN)/host/naru-init: $$(file -b $(BIN)/host/naru-init | cut -d, -f1-4)"
 	@echo "build: $(BIN)/node/naru-init: $$(file -b $(BIN)/node/naru-init | cut -d, -f1-4)"
+	@echo "build: $(BIN)/host/naru-signer: $$(file -b $(BIN)/host/naru-signer | cut -d, -f1-4)"
+	@echo "build: $(BIN)/orch/naru-orchd: $$(file -b $(BIN)/orch/naru-orchd | cut -d, -f1-4)"
 	@echo "build: $(BIN)/naructl: $$(file -b $(BIN)/naructl | cut -d, -f1-4)"
 
 # image builds the host kernel, the guest kernels and initrds, the static mke2fs and mkfs.xfs, gaon's four

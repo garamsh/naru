@@ -133,6 +133,11 @@ func (h *Host) WriteFiles(files []config.File) error {
 		if err := writeFile(f.Path, []byte(f.Content), f.Perm()); err != nil {
 			return fmt.Errorf("write %s: %w", f.Path, err)
 		}
+		if f.Owner != nil {
+			if err := os.Lchown(f.Path, int(f.Owner.UID), int(f.Owner.GID)); err != nil {
+				return fmt.Errorf("own %s: %w", f.Path, err)
+			}
+		}
 	}
 	return nil
 }
@@ -157,6 +162,9 @@ func (h *Host) ReplaceFile(f config.File) (err error) {
 	_, err = tmp.WriteString(f.Content)
 	if err == nil {
 		err = tmp.Chmod(f.Perm())
+	}
+	if err == nil && f.Owner != nil {
+		err = tmp.Chown(int(f.Owner.UID), int(f.Owner.GID))
 	}
 	if err = errors.Join(err, tmp.Close()); err != nil {
 		return err
