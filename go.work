@@ -6,6 +6,7 @@ use (
 	./controlplane
 	./host
 	./init
+	./lib/hostapi
 	./lib/identity
 	./lib/iso9660
 	./lib/orchapi

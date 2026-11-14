@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 // The outcomes the host API tells apart. Everything else is a failure of mvmd or of the socket.
@@ -31,24 +33,12 @@ const (
 	StateFaulted = "faulted"
 )
 
-// Rule is one rule of a Machine's network policy.
-type Rule struct {
-	Prefix   string      `json:"prefix"`
-	Protocol string      `json:"protocol"`
-	Ports    []PortRange `json:"ports,omitempty"`
-}
-
-// PortRange is first to last, inclusive.
-type PortRange struct {
-	First uint32 `json:"first"`
-	Last  uint32 `json:"last"`
-}
-
-// Policy is a Machine's network policy.
-type Policy struct {
-	Egress  []Rule `json:"egress,omitempty"`
-	Ingress []Rule `json:"ingress,omitempty"`
-}
+// Rule, PortRange and Policy are a Machine's network policy, in the host API's types.
+type (
+	Rule      = hostapi.Rule
+	PortRange = hostapi.PortRange
+	Policy    = hostapi.Policy
+)
 
 // Disk is a disk mvmd holds. Holder is the Machine it is attached to, or empty.
 type Disk struct {
@@ -82,6 +72,10 @@ type Machine struct {
 	RoutedPrefixes []string
 	// RestartOnBoot is whether mvmd starts the Machine again after the host reboots, when it ran.
 	RestartOnBoot bool
+	// Fenced is whether the Machine has a fence of its own, and FenceLapsedAt when it last lapsed,
+	// zero until it has. After a lapse Failure begins "the Machine's own fence lapsed".
+	Fenced        bool
+	FenceLapsedAt time.Time
 }
 
 // Create is what CreateMachine takes.
@@ -102,14 +96,13 @@ type Create struct {
 	// boot when it ran when the host went down and was not stopped since. It is fixed for the
 	// Machine's life.
 	RestartOnBoot bool
+	// Fenced gives the Machine a fence of its own, not armed until it is renewed; mvmd refuses to
+	// start a fenced Machine before that.
+	Fenced bool
 }
 
-// Kernel is a guest kernel the node offers.
-type Kernel struct {
-	Name    string `json:"name"`
-	Digest  string `json:"digest"`
-	Default bool   `json:"default"`
-}
+// Kernel is a guest kernel the node offers, in the host API's type.
+type Kernel = hostapi.Kernel
 
 // Info is what GetRuntimeInfo reports.
 type Info struct {
@@ -130,6 +123,40 @@ type Deadline struct {
 	Armed      bool
 	LastNumber uint64
 	Remaining  time.Duration
+	// Phase is "notArmed", "armed", "expired" or "stoppedEverything", and Length the length of the
+	// last renewal.
+	Phase  string
+	Length time.Duration
+}
+
+// Snapshot is a snapshot mvmd holds.
+type Snapshot struct {
+	ID          string
+	MachineID   string
+	ImageDigest string
+	Driver      string
+	CPUModel    string
+	Kernel      string
+	RootDisk    uint64
+	Disks       []SnapshotDisk
+	SizeBytes   uint64
+	CreatedAt   time.Time
+}
+
+// SnapshotDisk is a disk a snapshot's Machine had attached.
+type SnapshotDisk struct {
+	ID        string
+	ReadOnly  bool
+	SizeBytes uint64
+}
+
+// Restore is what RestoreMachine takes: the new Machine's ID, the snapshot, and the policy and
+// routed prefixes a snapshot does not carry.
+type Restore struct {
+	ID             string
+	SnapshotID     string
+	Policy         Policy
+	RoutedPrefixes []string
 }
 
 // Runtime is mvmd. Every method returns one of the errors above, wrapped, or mvmd's own.
@@ -158,4 +185,16 @@ type Runtime interface {
 	// Renew sets the fencing deadline to length from now, under the renewal number.
 	Renew(ctx context.Context, length time.Duration, number uint64) error
 	InspectDeadline(ctx context.Context) (Deadline, error)
+	// RenewMachine and InspectMachineDeadline are the same for one fenced Machine's own fence.
+	// ErrNotFound is an unknown Machine and ErrPrecondition one that is not fenced.
+	RenewMachine(ctx context.Context, id string, length time.Duration, number uint64) (Deadline, error)
+	InspectMachineDeadline(ctx context.Context, id string) (Deadline, error)
+	// SnapshotMachine takes a snapshot of a Running or Paused Machine under the ID the caller
+	// chooses; the same ID again is the original outcome.
+	SnapshotMachine(ctx context.Context, snapshotID, machineID string) error
+	ListSnapshots(ctx context.Context) ([]Snapshot, error)
+	// DeleteSnapshot deletes a snapshot; an absent one is success and one in use is ErrPrecondition.
+	DeleteSnapshot(ctx context.Context, id string) error
+	// RestoreMachine creates a new Running Machine from a snapshot.
+	RestoreMachine(ctx context.Context, r Restore) (Machine, error)
 }

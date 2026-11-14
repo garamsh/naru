@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 const userData = "#cloud-config\nhostname: web\n"
@@ -52,7 +53,7 @@ func TestOSForm_CreatesTheDataDiskThenTheMachineThenTheSeedAttachedBeforeTheStar
 		assert.True(t, bytes.Contains(vol, []byte(want)), "the seed has no %q", want)
 	}
 
-	var v MicroVM
+	var v hostapi.MicroVM
 	require.NoError(t, json.Unmarshal(b, &v))
 	assert.Equal(t, "running", v.State)
 	assert.Equal(t, "naru", v.BootSet)

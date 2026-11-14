@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 // Limits on one request.
@@ -22,45 +23,11 @@ var (
 	imagePieces = regexp.MustCompile(`^(?:([a-z0-9][a-z0-9._:/-]*)@)?(sha256:[0-9a-f]{64})$`)
 )
 
-// DiskSpec is a disk of a microVM, created with it and deleted with it.
-type DiskSpec struct {
-	Name      string `json:"name"`
-	SizeBytes uint64 `json:"sizeBytes"`
-	ReadOnly  bool   `json:"readOnly,omitempty"`
-}
-
-// CreateRequest is the body of POST /v1/microvms.
-type CreateRequest struct {
-	Name string `json:"name"`
-	// Image is repository@sha256:<64 hex digits>, which hostd has mvmd pull, or the bare digest of
-	// an image mvmd already has.
-	Image         string            `json:"image"`
-	CPU           uint32            `json:"cpu"`
-	Memory        uint64            `json:"memory"`
-	RootDiskBytes uint64            `json:"rootDiskBytes"`
-	Disks         []DiskSpec        `json:"disks,omitempty"`
-	NetworkPolicy mvmd.Policy       `json:"networkPolicy"`
-	Env           map[string]string `json:"env,omitempty"`
-	Command       []string          `json:"command,omitempty"`
-	// RestartOnBoot makes mvmd start the microVM again after the host reboots, when it ran and was
-	// not stopped. Absent, it is true for the OS form and false for the image form.
-	RestartOnBoot *bool `json:"restartOnBoot,omitempty"`
-
-	// The OS form, in place of Image, RootDiskBytes, Disks, Env and Command: a microVM that boots
-	// BootSet, with Cmdline added to the kernel's command line, a data disk of DataDisk bytes, a
-	// NoCloud seed whose user-data is Seed, and PodPrefix routed to it.
-	BootSet   string `json:"bootSet,omitempty"`
-	Cmdline   string `json:"cmdline,omitempty"`
-	Seed      []byte `json:"seed,omitempty"`
-	DataDisk  uint64 `json:"dataDisk,omitempty"`
-	PodPrefix string `json:"podPrefix,omitempty"`
-}
-
 // plan is a validated request: what to pull and what to create.
 type plan struct {
 	repository string
 	create     mvmd.Create
-	disks      []DiskSpec
+	disks      []hostapi.DiskSpec
 	// userData is the seed's user-data; only the OS form has one.
 	userData []byte
 }
@@ -70,8 +37,8 @@ type plan struct {
 func diskID(name, disk string) string { return name + "." + disk }
 
 // validate returns the plan for r, or every field that is wrong with it.
-func validate(r CreateRequest) (plan, []string, string) {
-	if r.osForm() {
+func validate(r hostapi.CreateRequest) (plan, []string, string) {
+	if isOSForm(r) {
 		return validateOS(r)
 	}
 	var fields []string
@@ -121,7 +88,7 @@ func validate(r CreateRequest) (plan, []string, string) {
 	}
 	p := plan{repository: m[1], disks: slices.Clone(r.Disks), create: mvmd.Create{
 		ID: r.Name, ImageDigest: m[2], CPU: r.CPU, MemoryBytes: r.Memory, RootDiskBytes: r.RootDiskBytes, Policy: r.NetworkPolicy,
-		RestartOnBoot: restartOnBoot(r.RestartOnBoot, false),
+		RestartOnBoot: restartOnBoot(r.RestartOnBoot, false), Fenced: r.Fenced,
 	}}
 	for _, d := range r.Disks {
 		p.create.Disks = append(p.create.Disks, mvmd.Attachment{ID: diskID(r.Name, d.Name), ReadOnly: d.ReadOnly})
