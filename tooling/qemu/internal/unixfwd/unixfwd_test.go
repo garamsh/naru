@@ -3,6 +3,7 @@ package unixfwd_test
 import (
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestListen_ForwardsAUnixConnectionToTheTCPAddress(t *testing.T) {
 			_, _ = io.Copy(c, c)
 		}
 	}()
-	sock := filepath.Join(t.TempDir(), "s.sock")
+	sock := shortSocketPath(t, "s.sock")
 	stop, err := unixfwd.Listen(sock, echo.Addr().String())
 	require.NoError(t, err)
 	defer stop()
@@ -36,4 +37,14 @@ func TestListen_ForwardsAUnixConnectionToTheTCPAddress(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "ping", string(buf))
+}
+
+// shortSocketPath is a socket path in a directory removed with the test. t.TempDir carries the test's
+// name, which with a long TMPDIR passes the 107 bytes a unix socket path may have.
+func shortSocketPath(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "s")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, name)
 }

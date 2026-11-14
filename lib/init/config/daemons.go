@@ -65,10 +65,16 @@ type Orch struct {
 	// PeerURL and ClientURL are the https URLs etcd listens on.
 	PeerURL   string `yaml:"peerURL"`
 	ClientURL string `yaml:"clientURL"`
-	// InitialCluster maps each member's name to its peer URL, this member's among them.
-	InitialCluster map[string]string `yaml:"initialCluster"`
-	// InitialClusterState is "new", or "existing" for a member that joins a cluster. It is "new" when empty.
+	// InitialCluster maps each member's name to its peer URL, this member's among them. A member
+	// that has Join takes it from the cluster it joins, so it has none.
+	InitialCluster map[string]string `yaml:"initialCluster,omitempty"`
+	// InitialClusterState is "new", or "existing" for a member that joins a cluster. It is "new"
+	// when empty, and "existing" with Join.
 	InitialClusterState string `yaml:"initialClusterState,omitempty"`
+	// Join is the client URL, https://host:port, of a running member of the cluster. The member
+	// adds itself to that cluster at its first start; init writes --join and the state "existing".
+	// It excludes Restore.
+	Join string `yaml:"join,omitempty"`
 	// Listen is the address of orch's HTTPS API. It is "0.0.0.0:7500" when empty.
 	Listen string `yaml:"listen,omitempty"`
 	// SANs are the names and addresses of the member's certificate. They are ["127.0.0.1"] when empty.
@@ -178,6 +184,9 @@ func (o Orch) listen() string {
 }
 
 func (o Orch) state() string {
+	if o.Join != "" {
+		return "existing"
+	}
 	if o.InitialClusterState == "" {
 		return "new"
 	}
@@ -201,23 +210,8 @@ func pemOf(s, typ string) bool {
 	return b != nil && (typ == "" || b.Type == typ)
 }
 
-func (v *validation) orch(cfg NodeConfig) {
-	o := cfg.Spec.Orch
-	if o == nil {
-		return
-	}
-	if cfg.Spec.Signer == nil {
-		v.fail("spec.orch", "needs spec.signer: orch asks the signer on this Node, over its socket, for every identity")
-	}
-	name := o.name(cfg.Metadata.Name)
-	if !nameRE.MatchString(name) {
-		v.fail("spec.orch.name", "must be lowercase letters, digits and '-', at most 63 characters, got %q", name)
-	}
-	for field, u := range map[string]string{"spec.orch.peerURL": o.PeerURL, "spec.orch.clientURL": o.ClientURL} {
-		if !httpsURL(u) {
-			v.fail(field, "must be an https URL with a host and a port, got %q", u)
-		}
-	}
+// orchCluster checks the initial cluster of a member that starts or joins by it.
+func (v *validation) orchCluster(o *Orch, name string) {
 	switch peer, ok := o.InitialCluster[name]; {
 	case len(o.InitialCluster) == 0:
 		v.fail("spec.orch.initialCluster", "must name the members of the cluster, this one among them")
@@ -236,6 +230,46 @@ func (v *validation) orch(cfg NodeConfig) {
 	}
 	if s := o.InitialClusterState; s != "" && s != "new" && s != "existing" {
 		v.fail("spec.orch.initialClusterState", `must be "new" or "existing", got %q`, s)
+	}
+}
+
+// orchJoin checks a member that joins a running one, which hands it the initial cluster.
+func (v *validation) orchJoin(o *Orch) {
+	if !httpsURL(o.Join) {
+		v.fail("spec.orch.join", "must be the https URL, with a host and a port, of a running member's client, got %q", o.Join)
+	}
+	if o.Restore {
+		v.fail("spec.orch.join", "excludes spec.orch.restore: a member either restores a snapshot or joins a cluster")
+	}
+	if len(o.InitialCluster) != 0 {
+		v.fail("spec.orch.initialCluster", "must be empty with spec.orch.join: the member takes the initial cluster from the one it joins")
+	}
+	if s := o.InitialClusterState; s != "" && s != "existing" {
+		v.fail("spec.orch.initialClusterState", `must be "existing" with spec.orch.join, got %q`, s)
+	}
+}
+
+func (v *validation) orch(cfg NodeConfig) {
+	o := cfg.Spec.Orch
+	if o == nil {
+		return
+	}
+	if cfg.Spec.Signer == nil {
+		v.fail("spec.orch", "needs spec.signer: orch asks the signer on this Node, over its socket, for every identity")
+	}
+	name := o.name(cfg.Metadata.Name)
+	if !nameRE.MatchString(name) {
+		v.fail("spec.orch.name", "must be lowercase letters, digits and '-', at most 63 characters, got %q", name)
+	}
+	for field, u := range map[string]string{"spec.orch.peerURL": o.PeerURL, "spec.orch.clientURL": o.ClientURL} {
+		if !httpsURL(u) {
+			v.fail(field, "must be an https URL with a host and a port, got %q", u)
+		}
+	}
+	if o.Join != "" {
+		v.orchJoin(o)
+	} else {
+		v.orchCluster(o, name)
 	}
 	if _, err := netip.ParseAddrPort(o.listen()); err != nil {
 		v.fail("spec.orch.listen", "must be an IP address and a port, got %q", o.Listen)
@@ -515,9 +549,13 @@ func orchService(o Orch, node string, m *Metrics) (Service, []File) {
 	if len(sans) == 0 {
 		sans = []string{"127.0.0.1"}
 	}
+	cluster := "--initial-cluster=" + strings.Join(members, ",")
+	if o.Join != "" {
+		cluster = "--join=" + o.Join
+	}
 	args := []string{
 		"--name=" + o.name(node), "--data-dir=" + OrchDataDir + "/etcd", "--peer-url=" + o.PeerURL, "--client-url=" + o.ClientURL,
-		"--initial-cluster=" + strings.Join(members, ","), "--initial-cluster-state=" + o.state(), "--listen=" + o.listen(),
+		cluster, "--initial-cluster-state=" + o.state(), "--listen=" + o.listen(),
 		"--san=" + strings.Join(sans, ","), "--cert=" + OrchRunDir + "/orch.crt", "--key=" + OrchKeyFile, "--ca=" + OrchRunDir + "/ca.crt",
 		"--signer-socket=" + SignerRunDir + "/signer.sock", "--snapshot-dir=" + OrchDataDir + "/snapshots",
 		"--revocation-public-key=" + OrchRunDir + "/revocation.pub",

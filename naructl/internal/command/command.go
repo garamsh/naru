@@ -305,7 +305,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 		hostLabels, orchCluster, orchSANs, signerPeerNames                                        list
 		hostMgmt, hostEgress, signerPeer, signerRecovery, signerRootCSR, metricsListen            string
 		orchPeerURL, orchClientURL, orchState, orchListen, orchCert, orchCA, orchRevocation       string
-		orchRecovery, orchKey, orchHostCA, hostClientCA                                           string
+		orchRecovery, orchKey, orchHostCA, hostClientCA, orchJoin                                 string
 		hostTunnelPort                                                                            int
 		hostOrchURL, hostOrchCA, hostOrchKey, signerJoinPeer, signerJoinPeerCA, signerJoinAuthz   string
 		n                                                                                         layout.Node
@@ -363,6 +363,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&orchHostCA, "orch-host-ca", "", "spec.orch: the file holding the PEM of the authority the hosts' API certificates chain to, the host authority; without it orch trusts --orch-ca for them")
 	fs.StringVar(&hostClientCA, "host-client-ca", "", "spec.host: the file holding the PEM of the authority orch's certificate chains to, which naru-hostd trusts for its clients beside the host authority (with --host-region)")
 	fs.StringVar(&orchRecovery, "orch-recovery-public", "", "spec.orch: the file holding the recovery key's public half; without it orch writes no snapshot")
+	fs.StringVar(&orchJoin, "orch-join", "", "spec.orch.join: the client URL, https://<host>:<port>, of a running member, which this member joins; it takes the initial cluster from that cluster, so no --orch-member, and excludes --orch-restore")
 	fs.BoolVar(&orchRestore, "orch-restore", false, "spec.orch.restore: orchd starts empty and waits for root's etcd snapshot (PUT /v1/restore)")
 	fs.StringVar(&orchKey, "orch-key", "", "spec.orch: the file holding orch's private key, which the user data carries 0600 for orch's user alone")
 	fs.StringVar(&metricsListen, "metrics-listen", "", "spec.metrics: the IP address init and the daemons serve /metrics on, each on its own port")
@@ -404,7 +405,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	if err := needs(fs, "signer", "signer-replica", "signer-peer-listen", "signer-peer-name", "signer-recovery-public", "signer-root-csr"); err != nil {
 		return err
 	}
-	if err := needs(fs, "orch-peer-url", "orch-client-url", "orch-member", "orch-state", "orch-listen", "orch-san", "orch-certificate", "orch-ca", "orch-revocation-public-key", "orch-recovery-public", "orch-key", "orch-restore", "orch-host-ca"); err != nil {
+	if err := needs(fs, "orch-peer-url", "orch-client-url", "orch-member", "orch-state", "orch-listen", "orch-san", "orch-certificate", "orch-ca", "orch-revocation-public-key", "orch-recovery-public", "orch-key", "orch-restore", "orch-join", "orch-host-ca"); err != nil {
 		return err
 	}
 	var err error
@@ -417,7 +418,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 		signerReplica: signerReplica, signerJoinPeer: signerJoinPeer, signerJoinPeerCA: signerJoinPeerCA, signerJoinAuthz: signerJoinAuthz,
 		runSigner: runSigner, signerPeer: signerPeer, signerPeerNames: signerPeerNames, signerRecovery: signerRecovery, signerRootCSR: signerRootCSR,
 		orchPeerURL: orchPeerURL, orchClientURL: orchClientURL, orchCluster: orchCluster, orchState: orchState, orchListen: orchListen, orchSANs: orchSANs,
-		orchCert: orchCert, orchCA: orchCA, orchRevocation: orchRevocation, orchRecovery: orchRecovery, orchKey: orchKey, orchHostCA: orchHostCA, orchRestore: orchRestore, metricsListen: metricsListen,
+		orchCert: orchCert, orchCA: orchCA, orchRevocation: orchRevocation, orchRecovery: orchRecovery, orchKey: orchKey, orchHostCA: orchHostCA, orchRestore: orchRestore, orchJoin: orchJoin, metricsListen: metricsListen,
 	}); err != nil {
 		return err
 	}

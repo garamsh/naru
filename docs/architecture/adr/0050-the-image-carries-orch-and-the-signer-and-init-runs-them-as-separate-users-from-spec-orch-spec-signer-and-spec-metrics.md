@@ -51,3 +51,12 @@ This note appends to the decision above and supersedes the Consequences line tha
 - naru-hostd's role comes from the Organization `naru:host-provisioner` or `naru:host-reader`, and now also from `lib/identity`: a certificate whose one OrganizationalUnit is `orch` is a provisioner. Only that unit is read; a certificate that carries `orch` beside another unit has no role. This is the change the Consequences above name ("until the host API takes `lib/identity`'s roles").
 - The hosts' client trust is a bundle. `naructl gen node --host-client-ca` appends the authority orch's certificate chains to the host authority in `/run/naru-hostd/client-ca.crt`; `--orch-host-ca` writes `spec.orch.hostCA`.
 - A certificate with the `orch` unit is also what the signer's replicas present on the replication channel. A host that trusts the authority those chain to takes such a certificate as a provisioner, because the host reads only the unit.
+
+## Note of 2026-11-14: a member that joins a running one
+
+This note appends to the decision above and to the section it names under decision 2, `spec.orch`. It follows [ADR 0053](./0053-a-member-started-with-restore-serves-only-a-snapshot-upload-and-the-operator-sends-it-the-plain-snapshot-and-the-other-members-join-it-as-new-members.md), whose `naru-orchd --join` had no section to write it from.
+
+- **`spec.orch.join`** is the client URL, `https://<host>:<port>`, of a running member. Init writes orchd's `--join <url>` and `--initial-cluster-state=existing`, and no `--initial-cluster`: the member adds itself to that cluster at its first start and takes the initial cluster from the one it answers, so the section's `initialCluster` is empty. A Node whose `spec.orch` has `join` and an `initialCluster`, a `restore`, or the state `new` is refused when its document is parsed.
+- **Why `initialCluster` is refused, not ignored.** A value the member does not use is one an operator edits and expects to matter; the member that joins takes the cluster etcd returns, which has the members the cluster holds when it joins, not the members the operator wrote down some time before.
+- **Why `restore` is refused.** A member that restores starts a cluster of itself alone and the others join it; one member cannot do both at its first start.
+- **`naructl gen node --orch-join <url>`** writes the field, in place of `--orch-member`.

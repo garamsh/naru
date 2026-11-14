@@ -448,3 +448,50 @@ func TestParse_OrchRestoreGivesOrchdItsRestoreFlagAndNothingElseDoes(t *testing.
 	_, err = config.Parse([]byte(strings.Replace(doc, "restore: true", "restore: maybe", 1)))
 	require.Error(t, err, "restore is a boolean")
 }
+
+// joining is the daemons document with orch joining a running member instead of starting a cluster.
+func joining(t *testing.T, extra string) string {
+	t.Helper()
+	doc := daemonsDoc(t)
+	cluster := "    initialCluster:\n      host-1: https://192.168.0.40:2380\n      host-2: https://192.168.0.41:2380\n"
+	require.Contains(t, doc, cluster)
+	return strings.Replace(doc, cluster, "    join: https://192.168.0.41:2379\n"+extra, 1)
+}
+
+func TestParse_OrchJoinGivesOrchdItsJoinFlagAndTheExistingState(t *testing.T) {
+	cfg, err := config.Parse([]byte(joining(t, "")))
+	require.NoError(t, err)
+
+	args := service(t, cfg, "naru-orchd").Args
+	assert.Contains(t, args, "--join=https://192.168.0.41:2379")
+	assert.Contains(t, args, "--initial-cluster-state=existing", "a member that joins is an existing member's, whatever the state says")
+	for _, a := range args {
+		assert.NotContains(t, a, "--initial-cluster=", "orchd takes the initial cluster from the cluster it joins")
+	}
+
+	// Control: a member that starts a cluster takes no --join.
+	plain, err := config.Parse([]byte(daemonsDoc(t)))
+	require.NoError(t, err)
+	for _, a := range service(t, plain, "naru-orchd").Args {
+		assert.NotContains(t, a, "--join")
+	}
+
+	_, err = config.Parse([]byte(joining(t, "    initialClusterState: existing\n")))
+	require.NoError(t, err, "the state may be spelled out as existing")
+}
+
+func TestParse_OrchJoinIsRefusedBesideWhatItExcludesAndWhenItIsNotAnHTTPSURL(t *testing.T) {
+	for name, tc := range map[string]struct{ doc, field string }{
+		"restore":            {joining(t, "    restore: true\n"), "spec.orch.join"},
+		"an initial cluster": {strings.Replace(joining(t, ""), "    join:", "    initialCluster:\n      host-1: https://192.168.0.40:2380\n    join:", 1), "spec.orch.initialCluster"},
+		"the state new":      {joining(t, "    initialClusterState: new\n"), "spec.orch.initialClusterState"},
+		"http":               {strings.Replace(joining(t, ""), "https://192.168.0.41:2379", "http://192.168.0.41:2379", 1), "spec.orch.join"},
+		"no port":            {strings.Replace(joining(t, ""), "https://192.168.0.41:2379", "https://192.168.0.41", 1), "spec.orch.join"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := config.Parse([]byte(tc.doc))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.field)
+		})
+	}
+}

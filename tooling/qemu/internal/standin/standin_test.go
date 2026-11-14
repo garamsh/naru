@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,7 +18,7 @@ import (
 )
 
 func TestWaitForDial_ReturnsOnceTheSocketAcceptsAConnection(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.sock")
+	path := shortSocketPath(t, "s.sock")
 	go func() {
 		time.Sleep(300 * time.Millisecond)
 		l, err := net.Listen("unix", path)
@@ -94,10 +95,20 @@ func (l *lockedBuffer) String() string {
 }
 
 func TestWaitForDial_FailsWhenNothingListensBeforeTheTimeout(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "absent.sock")
+	path := shortSocketPath(t, "absent.sock")
 
 	err := waitForDial(context.Background(), "unix", path, 300*time.Millisecond)
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "did not accept a connection")
+}
+
+// shortSocketPath is a socket path in a directory removed with the test. t.TempDir carries the test's
+// name, which with a long TMPDIR passes the 107 bytes a unix socket path may have.
+func shortSocketPath(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "s")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, name)
 }
