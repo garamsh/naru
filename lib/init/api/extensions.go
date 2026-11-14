@@ -73,10 +73,8 @@ func (s *Server) deleteExtension(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// extensionRefused answers a request the extension store did not carry out. An image the caller
-// got wrong is 400, one too large 413, one that does not exist 404, one that is mounted 409, and
-// anything else 500 with the reason left to the log. The unread rest of a bad body is read first,
-// within the cap, so the client that is still sending it receives the answer.
+// extensionRefused answers a request the store refused: 400 for an image the caller got wrong, 413
+// too large, 404 not stored, 409 mounted, and 500 for anything else, with the reason left to the log.
 func (s *Server) extensionRefused(w http.ResponseWriter, r *http.Request, what string, err error) {
 	switch {
 	case errors.Is(err, extension.ErrDigest), errors.Is(err, extension.ErrImage), errors.Is(err, extension.ErrTooLarge):
