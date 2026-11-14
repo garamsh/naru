@@ -300,7 +300,7 @@ func genToken(args []string, stdout, stderr io.Writer) error {
 func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen node", stderr)
 	var (
-		nameservers, serving, binaries, disable, timeServers, peers, members, registries, storage list
+		nameservers, serving, binaries, disable, timeServers, peers, members, registries, storage, noMasquerade list
 		awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion                                string
 		hostLabels, orchCluster, orchSANs, signerPeerNames                                        list
 		hostMgmt, hostEgress, signerPeer, signerRecovery, signerRootCSR, metricsListen            string
@@ -369,6 +369,7 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&metricsListen, "metrics-listen", "", "spec.metrics: the IP address init and the daemons serve /metrics on, each on its own port")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.Var(&peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
+	fs.Var(&noMasquerade, "no-masquerade", "an IPv4 prefix in canonical form, repeatable: a Machine's traffic to it keeps its source address (mvmd's network.no_masquerade) and the Node gets no route to it, such as the Machine prefixes of the hosts a WireGuard tunnel reaches")
 	fs.Var(&storage, "storage", "<name>=<label or /dev/path>, an extra disk the Node offers as XFS, found by its partition or file system label, or by its device when the value starts with /dev/ (a blank disk has no label), repeatable: the first is mounted where mvmd keeps its disks")
 	fs.StringVar(&guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
 	fs.StringVar(&n.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
@@ -487,6 +488,13 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("--peer: %w", err)
 		}
 		n.Peers = append(n.Peers, layout.Peer{Address: a, MachinePrefix: p})
+	}
+	for _, s := range noMasquerade {
+		p, err := netip.ParsePrefix(s)
+		if err != nil || !p.Addr().Is4() || p != p.Masked() {
+			return fmt.Errorf("--no-masquerade %q is not an IPv4 prefix in canonical form", s)
+		}
+		n.NoMasquerade = append(n.NoMasquerade, p)
 	}
 	for _, s := range storage {
 		name, value, ok := strings.Cut(s, "=")
