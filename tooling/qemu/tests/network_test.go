@@ -245,12 +245,12 @@ func TestFleet_NetworksAreSeparateMembershipSetsAndOnlyWireGuardCrossesBetweenTh
 	})
 
 	// A forged source is dropped: an address outside every network and the address of a member of the
-	// network on another host, which no local member holds. The forged datagram never arrives, and
-	// the host's counter of forged sources rises.
-	before := counter(hostNode, "forged_source")
+	// network on another host, which no local member holds. The forged datagram never arrives. It is
+	// mvmd that drops it: the ingress chain of the microVM's tap has the policy drop and accepts IPv4
+	// from the microVM's own address only, which is before hostd's rule, so hostd counts none of it.
 	assert.Equal(t, "sent", a1.call(t, "/spoof?src=192.0.2.7&dst="+a2.ip))
 	assert.Equal(t, "sent", a1.call(t, "/spoof?src="+a2.ip+"&dst="+a1b.ip))
-	eventually(t, "the host counts the forged sources", func() bool { return counter(hostNode, "forged_source") >= before+2 })
+	eventually(t, "mvmd's ingress chain of a1's tap drops all but a1's address", func() bool { return ingressDrops(hostNode, a1.ip) })
 	time.Sleep(3 * time.Second)
 	assert.Zero(t, a2.received(t)["192.0.2.7"], "the outside source arrives nowhere")
 	assert.Zero(t, a1b.received(t)[a2.ip], "the other member's address as a source arrives nowhere")
@@ -277,3 +277,18 @@ func TestFleet_NetworksAreSeparateMembershipSetsAndOnlyWireGuardCrossesBetweenTh
 
 // targetOf is address:port of control Node i.
 func (f *fleet) targetOf(i int, port string) string { return nodeIP(i) + ":" + port }
+
+// ingressDrops is whether the Node's last report of mvmd's ingress chains has one whose policy is drop
+// and whose only accepted source is addr: the chain of the tap of the microVM that holds addr.
+func ingressDrops(nd *node.Node, addr string) bool {
+	lines := regexp.MustCompile(`(?m)naru94-nft-ingress: (.*)$`).FindAllStringSubmatch(nd.Console(), -1)
+	if len(lines) == 0 {
+		return false
+	}
+	for _, c := range strings.Fields(lines[len(lines)-1][1]) {
+		if strings.HasSuffix(c, "=drop:"+addr) {
+			return true
+		}
+	}
+	return false
+}
