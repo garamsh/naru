@@ -121,10 +121,19 @@ func TestGroupAPIRolesValidationAndDelete(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, gs, 1)
 	require.Equal(t, "web", gs[0].Spec.Name)
+	_, err = o.anon.MicroVMs(t.Context())
+	require.Equal(t, 401, status(err))
 
 	// A group with members cannot be deleted; once its count is 0 and they are gone it can.
 	o.c.Leader(t, []int{0}, 30*time.Second)
 	waitRunning(t, o.op, hosts, 3)
+	vms, err := o.reader.MicroVMs(t.Context())
+	require.NoError(t, err)
+	require.Len(t, vms, 3)
+	for _, v := range vms {
+		require.Equal(t, "web", v.Group)
+		require.Equal(t, "running", v.State)
+	}
 	require.Equal(t, 409, status(o.op.DeleteGroup(t.Context(), "web")))
 
 	zero := webGroup()

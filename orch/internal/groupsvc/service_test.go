@@ -127,6 +127,26 @@ func TestDeleteIsRefusedWhileAMemberIsNotGone(t *testing.T) {
 	require.ErrorIs(t, err, inventory.ErrNotFound)
 }
 
+func TestMicroVMsListWhatTheHostsReportAndNameTheGroupOfAMembersMicroVM(t *testing.T) {
+	fh := orchtest.NewFakeHosts("h1", "h2")
+	svc, st, _ := newSvc(fh)
+	st.members["web-1"] = groups.Member{ID: "web-1", Group: "web", Host: "h1", MachineID: "web-1", Phase: groups.PhaseRunning}
+	require.NoError(t, fh.Create(t.Context(), "h1", groups.MachineSpec{ID: "web-1"}))
+	require.NoError(t, fh.Create(t.Context(), "h2", groups.MachineSpec{ID: "adhoc"}))
+
+	got, err := svc.MicroVMs(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []orchapi.MicroVM{
+		{Host: "h1", Name: "web-1", State: "running", Group: "web"},
+		{Host: "h2", Name: "adhoc", State: "running"},
+	}, got)
+
+	none, _, _ := newSvc(nil)
+	got, err = none.MicroVMs(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
 func TestPhasesAreComputedFromTheHostsOrElseTheStoredOnes(t *testing.T) {
 	fh := orchtest.NewFakeHosts("h1")
 	svc, st, _ := newSvc(fh)

@@ -16,8 +16,8 @@ type Orch interface {
 	Admit(ctx context.Context, req orchapi.AdmitRequest) (orchapi.Host, error)
 }
 
-// Fleet is what the console shows of the microVMs and groups. orch's API does not carry them yet, so
-// a Server built without one says so on those pages.
+// Fleet is what the console shows of the microVMs and groups. A Server built without one says so on
+// those pages.
 type Fleet interface {
 	MicroVMs(ctx context.Context, hostID string) ([]MicroVM, error)
 	Groups(ctx context.Context) ([]Group, error)

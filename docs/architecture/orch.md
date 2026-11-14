@@ -13,7 +13,7 @@ What `naru-orchd` is: the service of the control hosts that keeps the inventory 
 
   | Endpoint | reader | operator, automation | root | host | no certificate |
   | --- | --- | --- | --- | --- | --- |
-  | `GET /v1/hosts`, `GET /v1/pending`, `GET /v1/events`, `GET /v1/groups`, `GET /v1/groups/{name}` | yes | yes | yes | 403 | 401 |
+  | `GET /v1/hosts`, `GET /v1/pending`, `GET /v1/events`, `GET /v1/microvms`, `GET /v1/groups`, `GET /v1/groups/{name}` | yes | yes | yes | 403 | 401 |
   | `POST /v1/admit`, `PUT /v1/hosts/{id}/labels`, `PUT /v1/groups/{name}`, `DELETE /v1/groups/{name}` | 403 | yes | yes | 403 | 401 |
   | `POST /v1/enrollment-keys`, `DELETE /v1/enrollment-keys/{id}` | 403 | yes | yes | 403 | 401 |
   | `POST /v1/snapshot` | 403 | 403 | yes | 403 | 401 |

@@ -118,6 +118,21 @@ func (c *Client) Group(ctx context.Context, name string) (Group, error) {
 	return out, c.do(ctx, http.MethodGet, "/v1/groups/"+url.PathEscape(name), nil, nil, &out)
 }
 
+// MicroVM is a microVM on an admitted host, as that host reports it.
+type MicroVM struct {
+	Host  string `json:"host"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+	// Group is the group whose member the microVM is; empty for one no group made.
+	Group string `json:"group,omitempty"`
+}
+
+// MicroVMs lists the microVMs of every admitted host that answers.
+func (c *Client) MicroVMs(ctx context.Context) ([]MicroVM, error) {
+	var out []MicroVM
+	return out, c.do(ctx, http.MethodGet, "/v1/microvms", nil, nil, &out)
+}
+
 // DeleteGroup removes a group that has no member left.
 func (c *Client) DeleteGroup(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/groups/"+url.PathEscape(name), nil, nil, nil)

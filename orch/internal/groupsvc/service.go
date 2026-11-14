@@ -27,6 +27,8 @@ type Service interface {
 	List(ctx context.Context) ([]orchapi.Group, error)
 	// Delete removes a group that has no live member, which count 0 brings about.
 	Delete(ctx context.Context, by, name string) error
+	// MicroVMs lists what the hosts that answer report, naming the group of each member's microVM.
+	MicroVMs(ctx context.Context) ([]orchapi.MicroVM, error)
 }
 
 type service struct {
@@ -98,6 +100,32 @@ func (s *service) Delete(ctx context.Context, by, name string) error {
 		return err
 	}
 	return s.log.AppendEvent(ctx, orchapi.Event{Time: s.clock.Now(), Type: EventDeleted, Subject: name, Detail: map[string]string{"by": by}})
+}
+
+func (s *service) MicroVMs(ctx context.Context) ([]orchapi.MicroVM, error) {
+	out := []orchapi.MicroVM{}
+	if s.hosts == nil {
+		return out, nil
+	}
+	members, err := s.store.ListMembers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	type key struct{ host, machine string }
+	groupOf := map[key]string{}
+	for _, m := range members {
+		groupOf[key{m.Host, m.MachineID}] = m.Group
+	}
+	hosts, err := s.hosts.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range hosts {
+		for _, m := range h.Machines {
+			out = append(out, orchapi.MicroVM{Host: h.ID, Name: m.ID, State: string(m.State), Group: groupOf[key{h.ID, m.ID}]})
+		}
+	}
+	return out, nil
 }
 
 // views shows each spec with its members. Phases are computed from the hosts when they answer,

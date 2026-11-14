@@ -56,6 +56,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/hosts", h.guard(auth.Read, h.hosts))
 	mux.HandleFunc("GET /v1/pending", h.guard(auth.Read, h.pending))
 	mux.HandleFunc("GET /v1/events", h.guard(auth.Read, h.events))
+	mux.HandleFunc("GET /v1/microvms", h.guard(auth.Read, h.microVMs))
 	mux.HandleFunc("GET /v1/groups", h.guard(auth.Read, h.groupList))
 	mux.HandleFunc("GET /v1/groups/{name}", h.guard(auth.Read, h.groupGet))
 	mux.HandleFunc("PUT /v1/groups/{name}", h.guard(auth.Operate, h.groupApply))
@@ -231,6 +232,11 @@ func (h *handler) labels(w http.ResponseWriter, r *http.Request, who identity.Id
 		return
 	}
 	out, err := h.Inventory.SetLabels(r.Context(), who.Subject, r.PathValue("id"), req)
+	reply(w, r, out, err)
+}
+
+func (h *handler) microVMs(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Groups.MicroVMs(r.Context())
 	reply(w, r, out, err)
 }
 
