@@ -1,4 +1,4 @@
-.PHONY: lint lint-imports format format-apply test test-cgroup test-qemu test-harness nodes judge-serial release build image image-upgrade disk image-repro ci
+.PHONY: lint lint-imports format format-apply test test-cgroup test-qemu test-harness test-release-upgrade nodes judge-serial release build image image-upgrade disk image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -267,6 +267,20 @@ test-qemu:
 	cat "$$log"; \
 	n=$$(grep -Ec '^--- PASS: Test(Node|ControlPlane)_' "$$log" || true); \
 	echo "$@: $$n test(s) passed, selected by -run '^Test(Node|ControlPlane)_' with -tags qemu_real"; \
+	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
+
+# test-release-upgrade installs the release in FROM and upgrades the Node in place to the release in
+# TO, both directories as `gh release download <tag>` writes them (docs/architecture/image.md). It
+# is run before a release is cut, on the previous release and the candidate. It needs what test-qemu
+# needs, builds nothing and fails, never skips, when no test passed.
+test-release-upgrade:
+	@test -n "$(FROM)" -a -n "$(TO)" || { echo "usage: make $@ FROM=<release dir> TO=<release dir>" >&2; exit 2; }
+	@set -e; \
+	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
+	if ! (cd tooling/qemu && NARU_FROM_RELEASE_DIR=$(abspath $(FROM)) NARU_TO_RELEASE_DIR=$(abspath $(TO)) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestRelease_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	cat "$$log"; \
+	n=$$(grep -c '^--- PASS: TestRelease_' "$$log" || true); \
+	echo "$@: $$n test(s) passed, selected by -run '^TestRelease_' with -tags qemu_real"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
 # test-harness drives naru-cluster as an external harness does (docs/architecture/harness.md): from

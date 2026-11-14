@@ -40,6 +40,10 @@ func TestMain(m *testing.M) {
 
 func run(m *testing.M) int {
 	root, image, guest := os.Getenv("NARU_ROOT"), os.Getenv("NARU_IMAGE_DIR"), os.Getenv("NARU_GUEST_DIR")
+	if root == "" && (os.Getenv(fromReleaseEnv) != "" || os.Getenv(toReleaseEnv) != "") {
+		// make test-release-upgrade: the test reads two releases and uses nothing of the checkout.
+		return m.Run()
+	}
 	if root == "" || image == "" || guest == "" {
 		os.Stderr.WriteString("NARU_ROOT, NARU_IMAGE_DIR and NARU_GUEST_DIR are required; make test-qemu sets them\n")
 		return 1
