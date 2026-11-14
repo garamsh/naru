@@ -67,6 +67,9 @@ type fleetOpts struct {
 	// vmMiB is the memory the microVMs placed on one host may take at once, added to the default the host
 	// needs to boot.
 	vmMiB int
+	// vmCPUs is the virtual CPUs of a host, which orch's placement counts against the microVMs' CPUs;
+	// 0 is the Node's default of 2.
+	vmCPUs int
 	// capture records the shared network at every Node.
 	capture bool
 	// services are added to every Node.
@@ -174,7 +177,7 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 	c := start(t, node.ClusterSpec{
 		N: o.controls + o.hosts, Gaon: true, NodeAPI: true, Host: true, Hosts: f.hosts(), Capture: o.capture,
 		Disable: []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"},
-		Forward: forward, HostMemoryMiB: defaultNodeMiB + o.vmMiB, GenFlags: f.genFlags, ExtraServices: services,
+		Forward: forward, HostMemoryMiB: defaultNodeMiB + o.vmMiB, HostCPUs: o.vmCPUs, GenFlags: f.genFlags, ExtraServices: services,
 	})
 	f.c = c
 

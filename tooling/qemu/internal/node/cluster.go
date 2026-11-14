@@ -88,6 +88,10 @@ type ClusterSpec struct {
 	// HostMemoryMiB, when not 0, is the memory of the Nodes that run naru-hostd in place of MemoryMiB:
 	// a fleet's control Nodes keep the default while a host adds its microVMs' memory to it.
 	HostMemoryMiB int
+	// HostCPUs, when not 0, is the virtual CPUs of the Nodes that run naru-hostd in place of the
+	// default (Config.CPUs): hostd offers its CPUs less those of the microVMs it runs to orch's
+	// placement, so a host that runs several microVMs needs their CPUs added to its own.
+	HostCPUs int
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
 	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
@@ -221,6 +225,9 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		}
 		if spec.HostMemoryMiB > 0 && spec.isHost(i) {
 			cfg.MemoryMiB = spec.HostMemoryMiB
+		}
+		if spec.HostCPUs > 0 && spec.isHost(i) {
+			cfg.CPUs = spec.HostCPUs
 		}
 		if !spec.Gaon {
 			ca, err := os.ReadFile(filepath.Join(spec.Inputs.Dir, "registry", "ca.pem"))
