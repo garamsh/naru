@@ -30,12 +30,12 @@ func (f *fleet) drainingHosts(i int) map[string]bool {
 }
 
 func TestFleet_DrainEmptiesAHostKeepsTheCountAndNothingIsPlacedBackUntilUndrain(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1792})
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1792, vmCPUs: 6})
 	f.startOrch()
 	key := f.enrollmentKey()
 	ids := map[int]string{}
 	for _, i := range f.hosts() {
-		ids[i] = f.admit(f.enroll(i, key), "eu-1", "")
+		ids[i] = f.admit(f.enroll(i, key), "eu-1")
 	}
 	h1, h2 := f.hosts()[0], f.hosts()[1]
 
