@@ -53,6 +53,9 @@ type Sources struct {
 //	bin/naru-credstub                  the interpreter of a stand-in credential helper (ADR 0026)
 //	bin/naru-storageprobe              reports on a storage disk (ADR 0027)
 //	bin/naru-loginprobe                reports a Node's listeners, shells and terminal readers (ADR 0047)
+//	bin/naru-nftprobe                  prints the host's nftables counters (harness.md)
+//	bin/naru-sockproxy                 forwards a TCP port to a unix socket (harness.md)
+//	bin/naru-keyprobe                  scans for the private keys of given authorities (harness.md)
 //	registry/                          see WriteRegistry
 //
 // The guest kernel, the initrds and mkfs.ext4 are not staged: the image carries them (ADR 0010,
@@ -91,6 +94,9 @@ func Stage(src Sources, out string) (Inputs, error) {
 		{"tooling/qemu", "./cmd/naru-etcdprobe", filepath.Join(bin, "naru-etcdprobe")},
 		{"tooling/qemu", "./cmd/naru-storageprobe", filepath.Join(bin, "naru-storageprobe")},
 		{"tooling/qemu", "./cmd/naru-loginprobe", filepath.Join(bin, "naru-loginprobe")},
+		{"tooling/qemu", "./cmd/naru-nftprobe", filepath.Join(bin, "naru-nftprobe")},
+		{"tooling/qemu", "./cmd/naru-sockproxy", filepath.Join(bin, "naru-sockproxy")},
+		{"tooling/qemu", "./cmd/naru-keyprobe", filepath.Join(bin, "naru-keyprobe")},
 		{"tooling/qemu", "./cmd/naru-mvmdlist", filepath.Join(bin, "naru-mvmdlist")},
 		{"tooling/qemu", "./cmd/naru-mvmroute", filepath.Join(bin, "naru-mvmroute")},
 		{"tooling/probe", "./cmd/naru-probe", filepath.Join(bin, "naru-probe")},

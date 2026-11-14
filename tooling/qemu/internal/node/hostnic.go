@@ -24,6 +24,13 @@ const (
 	RoutePort = "7480"
 )
 
+// Forward is a forward of the test host's loopback port to a TCP port of the second NIC.
+type Forward struct {
+	// HostPort is the port on 127.0.0.1 of the test host; GuestPort is the port at HostNICAddress.
+	HostPort  int
+	GuestPort string
+}
+
 // HostMAC is the address of the second NIC: the form of the first, in the next block of the
 // locally administered range so that no two cards of a cluster share one.
 func (c Config) HostMAC() string {

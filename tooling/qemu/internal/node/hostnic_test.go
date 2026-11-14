@@ -40,6 +40,23 @@ func TestQemuArgs_ARouteHostPortForwardsLoopbackToTheRouteOnTheHostNIC(t *testin
 	assert.NotContains(t, qemuLine(t, c), "7480")
 }
 
+func TestQemuArgs_ExtraForwardsReachMorePortsOfTheHostNICAndCaptureDumpsTheSharedNetwork(t *testing.T) {
+	c := cfg(1, 2, true, false)
+	c.HostPort, c.ExtraForwards = 41234, []Forward{{HostPort: 41300, GuestPort: "7500"}, {HostPort: 41301, GuestPort: "9102"}}
+
+	line := qemuLine(t, c)
+
+	assert.Contains(t, line, ",hostfwd=tcp:127.0.0.1:41300-10.0.2.15:7500,hostfwd=tcp:127.0.0.1:41301-10.0.2.15:9102")
+	assert.NotContains(t, line, "filter-dump", "no capture is asked for")
+
+	spec := Spec{Config: c, Capture: true}
+	spec.Dir, spec.Disk, spec.Mcast = t.TempDir(), filepath.Join(t.TempDir(), "naru.img"), "230.78.0.1:5000"
+	require.NoError(t, os.WriteFile(spec.Disk, []byte("disk"), 0o644))
+	args, err := qemuArgs(spec, "naru15-node-1", "cidata.img", "data.img", "console.log")
+	require.NoError(t, err)
+	assert.Contains(t, strings.Join(args, " "), "-object filter-dump,id=cap0,netdev=net0,file="+CapturePath(spec.Dir))
+}
+
 func TestQemuArgs_ANodeWithoutAHostPortHasOneNIC(t *testing.T) {
 	assert.NotContains(t, qemuLine(t, cfg(2, 2, false, false)), "net1")
 }

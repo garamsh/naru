@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -56,6 +57,15 @@ type ClusterSpec struct {
 	// node-1's host API is reachable from the host through a forward. node-1 also runs naru-mvmdlist,
 	// which prints the Machines its mvmd holds (ADR 0028).
 	Host bool
+	// Hosts, with Host, are the numbers of the Nodes that run naru-hostd, each with a host API of its
+	// own, the same host authority, a route and a second NIC with forwards. Empty is Node 1 alone.
+	// A Node that is no control-plane Node still runs Gaon's Node Agent (docs/architecture/harness.md).
+	Hosts []int
+	// Forward, with Gaon, is guest ports of the second NIC that every Node has forwarded from a
+	// loopback port of the test host (Cluster.Forwards): orchd's 7500, a socket proxy, the metrics.
+	Forward []string
+	// Capture records the shared network at every Node (Spec.Capture, Node.CapturePath).
+	Capture bool
 	// TimeServers, with Gaon, is node-1's spec.time.servers. The servers are on the test host, which
 	// node-1 reaches at 10.0.2.2 over its second NIC, left unrestricted for it (Config.HostReach).
 	TimeServers []string
@@ -86,6 +96,9 @@ type ClusterSpec struct {
 	// EditUserData, when set, changes the user-data naructl wrote for a Gaon Node before the Node
 	// starts: the test adds files, such as a credential helper, or a service's arguments.
 	EditUserData func(c Config, file string) error
+	// GenFlags, when set, gives gen node further flags for the Node c names: the sections of spec that
+	// naructl has a flag for (--signer, --metrics-listen, --host-management-prefix).
+	GenFlags func(c Config) []string
 	// Configure, when set, changes each Node's Config before it starts, such as to give it routes.
 	// It does not apply to a Gaon cluster, whose user-data is naructl's.
 	Configure func(*Config)
@@ -103,8 +116,15 @@ type Cluster struct {
 	HostAddrs map[string]string
 	// API is set when the cluster has NodeAPI.
 	API *NodeAPI
-	// Host is set when the cluster has Host.
+	// Host is set when the cluster has Host: node-1's, or nil when node-1 is no host.
 	Host *HostAPI
+	// Hosts is the host API of each Node that runs naru-hostd, in the order of ClusterSpec.Hosts.
+	Hosts []*HostAPI
+	// HostCA is the certificate file of the authority the hosts' API certificates chain to, which orch
+	// trusts for them (spec.orch.hostCA). It is set when the cluster has hosts.
+	HostCA string
+	// Forwards is, by Node name and guest port, the "127.0.0.1:port" of each ClusterSpec.Forward.
+	Forwards map[string]map[string]string
 }
 
 // HostRegion and HostLabels are what a cluster with Host configures node-1's spec.host with.
@@ -116,6 +136,9 @@ var HostLabels = []string{"disk=ssd"}
 // HostAPI is how the test host reaches node-1's host API: the address of the forward and naructl
 // client files, each naructl's own format (ADR 0028).
 type HostAPI struct {
+	// Node is the name of the Node that runs it, and Index its number.
+	Node  string
+	Index int
 	// Addr is "127.0.0.1:port", the host side of the forward to node-1's host API.
 	Addr string
 	// Provisioner and Reader are client files with the certificate of that role from the cluster's
@@ -163,10 +186,19 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		if gen, err = newGaonFiles(spec); err != nil {
 			return nil, err
 		}
-		c.Client, c.HostAddr, c.API, c.Host = gen.client, "127.0.0.1:"+strconv.Itoa(gen.ports[1]), gen.api, gen.host
+		c.Client, c.HostAddr, c.API = gen.client, "127.0.0.1:"+strconv.Itoa(gen.ports[1]), gen.api
+		c.Hosts, c.Forwards = gen.hostList, gen.forwarded
+		if len(gen.hostList) > 0 {
+			c.HostCA = filepath.Join(gen.caDir, "host", "ca.pem")
+		}
+		if h := gen.hosts[1]; h != nil {
+			c.Host = h.api
+		}
 		c.HostAddrs = map[string]string{}
 		for i, p := range gen.ports {
-			c.HostAddrs[fmt.Sprintf("node-%d", i)] = "127.0.0.1:" + strconv.Itoa(p)
+			if spec.controlPlane(i) {
+				c.HostAddrs[fmt.Sprintf("node-%d", i)] = "127.0.0.1:" + strconv.Itoa(p)
+			}
 		}
 		// The CA's key stays on disk only while naructl needs it, whichever way StartCluster returns.
 		defer func() { _ = gen.dropCA() }()
@@ -186,14 +218,17 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		if spec.Configure != nil {
 			spec.Configure(&cfg)
 		}
-		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase, SerialSocket: spec.SerialSocket}
+		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase, SerialSocket: spec.SerialSocket, Capture: spec.Capture}
 		if gen != nil {
-			if spec.controlPlane(i) {
-				start.Config.HostPort = gen.ports[i] // only a control-plane Node has the second NIC
+			if spec.secondNIC(i) {
+				start.Config.HostPort = gen.ports[i] // a control-plane Node and a host have the second NIC
+				start.Config.ExtraForwards = gen.extraForwards[i]
+				if h := gen.hosts[i]; h != nil {
+					start.Config.HostAPIHostPort = h.port
+					start.Config.RouteHostPort = h.routePort
+				}
 				if i == 1 {
 					start.Config.APIHostPort = gen.apiPort
-					start.Config.HostAPIHostPort = gen.hostPort
-					start.Config.RouteHostPort = gen.routePort
 					start.Config.HostReach = len(spec.TimeServers) > 0
 				}
 			}
@@ -221,6 +256,26 @@ type ExtraService struct {
 
 // controlPlane reports whether Node i is a control-plane Node.
 func (spec ClusterSpec) controlPlane(i int) bool { return i <= max(spec.ControlPlanes, 1) }
+
+// hostNodes is the numbers of the Nodes that run naru-hostd.
+func (spec ClusterSpec) hostNodes() []int {
+	switch {
+	case !spec.Host:
+		return nil
+	case len(spec.Hosts) == 0:
+		return []int{1}
+	}
+	return spec.Hosts
+}
+
+// isHost reports whether Node i runs naru-hostd.
+func (spec ClusterSpec) isHost(i int) bool { return slices.Contains(spec.hostNodes(), i) }
+
+// secondNIC reports whether Node i has the second NIC: a control-plane Node, a host, and every Node
+// when the cluster has forwards of its own.
+func (spec ClusterSpec) secondNIC(i int) bool {
+	return spec.controlPlane(i) || spec.isHost(i) || len(spec.Forward) > 0
+}
 
 // ha reports whether the control plane has several members.
 func (spec ClusterSpec) ha() bool { return spec.ControlPlanes > 1 }
@@ -255,21 +310,42 @@ type gaonFiles struct {
 	// api and apiPort are set when the cluster has a Node API.
 	api     *NodeAPI
 	apiPort int
-	// host and hostPort are set when the cluster has a host API.
-	host     *HostAPI
-	hostPort int
-	// routePort is the host port forwarded to naru-mvmroute, set with host.
-	routePort int
+	// hosts is the host API of each host Node by number, and hostList the same in order.
+	hosts    map[int]*hostFiles
+	hostList []*HostAPI
+	// extraForwards is the ClusterSpec.Forward of each Node by number, and forwarded the same by name.
+	extraForwards map[int][]Forward
+	forwarded     map[string]map[string]string
+}
+
+// hostFiles is a host's API and the host ports forwarded to its host API and to its naru-mvmroute.
+type hostFiles struct {
+	api             *HostAPI
+	port, routePort int
 }
 
 func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
-	g := &gaonFiles{caDir: filepath.Join(spec.Dir, "ca"), guest: filepath.Join(spec.Dir, "guest.json"), ports: map[int]int{}}
-	for i := 1; spec.controlPlane(i) && i <= spec.N; i++ {
+	g := &gaonFiles{caDir: filepath.Join(spec.Dir, "ca"), guest: filepath.Join(spec.Dir, "guest.json"), ports: map[int]int{},
+		hosts: map[int]*hostFiles{}, extraForwards: map[int][]Forward{}, forwarded: map[string]map[string]string{}}
+	for i := 1; i <= spec.N; i++ {
+		if !spec.secondNIC(i) {
+			continue
+		}
 		port, err := freePort()
 		if err != nil {
 			return nil, fmt.Errorf("pick a host port for the API server: %w", err)
 		}
 		g.ports[i] = port
+		name := fmt.Sprintf("node-%d", i)
+		g.forwarded[name] = map[string]string{}
+		for _, guest := range spec.Forward {
+			fp, err := freePort()
+			if err != nil {
+				return nil, fmt.Errorf("pick a host port for the forward to %s: %w", guest, err)
+			}
+			g.extraForwards[i] = append(g.extraForwards[i], Forward{HostPort: fp, GuestPort: guest})
+			g.forwarded[name][guest] = "127.0.0.1:" + strconv.Itoa(fp)
+		}
 	}
 	manifest, err := json.Marshal(spec.Inputs.Guest)
 	if err != nil {
@@ -362,12 +438,15 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 		a.Binaries[name] = path.Join(OverrideDir, name)
 	}
 	a.AWSRegion, a.AWSTrustAnchor, a.AWSProfile, a.AWSRole = spec.AWSRegion, spec.AWSTrustAnchor, spec.AWSProfile, spec.AWSRole
-	if spec.Host && c.Index == 1 {
+	if spec.isHost(c.Index) {
 		a.HostRegion, a.HostLabels = HostRegion, HostLabels
 	}
 	a.Registries = spec.Registries
 	if a.Registries == nil {
 		a.Registries = []string{"host=" + fixture.RegistryAddr + ",ca=" + filepath.Join(spec.Inputs.Dir, "registry", "ca.pem")}
+	}
+	if spec.GenFlags != nil {
+		a.Extra = spec.GenFlags(c)
 	}
 	if err := spec.Naructl.GenNode(a); err != nil {
 		return nil, nil, err
@@ -386,7 +465,7 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 			return nil, nil, err
 		}
 	}
-	if spec.Host && c.Index == 1 {
+	if spec.isHost(c.Index) {
 		if err := appendService(a.Out, map[string]any{
 			"name": "naru88-mvmdlist", "binary": path.Join(fixture.GuestRoot, "bin/naru-mvmdlist"),
 		}); err != nil {
@@ -559,39 +638,57 @@ func yamlField(m *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-// hostAPIFiles has naructl write the host API's authority into the CA directory, so that node-1's
-// user-data carries spec.host, and the client files of the host: a provisioner's, a reader's, and a
-// provisioner's whose certificate is from another authority. The other authority lives only in its
-// own directory, removed here.
+// hostAPIFiles has naructl write the host API's authority into the CA directory, so that the hosts'
+// user-data carries spec.host, and, for each host Node, the client files of the test host: a
+// provisioner's, a reader's, and a provisioner's whose certificate is from another authority. The
+// other authority lives only in its own directory, removed here.
 func (g *gaonFiles) hostAPIFiles(spec ClusterSpec) error {
-	port, err := freePort()
-	if err != nil {
+	if err := spec.Naructl.GenHostCA(g.caDir); err != nil {
+		return err
+	}
+	other := filepath.Join(spec.Dir, "host-ca-foreign")
+	defer func() { _ = os.RemoveAll(other) }()
+	if err := spec.Naructl.GenHostCA(other); err != nil {
+		return err
+	}
+	for _, i := range spec.hostNodes() {
+		if err := g.hostAPIFilesOf(spec, i, other); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hostAPIFilesOf makes the files of host Node i; the foreign authority is in other.
+func (g *gaonFiles) hostAPIFilesOf(spec ClusterSpec, i int, other string) error {
+	f := &hostFiles{}
+	var err error
+	if f.port, err = freePort(); err != nil {
 		return fmt.Errorf("pick a host port for the host API: %w", err)
 	}
-	g.hostPort = port
-	if g.routePort, err = freePort(); err != nil {
+	if f.routePort, err = freePort(); err != nil {
 		return fmt.Errorf("pick a host port for the route: %w", err)
 	}
-	addr := "127.0.0.1:" + strconv.Itoa(port)
-	dir := filepath.Join(spec.Dir, "host-client")
+	addr := "127.0.0.1:" + strconv.Itoa(f.port)
+	suffix := ""
+	if i != 1 {
+		suffix = fmt.Sprintf("-%d", i) // node-1's directory keeps its name
+	}
+	dir := filepath.Join(spec.Dir, "host-client"+suffix)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
 		return err
 	}
-	h := &HostAPI{Addr: addr, Provisioner: filepath.Join(dir, "provisioner.yaml"), Reader: filepath.Join(dir, "reader.yaml"), Foreign: filepath.Join(dir, "foreign.yaml")}
-	if err := spec.Naructl.GenHostCA(g.caDir); err != nil {
-		return err
+	h := &HostAPI{
+		Node: fmt.Sprintf("node-%d", i), Index: i, Addr: addr,
+		Provisioner: filepath.Join(dir, "provisioner.yaml"), Reader: filepath.Join(dir, "reader.yaml"), Foreign: filepath.Join(dir, "foreign.yaml"),
+		Route: "127.0.0.1:" + strconv.Itoa(f.routePort),
 	}
 	for role, out := range map[string]string{"provisioner": h.Provisioner, "reader": h.Reader} {
 		if err := spec.Naructl.GenHostClient(g.caDir, role, addr, out); err != nil {
 			return err
 		}
 	}
-	other := filepath.Join(spec.Dir, "host-ca-foreign")
-	defer func() { _ = os.RemoveAll(other) }()
 	foreign := filepath.Join(dir, "foreign-own.yaml")
-	if err := spec.Naructl.GenHostCA(other); err != nil {
-		return err
-	}
 	if err := spec.Naructl.GenHostClient(other, "provisioner", addr, foreign); err != nil {
 		return err
 	}
@@ -601,8 +698,9 @@ func (g *gaonFiles) hostAPIFiles(spec ClusterSpec) error {
 	if err := os.Remove(foreign); err != nil {
 		return err
 	}
-	h.Route = "127.0.0.1:" + strconv.Itoa(g.routePort)
-	g.host = h
+	f.api = h
+	g.hosts[i] = f
+	g.hostList = append(g.hostList, h)
 	return nil
 }
 

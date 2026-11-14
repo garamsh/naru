@@ -54,6 +54,9 @@ type Config struct {
 	// RouteHostPort, when not 0 and with HostPort, adds a forward of the host's loopback port to
 	// naru-mvmroute's port on the same NIC, the test host's route to the microVMs' addresses.
 	RouteHostPort int
+	// ExtraForwards, with HostPort, are forwards of the host's loopback to more ports of the second NIC:
+	// the orch, the signer's socket proxy and the metrics of a multi-host scenario (see Forward).
+	ExtraForwards []Forward
 	// HostReach, with HostPort, leaves the second NIC's user-mode network unrestricted, so the
 	// guest reaches the test host at 10.0.2.2 (a time server the test runs on the host). The NIC
 	// has no gateway, so the Node still has no route off the host. Without it the NIC is

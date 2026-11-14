@@ -53,6 +53,9 @@ type Spec struct {
 	// SerialSocket attaches the serial port as a server socket, Dir/serial.sock, that nothing
 	// reads, as Proxmox does for `serial0: socket`. Console is then empty.
 	SerialSocket bool
+	// Capture records every frame of the shared network the Node sends and receives, as a pcap file at
+	// CapturePath(Dir): the tests read what crossed the link between two hosts.
+	Capture bool
 }
 
 // Node is one running QEMU machine.
@@ -190,6 +193,24 @@ func (n *Node) Reboot() error {
 	return n.launch()
 }
 
+// ReplaceUserData writes a new NoCloud drive with the user-data and network-config, which the Node's
+// next boot reads: an operator who edits spec in the hypervisor's console and restarts the machine.
+// The instance ID is the same, so the data disk is kept.
+func (n *Node) ReplaceUserData(userData, networkConfig []byte) error {
+	return BuildCidata(filepath.Join(n.dir, "cidata.img"), "naru15-"+n.Name, userData, networkConfig)
+}
+
+// ResetData stops the Node, replaces its data disk with a new one that carries only the inputs tree
+// at inputsDir, and boots it again: a control host that lost its disk, whose signer and orch state
+// are gone. The boot disk, the NoCloud drive and the variable store are kept.
+func (n *Node) ResetData(inputsDir string) error {
+	n.Stop()
+	if _, err := BuildDataDiskWith(n.dir, inputsDir, ""); err != nil {
+		return err
+	}
+	return n.launch()
+}
+
 // qemuArgs is the QEMU command line of a Node, laid out as Proxmox lays out a guest: a q35
 // machine under OVMF, the boot and data disks on a virtio-scsi controller, the NoCloud drive as a
 // CD-ROM on the AHCI bus, one virtio NIC, and the serial console written to console.
@@ -249,10 +270,16 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		if spec.Config.RouteHostPort != 0 {
 			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.RouteHostPort, HostNICAddress, RoutePort)
 		}
+		for _, f := range spec.Config.ExtraForwards {
+			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", f.HostPort, HostNICAddress, f.GuestPort)
+		}
 		args = append(args,
 			"-netdev", netdev,
 			"-device", "virtio-net-pci,netdev=net1,mac="+spec.Config.HostMAC(),
 		)
+	}
+	if spec.Capture {
+		args = append(args, "-object", "filter-dump,id=cap0,netdev=net0,file="+CapturePath(spec.Dir))
 	}
 	if spec.RTCBase != "" {
 		args = append(args, "-rtc", "base="+spec.RTCBase+",clock=vm")
@@ -268,6 +295,9 @@ func serialArgs(spec Spec, console string) []string {
 	}
 	return []string{"-serial", "file:" + console}
 }
+
+// CapturePath is the capture of a Node's shared network in dir, when its Spec has Capture.
+func CapturePath(dir string) string { return filepath.Join(dir, "net0.pcap") }
 
 // SerialSocketPath is the socket of a Node's serial port in dir, when its Spec has SerialSocket.
 func SerialSocketPath(dir string) string { return filepath.Join(dir, "serial.sock") }
@@ -344,6 +374,9 @@ func (n *Node) Pid() int { return n.cmd.Process.Pid }
 
 // ConsolePath is the file the Node's serial console is written to, for the boot now running.
 func (n *Node) ConsolePath() string { return n.console }
+
+// CapturePath is where the Node's capture is, when its Spec had Capture.
+func (n *Node) CapturePath() string { return CapturePath(n.dir) }
 
 // Done is closed once the Node's QEMU process has exited, whoever ended it.
 func (n *Node) Done() <-chan struct{} { return n.done }
