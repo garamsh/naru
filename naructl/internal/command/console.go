@@ -17,9 +17,8 @@ import (
 
 func consoleCmd(args []string, stdout, stderr io.Writer) error {
 	o := newOrchFlags("console", stderr)
-	listen := o.fs.String("listen", "127.0.0.1:8484", "the address the console serves on; a loopback IP address unless --allow-remote")
+	listen := o.fs.String("listen", "127.0.0.1:8484", "the address the console serves on; a loopback IP address")
 	ttl := o.fs.Duration("admission-ttl", time.Hour, "how long a signed admission stays valid")
-	remote := o.fs.Bool("allow-remote", false, "serve on an address that is not loopback")
 	if _, err := o.parse(args, 0); err != nil {
 		return err
 	}
@@ -30,7 +29,7 @@ func consoleCmd(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	ln, err := console.Listen(*listen, *remote)
+	ln, err := console.Listen(*listen)
 	if err != nil {
 		return err
 	}
@@ -41,7 +40,7 @@ func consoleCmd(args []string, stdout, stderr io.Writer) error {
 			return identity.SignAdmission(a, person.Key, person.Cert)
 		},
 		AdmissionTTL: *ttl,
-		AllowedHosts: loopbackHosts(ln.Addr(), *remote),
+		AllowedHosts: loopbackHosts(ln.Addr()),
 	})
 	if err != nil {
 		return err
@@ -52,12 +51,8 @@ func consoleCmd(args []string, stdout, stderr io.Writer) error {
 	return srv.Serve(ctx, ln)
 }
 
-// loopbackHosts are the Host headers a browser sends to a loopback listener; none for a listener
-// that is allowed to be remote.
-func loopbackHosts(addr net.Addr, remote bool) []string {
-	if remote {
-		return nil
-	}
+// loopbackHosts are the Host headers a browser sends to the loopback listener.
+func loopbackHosts(addr net.Addr) []string {
 	_, port, err := net.SplitHostPort(addr.String())
 	if err != nil {
 		return nil

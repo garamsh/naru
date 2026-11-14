@@ -456,23 +456,21 @@ func TestPages_NeverCarryTheKey(t *testing.T) {
 	assert.NotContains(t, string(o.admitted[0].Statement), "PRIVATE")
 }
 
-func TestListen_LoopbackOnlyByDefault(t *testing.T) {
+func TestListen_LoopbackOnly(t *testing.T) {
 	tests := []struct {
-		addr   string
-		remote bool
-		ok     bool
+		addr string
+		ok   bool
 	}{
-		{"127.0.0.1:0", false, true},
-		{"[::1]:0", false, true},
-		{"0.0.0.0:0", false, false},
-		{":0", false, false},
-		{"localhost:0", false, false},
-		{"not-an-address", false, false},
-		{"0.0.0.0:0", true, true},
+		{"127.0.0.1:0", true},
+		{"[::1]:0", true},
+		{"0.0.0.0:0", false},
+		{":0", false},
+		{"localhost:0", false},
+		{"not-an-address", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.addr, func(t *testing.T) {
-			ln, err := console.Listen(tc.addr, tc.remote)
+			ln, err := console.Listen(tc.addr)
 			if ln != nil {
 				_ = ln.Close()
 			}
