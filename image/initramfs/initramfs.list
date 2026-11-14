@@ -55,6 +55,8 @@ file /bin/naru-standin @OUT@/naru-standin 0755 0 0
 file /bin/naru-vip @OUT@/naru-vip 0755 0 0
 file /bin/naru-fence @OUT@/naru-fence 0755 0 0
 file /bin/naru-hostd @OUT@/naru-hostd 0755 0 0
+file /bin/naru-orchd @OUT@/naru-orchd 0755 0 0
+file /bin/naru-signer @OUT@/naru-signer 0755 0 0
 file /bin/kube-apiserver @OUT@/kube-apiserver 0755 0 0
 file /bin/kube-controller-manager @OUT@/kube-controller-manager 0755 0 0
 file /bin/kube-scheduler @OUT@/kube-scheduler 0755 0 0

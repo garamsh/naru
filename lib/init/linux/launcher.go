@@ -52,10 +52,22 @@ func (l *Launcher) Launch(svc config.Service, cgroup string) (service.Process, e
 		return nil, err
 	}
 	defer in.Close()
-	cmd := exec.Command(svc.Binary, svc.Args...)
-	cmd.Env = environ(svc.Env)
+	newCmd := func(args []string) *exec.Cmd {
+		cmd := exec.Command(svc.Binary, args...)
+		cmd.Env = environ(svc.Env)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, UseCgroupFD: true, CgroupFD: int(dir.Fd()), Credential: credential(svc.User)}
+		return cmd
+	}
+	if err := prepareDirs(svc.Dirs); err != nil {
+		out.Close()
+		return nil, err
+	}
+	if err := l.runSetup(svc, newCmd, l.console.Source(svc.Name)); err != nil {
+		out.Close()
+		return nil, err
+	}
+	cmd := newCmd(svc.Args)
 	cmd.Stdout, cmd.Stderr = in, in
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, UseCgroupFD: true, CgroupFD: int(dir.Fd())}
 
 	// A log file is followed from where it ends now, so a restart does not repeat what it kept.
 	offsets := map[string]int64{}

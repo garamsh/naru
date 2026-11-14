@@ -93,10 +93,12 @@ func Main() {
 		Upgrades: upgrades,
 		Log:      log,
 	})
+	metricsCtx, stopMetrics := context.WithCancel(context.Background())
 	stopRenewing, booted := bootAndRenew(host, issuer, services, configs, server, log)
 	if booted != nil {
 		server.Attach(newEngine(*booted, configs, services, host, issuer, server))
 		log.Info("the apply engine is ready", "revision", booted.Revision)
+		serveMetrics(metricsCtx, booted.Config.Spec.MetricsAddr(), services, log)
 	}
 	// A trial boot of an upgrade is judged, and a default boot settles an upgrade left unfinished.
 	judging, stopJudging := context.WithCancel(context.Background())
@@ -108,6 +110,7 @@ func Main() {
 
 	sig := <-sigs
 	stopJudging()
+	stopMetrics()
 	// A renewal in flight must not restart a service after it is stopped.
 	stopRenewing()
 	log.Info("stopping services", "signal", sig.String())

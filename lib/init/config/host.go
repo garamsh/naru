@@ -19,6 +19,11 @@ type Host struct {
 	Region string `yaml:"region"`
 	// Labels are Kubernetes-style label pairs.
 	Labels map[string]string `yaml:"labels,omitempty"`
+	// Network is what naru-hostd keeps the virtual networks from, and the egress and tunnel it
+	// uses. It is nil when the host runs none.
+	Network *HostNetwork `yaml:"network,omitempty"`
+	// Orch is how naru-hostd enrolls with orch. It is nil when the host does not enroll.
+	Orch *HostOrch `yaml:"orch,omitempty"`
 }
 
 var (

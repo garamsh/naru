@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the initramfs: naru-init as /init, mvmd and mvmd-supervisor from the pinned mvmd commit,
+# Builds the initramfs: host/cmd/naru-init as /init (the node initrd's /init is node/cmd/naru-init), naru-orchd and naru-signer (ADR 0050), mvmd and mvmd-supervisor from the pinned mvmd commit,
 # the Firecracker binary mvmd's fetch.sh verifies, mke2fs as mkfs.ext4 (ADR 0011), mkfs.xfs (ADR 0027), the gaon
 # services and etcd (ADR 0012), the two credential helpers and the public root bundle (ADR 0026), the stand-in
 # service the tests configure, Kubernetes with its container runtime, CNI plugins, nft, mount and umount, and the guest kernels, the two initrds and guest.json that image/guest/build.sh wrote, which a Machine
@@ -61,19 +61,21 @@ bin=$build/bin
 rm -rf "$bin"
 mkdir -p "$bin"
 
-# naru-init and the stand-in are built from this repository. The image has one /init, built from
-# host/cmd/naru-init, and the node initrd below takes it too; node/cmd/naru-init is not installed until
-# the image is split by unit (ADR 0039).
+# naru-init and the stand-in are built from this repository. The host image's /init is built from
+# host/cmd/naru-init, and the node initrd below carries node/cmd/naru-init as its /init (ADR 0039, 0050).
 gobuild() { # <module-dir> <output> <package> [<extra ldflags>]
   (cd "$1" && CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -ldflags="-s -w ${4:-}" -o "$2" "$3")
 }
 # NARU_VERSION, when set, is the version naru-init reports on the Node API. The same value gives the
 # same bytes: it is the only thing that enters the binary.
 gobuild "$root/host" "$bin/naru-init" ./cmd/naru-init "${NARU_VERSION:+-X github.com/garamsh/naru/lib/init/run.buildVersion=$NARU_VERSION}"
+gobuild "$root/node" "$bin/naru-init-node" ./cmd/naru-init "${NARU_VERSION:+-X github.com/garamsh/naru/lib/init/run.buildVersion=$NARU_VERSION}"
 gobuild "$root/tooling/qemu" "$bin/naru-standin" ./cmd/naru-standin
 gobuild "$root/node" "$bin/naru-vip" ./cmd/naru-vip
 gobuild "$root/node" "$bin/naru-fence" ./cmd/naru-fence
 gobuild "$root/host" "$bin/naru-hostd" ./cmd/naru-hostd
+gobuild "$root/host" "$bin/naru-signer" ./cmd/naru-signer
+gobuild "$root/orch" "$bin/naru-orchd" ./cmd/naru-orchd
 
 # mvmd is fetched at its pinned commit and nowhere else.
 src=$build/mvmd
@@ -100,7 +102,7 @@ for f in $k8s_programs; do
 done
 sed "s#=$build/inputs/#=$out/#" "$build/inputs/inputs.env" >"$out/inputs.env"
 
-for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 mkfs.xfs naru-standin naru-vip naru-fence naru-hostd gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd docker-credential-ecr-login aws_signing_helper $k8s_programs; do
+for f in naru-init naru-init-node mvmd mvmd-supervisor firecracker mkfs.ext4 mkfs.xfs naru-standin naru-vip naru-fence naru-hostd naru-signer naru-orchd gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd docker-credential-ecr-login aws_signing_helper $k8s_programs; do
   if ! file "$bin/$f" | grep -Eq 'statically linked|static-pie linked'; then
     echo "initramfs: $f is not a static executable: $(file "$bin/$f")" >&2
     exit 1
@@ -132,7 +134,7 @@ done
     done
     [ -n "$skip" ] || echo "$line"
   done <"$here/initramfs.list"
-} | sed "s#@OUT@#$bin#" >"$build/node.list"
+} | sed -e "s#^file /init @OUT@/naru-init #file /init @OUT@/naru-init-node #" -e "s#@OUT@#$bin#" >"$build/node.list"
 "$tools/gen_init_cpio" -t "$SOURCE_DATE_EPOCH" "$build/node.list" | gzip -9n >"$build/node-initrd.cpio.gz"
 
 # The boot set mvmd's configuration names (mvmd ADR 0058): the guest form's kernel and initrd, each

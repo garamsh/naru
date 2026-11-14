@@ -87,6 +87,9 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 	case na != nil && na.ListenAddr() != ra.ListenAddr():
 		reboot = append(reboot, "spec.api.listen")
 	}
+	if next.Spec.MetricsAddr() != running.Spec.MetricsAddr() {
+		reboot = append(reboot, "spec.metrics")
+	}
 	if !slices.Equal(next.Spec.Storage, running.Spec.Storage) {
 		reboot = append(reboot, "spec.storage")
 	}
@@ -134,7 +137,7 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 		steps = append(steps, step{Action{"add-route", r.To.String()}, func() error { return e.deps.Routes.AddRoute(r) }})
 	}
 	for _, f := range next.Spec.Files {
-		if old, ok := fileAt(running.Spec.Files, f.Path); ok && old.Perm() == f.Perm() && old.Content == f.Content {
+		if old, ok := fileAt(running.Spec.Files, f.Path); ok && old.Perm() == f.Perm() && old.Content == f.Content && ownerEqual(old.Owner, f.Owner) {
 			continue
 		}
 		steps = append(steps, step{Action{"write-file", f.Path}, func() error { return e.deps.Files.ReplaceFile(f) }})
@@ -218,6 +221,10 @@ func registryFilesEqual(a, b config.Spec) bool {
 		}
 	}
 	return true
+}
+
+func ownerEqual(a, b *config.Owner) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }
 
 func routeAt(routes []config.Route, to netip.Prefix) (config.Route, bool) {

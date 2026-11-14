@@ -67,6 +67,12 @@ type Spec struct {
 	Storage []Storage `yaml:"storage,omitempty"`
 	// Host is the region and labels naru-hostd reports. It is nil when the Node serves no host API.
 	Host *Host `yaml:"host,omitempty"`
+	// Orch makes init run naru-orchd (docs/architecture/adr/0050-the-image-carries-orch-and-the-signer-and-init-runs-them-as-separate-users-from-spec-orch-spec-signer-and-spec-metrics.md). It is nil when the Node runs no orch member.
+	Orch *Orch `yaml:"orch,omitempty"`
+	// Signer makes init run naru-signer. It is nil when the Node runs no signer.
+	Signer *SignerSection `yaml:"signer,omitempty"`
+	// Metrics makes init serve /metrics and gives each daemon its --metrics-addr. It is nil when none serves metrics.
+	Metrics *Metrics `yaml:"metrics,omitempty"`
 }
 
 // StorageRoot is the directory a storage disk is mounted under, as StorageRoot/<name>, unless it names a mount point.
@@ -128,6 +134,14 @@ type File struct {
 	Content string `yaml:"content"`
 	// Restart names the services init restarts when the file's path, mode or content changes in an apply.
 	Restart []string `yaml:"restart,omitempty"`
+	// Owner is the user and group that own the file. It is root's when nil.
+	Owner *Owner `yaml:"owner,omitempty"`
+}
+
+// Owner is a numeric user and group, a file's owner.
+type Owner struct {
+	UID uint32 `yaml:"uid"`
+	GID uint32 `yaml:"gid"`
 }
 
 // Perm returns the permission bits of the file. It is only meaningful once
@@ -159,6 +173,48 @@ type Service struct {
 	// writes its log to. init keeps the lines appended to one while the service runs as lines of
 	// the service, so `naructl logs` shows them.
 	LogFiles []string `yaml:"logFiles,omitempty"`
+	// User is the user the service runs as. It runs as root when nil.
+	User *User `yaml:"user,omitempty"`
+	// Dirs are directories init makes, owns and gives a mode before each start of the service.
+	Dirs []Dir `yaml:"dirs,omitempty"`
+	// Setup are commands that init runs one after another to completion, as User, before a start
+	// of the service, each unless a path it names exists. A setup that fails keeps the service
+	// from starting.
+	Setup []Setup `yaml:"setup,omitempty"`
+}
+
+// User is the identity a service runs with: a user, a group and the supplementary groups.
+type User struct {
+	UID    uint32   `yaml:"uid"`
+	GID    uint32   `yaml:"gid"`
+	Groups []uint32 `yaml:"groups,omitempty"`
+}
+
+// Dir is a directory a service needs, which init makes with its parents when it is missing and
+// whose owner and mode it sets on every start of the service.
+type Dir struct {
+	Path string `yaml:"path"`
+	// Mode is the permission bits in octal. It is "0755" when empty.
+	Mode string `yaml:"mode,omitempty"`
+	UID  uint32 `yaml:"uid"`
+	GID  uint32 `yaml:"gid"`
+}
+
+// Perm returns the permission bits of the directory. It is only meaningful once Parse has accepted it.
+func (d Dir) Perm() os.FileMode {
+	if d.Mode == "" {
+		return 0o755
+	}
+	m, _ := strconv.ParseUint(d.Mode, 8, 32)
+	return os.FileMode(m)
+}
+
+// Setup is a one-shot command of a service, run with the service's binary.
+type Setup struct {
+	// Args are the arguments of the service's binary.
+	Args []string `yaml:"args"`
+	// Unless are clean absolute paths: the setup does not run while any of them exists.
+	Unless []string `yaml:"unless,omitempty"`
 }
 
 // KeptPair is a certificate pair file a service keeps across boots. A pair whose certificate's
@@ -176,7 +232,14 @@ func (s Service) Equal(o Service) bool {
 	return s.Name == o.Name && s.Binary == o.Binary && s.ControlPlane == o.ControlPlane &&
 		slices.Equal(s.Args, o.Args) && maps.Equal(s.Env, o.Env) &&
 		slices.Equal(s.RestartOnChange, o.RestartOnChange) && slices.Equal(s.LogFiles, o.LogFiles) &&
-		(s.KeptPair == nil) == (o.KeptPair == nil) && (s.KeptPair == nil || *s.KeptPair == *o.KeptPair)
+		(s.KeptPair == nil) == (o.KeptPair == nil) && (s.KeptPair == nil || *s.KeptPair == *o.KeptPair) &&
+		(s.User == nil) == (o.User == nil) && (s.User == nil || s.User.equal(*o.User)) &&
+		slices.Equal(s.Dirs, o.Dirs) &&
+		slices.EqualFunc(s.Setup, o.Setup, func(a, b Setup) bool { return slices.Equal(a.Unless, b.Unless) && slices.Equal(a.Args, b.Args) })
+}
+
+func (u User) equal(o User) bool {
+	return u.UID == o.UID && u.GID == o.GID && slices.Equal(u.Groups, o.Groups)
 }
 
 // Runs reports whether init starts svc on this Node: a service marked controlPlane runs only on

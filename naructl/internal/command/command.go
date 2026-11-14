@@ -298,12 +298,17 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	var (
 		nameservers, serving, binaries, disable, timeServers, peers, members, registries, storage list
 		awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion                                string
-		hostLabels                                                                                list
+		hostLabels, orchCluster, orchSANs, signerPeerNames                                        list
+		hostMgmt, hostEgress, signerPeer, signerRecovery, signerRootCSR, metricsListen            string
+		orchPeerURL, orchClientURL, orchState, orchListen, orchCert, orchCA, orchRevocation       string
+		orchRecovery, orchKey                                                                     string
+		hostTunnelPort                                                                            int
+		hostOrchURL, hostOrchCA, hostOrchKey, signerJoinPeer, signerJoinPeerCA, signerJoinAuthz   string
 		n                                                                                         layout.Node
 		caDir, address, gateway, apiServer                                                        string
 		machinePrefix, guest, extraNIC                                                            string
 		out, networkConfig                                                                        string
-		controlPlane, pairsAsFiles                                                                bool
+		controlPlane, pairsAsFiles, runSigner, signerReplica, orchRestore                         bool
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")
@@ -327,6 +332,34 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&awsRole, "aws-role", "", "the ARN of the IAM role; the certificate and key are the Node Agent's pair")
 	fs.StringVar(&hostRegion, "host-region", "", "the Node serves the host API (naru-hostd) and reports this region, a DNS label; needs the host authority, gen host-ca")
 	fs.Var(&hostLabels, "host-label", "a label of the host, <key>=<value>, repeatable (with --host-region)")
+	fs.StringVar(&hostMgmt, "host-management-prefix", "", "spec.host.network: the prefix of the management plane, which no virtual network may reach, such as 192.168.0.0/24 (with --host-region)")
+	fs.StringVar(&hostEgress, "host-egress-interface", "", "spec.host.network: the interface the virtual networks' egress leaves by (with --host-management-prefix)")
+	fs.IntVar(&hostTunnelPort, "host-tunnel-port", 0, "spec.host.network: the UDP port of the WireGuard tunnel (with --host-management-prefix; default 51820)")
+	fs.BoolVar(&runSigner, "signer", false, "the Node runs naru-signer (spec.signer)")
+	fs.StringVar(&signerPeer, "signer-peer-listen", "", "spec.signer: the address of the peer listener other signers replicate from (with --signer-peer-name)")
+	fs.Var(&signerPeerNames, "signer-peer-name", "spec.signer: a name or address of the peer listener's certificate, repeatable")
+	fs.StringVar(&hostOrchURL, "host-orch-url", "", "spec.host.orch: the https URL of orch's API, which naru-hostd enrolls with (with --host-region)")
+	fs.StringVar(&hostOrchCA, "host-orch-ca-sha256", "", "spec.host.orch: the hex SHA-256 of the authority orch's certificate chains to")
+	fs.StringVar(&hostOrchKey, "host-orch-enroll-key", "", "spec.host.orch: the file holding the enrollment key, which the user data carries 0600 for naru-hostd alone")
+	fs.BoolVar(&signerReplica, "signer-replica", false, "spec.signer.replica: the signer is a replica of another and makes its join key at its first start (excludes --signer-root-csr)")
+	fs.StringVar(&signerJoinPeer, "signer-join-peer", "", "spec.signer.replica.join: host:port of the peer listener of a signer that holds the authorities (with --signer-replica)")
+	fs.StringVar(&signerJoinPeerCA, "signer-join-peer-ca", "", "spec.signer.replica.join: the file holding the PEM of the orch authority the peer's certificate chains to")
+	fs.StringVar(&signerJoinAuthz, "signer-join-authorisation", "", "spec.signer.replica.join: the file holding root's authorisation, which naructl signer authorise-replica wrote")
+	fs.StringVar(&signerRecovery, "signer-recovery-public", "", "spec.signer.bootstrap: the file holding the recovery key's public half (with --signer-root-csr)")
+	fs.StringVar(&signerRootCSR, "signer-root-csr", "", "spec.signer.bootstrap: the file holding the PEM certificate request of the first root identity")
+	fs.StringVar(&orchPeerURL, "orch-peer-url", "", "spec.orch: the https URL etcd listens on for its peers; giving it makes the Node run naru-orchd, which needs the other --orch flags and --signer")
+	fs.StringVar(&orchClientURL, "orch-client-url", "", "spec.orch: the https URL etcd listens on for clients")
+	fs.Var(&orchCluster, "orch-member", "spec.orch: <name>=<peer URL>, a member of orch's cluster, this Node among them, repeatable")
+	fs.StringVar(&orchState, "orch-state", "", "spec.orch: new, or existing for a member that joins a cluster (default new)")
+	fs.StringVar(&orchListen, "orch-listen", "", "spec.orch: the address of orch's HTTPS API (default 0.0.0.0:7500)")
+	fs.Var(&orchSANs, "orch-san", "spec.orch: a name or address of orch's certificate, repeatable")
+	fs.StringVar(&orchCert, "orch-certificate", "", "spec.orch: the file holding orch's certificate then the authority's, PEM")
+	fs.StringVar(&orchCA, "orch-ca", "", "spec.orch: the file holding the authority's certificate, PEM")
+	fs.StringVar(&orchRevocation, "orch-revocation-public-key", "", "spec.orch: the file holding the revocation public key, PKIX PEM, which the signer's init printed")
+	fs.StringVar(&orchRecovery, "orch-recovery-public", "", "spec.orch: the file holding the recovery key's public half; without it orch writes no snapshot")
+	fs.BoolVar(&orchRestore, "orch-restore", false, "spec.orch.restore: orchd starts empty and waits for root's etcd snapshot (PUT /v1/restore)")
+	fs.StringVar(&orchKey, "orch-key", "", "spec.orch: the file holding orch's private key, which the user data carries 0600 for orch's user alone")
+	fs.StringVar(&metricsListen, "metrics-listen", "", "spec.metrics: the IP address init and the daemons serve /metrics on, each on its own port")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.Var(&peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
 	fs.Var(&storage, "storage", "<name>=<label or /dev/path>, an extra disk the Node offers as XFS, found by its partition or file system label, or by its device when the value starts with /dev/ (a blank disk has no label), repeatable: the first is mounted where mvmd keeps its disks")
@@ -353,8 +386,33 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	if err := needs(fs, "host-region", "host-label"); err != nil {
 		return err
 	}
+	if err := needs(fs, "host-management-prefix", "host-egress-interface", "host-tunnel-port"); err != nil {
+		return err
+	}
+	if err := needs(fs, "host-orch-url", "host-orch-ca-sha256", "host-orch-enroll-key"); err != nil {
+		return err
+	}
+	if err := needs(fs, "signer-replica", "signer-join-peer", "signer-join-peer-ca", "signer-join-authorisation"); err != nil {
+		return err
+	}
+	if err := needs(fs, "signer", "signer-replica", "signer-peer-listen", "signer-peer-name", "signer-recovery-public", "signer-root-csr"); err != nil {
+		return err
+	}
+	if err := needs(fs, "orch-peer-url", "orch-client-url", "orch-member", "orch-state", "orch-listen", "orch-san", "orch-certificate", "orch-ca", "orch-revocation-public-key", "orch-recovery-public", "orch-key", "orch-restore"); err != nil {
+		return err
+	}
 	var err error
 	if n.CA, err = pki.Load(caDir); err != nil {
+		return err
+	}
+	if err := genNodeDaemons(&n, daemonFlags{
+		hostMgmt: hostMgmt, hostEgress: hostEgress, hostTunnelPort: hostTunnelPort,
+		hostOrchURL: hostOrchURL, hostOrchCA: hostOrchCA, hostOrchKey: hostOrchKey,
+		signerReplica: signerReplica, signerJoinPeer: signerJoinPeer, signerJoinPeerCA: signerJoinPeerCA, signerJoinAuthz: signerJoinAuthz,
+		runSigner: runSigner, signerPeer: signerPeer, signerPeerNames: signerPeerNames, signerRecovery: signerRecovery, signerRootCSR: signerRootCSR,
+		orchPeerURL: orchPeerURL, orchClientURL: orchClientURL, orchCluster: orchCluster, orchState: orchState, orchListen: orchListen, orchSANs: orchSANs,
+		orchCert: orchCert, orchCA: orchCA, orchRevocation: orchRevocation, orchRecovery: orchRecovery, orchKey: orchKey, orchRestore: orchRestore, metricsListen: metricsListen,
+	}); err != nil {
 		return err
 	}
 	if _, err := os.Stat(filepath.Join(caDir, pki.APIDir)); err == nil {

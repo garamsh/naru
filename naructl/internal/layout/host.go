@@ -65,6 +65,10 @@ func (h Host) check() error {
 type hostSpec struct {
 	Region string            `yaml:"region"`
 	Labels map[string]string `yaml:"labels,omitempty"`
+	// Network is spec.host.network.
+	Network *hostNetworkSpec `yaml:"network,omitempty"`
+	// Orch is spec.host.orch.
+	Orch *hostOrchSpec `yaml:"orch,omitempty"`
 }
 
 // servingIPs are the addresses the Node's serving certificates name: its own, its serving

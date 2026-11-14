@@ -461,6 +461,21 @@ func TestServer_ConfigRedactsARegistryPasswordAndKeepsTheRest(t *testing.T) {
 	assert.Equal(t, "registry-secret", r.engine.cfg.Spec.Registries[0].Credential.Password, "the held configuration is not changed")
 }
 
+func TestServer_ConfigRedactsTheEnrollmentKeyAndKeepsTheRestOfSpecHostOrch(t *testing.T) {
+	r := newRig(t)
+	r.engine.cfg.Spec.Host = &config.Host{Region: "eu-1", Orch: &config.HostOrch{URL: "https://192.168.0.10:7500", CASHA256: "ab", EnrollKey: "enroll-secret"}}
+	r.start(t)
+
+	status, body := r.do(t, r.admin(t), http.MethodGet, "/v1/config", "")
+
+	assert.Equal(t, http.StatusOK, status)
+	orch := decode(t, body)["config"].(map[string]any)["spec"].(map[string]any)["host"].(map[string]any)["orch"].(map[string]any)
+	assert.Equal(t, "REDACTED", orch["enrollKey"])
+	assert.Equal(t, "https://192.168.0.10:7500", orch["url"], "an address is not private")
+	assert.NotContains(t, string(body), "enroll-secret")
+	assert.Equal(t, "enroll-secret", r.engine.cfg.Spec.Host.Orch.EnrollKey, "the held configuration is not changed")
+}
+
 func TestServer_ConfigRedactionLeavesTheEnginesConfigurationAlone(t *testing.T) {
 	r := newRig(t)
 	r.start(t)
