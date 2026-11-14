@@ -1,6 +1,6 @@
 # ADR 0051: the recovery key signs a once-only request for a new root certificate, and the signer revokes every root serial it recorded
 
-> Status: accepted
+> Status: accepted; item 3 and the risk of a restored signer superseded by ADR 0052
 > Date: 2026-11-14
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

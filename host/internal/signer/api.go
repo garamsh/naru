@@ -110,7 +110,7 @@ func (s *Signer) wrap(next http.Handler) http.Handler {
 // role does not allow the action is 403; a malformed request 400; a state the signer is not in 409.
 func statusOf(err error) int {
 	switch {
-	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised):
+	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced):
 		return http.StatusConflict
 	case errors.Is(err, ErrBadRequest), errors.Is(err, identity.ErrFormat):
 		return http.StatusBadRequest
