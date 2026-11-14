@@ -50,3 +50,4 @@ Drafted for garamsh/naru#56. It supersedes item 1 of [ADR 0007](./0007-the-proxm
 ## Errata
 
 - 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/initramfs/initramfs.list` is `image/host/initramfs/initramfs.list` and `image/kernel/embed.sh` is `image/host/kernel/embed.sh`.
+- 2026-11-15: renamed in [ADR 0056](./0056-the-hosts-release-assets-are-named-naru-host-the-boot-disk-naru-host-version-qcow2-and-the-upgrade-bundle-naru-host-upgrade-version-tar.md): the bundle is `naru-host-upgrade-<version>.tar` from the release after `v0.1.0-dev.8`; the name above is that of earlier releases.

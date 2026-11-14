@@ -227,8 +227,8 @@ judge-serial:
 	@test -n "$(NODE1)" -a -n "$(NODE2)" || { echo "judge-serial: usage: make judge-serial NODE1=<log> NODE2=<log>" >&2; exit 2; }
 	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_GAON),-gaon) $(if $(JUDGE_NARUCTL),-naructl "$(abspath $(JUDGE_NARUCTL))") $(if $(JUDGE_PKI),-pki) $(if $(JUDGE_NODE_API),-node-api $(JUDGE_NODE_API)) $(if $(JUDGE_NODE1_INTERFACES),-node1-interfaces $(JUDGE_NODE1_INTERFACES)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
 
-# release writes the assets of a deployment into $(RELEASE): naru-<version>.qcow2 (the boot disk),
-# naru-upgrade-<version>.tar (the upgrade bundle: the kernel and a manifest of its digest),
+# release writes the assets of a deployment into $(RELEASE): naru-host-<version>.qcow2 (the boot disk),
+# naru-host-upgrade-<version>.tar (the upgrade bundle: the kernel and a manifest of its digest),
 # naru-node-kernel-<version>, naru-node-initramfs-<version> and naru-node-<version>.json (the Node boot
 # set a host takes with `naructl host boot-set add`, ADR 0046), naru-data-<version>.qcow2 (the one data
 # disk both Nodes attach), naru-guest-<version>.json,

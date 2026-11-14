@@ -456,6 +456,28 @@ func TestBuild_ShipsNaructlAsAnExecutableAssetListedInSHA256SUMS(t *testing.T) {
 	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums))
 }
 
+func TestBuild_NamesTheHostArtifactsNaruHostAndLeavesTheOldNamesOut(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+
+	assets, err := release.Build(o)
+
+	require.NoError(t, err)
+	var listed []string
+	for _, a := range assets {
+		listed = append(listed, a.Name)
+	}
+	assert.Contains(t, listed, "naru-host-v9.qcow2", "the boot disk")
+	assert.Contains(t, listed, "naru-host-upgrade-v9.tar", "the upgrade bundle")
+	assert.NotContains(t, listed, "naru-v9.qcow2")
+	assert.NotContains(t, listed, "naru-upgrade-v9.tar")
+	assert.Contains(t, listed, "naru-data-v9.qcow2", "the other assets keep their names")
+	assert.FileExists(t, filepath.Join(o.Out, "naru-host-v9.qcow2"))
+	assert.NoFileExists(t, filepath.Join(o.Out, "naru-v9.qcow2"))
+	entries, err := os.ReadDir(o.Out)
+	require.NoError(t, err)
+	assert.Len(t, entries, 14, "the assets and SHA256SUMS")
+}
+
 func TestBuild_ShipsTheUpgradeBundleListedInSHA256SUMS(t *testing.T) {
 	o := fakeBuildInputs(t, strings.Repeat("7", 64))
 

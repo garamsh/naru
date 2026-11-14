@@ -161,7 +161,7 @@ type Options struct {
 	// Root is the repository root; ImageDir and GuestDir (its guest/ directory) are what make
 	// image wrote, and DiskDir what make disk wrote. Out receives the assets.
 	Root, ImageDir, DiskDir, GuestDir, Out string
-	// Version names the assets: naru-<Version>.qcow2.
+	// Version names the assets: naru-host-<Version>.qcow2.
 	Version string
 	// Naructl is the naructl binary, built static for linux/amd64: it is an asset, and it writes the
 	// user-data.
@@ -244,7 +244,7 @@ func Build(o Options) ([]Asset, error) {
 	}
 
 	var names []string
-	boot := "naru-" + o.Version + ".qcow2"
+	boot := fixture.BootDiskName(o.Version)
 	if err := copyFile(filepath.Join(o.DiskDir, "naru.qcow2"), filepath.Join(o.Out, boot)); err != nil {
 		return nil, fmt.Errorf("the boot disk (make disk): %w", err)
 	}

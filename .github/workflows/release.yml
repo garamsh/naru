@@ -129,8 +129,13 @@ jobs:
             exit 0
           fi
           mkdir prev
-          gh release download "$prev" --pattern 'naru-upgrade-*.tar' --dir prev
-          tar -xf prev/naru-upgrade-*.tar -C prev manifest.json
+          # The bundle is naru-host-upgrade-<tag>.tar; releases up to v0.1.0-dev.8 carry naru-upgrade-<tag>.tar (ADR 0056).
+          if ! gh release download "$prev" --pattern 'naru-host-upgrade-*.tar' --dir prev || ! ls prev/naru-host-upgrade-*.tar >/dev/null 2>&1; then
+            gh release download "$prev" --pattern 'naru-upgrade-*.tar' --dir prev
+          fi
+          bundle=$(ls prev/naru-host-upgrade-*.tar prev/naru-upgrade-*.tar 2>/dev/null | head -n 1)
+          [ -n "$bundle" ] || { echo "release: $prev carries no upgrade bundle" >&2; exit 1; }
+          tar -xf "$bundle" -C prev manifest.json
           echo "release: the previous release is $prev"
           echo "PREV_MANIFEST=$PWD/prev/manifest.json" >>"$GITHUB_ENV"
 
@@ -194,7 +199,7 @@ jobs:
           cat >notes.md <<'NOTES'
           naru @TAG@, built from commit @COMMIT@ by the release workflow on a GitHub-hosted ubuntu-24.04 runner.
 
-          Assets: `naru-@TAG@.qcow2` (the boot disk), `naru-upgrade-@TAG@.tar` (the upgrade bundle: the kernel with its initramfs inside, and a manifest that names its version and SHA-256, which an A/B upgrade writes to the boot disk's trial slot), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-node-kernel-@TAG@`, `naru-node-initramfs-@TAG@` and `naru-node-@TAG@.json` (the Node boot set: the kernel and initramfs of the guest form that runs a Node as a microVM, and the manifest that names them with their SHA-256), `naru-orch-ext-@TAG@.sqfs` and `naru-orch-ext-@TAG@.json` (the `naru-orch` system extension that carries `naru-orchd` and `naru-signer`, and its description: the `sha256` field is what `spec.extensions` names, and the image is built for this release's version only), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-inputs-@TAG@.json` (the Firecracker digest and the test image reference that `naru-cluster` reads), `naructl-@TAG@-linux-amd64` (the operator's tool: it generates a cluster CA, each Node's user-data and client certificates, and it is the Node API's client; a static binary), `naru-node-1.test.yaml` and `naru-node-2.test.yaml` (test-only user-data for Proxmox that runs gaon) and `SHA256SUMS` of the other thirteen.
+          Assets: `naru-host-@TAG@.qcow2` (the boot disk of `naru-host`), `naru-host-upgrade-@TAG@.tar` (the upgrade bundle: the kernel with its initramfs inside, and a manifest that names its version and SHA-256, which an A/B upgrade writes to the boot disk's trial slot), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-node-kernel-@TAG@`, `naru-node-initramfs-@TAG@` and `naru-node-@TAG@.json` (the Node boot set: the kernel and initramfs of the guest form that runs a Node as a microVM, and the manifest that names them with their SHA-256), `naru-orch-ext-@TAG@.sqfs` and `naru-orch-ext-@TAG@.json` (the `naru-orch` system extension that carries `naru-orchd` and `naru-signer`, and its description: the `sha256` field is what `spec.extensions` names, and the image is built for this release's version only), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-inputs-@TAG@.json` (the Firecracker digest and the test image reference that `naru-cluster` reads), `naructl-@TAG@-linux-amd64` (the operator's tool: it generates a cluster CA, each Node's user-data and client certificates, and it is the Node API's client; a static binary), `naru-node-1.test.yaml` and `naru-node-2.test.yaml` (test-only user-data for Proxmox that runs gaon) and `SHA256SUMS` of the other thirteen.
 
           - **What this release carries beyond v0.3.0.** init serves the Node API (version, services, service logs, the stored configuration, and applying a change live or staged for the next boot) over mutual TLS on `spec.api.listen`, `0.0.0.0:50000` by default, and `naructl` is its client: `version`, `services`, `logs`, `get config` and `apply`. `naru-init` reports the release's tag as its version. A Node whose user-data has no `spec.api` serves no API and logs that the Node API is off, and user-data written for v0.3.0 boots unchanged.
           - **The Node boot set and the image's room.** `naructl host boot-set add naru-node-@TAG@.json --config <host client config>` adds the boot set to a host that runs mvmd, with no reboot, under the name `naru-node-` and the tag in lower case with each character outside a-z, 0-9 and `-` replaced by `-`; the files it names are read from beside the manifest. The boot disk's ESP is @ESP_BYTES@ bytes, and the largest kernel a Node installed from this image can take as an in-place upgrade is @UPGRADE_KERNEL_BYTES@ bytes.
@@ -206,7 +211,7 @@ jobs:
           NOTES
           if [ -n "$RECREATE" ]; then
             cat >>notes.md <<'NOTES'
-          - **A Node installed from an earlier image cannot take this release's upgrade bundle, and must be recreated.** This release's kernel is larger than the trial slot of the ESP of the previous release's image. Recreate the Node from `naru-@TAG@.qcow2`. A Node installed from this image has room for a trial copy of a kernel twice the size of this release's own.
+          - **A Node installed from an earlier image cannot take this release's upgrade bundle, and must be recreated.** This release's kernel is larger than the trial slot of the ESP of the previous release's image. Recreate the Node from `naru-host-@TAG@.qcow2`. A Node installed from this image has room for a trial copy of a kernel twice the size of this release's own.
           NOTES
           fi
           sed -i -e "s/@TAG@/$TAG/g" -e "s/@COMMIT@/$COMMIT/g" -e "s/@ESP_BYTES@/$ESP_BYTES/g" -e "s/@UPGRADE_KERNEL_BYTES@/$UPGRADE_KERNEL_BYTES/g" notes.md

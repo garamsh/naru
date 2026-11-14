@@ -16,14 +16,14 @@ import (
 func bundleWithSums(t *testing.T, body, sum string) (bundle, sums string) {
 	t.Helper()
 	dir := t.TempDir()
-	bundle = filepath.Join(dir, "naru-upgrade-v2.tar")
+	bundle = filepath.Join(dir, "naru-host-upgrade-v2.tar")
 	require.NoError(t, os.WriteFile(bundle, []byte(body), 0o644))
 	if sum == "" {
 		h := sha256.Sum256([]byte(body))
 		sum = hex.EncodeToString(h[:])
 	}
 	sums = filepath.Join(dir, "SHA256SUMS")
-	require.NoError(t, os.WriteFile(sums, []byte("0000000000000000000000000000000000000000000000000000000000000000  other.img\n"+sum+"  naru-upgrade-v2.tar\n"), 0o644))
+	require.NoError(t, os.WriteFile(sums, []byte("0000000000000000000000000000000000000000000000000000000000000000  other.img\n"+sum+"  naru-host-upgrade-v2.tar\n"), 0o644))
 	return bundle, sums
 }
 
@@ -68,7 +68,7 @@ func TestUpgrade_RefusesABundleThatIsNotTheOneTheSumsFileListsBeforeAnyRequest(t
 		apiAuthority(t, dep)
 		node := newFakeNode(t, dep)
 		bundle, sums := bundleWithSums(t, "the bundle", "")
-		renamed := filepath.Join(filepath.Dir(bundle), "naru-upgrade-v3.tar")
+		renamed := filepath.Join(filepath.Dir(bundle), "naru-host-upgrade-v3.tar")
 		require.NoError(t, os.Rename(bundle, renamed))
 
 		_, err := run(t, "upgrade", "--config", node.clientFile(t, dep, "admin"), "--bundle", renamed, "--sums", sums)

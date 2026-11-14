@@ -46,3 +46,4 @@ Drafted for garamsh/naru#67. It builds on [ADR 0020](./0020-a-node-boots-one-ker
 ## Errata
 
 - 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/disk/build.sh` is `image/host/disk/build.sh`.
+- 2026-11-15: renamed in [ADR 0056](./0056-the-hosts-release-assets-are-named-naru-host-the-boot-disk-naru-host-version-qcow2-and-the-upgrade-bundle-naru-host-upgrade-version-tar.md): the bundle is `naru-host-upgrade-<version>.tar` from the release after `v0.1.0-dev.8`; the name above is that of earlier releases.
