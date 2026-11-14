@@ -99,6 +99,7 @@ func TestParse_RefusesAndNamesTheField(t *testing.T) {
 		{"invalid env name", "MVMD_LOG: debug", "'A=B': debug", "spec.services[0].env"},
 		{"disk named twice", "label: NARUDATA", "label: NARUDATA\n    device: /dev/vdb", "spec.dataDisk"},
 		{"disk not named", "    label: NARUDATA\n", "", "spec.dataDisk"},
+		{"format blank without a label", "label: NARUDATA", "device: /dev/vdb\n    formatBlank: true", "spec.dataDisk.formatBlank"},
 		{"label too long", "NARUDATA", "ABCDEFGHIJKLMNOPQ", "spec.dataDisk.label"},
 		{"relative mount point", "mountPoint: /var/lib/mvmd", "mountPoint: var/lib", "spec.dataDisk.mountPoint"},
 		{"unknown family", "[ipv4, ipv6]", "[ipv4, ipx]", "spec.network.forwarding[1]"},
@@ -139,4 +140,14 @@ func TestParse_ReportsEveryInvalidField(t *testing.T) {
 	_, err := config.Parse([]byte(doc))
 
 	assert.ElementsMatch(t, []string{"kind", "spec.dataDisk.mountPoint"}, fields(t, err))
+}
+
+func TestParse_AcceptsAFormatBlankDataDiskNamedByLabel(t *testing.T) {
+	doc := strings.Replace(valid, "label: NARUDATA", "label: NARUDATA\n    formatBlank: true", 1)
+	require.NotEqual(t, valid, doc)
+
+	cfg, err := config.Parse([]byte(doc))
+
+	require.NoError(t, err)
+	assert.True(t, cfg.Spec.DataDisk.FormatBlank)
 }

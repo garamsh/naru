@@ -3,7 +3,8 @@
 # the Firecracker binary mvmd's fetch.sh verifies, mke2fs as mkfs.ext4 (ADR 0011), mkfs.xfs (ADR 0027), the gaon
 # services and etcd (ADR 0012), the two credential helpers and the public root bundle (ADR 0026), the stand-in
 # service the tests configure, Kubernetes with its container runtime, CNI plugins, nft, mount and umount, and the guest kernels, the two initrds and guest.json that image/guest/build.sh wrote, which a Machine
-# boots on (ADR 0010).
+# boots on (ADR 0010). It also builds the guest form's initramfs (ADR 0034), the same without what
+# runs Machines, and puts it, the guest form's kernel and boot-sets.json, which names both, beside them.
 # Every program is a static executable (the image has no libc), which this script checks. The archive is a newc cpio written by the kernel's own
 # usr/gen_init_cpio, which takes the entries in the order of initramfs.list, owns them by 0:0 and
 # stamps every mtime with SOURCE_DATE_EPOCH; it is compressed with gzip -9n, which stores no name
@@ -18,7 +19,8 @@
 # image/e2fsprogs/build.sh wrote, <gaon-dir> and <etcd-dir> are the ones image/gaon/build.sh and
 # image/etcd/build.sh wrote, <regtools-dir> holds what image/ecr-login/build.sh,
 # image/rolesanywhere/build.sh and image/cacert/build.sh wrote, <xfsprogs-dir> is the one image/xfsprogs/build.sh wrote, and <output-dir> receives
-# initramfs.cpio.gz and inputs.env, which names the Firecracker binary mvmd's fetch.sh yields.
+# initramfs.cpio.gz, node-initrd.cpio.gz and boot-sets.json (the guest form's, already inside
+# initramfs.cpio.gz) and inputs.env, which names the Firecracker binary mvmd's fetch.sh yields.
 # <k8s-dir> holds what image/kubernetes/build.sh, image/containerd/build.sh, image/cni/build.sh,
 # image/nftables/build.sh and image/util-linux/build.sh wrote: the Kubernetes programs, containerd,
 # its shim, runc, the CNI plugins, nft, mount and umount.
@@ -109,6 +111,35 @@ mkdir -p "$tools"
 tar -xf "$tarball" -C "$tools" --strip-components=2 "linux-$KERNEL_VERSION/usr/gen_init_cpio.c"
 gcc -O2 -o "$tools/gen_init_cpio" "$tools/gen_init_cpio.c"
 
+# The guest form's initramfs (ADR 0034): initramfs.list without the entries guest-excludes.txt names,
+# built before the host's, which carries it. The same init and programs, so a guest Node is the
+# Node the host runs, minus what runs Machines. It is gzipped as the host's is, which the kernel
+# unpacks as an initrd; mvmd is given this file and checks its SHA-256.
+excluded=$(grep -v -e '^#' -e '^$' "$here/guest-excludes.txt")
+for path in $excluded; do
+  if ! grep -q "^file $path " "$here/initramfs.list"; then
+    echo "initramfs: guest-excludes.txt names $path, which initramfs.list has no file entry for" >&2
+    exit 1
+  fi
+done
+{
+  while IFS= read -r line; do
+    skip=
+    for path in $excluded; do
+      case "$line" in "file $path "*) skip=1 ;; esac
+    done
+    [ -n "$skip" ] || echo "$line"
+  done <"$here/initramfs.list"
+} | sed "s#@OUT@#$bin#" >"$build/node.list"
+"$tools/gen_init_cpio" -t "$SOURCE_DATE_EPOCH" "$build/node.list" | gzip -9n >"$build/node-initrd.cpio.gz"
+
+# The boot set mvmd's configuration names (mvmd ADR 0058): the guest form's kernel and initrd, each
+# with the path it has inside the image and its SHA-256.
+boot_dir=$GUEST_IMAGE_DIR/boot-sets/$GUEST_BOOT_SET
+sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+printf '{\n  "boot_sets": {\n    "%s": {\n      "kernel": {"path": "%s/vmlinux", "sha256": "%s"},\n      "initrd": {"path": "%s/initrd.cpio.gz", "sha256": "%s"}\n    }\n  }\n}\n' \
+  "$GUEST_BOOT_SET" "$boot_dir" "$(sha_of "$guest/boot-sets/$GUEST_BOOT_SET/vmlinux")" "$boot_dir" "$(sha_of "$build/node-initrd.cpio.gz")" >"$build/boot-sets.json"
+
 # The guest files go under GUEST_IMAGE_DIR, which guest.json's paths name: every directory down to
 # it, then each kernel's directory, then the files, in a fixed order.
 {
@@ -123,13 +154,19 @@ gcc -O2 -o "$tools/gen_init_cpio" "$tools/gen_init_cpio.c"
   for name in $GUEST_KERNELS; do
     echo "dir $GUEST_IMAGE_DIR/kernels/$name 0755 0 0"
   done
+  echo "dir $GUEST_IMAGE_DIR/boot-sets 0755 0 0"
+  echo "dir $boot_dir 0755 0 0"
   for name in $GUEST_KERNELS; do
     echo "file $GUEST_IMAGE_DIR/kernels/$name/vmlinux $guest/kernels/$name/vmlinux 0644 0 0"
   done
+  echo "file $boot_dir/vmlinux $guest/boot-sets/$GUEST_BOOT_SET/vmlinux 0644 0 0"
+  echo "file $boot_dir/initrd.cpio.gz $build/node-initrd.cpio.gz 0644 0 0"
   for f in guest-initrd.cpio converter-initrd.cpio guest.json; do
     echo "file $GUEST_IMAGE_DIR/$f $guest/$f 0644 0 0"
   done
+  echo "file $GUEST_IMAGE_DIR/boot-sets.json $build/boot-sets.json 0644 0 0"
 } >"$build/initramfs.list"
 "$tools/gen_init_cpio" -t "$SOURCE_DATE_EPOCH" "$build/initramfs.list" >"$build/initramfs.cpio"
 gzip -9n <"$build/initramfs.cpio" >"$out/initramfs.cpio.gz"
+cp "$build/node-initrd.cpio.gz" "$build/boot-sets.json" "$out/"
 echo "initramfs: built $out/initramfs.cpio.gz, SHA-256 $(sha256sum "$out/initramfs.cpio.gz" | cut -d' ' -f1)"

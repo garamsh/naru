@@ -38,11 +38,11 @@ func NewCgroupTree(root string) *CgroupTree {
 	return &CgroupTree{root: root}
 }
 
-// cpu, cpuset, hugetlb, memory and pids controllers at the root, in naru/ and in
-// cpu, memory and pids controllers at the root, in naru/ and in
-// naru/kubernetes, which holds no process: the kubelet makes its pod cgroups
-// there (ADR 0031). root must hold no process other than the root of a real
-// cgroup hierarchy.
+// Prepare creates naru/ with its detached/ and kubernetes/ groups under root,
+// and enables the cpu, cpuset, hugetlb, memory and pids controllers at root, in
+// naru/ and in naru/kubernetes. kubernetes/ holds no process: the kubelet makes
+// its pod cgroups there (ADR 0031). root must hold no process other than the
+// root of a real cgroup hierarchy.
 func (t *CgroupTree) Prepare() error {
 	naru := filepath.Join(t.root, naruGroup)
 	if err := os.MkdirAll(filepath.Join(naru, config.DetachedName), 0o755); err != nil {

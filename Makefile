@@ -144,7 +144,7 @@ disk: image
 
 # image-repro builds the image and the disk twice from clean build directories
 # and fails unless the kernel, the initramfs, the guest manifest (which names
-# the SHA-256 of every guest file), mke2fs, mkfs.xfs, naru.img and naru.qcow2 of both are
+# the SHA-256 of every guest file), the guest form's initramfs, kernel and boot set, mke2fs, mkfs.xfs, naru.img and naru.qcow2 of both are
 # byte-identical. It takes two full kernel builds, two guest kernel builds, two
 # builds of the initrds and two of mke2fs and mkfs.xfs.
 image-repro:
@@ -170,7 +170,7 @@ image-repro:
 	  image/kernel/embed.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/initramfs.cpio.gz >/dev/null; \
 	  image/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
 	done; \
-	for f in bzImage e2fsprogs/mke2fs xfsprogs/mkfs.xfs etcd/etcd regtools/docker-credential-ecr-login regtools/aws_signing_helper regtools/ca-certificates.crt gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz guest/guest.json naru.img naru.qcow2; do \
+	for f in bzImage e2fsprogs/mke2fs xfsprogs/mkfs.xfs etcd/etcd regtools/docker-credential-ecr-login regtools/aws_signing_helper regtools/ca-certificates.crt gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz node-initrd.cpio.gz boot-sets.json guest/boot-sets/naru-node/vmlinux guest/guest.json naru.img naru.qcow2; do \
 	  a=$$(sha256sum $(BUILD)/repro/1/image/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/$$f | cut -d' ' -f1); \
 	  echo "$@: $$f build 1 $$a"; echo "$@: $$f build 2 $$b"; \
 	  if [ "$$a" != "$$b" ]; then echo "$@: $$f differs between the builds" >&2; exit 1; fi; \
@@ -181,7 +181,7 @@ image-repro:
 	  if [ "$$a" != "$$b" ]; then echo "$@: k8s/$$f differs between the builds" >&2; exit 1; fi; \
 	done; \
 	echo "$@: the Kubernetes programs, containerd, runc, the CNI plugins, nft, mount and umount are byte-identical across two clean builds"; \
-	echo "$@: bzImage, mke2fs, mkfs.xfs, etcd, the two credential helpers, the root bundle, the four gaon binaries, initramfs.cpio.gz, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
+	echo "$@: bzImage, mke2fs, mkfs.xfs, etcd, the two credential helpers, the root bundle, the four gaon binaries, initramfs.cpio.gz, the guest form's initrd, kernel and boot-sets.json, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
 
 # nodes boots N (default 2) Nodes of the image under QEMU on one network, as
 # the user, and keeps them up until interrupted. Their disks and consoles are

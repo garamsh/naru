@@ -61,6 +61,7 @@ type recorder struct {
 	networkErr error
 	filesErr   error
 	diskErr    error
+	formatErr  error
 	forwardErr error
 	prepareErr error
 	sealErr    error
@@ -109,6 +110,11 @@ func (r *recorder) WriteFiles(f []config.File) error {
 	r.calls = append(r.calls, "files")
 	r.written = f
 	return r.filesErr
+}
+
+func (r *recorder) FormatBlankDataDisk(d config.DataDisk, _ *slog.Logger) error {
+	r.calls = append(r.calls, "format")
+	return r.formatErr
 }
 
 func (r *recorder) MountDataDisk(d config.DataDisk) error {
@@ -482,4 +488,21 @@ func TestRun_RefusesWhenTheRegistryFilesCannotBeWritten(t *testing.T) {
 	require.Error(t, run(r))
 
 	assert.Empty(t, r.started)
+}
+
+func TestRun_FormatsTheBlankDataDiskOnlyWhenTheConfigurationAsksAndBeforeMountingIt(t *testing.T) {
+	asks := replace(t, validConfig, "    label: NARUDATA\n", "    label: NARUDATA\n    formatBlank: true\n")
+
+	r := &recorder{raw: asks}
+	require.NoError(t, run(r))
+	assert.Equal(t, []string{"read", "network", "format", "mount"}, r.calls[:4])
+
+	r = &recorder{raw: validConfig}
+	require.NoError(t, run(r))
+	assert.NotContains(t, r.calls, "format", "a configuration that does not ask never formats")
+
+	boom := errors.New("boom")
+	r = &recorder{raw: asks, formatErr: boom}
+	assert.ErrorIs(t, run(r), boom)
+	assert.Equal(t, []string{"read", "network", "format"}, r.calls, "a disk that cannot be formatted is not mounted and nothing starts")
 }

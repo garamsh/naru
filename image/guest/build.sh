@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds what a Machine boots on and writes the manifest that names it (ADR 0010): each guest
-# kernel kernels.env declares, with kernel.sh, and the two initrds, the Guest Agent's and the
+# kernel kernels.env declares, and the kernel of the guest form's boot set, with kernel.sh, and the two initrds, the Guest Agent's and the
 # converter's, with mvmd's own Makefile in the mvmd checkout; it checks each initrd against the
 # SHA-256 of pin.env. image/initramfs/build.sh puts the result into the initramfs, so these are
 # parts of the image and not inputs a test supplies.
@@ -8,7 +8,7 @@
 # Usage: build.sh <mvmd-checkout> <kernel-build-dir> <build-dir> <output-dir>
 # <kernel-build-dir> is the one image/kernel/build.sh was given, whose dl/ holds the verified
 # kernel tarball; <build-dir> receives the guest kernels' sources; <output-dir> receives
-# kernels/<name>/vmlinux, guest-initrd.cpio, converter-initrd.cpio and guest.json, which names each
+# kernels/<name>/vmlinux, boot-sets/<boot set>/vmlinux, guest-initrd.cpio, converter-initrd.cpio and guest.json, which names each
 # with the path it has inside the image and its SHA-256. The Rust toolchain is the one mvmd's
 # rust-toolchain.toml names, which rustup installs for the user, and erofs-utils builds itself.
 # Nothing is built again when its inputs and the initrds' digests are unchanged.
@@ -49,12 +49,20 @@ if [ "$kernel_listed" -ne 1 ]; then
   exit 1
 fi
 
+if ! [[ "$GUEST_BOOT_SET" =~ ^[a-z0-9-]{1,63}$ ]]; then
+  echo "guest: GUEST_BOOT_SET $GUEST_BOOT_SET is not 1 to 63 characters of [a-z0-9-]" >&2
+  exit 1
+fi
+
 sha_of() { sha256sum "$1" | cut -d' ' -f1; }
 digest_is() { [ -f "$1" ] && [ "$(sha_of "$1")" = "$2" ]; }
 
 for name in $GUEST_KERNELS; do
   "$here/kernel.sh" "$name" "$2" "$build/kernels/$name" "$out/kernels/$name"
 done
+
+# The guest form's kernel, for the boot set image/initramfs/build.sh completes with its initrd.
+"$here/kernel.sh" "$GUEST_BOOT_SET_KERNEL" "$2" "$build/boot-sets/$GUEST_BOOT_SET" "$out/boot-sets/$GUEST_BOOT_SET"
 
 if ! digest_is "$out/guest-initrd.cpio" "$GUEST_INITRD_SHA256" || ! digest_is "$out/converter-initrd.cpio" "$CONVERTER_INITRD_SHA256"; then
   make -C "$src" guest-initrd converter-initrd

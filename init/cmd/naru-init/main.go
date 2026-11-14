@@ -49,6 +49,12 @@ func main() {
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 
+	// Ctrl-Alt-Del, the stop request mvmd sends a Firecracker guest, reaches init as SIGINT, which
+	// reboots through the one stop path, rather than restarting the kernel with nothing stopped.
+	if err := syscall.Reboot(syscall.LINUX_REBOOT_CMD_CAD_OFF); err != nil {
+		log.Warn("make ctrl-alt-del a signal", "err", err)
+	}
+
 	// The first thing, before anything is mounted: pivot_root, which the VMM supervisor does, fails on the rootfs.
 	if err := linux.LeaveRootfs(); err != nil {
 		log.Error("leave the rootfs", "err", err)
