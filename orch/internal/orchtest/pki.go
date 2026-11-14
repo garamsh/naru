@@ -81,6 +81,11 @@ func (c *CA) CRL() ([]byte, error) {
 	return identity.SignCRL(c.revokeKey, identity.CRL{Seq: c.revokedSeq, IssuedAt: time.Now(), Serials: c.revoked})
 }
 
+// SignCRL signs a list with the revocation key, as a signer replica does.
+func (c *CA) SignCRL(crl identity.CRL) ([]byte, error) {
+	return identity.SignCRL(c.revokeKey, crl)
+}
+
 // Pool is a pool holding the authority.
 func (c *CA) Pool() *x509.CertPool {
 	p := x509.NewCertPool()

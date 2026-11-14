@@ -19,9 +19,9 @@ import (
 // crlTTL is how long a revocation list is used before orch asks the signer for a fresh one.
 const crlTTL = 30 * time.Second
 
-// newAuthenticator checks callers against lib/identity's roles and the signer's revocation list,
-// which the Ed25519 public key in keyFile (PKIX, PEM) verifies.
-func newAuthenticator(sg *signer.Client, keyFile string, log *slog.Logger) (auth.Authenticator, error) {
+// readRevocationKey parses the Ed25519 public key in keyFile (PKIX, PEM) that verifies the
+// revocation list.
+func readRevocationKey(keyFile string) (ed25519.PublicKey, error) {
 	data, err := os.ReadFile(keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("read the revocation public key: %w", err)
@@ -38,7 +38,13 @@ func newAuthenticator(sg *signer.Client, keyFile string, log *slog.Logger) (auth
 	if !ok {
 		return nil, errors.New("the revocation public key is not Ed25519")
 	}
-	return &auth.Revocations{Source: sg, Key: key, TTL: crlTTL, Now: time.Now, Log: log}, nil
+	return key, nil
+}
+
+// newAuthenticator checks callers against lib/identity's roles and the signer's revocation list,
+// which key verifies. A list that cannot be refreshed is used for maxAge and then refused.
+func newAuthenticator(sg *signer.Client, key ed25519.PublicKey, maxAge time.Duration, log *slog.Logger) auth.Authenticator {
+	return &auth.Revocations{Source: sg, Key: key, TTL: crlTTL, MaxAge: maxAge, Now: time.Now, Log: log}
 }
 
 // newSealer seals snapshots to the recovery public key in path, the file naructl orch init wrote.

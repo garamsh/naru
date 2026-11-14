@@ -75,9 +75,31 @@ func TestTheLastListIsKeptWhenARefreshFails(t *testing.T) {
 	require.ErrorIs(t, err, identity.ErrRevoked)
 
 	src.down = true
-	now = now.Add(time.Hour)
+	now = now.Add(5 * time.Minute)
 	_, err = a.Authenticate(t.Context(), chains(op))
 	require.ErrorIs(t, err, identity.ErrRevoked, "a signer outage does not un-revoke")
+}
+
+func TestAListThatCannotBeRefreshedIsRefusedOnceItIsOlderThanMaxAge(t *testing.T) {
+	ca := orchtest.NewCA(t)
+	op := ca.Issue(t, "alice", identity.RoleOperator)
+	now := time.Now()
+	src := &source{ca: ca}
+	a := newAuth(src, func() time.Time { return now })
+	_, err := a.Authenticate(t.Context(), chains(op))
+	require.NoError(t, err)
+
+	src.down = true
+	now = now.Add(auth.DefaultMaxAge - time.Second)
+	_, err = a.Authenticate(t.Context(), chains(op))
+	require.NoError(t, err, "control: still within the bound")
+	now = now.Add(2 * time.Second)
+	_, err = a.Authenticate(t.Context(), chains(op))
+	require.ErrorIs(t, err, auth.ErrStaleRevocationList)
+
+	src.down = false
+	_, err = a.Authenticate(t.Context(), chains(op))
+	require.NoError(t, err, "a refresh that succeeds ends the refusal")
 }
 
 func TestAReplayedOlderListIsNotTaken(t *testing.T) {
@@ -93,7 +115,7 @@ func TestAReplayedOlderListIsNotTaken(t *testing.T) {
 	require.ErrorIs(t, err, identity.ErrRevoked)
 
 	src.data = old
-	now = now.Add(time.Hour)
+	now = now.Add(5 * time.Minute)
 	_, err = a.Authenticate(t.Context(), chains(op))
 	require.ErrorIs(t, err, identity.ErrRevoked, "the replayed list omits the revocation and is refused")
 }

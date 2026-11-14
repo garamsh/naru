@@ -148,7 +148,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, identity.ErrRevoked), errors.Is(err, identity.ErrRole), errors.Is(err, identity.ErrNoChain):
 		status, msg = http.StatusForbidden, err.Error()
-	case errors.Is(err, auth.ErrNoRevocationList):
+	case errors.Is(err, auth.ErrNoRevocationList), errors.Is(err, auth.ErrStaleRevocationList):
 		status, msg = http.StatusServiceUnavailable, "the revocation list is not available"
 		logger(r).Error("no revocation list", "err", err.Error())
 	case errors.Is(err, inventory.ErrRateLimited):

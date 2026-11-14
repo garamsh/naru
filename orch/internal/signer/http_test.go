@@ -2,6 +2,7 @@ package signer_test
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -60,4 +61,27 @@ func TestCRL(t *testing.T) {
 	crl, err := c.CRL(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, "signed-crl", string(crl))
+}
+
+func TestPushCRLSendsTheListAsTheBodyAndReturnsTheListTheSignerHolds(t *testing.T) {
+	var got []byte
+	status := http.StatusOK
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/crl", func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		if status != http.StatusOK {
+			http.Error(w, "no", status)
+			return
+		}
+		_, _ = w.Write([]byte("held-crl"))
+	})
+	c := serve(t, mux)
+	held, err := c.PushCRL(t.Context(), []byte("pushed-crl"))
+	require.NoError(t, err)
+	require.Equal(t, "pushed-crl", string(got), "the signed list goes as it is, not wrapped")
+	require.Equal(t, "held-crl", string(held))
+
+	status = http.StatusForbidden
+	_, err = c.PushCRL(t.Context(), []byte("forged"))
+	require.ErrorIs(t, err, inventory.ErrSignerRefused)
 }

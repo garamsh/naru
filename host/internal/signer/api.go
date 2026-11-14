@@ -33,6 +33,7 @@ func (s *Signer) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/orch", handleSigned(s, s.IssueOrch))
 	mux.HandleFunc("POST /v1/operator", handleSigned(s, s.IssueOperator))
 	mux.HandleFunc("POST /v1/revoke", handleSigned(s, s.Revoke))
+	mux.HandleFunc("POST /v1/crl", handleSigned(s, s.PushCRL))
 	mux.HandleFunc("GET /v1/crl", s.handle(func(*http.Request) (any, error) { return s.CRL() }))
 	mux.HandleFunc("GET /v1/ca", s.handle(func(*http.Request) (any, error) { return s.Authorities() }))
 	mux.HandleFunc("GET /v1/bundle", s.handle(func(r *http.Request) (any, error) {
@@ -122,6 +123,7 @@ func statusOf(err error) int {
 		errors.Is(err, identity.ErrRequestAction),
 		errors.Is(err, identity.ErrRequestExpired),
 		errors.Is(err, identity.ErrRequestSignature),
+		errors.Is(err, identity.ErrCRLSignature),
 		errors.Is(err, identity.ErrOpen),
 		errors.Is(err, identity.ErrPassphrase):
 		return http.StatusForbidden

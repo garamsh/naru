@@ -14,6 +14,7 @@ import (
 
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
+	"github.com/garamsh/naru/orch/internal/crlsync"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/member"
 	"github.com/garamsh/naru/orch/internal/orchd"
@@ -39,6 +40,12 @@ type Options struct {
 	LeaderTTL time.Duration
 	// Log receives the members' logs; it defaults to discarding them.
 	Log *slog.Logger
+	// CA, when set, is the authority the cluster uses; a test that builds peers first passes it.
+	CA *CA
+	// CRLPeers, when set, are the revocation list peers of the members, by index, and the members
+	// sync the list every CRLSyncInterval.
+	CRLPeers        []crlsync.Peer
+	CRLSyncInterval time.Duration
 }
 
 func freePorts(t testing.TB, n int) []int {
@@ -71,7 +78,10 @@ func Start(t testing.TB, o Options) *Cluster {
 	if o.Log == nil {
 		o.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	ca := NewCA(t)
+	ca := o.CA
+	if ca == nil {
+		ca = NewCA(t)
+	}
 	c := &Cluster{CA: ca, Signer: &Signer{CA: ca}, Clock: NewClock(), Log: o.Log, dir: t.TempDir()}
 
 	ports := freePorts(t, 2*o.Members)
@@ -97,9 +107,12 @@ func Start(t testing.TB, o Options) *Cluster {
 				Cert: files.Cert, Key: files.Key, CA: files.CA,
 			},
 			Listen: "127.0.0.1:0", ClientCA: files.CA, SnapshotDir: filepath.Join(dir, "snapshots"),
-			LeaderTTL: o.LeaderTTL, Limits: o.Limits,
+			LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval,
 		}
 		deps := orchd.Deps{Signer: c.Signer, Auth: &auth.Revocations{Source: c.Signer, Key: ca.RevocationKey(), Now: time.Now, Log: o.Log}, Sealer: o.Sealer, Clock: c.Clock, Log: o.Log.With("member", name)}
+		if i < len(o.CRLPeers) {
+			deps.CRLPeer, deps.RevocationKey = o.CRLPeers[i], ca.RevocationKey()
+		}
 		go func() {
 			m, err := orchd.Start(context.Background(), cfg, deps)
 			results <- result{m, err}
