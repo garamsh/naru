@@ -133,7 +133,7 @@ func TestMicrovm_CreateGetListDeleteSpeakTheHostAPIOverMutualTLS(t *testing.T) {
 	mustRun(t, "gen", "host-ca", "--ca-dir", dep.ca)
 	var got map[string]any
 	mux := http.NewServeMux()
-	vm := map[string]any{"name": "web", "machineId": "web", "state": "running", "addresses": []string{"10.200.1.2"}, "cpu": 2, "memory": 1 << 28}
+	vm := map[string]any{"name": "web", "machineId": "web", "state": "running", "addresses": []string{"10.200.1.2"}, "cpu": 2, "memory": 1 << 28, "network": "neta"}
 	mux.HandleFunc("POST /v1/microvms", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&got)
 		w.WriteHeader(http.StatusCreated)
@@ -183,6 +183,7 @@ func TestMicrovm_CreateGetListDeleteSpeakTheHostAPIOverMutualTLS(t *testing.T) {
 	out, err = run(t, "microvm", "get", "--config", cfg, "web")
 	require.NoError(t, err, out)
 	assert.Contains(t, out, `"state": "running"`)
+	assert.Contains(t, out, `"network": "neta"`, "get shows the network the host keeps")
 	out, err = run(t, "microvm", "stop", "--config", cfg, "web")
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "stop web: stopped")

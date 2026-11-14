@@ -124,6 +124,7 @@ type MicroVM struct {
 	BootSet       string        `json:"bootSet,omitempty"`
 	Cmdline       string        `json:"cmdline,omitempty"`
 	PodPrefix     string        `json:"podPrefix,omitempty"`
+	Network       string        `json:"network,omitempty"`
 	RestartOnBoot bool          `json:"restartOnBoot"`
 }
 
