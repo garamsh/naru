@@ -311,16 +311,18 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 	snap := f.snapshot(1) // GET /v1/snapshots/latest, root only, the sealed bytes
 
 	// Every control host loses its disk. The recovery key and its passphrase go to the first one as
-	// files, for the signer's restore, which reads them on the signer's host.
+	// files owned by the signer, for its restore, which reads them on its host.
 	recKey, err := os.ReadFile(f.rec.key)
 	require.NoError(t, err)
 	pass, err := os.ReadFile(f.pass)
 	require.NoError(t, err)
+	// The signer reads them as its own user, 6001.
+	signerOwner := map[string]any{"uid": 6001, "gid": 6001}
 	for _, i := range f.controls() {
 		if i == 1 {
 			f.lose(i,
-				map[string]any{"path": "/run/harness/recovery.key", "mode": "0600", "content": string(recKey)},
-				map[string]any{"path": "/run/harness/recovery.pass", "mode": "0600", "content": string(pass)})
+				map[string]any{"path": "/run/harness/recovery.key", "mode": "0600", "content": string(recKey), "owner": signerOwner},
+				map[string]any{"path": "/run/harness/recovery.pass", "mode": "0600", "content": string(pass), "owner": signerOwner})
 		} else {
 			f.lose(i)
 		}
