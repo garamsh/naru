@@ -57,7 +57,7 @@ func page(t *testing.T, cl *http.Client, base, path string) string {
 var csrfField = regexp.MustCompile(`name="csrf"[^>]*value="([^"]+)"|value="([^"]+)"[^>]*name="csrf"`)
 
 func TestFleet_ConsoleListsHostsMicroVMsGroupsAndEventsAndAdmitsAPendingHost(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 1, hosts: 2})
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 512})
 	f.startOrch()
 	first, second := f.hosts()[0], f.hosts()[1]
 	key := f.enrollmentKey()

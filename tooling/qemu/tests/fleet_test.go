@@ -55,8 +55,14 @@ var (
 	keyProbe  = path.Join(fixture.GuestRoot, "bin/naru-keyprobe")
 )
 
+// defaultNodeMiB is the memory a Node needs to unpack the image's initramfs (Config.MemoryMiB).
+const defaultNodeMiB = 3072
+
 type fleetOpts struct {
 	controls, hosts int
+	// vmMiB is the memory the microVMs placed on one host may take at once, added to the default the host
+	// needs to boot.
+	vmMiB int
 	// capture records the shared network at every Node.
 	capture bool
 	// services are added to every Node.
@@ -159,7 +165,7 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 	c := start(t, node.ClusterSpec{
 		N: o.controls + o.hosts, Gaon: true, NodeAPI: true, Host: true, Hosts: f.hosts(), Capture: o.capture,
 		Disable: []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"},
-		Forward: forward, MemoryMiB: 2048, GenFlags: f.genFlags, ExtraServices: services,
+		Forward: forward, HostMemoryMiB: defaultNodeMiB + o.vmMiB, GenFlags: f.genFlags, ExtraServices: services,
 	})
 	f.c = c
 

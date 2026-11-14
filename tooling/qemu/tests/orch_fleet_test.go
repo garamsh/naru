@@ -285,7 +285,7 @@ func (f *fleet) lose(i int, extraFiles ...map[string]any) {
 }
 
 func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 3, hosts: 1})
+	f := newFleet(t, fleetOpts{controls: 3, hosts: 1, vmMiB: 512})
 	f.startOrch()
 	hostIDs := f.enrollAndAdmit("eu-1", "disk=ssd")
 	f.must(f.orch("group", "apply", "-f", f.groupFile("keep", 1, 256, "")), "group apply")
@@ -372,7 +372,7 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 }
 
 func TestFleet_GroupsKeepTheCountRollDrainReplaceOnALabelChangeAndFenceAStatefulMember(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 1, hosts: 2})
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1536})
 	f.startOrch()
 	key := f.enrollmentKey()
 	ids := map[int]string{}

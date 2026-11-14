@@ -30,7 +30,7 @@ func (f *fleet) drainingHosts(i int) map[string]bool {
 }
 
 func TestFleet_DrainEmptiesAHostKeepsTheCountAndNothingIsPlacedBackUntilUndrain(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 1, hosts: 2})
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1792})
 	f.startOrch()
 	key := f.enrollmentKey()
 	ids := map[int]string{}

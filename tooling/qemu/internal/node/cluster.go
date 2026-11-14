@@ -85,6 +85,9 @@ type ClusterSpec struct {
 	// MemoryMiB, when not 0, is every Node's memory in place of the default (Config.MemoryMiB): a host
 	// that runs a Kubernetes Node as a microVM needs the microVM's memory and its own.
 	MemoryMiB int
+	// HostMemoryMiB, when not 0, is the memory of the Nodes that run naru-hostd in place of MemoryMiB:
+	// a fleet's control Nodes keep the default while a host adds its microVMs' memory to it.
+	HostMemoryMiB int
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
 	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
@@ -207,6 +210,9 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		name := fmt.Sprintf("node-%d", i)
 		cfg := Config{
 			Name: name, Index: i, Total: spec.N, ControlPlane: spec.controlPlane(i), Probe: i == spec.ProbeOn, Inputs: spec.Inputs, MemoryMiB: spec.MemoryMiB,
+		}
+		if spec.HostMemoryMiB > 0 && spec.isHost(i) {
+			cfg.MemoryMiB = spec.HostMemoryMiB
 		}
 		if !spec.Gaon {
 			ca, err := os.ReadFile(filepath.Join(spec.Inputs.Dir, "registry", "ca.pem"))
