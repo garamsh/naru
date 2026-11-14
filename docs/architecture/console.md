@@ -10,7 +10,7 @@ What `naructl console` is: the operator's local web console, what it shows of or
 
   | Page | Shows |
   | --- | --- |
-  | `/hosts` | admitted hosts: region, labels, address, last seen |
+  | `/hosts` | admitted hosts: region, labels, address, last seen, and whether the host is draining (read-only: the console has no drain key, `naructl host drain` is the way) |
   | `/microvms` | the microVMs of each host, or of one with `?host=`; empty of data until orch serves them |
   | `/groups` | each group's ready and wanted count, and whether it is stateful; empty of data until orch serves them |
   | `/events` | the newest events of orch's log, newest first |

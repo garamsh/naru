@@ -403,7 +403,7 @@ func TestFleet_GroupsKeepTheCountRollDrainReplaceOnALabelChangeAndFenceAStateful
 	})
 	assert.GreaterOrEqual(t, lowest, 2, "a rolling replace keeps at least count minus maxUnavailable running")
 
-	// A smaller count drains the surplus member and leaves the others running.
+	// A smaller count removes the surplus member and leaves the others running.
 	f.must(f.orch("group", "apply", "-f", f.groupFile("web", 2, 320, "")), "apply web smaller")
 	eventually(t, "the surplus member is gone and two run", func() bool {
 		g, ok := f.group(1, "web")

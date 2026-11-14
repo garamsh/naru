@@ -19,6 +19,9 @@ type Service interface {
 	CreateKey(ctx context.Context, by string, expiresAt time.Time) (orchapi.EnrollmentKey, error)
 	RevokeKey(ctx context.Context, by, id string) error
 	SetLabels(ctx context.Context, by, hostID string, req orchapi.SetLabelsRequest) (orchapi.Host, error)
+	// Drain and Undrain set whether the groups engine may place on the host and keep members on it.
+	Drain(ctx context.Context, by, hostID string) (orchapi.Host, error)
+	Undrain(ctx context.Context, by, hostID string) (orchapi.Host, error)
 	// Heartbeat records that the admitted host hostID is alive.
 	Heartbeat(ctx context.Context, hostID string) error
 	Hosts(ctx context.Context) ([]orchapi.Host, error)
