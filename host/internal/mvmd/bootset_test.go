@@ -68,7 +68,11 @@ func (s *bootSetServer) RemoveBootSet(_ context.Context, r *v1alpha2.RemoveBootS
 
 func serve(t *testing.T, s *bootSetServer) *GRPC {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "mvmd.sock")
+	// A unix socket's path is at most 107 bytes, which t.TempDir() under a long test name exceeds.
+	dir, err := os.MkdirTemp("", "mvmd")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s")
 	ln, err := net.Listen("unix", sock)
 	require.NoError(t, err)
 	srv := grpc.NewServer()
