@@ -406,3 +406,25 @@ func TestLoadKey_Refusals(t *testing.T) {
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "secret-looking-junk", "an error never carries the file's contents")
 }
+
+func TestManager_ADeclarationThatChangesNothingReplacesNoTable(t *testing.T) {
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	ctx := context.Background()
+	n := network.Network{Name: "a", Prefix: pfx("10.8.0.0/16"), Remote: []netip.Prefix{pfx("10.0.2.7/32"), pfx("10.0.2.8/32")}}
+	peers := []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24"), pfx("10.8.3.0/24")}}}
+	require.NoError(t, m.Declare(ctx, n))
+	require.NoError(t, m.SetPeers(ctx, peers))
+	before := len(f.calls)
+
+	// The same, in another order: the table's counters are not reset by it.
+	n.Remote = []netip.Prefix{pfx("10.0.2.8/32"), pfx("10.0.2.7/32")}
+	peers[0].Prefixes = []netip.Prefix{pfx("10.8.3.0/24"), pfx("10.8.2.0/24")}
+	require.NoError(t, m.Declare(ctx, n))
+	require.NoError(t, m.SetPeers(ctx, peers))
+	assert.Len(t, f.calls, before, "nothing changed, so nft ran no more")
+
+	n.Remote = n.Remote[:1]
+	require.NoError(t, m.Declare(ctx, n))
+	assert.Len(t, f.calls, before+1, "a change is applied")
+}

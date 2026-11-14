@@ -53,8 +53,9 @@ type Manager struct {
 	// State is the file the state is kept in; empty keeps it in memory only.
 	State string
 
-	mu sync.Mutex
-	c  Config
+	mu  sync.Mutex
+	c   Config
+	ran bool // the host has had a state applied, so c is what the ruleset and the tunnel hold
 }
 
 // state is the file: everything a restart must bring back.
@@ -242,7 +243,7 @@ func (m *Manager) run(ctx context.Context, next Config) error {
 			return err
 		}
 	}
-	m.c = next
+	m.c, m.ran = next, true
 	return nil
 }
 
@@ -250,6 +251,11 @@ func (m *Manager) run(ctx context.Context, next Config) error {
 // state as it was; one to write State puts the host back to the state before.
 func (m *Manager) apply(ctx context.Context, next Config) error {
 	prev := m.c
+	// Orch declares its networks and peers again every few seconds. A declaration that changes nothing
+	// replaces nothing: the table is replaced whole, which would reset the counters of its drop rules.
+	if m.ran && stateOf(next) == stateOf(prev) {
+		return nil
+	}
 	if err := m.run(ctx, next); err != nil {
 		return err
 	}
@@ -265,4 +271,20 @@ func (m *Manager) apply(ctx context.Context, next Config) error {
 		return fmt.Errorf("write %s: %w", m.State, err)
 	}
 	return nil
+}
+
+// stateOf is the state of c as a canonical string: equal for two configurations that make the same
+// ruleset and the same peers, whatever the order of their lists.
+func stateOf(c Config) string {
+	nets, peers := sortedNetworks(c.Networks), sortedPeers(c.Peers)
+	for i := range nets {
+		nets[i].Remote = sortedPrefixes(nets[i].Remote)
+	}
+	for i := range peers {
+		peers[i].Prefixes = sortedPrefixes(peers[i].Prefixes)
+	}
+	members := append([]Member(nil), c.Members...)
+	sort.Slice(members, func(i, j int) bool { return members[i].Address.Less(members[j].Address) })
+	raw, _ := json.Marshal(state{Networks: nets, Members: members, Peers: peers})
+	return string(raw)
 }
