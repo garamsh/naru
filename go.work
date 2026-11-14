@@ -6,6 +6,7 @@ use (
 	./controlplane
 	./host
 	./init
+	./lib/identity
 	./lib/iso9660
 	./naructl
 	./tooling/disk
