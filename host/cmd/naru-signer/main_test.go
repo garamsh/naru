@@ -16,6 +16,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/garamsh/naru/lib/identity"
 )
 
 func TestReadCSR_TakesPEMAndDER(t *testing.T) {
@@ -65,4 +67,46 @@ func TestRunJoinKey_WritesThePublicKeyAndPrintsItOnTheConsole(t *testing.T) {
 	assert.Len(t, pub, 32)
 	assert.Contains(t, string(console), base64.StdEncoding.EncodeToString(pub), "the key an operator authorises is on the console")
 	assert.FileExists(t, filepath.Join(dir, "join.key"), "the private half stays in the directory")
+}
+
+func TestRunInit_PrintsTheRootCertificateAndTheRevocationKeyAsPEMOnTheConsole(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Chmod(dir, 0o700))
+	work := t.TempDir()
+	rec, err := identity.GenerateRecovery()
+	require.NoError(t, err)
+	recPub, err := rec.Public().MarshalPublic()
+	require.NoError(t, err)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "root", OrganizationalUnit: []string{"root"}}}, key)
+	require.NoError(t, err)
+	write := func(name string, b []byte) string {
+		p := filepath.Join(work, name)
+		require.NoError(t, os.WriteFile(p, b, 0o600))
+		return p
+	}
+	args := []string{"--dir", dir, "--recovery-public", write("rec.pub", recPub), "--root-csr", write("root.csr", csr),
+		"--root-cert", filepath.Join(work, "root.crt"), "--revocation-public-key", filepath.Join(work, "rev.pub")}
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	stdout := os.Stdout
+	os.Stdout = w
+	runErr := runInit(slog.New(slog.NewTextHandler(io.Discard, nil)), args)
+	os.Stdout = stdout
+	require.NoError(t, w.Close())
+	console, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.NoError(t, runErr)
+
+	block, rest := pem.Decode(console[len("root certificate:\n"):])
+	require.NotNil(t, block, "the root certificate is PEM on the console")
+	assert.Equal(t, "CERTIFICATE", block.Type)
+	_, err = x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	onDisk, err := os.ReadFile(filepath.Join(work, "root.crt"))
+	require.NoError(t, err)
+	assert.Equal(t, onDisk, block.Bytes, "the console shows the certificate the file holds")
+	assert.Contains(t, string(rest), "-----BEGIN PUBLIC KEY-----", "the revocation key follows")
 }

@@ -110,7 +110,8 @@ func runInit(log *slog.Logger, args []string) error {
 	}
 	// Init runs the first boot as a service whose output is on the console, which is where the
 	// operator reads what spec.orch needs: neither holds a secret.
-	fmt.Printf("root certificate:\n%s\nrevocation public key:\n%s", root.Certificate, revPEM)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Certificate})
+	fmt.Printf("root certificate:\n%s\nrevocation public key:\n%s", certPEM, revPEM)
 	return nil
 }
 
