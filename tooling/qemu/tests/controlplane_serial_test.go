@@ -5,6 +5,7 @@ package tests_test
 import (
 	"crypto/tls"
 	"net"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -25,24 +26,38 @@ import (
 const (
 	// settle is how long the Nodes run before the window opens, which is long enough for several
 	// re-prints of the console log and for the control plane to have formed.
-	settle = 60 * time.Second
-	// stallWindow is the time the Nodes are probed, 5 times a second each.
+	settle = 90 * time.Second
+	// stallWindow is the time the Nodes are probed, 5 times a second each, unless NARU_STALL_WINDOW
+	// gives another (a Go duration, such as 30m).
 	stallWindow = 120 * time.Second
 	// maxStall is the slowest handshake the Nodes may answer with. Before ADR 0036 a re-print of the
 	// console log held a Node for 0.3 to 1.5 s in this window.
 	maxStall = 100 * time.Millisecond
 )
 
+func window(t *testing.T) time.Duration {
+	v := os.Getenv("NARU_STALL_WINDOW")
+	if v == "" {
+		return stallWindow
+	}
+	d, err := time.ParseDuration(v)
+	require.NoError(t, err, "NARU_STALL_WINDOW")
+	require.Positive(t, d, "NARU_STALL_WINDOW")
+	return d
+}
+
 func TestControlPlane_ThreeNodesWhoseSerialSocketNobodyReadsAnswerWithinAHundredMillisecondsAndTheHolderNeverReleasesTheAddress(t *testing.T) {
 	c := start(t, node.ClusterSpec{N: 3, Gaon: true, BootPKI: true, ControlPlanes: 3, NodeAPI: true, SerialSocket: true})
 	eventually(t, "node-1 Node API", func() bool { return ctl(c.API.Admin, "version").Err == nil })
 	eventually(t, "vip running", func() bool { return pids(t, c.API.Admin)["vip"] != "" })
+	stall := window(t)
 	time.Sleep(settle)
 	before := ctl(c.API.Admin, "logs", "vip").Stdout
 
 	var mu sync.Mutex
 	slow := map[string][]string{}
 	probed := map[string]int{}
+	slowest := map[string]time.Duration{}
 	began := time.Now()
 	var wg sync.WaitGroup
 	for name, addr := range c.HostAddrs {
@@ -51,7 +66,7 @@ func TestControlPlane_ThreeNodesWhoseSerialSocketNobodyReadsAnswerWithinAHundred
 			defer wg.Done()
 			tick := time.NewTicker(200 * time.Millisecond)
 			defer tick.Stop()
-			for time.Since(began) < stallWindow {
+			for time.Since(began) < stall {
 				<-tick.C
 				at := time.Now()
 				d := net.Dialer{Timeout: 30 * time.Second}
@@ -62,6 +77,7 @@ func TestControlPlane_ThreeNodesWhoseSerialSocketNobodyReadsAnswerWithinAHundred
 				}
 				mu.Lock()
 				probed[name]++
+				slowest[name] = max(slowest[name], took)
 				if err != nil || took > maxStall {
 					slow[name] = append(slow[name], at.Sub(began).Round(time.Millisecond).String()+" took "+took.Round(time.Millisecond).String())
 				}
@@ -78,8 +94,11 @@ func TestControlPlane_ThreeNodesWhoseSerialSocketNobodyReadsAnswerWithinAHundred
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		assert.Greater(t, probed[name], 500, name+" was probed through the window")
+		assert.Greater(t, probed[name], int(stall/time.Second)*4, name+" was probed through the window")
 		assert.Empty(t, slow[name], name+" answered slower than "+maxStall.String()+" at")
+	}
+	for _, name := range names {
+		t.Logf("%s: %d handshakes in %s, slowest %s, %d slower than %s", name, probed[name], stall, slowest[name].Round(time.Millisecond), len(slow[name]), maxStall)
 	}
 	assert.Equal(t, strings.Count(before, "released"), strings.Count(after, "released"), "node-1's vip released the address in the window:\n%s", after)
 

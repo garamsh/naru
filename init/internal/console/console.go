@@ -23,6 +23,12 @@ const (
 	// serial console costs the guest time for every byte written to it (ADR 0036), so a
 	// re-print of everything kept would stall the Node for as long as it takes to write it.
 	ReprintBytes = 16 << 10
+	// BlockPiece is the most bytes of a re-print written to the device at once, and BlockGap is
+	// the pause after each piece but the last. A Node does not run while the device takes a
+	// write, so a block written whole stalls it for as long as the block is large (ADR 0036);
+	// in pieces each stall is a piece long and the Node runs between them.
+	BlockPiece = 2 << 10
+	BlockGap   = 50 * time.Millisecond
 	// MaxLine is the longest line kept; a longer one is kept as several.
 	MaxLine = 4096
 	// QueueBytes bounds the live output waiting for the device. A write that would pass it is
@@ -47,7 +53,8 @@ const (
 
 // Console passes writes to out and keeps the complete lines written, each with the source
 // that wrote it. It is safe for concurrent use. Writes reach out in order through one
-// goroutine, and a re-print block is one write, so it is contiguous. Nothing that calls
+// goroutine, and a re-print block is written in pieces with nothing else between them, so it is
+// contiguous. Nothing that calls
 // Console waits on out; the mutex is never held while out is written.
 type Console struct {
 	out   io.Writer
@@ -173,6 +180,13 @@ func (c *Console) drain() {
 		}
 		if len(p) > 0 {
 			// A console that cannot be written to has nowhere to report it.
+			if it.block {
+				for len(p) > BlockPiece {
+					_, _ = c.out.Write(p[:BlockPiece])
+					p = p[BlockPiece:]
+					time.Sleep(BlockGap)
+				}
+			}
 			_, _ = c.out.Write(p)
 			midLine = p[len(p)-1] != '\n'
 		}
