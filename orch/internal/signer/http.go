@@ -1,5 +1,5 @@
 // Package signer is orch's client of naru-signer, which listens on a unix socket of the control
-// host and answers HTTP: POST /v1/host, GET /v1/crl and POST /v1/orch.
+// host and answers HTTP: POST /v1/host and GET /v1/crl.
 package signer
 
 import (
@@ -41,7 +41,6 @@ type hostRequest struct {
 
 type certificateResponse struct {
 	Certificate []byte `json:"certificate"`
-	CA          []byte `json:"ca,omitempty"`
 }
 
 func (c *Client) call(ctx context.Context, method, path string, in any) ([]byte, error) {
@@ -91,24 +90,4 @@ func (c *Client) IssueHost(ctx context.Context, statement, csr []byte) ([]byte, 
 // CRL returns the signed revocation list.
 func (c *Client) CRL(ctx context.Context) ([]byte, error) {
 	return c.call(ctx, http.MethodGet, "/v1/crl", nil)
-}
-
-// OrchCertificate is the identity the signer issues to an orch: its certificate and the PEM of the
-// authority that signed it.
-type OrchCertificate struct {
-	Certificate []byte
-	CA          []byte
-}
-
-// IssueOrch asks the signer for the identity of this orch on a certificate request.
-func (c *Client) IssueOrch(ctx context.Context, csr []byte) (OrchCertificate, error) {
-	raw, err := c.call(ctx, http.MethodPost, "/v1/orch", hostRequest{CSR: csr})
-	if err != nil {
-		return OrchCertificate{}, err
-	}
-	var out certificateResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return OrchCertificate{}, fmt.Errorf("the signer's certificate answer: %w", err)
-	}
-	return OrchCertificate{Certificate: out.Certificate, CA: out.CA}, nil
 }

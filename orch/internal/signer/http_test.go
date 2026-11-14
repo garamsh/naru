@@ -53,18 +53,11 @@ func TestARefusalIsDistinguishedFromAFailure(t *testing.T) {
 	require.NotErrorIs(t, err, inventory.ErrSignerRefused, "a failure of the signer is not the operator's refusal")
 }
 
-func TestCRLAndOrchCertificate(t *testing.T) {
+func TestCRL(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/crl", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("signed-crl")) })
-	mux.HandleFunc("POST /v1/orch", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string][]byte{"certificate": []byte("C"), "ca": []byte("A")})
-	})
 	c := serve(t, mux)
 	crl, err := c.CRL(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, "signed-crl", string(crl))
-	got, err := c.IssueOrch(t.Context(), []byte("csr"))
-	require.NoError(t, err)
-	require.Equal(t, "C", string(got.Certificate))
-	require.Equal(t, "A", string(got.CA))
 }
