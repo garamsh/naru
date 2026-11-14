@@ -192,7 +192,15 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		c.Client, c.HostAddr, c.API = gen.client, "127.0.0.1:"+strconv.Itoa(gen.ports[1]), gen.api
 		c.Hosts, c.Forwards = gen.hostList, gen.forwarded
 		if len(gen.hostList) > 0 {
-			c.HostCA = filepath.Join(gen.caDir, "host", "ca.pem")
+			// The authority's directory goes when StartCluster returns; the certificate stays.
+			c.HostCA = filepath.Join(spec.Dir, "host-ca.pem")
+			ca, err := os.ReadFile(filepath.Join(gen.caDir, "host", "ca.pem"))
+			if err != nil {
+				return nil, fmt.Errorf("read the host authority's certificate: %w", err)
+			}
+			if err := os.WriteFile(c.HostCA, ca, 0o644); err != nil { //nolint:gosec // a certificate holds nothing secret
+				return nil, err
+			}
 		}
 		if h := gen.hosts[1]; h != nil {
 			c.Host = h.api
