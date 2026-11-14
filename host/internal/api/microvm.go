@@ -93,6 +93,9 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotImplemented, hostapi.ErrorBody{Error: "this host was started with no --machine-gateway, so it cannot write the network-config of an OS-form microVM"})
 		return
 	}
+	if req.Network != "" && !s.checkNetwork(w, req) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), callTimeout)
 	defer cancel()
 	rt := s.deps.Runtime
@@ -117,6 +120,11 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// A repeat attaches again, which a host that restarted since needs.
+		if err := s.attach(ctx, req, existing); err != nil {
+			s.networkFail(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, view(existing, sizes))
 		return
 	case !errors.Is(err, mvmd.ErrNotFound):
@@ -127,6 +135,19 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 	m, sizes, err := s.provision(ctx, p)
 	if err != nil {
 		s.fail(w, err)
+		return
+	}
+	if err := s.attach(ctx, req, m); err != nil {
+		ids := make([]string, 0, len(sizes))
+		for id := range sizes {
+			ids = append(ids, id)
+		}
+		// The microVM runs unless it is fenced, and mvmd deletes only a Machine that does not.
+		if m.State == mvmd.StateRunning || !p.create.Fenced {
+			_ = rt.StopMachine(ctx, m.ID)
+		}
+		s.dropMade(m.ID, ids)
+		s.networkFail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, view(m, sizes))
@@ -415,6 +436,7 @@ func (s *Server) deleteMicroVM(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.detach(ctx, m)
 	for _, d := range m.Disks {
 		if !strings.HasPrefix(d.ID, name+".") {
 			continue

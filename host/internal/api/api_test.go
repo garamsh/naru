@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -18,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/hostapi"
 )
 
@@ -85,12 +88,44 @@ type env struct {
 	hostFile string
 	pool     *x509.CertPool
 	metrics  *prometheus.Registry
+	nets     *network.Manager
+	nft      *recorder
+}
+
+// recorder is the network.Runner of the tests: it records what the host would have run.
+type recorder struct {
+	mu    sync.Mutex
+	calls [][]string
+	stdin []string
+}
+
+func (r *recorder) Run(_ context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, append([]string{name}, args...))
+	r.stdin = append(r.stdin, string(stdin))
+	return nil, nil
+}
+
+// ruleset is the last nftables script the host applied.
+func (r *recorder) ruleset() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.calls) - 1; i >= 0; i-- {
+		if r.calls[i][0] == "nft" {
+			return r.stdin[i]
+		}
+	}
+	return ""
 }
 
 func start(t *testing.T) *env { return startWith(t, netip.MustParseAddr("10.1.0.1")) }
 
-// startWith starts a server whose machine gateway is gateway.
-func startWith(t *testing.T, gateway netip.Addr) *env {
+// startWith starts a server whose machine gateway is gateway, with networks.
+func startWith(t *testing.T, gateway netip.Addr) *env { return startEnv(t, gateway, true) }
+
+// startEnv starts a server whose machine gateway is gateway; it has networks when networks is true.
+func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
 	t.Helper()
 	dir := t.TempDir()
 	ca := newAuthority(t, "clients")
@@ -109,7 +144,19 @@ func startWith(t *testing.T, gateway netip.Addr) *env {
 	e.pool.AppendCertsFromPEM(srvCA.pem)
 	e.hostFile = write("host.json", []byte(`{"region":"eu-1","labels":{"disk":"ssd"}}`))
 	e.metrics = prometheus.NewRegistry()
-	srv := New(Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics})
+	e.nft = &recorder{}
+	e.nets = &network.Manager{
+		Run: e.nft, KeyFile: "/run/naru-hostd/wg.key", Port: 51820,
+		Base: network.Config{
+			Management: netip.MustParsePrefix("172.16.0.0/24"), HostAddrs: []netip.Addr{netip.MustParseAddr("192.0.2.1")},
+			TapPrefix: "tap", Egress: "eth0", Tunnel: "wg-naru",
+		},
+	}
+	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics}
+	if networks {
+		deps.Networks = e.nets
+	}
+	srv := New(deps)
 	go func() { _ = srv.Serve(ln, conf) }()
 	t.Cleanup(func() { _ = ln.Close() })
 	return e

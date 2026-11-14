@@ -18,6 +18,8 @@ What `naru-hostd` is: the service that creates, shows and destroys microVMs on a
   | `GET /v1/microvms/{name}/fence`, `GET /v1/snapshots`, `GET /v1/snapshots/{name}` | yes | yes |
   | `POST /v1/microvms/{name}/fence`, `POST /v1/microvms/{name}/snapshot` | 403 | yes |
   | `POST /v1/snapshots/{name}/resume`, `DELETE /v1/snapshots/{name}` | 403 | yes |
+  | `GET /v1/networks`, `GET /v1/networks/{name}`, `GET /v1/peers` | yes | yes |
+  | `PUT /v1/networks/{name}`, `DELETE /v1/networks/{name}`, `PUT /v1/peers` | 403 | yes |
 
 - **`GET /v1/host`** returns `region`, `labels`, the Node's `capacity` and what is `free` (CPU, memory and state disk; CPU and memory of running Machines are subtracted), and mvmd's `version` and `driver`. Region and labels are read from `/run/naru-hostd/host.json` on every request, so a changed label shows at the next request.
 - **`spec.host`** is `region` (a DNS label) and `labels` (Kubernetes label keys and values, at most 64). Parsing derives the file `/run/naru-hostd/host.json` from it as an entry of `spec.files`, so the apply engine writes it when `spec.host` changes and no service restarts: a label change is live ([config.md](./config.md), [init.md](./init.md)). An entry the user wrote at that path is replaced by the derived one.
@@ -33,6 +35,8 @@ What `naru-hostd` is: the service that creates, shows and destroys microVMs on a
 - **Errors** are JSON `{"error": "..."}`: 404 not found, 409 conflict or precondition, 422 invalid request, 503 mvmd unavailable, 504 mvmd timed out, 502 any other mvmd failure.
 - **Fencing.** mvmd starts no Machine without an armed fencing deadline. `naru-hostd` renews it (length 10 minutes, every minute, retried after 5 s), with a number above mvmd's last, read from `InspectDeadline` at start and again after a failed renewal.
 - **Keys.** naructl issues the serving pair and writes it into `spec.files` (`/run/naru-hostd/tls.crt`, `tls.key` at `0600`, and `client-ca.crt`), as it does for the Node API. The host authority's key stays with the operator and is in no Node's user-data. The pair is valid one year and is not renewed.
+- **Networks.** With `--management-prefix`, a host holds virtual networks, each a name and one prefix, declared by `PUT /v1/networks/{name}` (`prefix`, optional `apiEndpoint` inside it) and deleted by `DELETE`. A microVM is created on one with `network` in `POST /v1/microvms`; its address and `podPrefix` must be inside the prefix. hostd writes the nftables table `inet naru` and replaces it whole on each change: the forward chain drops by default and accepts a network's traffic inside its prefix, to its egress interface, and management's to the network's API endpoint. A network to another network, to the management prefix and to the host's addresses is dropped and counted by a rule of its own, and so is a packet from a tap whose source is no attached microVM's. Without the flag these calls are 501 ([ADR 0045](./adr/0045-each-network-of-a-host-is-closed-by-default-by-an-nftables-table-hostd-writes-and-wireguard-carries-the-networks-between-hosts.md)).
+- **The tunnel.** `PUT /v1/peers` replaces the WireGuard peers: public key, endpoint, and the prefixes the peer holds, which are its allowed IPs. The key is a file of mode 0600 (`--tunnel-key`) that `wg` reads and hostd does not. The interface exists before hostd runs. The state of networks and peers is in memory; orch declares it again after a restart ([ADR 0045](./adr/0045-each-network-of-a-host-is-closed-by-default-by-an-nftables-table-hostd-writes-and-wireguard-carries-the-networks-between-hosts.md)).
 - **`lib/hostapi`** holds the host API's request and response types and a Go client for it, which `host/` serves and `orch` calls. mvmd is pinned at b1a60cd in hostd's `go.mod`; the image's pin moves separately ([ADR 0043](./adr/0043-the-host-api-snapshots-and-resumes-a-microvm-gives-it-a-fence-of-its-own-and-its-types-and-client-are-the-module-lib-hostapi.md)).
 - **`naructl`** is the client: `gen host-ca`, `gen host-client --role provisioner|reader`, `gen node --host-region --host-label`, `host`, and `microvm create|get|list|stop|start|delete` ([config.md](./config.md)).
 
@@ -42,11 +46,14 @@ What `naru-hostd` is: the service that creates, shows and destroys microVMs on a
 - [ADR 0035](./adr/0035-the-host-api-creates-a-microvm-of-an-os-form-from-a-boot-set-with-a-data-disk-and-a-nocloud-seed-and-the-iso-9660-writer-is-a-library-module.md): the OS form, the order of its creation and what a failure removes, the gateway flag, and the ISO 9660 writer as `lib/iso9660`.
 - [ADR 0038](./adr/0038-the-host-api-stops-and-starts-a-microvm-and-restart-on-boot-brings-a-microvm-back-after-its-host-restarts-and-naructl-takes-the-os-forms-flags.md): stop and start, `restartOnBoot` and its defaults, the failed restart shown and not retried, naructl's OS-form flags, and the mvmd pin.
 - [ADR 0043](./adr/0043-the-host-api-snapshots-and-resumes-a-microvm-gives-it-a-fence-of-its-own-and-its-types-and-client-are-the-module-lib-hostapi.md): snapshot and resume as mvmd's create-from-snapshot, the fence of one microVM, the roles, and `lib/hostapi`.
+- [ADR 0045](./adr/0045-each-network-of-a-host-is-closed-by-default-by-an-nftables-table-hostd-writes-and-wireguard-carries-the-networks-between-hosts.md): the networks, the nftables table, the tunnel and its keys.
 - [ADR 0017](./adr/0017-the-node-api-is-served-by-init-over-mutual-tls-from-its-own-authority-and-naructl-is-its-client.md): the pattern the host API repeats.
 
 ## Open questions
 
 - **A snapshot of a microVM with named disks after its delete.** hostd's delete removes the disks `<name>.*`, and mvmd restores a snapshot only while the node holds its disks unattached and unchanged, so such a snapshot cannot be resumed after the delete. One of an image-form microVM with only its root disk can.
+- **The state of networks across a restart.** It is in memory, so after hostd restarts nothing is forwarded for a microVM until orch declares the networks and peers again and repeats each create.
+- **The tunnel's prerequisites.** The image has no `wg` and the kernel configuration no WireGuard option; the interface is not created by hostd. The tap name prefix is not reported by mvmd.
 - **Inspecting one snapshot.** mvmd has no such call; hostd lists them all and picks one.
 
 - **`env` and `command`.** The issue asks for them; mvmd's runtime API at the pinned commit has no such fields, and hostd refuses them. They are added when the pin moves to a commit that has them.

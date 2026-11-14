@@ -35,7 +35,10 @@ type Deps struct {
 	// their addresses from. mvmd's API does not report it, and an OS-form microVM's seed names it.
 	// Invalid means unset, and an OS-form request is then refused.
 	MachineGateway netip.Addr
-	Log            *slog.Logger
+	// Networks holds the host's virtual networks and the tunnel's peers. Nil means the host was
+	// started without them: the calls that need them are 501, and a microVM is created on none.
+	Networks Networks
+	Log      *slog.Logger
 	// Metrics is the registry the host API's metrics are registered on, made once by the composition site.
 	Metrics prometheus.Registerer
 }
@@ -70,6 +73,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/snapshots/{name}", s.getSnapshot)
 	mux.HandleFunc("DELETE /v1/snapshots/{name}", s.deleteSnapshot)
 	mux.HandleFunc("POST /v1/snapshots/{name}/resume", s.resumeSnapshot)
+	mux.HandleFunc("PUT /v1/networks/{name}", s.putNetwork)
+	mux.HandleFunc("GET /v1/networks", s.listNetworks)
+	mux.HandleFunc("GET /v1/networks/{name}", s.getNetwork)
+	mux.HandleFunc("DELETE /v1/networks/{name}", s.deleteNetwork)
+	mux.HandleFunc("PUT /v1/peers", s.putPeers)
+	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	return s.recovering(s.logged(s.authorised(mux)))
 }
 
