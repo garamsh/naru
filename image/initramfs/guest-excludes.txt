@@ -1,5 +1,5 @@
 # The entries of initramfs.list that the guest form's initramfs (ADR 0034) leaves out, one
-# destination path per line: the programs that run Machines and gaon's services, which a guest Node
+# destination path per line: the programs that run Machines, gaon's services and the orchestrator with its signer, which a guest Node
 # does not carry. build.sh drops the `file` entry of each from the list it builds the guest
 # initramfs from; a path that no entry has fails the build.
 /bin/mvmd
@@ -10,3 +10,5 @@
 /bin/gaon-scheduler
 /bin/gaon-controllers
 /bin/naru-hostd
+/bin/naru-orchd
+/bin/naru-signer
