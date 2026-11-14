@@ -54,3 +54,7 @@ Measured at this commit, against the same tree without the `/bin/mkfs.ext4` entr
 - The memory of the binary in the root (§Added size and memory) is a problem on a small Node.
 - A security advisory for e2fsprogs arrives faster than the pin is moved.
 - mvmd starts to call another e2fsprogs tool, which would widen the build beyond mke2fs.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/e2fsprogs/` is `image/common/e2fsprogs/` and `image/initramfs/build.sh` is `image/host/initramfs/build.sh`.

@@ -51,3 +51,7 @@ Drafted for garamsh/naru#3, which is the record of the decision, and the PM deci
 - The pin lags a published security fix for longer than naru can bear, so bumping it becomes continuous work.
 - `image/` accumulates files that belong to a Go unit, or a unit starts needing files under it.
 - The P0 test needs a Machine after all, so the guest artifacts must be in the image.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/initramfs/` is `image/host/initramfs/` and `image/kernel/` is `image/host/kernel/`, with the pin and `naru.config` in `image/common/kernel/`.

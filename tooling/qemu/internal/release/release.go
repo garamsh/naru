@@ -287,7 +287,7 @@ func Build(o Options) ([]Asset, error) {
 	if err != nil {
 		return nil, err
 	}
-	list, err := os.ReadFile(filepath.Join(o.Root, "image/initramfs/initramfs.list"))
+	list, err := os.ReadFile(filepath.Join(o.Root, "image/host/initramfs/initramfs.list"))
 	if err != nil {
 		return nil, err
 	}

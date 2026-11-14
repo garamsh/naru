@@ -2,7 +2,7 @@
 // client certificate, reaching the API server through the host forward of the control-plane Node
 // (ADR 0012). It decodes only the fields the tests read, so it adds no dependency on gaon's
 // modules; the paths and fields are those of gaon's docs/architecture/resource-api.md at the commit
-// image/gaon/pin.env names.
+// image/host/gaon/pin.env names.
 package hostapi
 
 import (

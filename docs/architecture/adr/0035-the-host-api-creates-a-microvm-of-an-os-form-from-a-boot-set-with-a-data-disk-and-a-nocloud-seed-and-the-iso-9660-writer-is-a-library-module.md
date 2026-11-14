@@ -41,3 +41,4 @@ Drafted for garamsh/naru#98, part B (decisions 1 and 2 of the PM's comment on th
 ## Errata
 
 - 2026-11-15: decision 2 names the data disk `<name>.data` without saying what is on it. hostd created it with `CreateDisk`, which makes mvmd put an ext4 file system on it, so init found no blank disk to format and the microVM did not boot. The data disk is created raw (`CreateRawDisk`, no file system), and init formats it because the Node's user-data carries `spec.dataDisk.formatBlank` (`naructl gen kubernetes-node` writes it). The decision stands.
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/initramfs/pin.env` is `image/host/mvmd/pin.env`.

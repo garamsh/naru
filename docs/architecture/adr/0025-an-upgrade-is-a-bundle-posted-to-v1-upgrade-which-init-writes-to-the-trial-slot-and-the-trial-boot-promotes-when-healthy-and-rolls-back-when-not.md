@@ -42,3 +42,7 @@ Drafted for garamsh/naru#67. It builds on [ADR 0020](./0020-a-node-boots-one-ker
 - The 180 s bound is too short for a Node whose services take long to start, so healthy trials are rolled back; or too long, so that a broken Node is unreachable for minutes before it recovers.
 - `BootCurrent` is not set by some firmware, so a trial is taken for a default boot: init would then remove the trial slot the firmware booted from. The test machine's firmware sets it; a platform that does not needs another way to tell the boot.
 - A bundle larger than 1 GiB is wanted, or the ESP is too small for two kernels and a bundle's worth of free space.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/disk/build.sh` is `image/host/disk/build.sh`.

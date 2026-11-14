@@ -44,3 +44,7 @@ Drafted for garamsh/naru#19, part of goal garamsh/naru#25. It supersedes no ADR.
 - A change to init to start etcd earlier, later or only when ready: the order is not a courtesy.
 - gaon issuing its own certificates (its end state): naru's carriage becomes a bootstrap file and this item narrows to it.
 - Two builds of the image on one host with different bytes for a gaon or etcd binary: the toolchain is not as pinned as stated.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/etcd/pin.env` is `image/node/etcd/pin.env` and `image/gaon/pin.env` is `image/host/gaon/pin.env`.

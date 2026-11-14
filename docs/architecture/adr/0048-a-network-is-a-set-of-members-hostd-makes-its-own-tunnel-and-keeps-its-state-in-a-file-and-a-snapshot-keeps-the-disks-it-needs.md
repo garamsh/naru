@@ -44,3 +44,7 @@ Drafted for garamsh/naru#100 (plan: garamsh/naru#113). It supersedes [ADR 0045](
 - Disks held for snapshots are mostly unwanted: snapshots carry their disks as a copy, or delete takes an option.
 - The state file and mvmd's records disagree after a crash often enough that orch must reconcile: hostd reconciles the file with mvmd's Machines at start.
 - One tunnel interface per host is not enough for a host that also runs another WireGuard: an interface per network replaces it.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/guest/kernels/node/naru.config` is `image/node/kernel/naru.config`.

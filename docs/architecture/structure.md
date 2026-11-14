@@ -46,7 +46,7 @@ The rules for units:
 - **A `lib/` module's packages are public.** The module's own folder holds one package, as `docs/convention/stack-go.md` §1 lays out a module that ships no binary, except where the module is a family of packages that belong together, as `lib/init` is (ADR 0039).
 - **The node API client gaon requires is a module under `lib/`**, as garamsh/mvmd's `lib/runtimeapi` is for gaon. gaon requires it as an external module and never copies it in.
 - **A unit's folder is created by its first pull request**, and not before.
-- **Non-Go build inputs live in one top-level folder, `image/`**: `image/kernel/` holds the kernel configuration and pin, `image/initramfs/` the initramfs definition. It holds no Go module, so it stays outside the units above and outside `go.work`.
+- **Non-Go build inputs live in one top-level folder, `image/`**: `image/host/` holds what the host image alone builds, `image/node/` what the Node image alone builds, and `image/common/` what both carry, with `image/build.env` the one file beside them ([ADR 0054](./adr/0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)). It holds no Go module, so it stays outside the units above and outside `go.work`.
 - **Dependencies between projects are one-way**: gaon calls naru's node API, and naru does not know gaon's resource API.
 
 ## Boundaries and dependency direction

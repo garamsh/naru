@@ -28,7 +28,7 @@ type Inputs struct {
 	// FirecrackerSHA256 is the digest of the Firecracker binary the image carries.
 	FirecrackerSHA256 string
 	// Guest names the guest kernels and initrds the image carries, by their paths inside it and
-	// their digests, as image/guest/build.sh wrote them (ADR 0010).
+	// their digests, as image/host/guest/build.sh wrote them (ADR 0010).
 	Guest guest.Manifest
 }
 
@@ -38,7 +38,7 @@ type Sources struct {
 	Root string
 	// ImageDir holds inputs.env, which make image writes.
 	ImageDir string
-	// GuestDir holds guest.json, which image/guest/build.sh writes.
+	// GuestDir holds guest.json, which image/host/guest/build.sh writes.
 	GuestDir string
 }
 

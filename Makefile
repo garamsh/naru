@@ -111,23 +111,25 @@ XFS := $(IMAGE)/xfsprogs
 VERSION ?= $(shell git describe --tags --always)
 export NARU_VERSION := $(VERSION)
 image:
-	image/kernel/build.sh $(BUILD)/kernel $(IMAGE)
-	image/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
-	image/xfsprogs/build.sh $(BUILD)/xfsprogs $(XFS)
-	image/gaon/build.sh $(BUILD)/gaon $(GAON)
-	image/etcd/build.sh $(BUILD)/etcd $(ETCD)
-	image/kubernetes/build.sh $(BUILD)/kubernetes $(K8S)
-	image/containerd/build.sh $(BUILD)/containerd $(K8S)
-	image/cni/build.sh $(BUILD)/cni $(K8S)
-	image/nftables/build.sh $(BUILD)/nftables $(K8S)
-	image/util-linux/build.sh $(BUILD)/util-linux $(K8S)
-	image/ecr-login/build.sh $(BUILD)/ecr-login $(REGTOOLS)
-	image/rolesanywhere/build.sh $(BUILD)/rolesanywhere $(REGTOOLS)
-	image/cacert/build.sh $(BUILD)/cacert $(REGTOOLS) $(TEST_ROOT)
-	image/mvmd-checkout.sh $(BUILD)/initramfs/mvmd
-	image/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
-	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S)
-	image/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
+	image/host/kernel/build.sh $(BUILD)/kernel $(IMAGE)
+	image/common/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
+	image/common/xfsprogs/build.sh $(BUILD)/xfsprogs $(XFS)
+	image/host/gaon/build.sh $(BUILD)/gaon $(GAON)
+	image/node/etcd/build.sh $(BUILD)/etcd $(ETCD)
+	image/node/kubernetes/build.sh $(BUILD)/kubernetes $(K8S)
+	image/node/containerd/build.sh $(BUILD)/containerd $(K8S)
+	image/node/cni/build.sh $(BUILD)/cni $(K8S)
+	image/common/nftables/build.sh $(BUILD)/nftables $(K8S)
+	image/common/util-linux/build.sh $(BUILD)/util-linux $(K8S)
+	image/common/ecr-login/build.sh $(BUILD)/ecr-login $(REGTOOLS)
+	image/common/rolesanywhere/build.sh $(BUILD)/rolesanywhere $(REGTOOLS)
+	image/common/cacert/build.sh $(BUILD)/cacert $(REGTOOLS) $(TEST_ROOT)
+	image/host/mvmd/checkout.sh $(BUILD)/initramfs/mvmd
+	image/host/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
+	image/node/kernel/build.sh $(BUILD)/kernel $(BUILD)/guest $(GUEST)
+	image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(IMAGE) $(E2FS) $(ETCD) $(REGTOOLS) $(XFS) $(K8S)
+	image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S)
+	image/host/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
 
 # image-upgrade builds the two kernels the upgrade tests (ADR 0025) put on a running Node, from the
 # programs and the kernel image built: next/bzImage is the same tree with the version $(VERSION)-next
@@ -142,17 +144,19 @@ image-upgrade: image
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
 	  cp $(IMAGE)/bzImage.bare $(IMAGE)/kernel.stamp $(UPGRADE)/$$v/; \
 	done; \
-	NARU_VERSION='$(VERSION)-next' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
-	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/next $(UPGRADE)/next/initramfs.cpio.gz; \
-	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
-	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
+	NARU_VERSION='$(VERSION)-next' image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(UPGRADE)/next $(E2FS) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
+	NARU_VERSION='$(VERSION)-next' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
+	image/host/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/next $(UPGRADE)/next/initramfs.cpio.gz; \
+	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(E2FS) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
+	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
+	image/host/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
 
 # disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
 # disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and has room for a second one, and
 # naru.qcow2, the same disk for Proxmox's import_from. It needs mkfs.fat,
 # sgdisk and qemu-img, and neither root nor mtools.
 disk: image
-	image/disk/build.sh $(BUILD)/disk $(IMAGE)
+	image/host/disk/build.sh $(BUILD)/disk $(IMAGE)
 
 # image-repro builds the image and the disk twice from clean build directories
 # and fails unless the kernel, the initramfs, the guest manifest (which names
@@ -163,24 +167,26 @@ image-repro:
 	@set -e; \
 	for i in 1 2; do \
 	  rm -rf $(BUILD)/repro/$$i; \
-	  image/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
-	  image/e2fsprogs/build.sh $(BUILD)/repro/$$i/e2fsprogs $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
-	  image/xfsprogs/build.sh $(BUILD)/repro/$$i/xfsprogs $(BUILD)/repro/$$i/image/xfsprogs >/dev/null; \
-	  image/gaon/build.sh $(BUILD)/repro/$$i/gaon $(BUILD)/repro/$$i/image/gaon >/dev/null; \
-	  image/etcd/build.sh $(BUILD)/repro/$$i/etcd $(BUILD)/repro/$$i/image/etcd >/dev/null; \
-	  image/kubernetes/build.sh $(BUILD)/repro/$$i/kubernetes $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/containerd/build.sh $(BUILD)/repro/$$i/containerd $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/cni/build.sh $(BUILD)/repro/$$i/cni $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/nftables/build.sh $(BUILD)/repro/$$i/nftables $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/util-linux/build.sh $(BUILD)/repro/$$i/util-linux $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/ecr-login/build.sh $(BUILD)/repro/$$i/ecr-login $(BUILD)/repro/$$i/image/regtools >/dev/null; \
-	  image/rolesanywhere/build.sh $(BUILD)/repro/$$i/rolesanywhere $(BUILD)/repro/$$i/image/regtools >/dev/null; \
-	  image/cacert/build.sh $(BUILD)/repro/$$i/cacert $(BUILD)/repro/$$i/image/regtools >/dev/null; \
-	  image/mvmd-checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
-	  image/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
-	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/kernel/embed.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/initramfs.cpio.gz >/dev/null; \
-	  image/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
+	  image/host/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
+	  image/common/e2fsprogs/build.sh $(BUILD)/repro/$$i/e2fsprogs $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
+	  image/common/xfsprogs/build.sh $(BUILD)/repro/$$i/xfsprogs $(BUILD)/repro/$$i/image/xfsprogs >/dev/null; \
+	  image/host/gaon/build.sh $(BUILD)/repro/$$i/gaon $(BUILD)/repro/$$i/image/gaon >/dev/null; \
+	  image/node/etcd/build.sh $(BUILD)/repro/$$i/etcd $(BUILD)/repro/$$i/image/etcd >/dev/null; \
+	  image/node/kubernetes/build.sh $(BUILD)/repro/$$i/kubernetes $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/node/containerd/build.sh $(BUILD)/repro/$$i/containerd $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/node/cni/build.sh $(BUILD)/repro/$$i/cni $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/common/nftables/build.sh $(BUILD)/repro/$$i/nftables $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/common/util-linux/build.sh $(BUILD)/repro/$$i/util-linux $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/common/ecr-login/build.sh $(BUILD)/repro/$$i/ecr-login $(BUILD)/repro/$$i/image/regtools >/dev/null; \
+	  image/common/rolesanywhere/build.sh $(BUILD)/repro/$$i/rolesanywhere $(BUILD)/repro/$$i/image/regtools >/dev/null; \
+	  image/common/cacert/build.sh $(BUILD)/repro/$$i/cacert $(BUILD)/repro/$$i/image/regtools >/dev/null; \
+	  image/host/mvmd/checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
+	  image/host/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
+	  image/node/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
+	  image/node/initramfs/build.sh $(BUILD)/repro/$$i/node-initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/host/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/host/kernel/embed.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/initramfs.cpio.gz >/dev/null; \
+	  image/host/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
 	done; \
 	for f in bzImage e2fsprogs/mke2fs xfsprogs/mkfs.xfs etcd/etcd regtools/docker-credential-ecr-login regtools/aws_signing_helper regtools/ca-certificates.crt gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz node-initrd.cpio.gz boot-sets.json guest/boot-sets/naru-node/vmlinux guest/guest.json naru.img naru.qcow2; do \
 	  a=$$(sha256sum $(BUILD)/repro/1/image/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/$$f | cut -d' ' -f1); \
