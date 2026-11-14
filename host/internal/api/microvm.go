@@ -41,6 +41,8 @@ type MicroVM struct {
 	BootSet   string `json:"bootSet,omitempty"`
 	Cmdline   string `json:"cmdline,omitempty"`
 	PodPrefix string `json:"podPrefix,omitempty"`
+	// RestartOnBoot is whether mvmd starts the microVM again after the host reboots.
+	RestartOnBoot bool `json:"restartOnBoot"`
 }
 
 func view(m mvmd.Machine, sizes map[string]uint64) MicroVM {
@@ -48,6 +50,7 @@ func view(m mvmd.Machine, sizes map[string]uint64) MicroVM {
 		Name: m.ID, MachineID: m.ID, State: m.State, Failure: m.Failure, Addresses: m.Addresses,
 		ImageDigest: m.ImageDigest, CPU: m.CPU, Memory: m.MemoryBytes, RootDiskBytes: m.RootDiskBytes,
 		Disks: []DiskSpec{}, NetworkPolicy: m.Policy, BootSet: m.BootSet, Cmdline: m.Cmdline,
+		RestartOnBoot: m.RestartOnBoot,
 	}
 	if len(m.RoutedPrefixes) > 0 {
 		v.PodPrefix = m.RoutedPrefixes[0]
@@ -255,12 +258,13 @@ func (s *Server) dropMade(machine string, disks []string) {
 }
 
 // matches reports whether the Machine mvmd holds is the one the plan would create: the same
-// image or boot set, resources, root disk, network policy, routed prefixes and disks, each disk of
+// image or boot set, resources, root disk, network policy, routed prefixes, restart on boot and disks, each disk of
 // the same size. An OS-form Machine also has its seed attached read-only; the seed's contents are
 // not compared, since they hold the address mvmd chose.
 func matches(m mvmd.Machine, sizes map[string]uint64, p plan) bool {
 	c := p.create
-	if m.ImageDigest != c.ImageDigest || m.CPU != c.CPU || m.MemoryBytes != c.MemoryBytes || m.RootDiskBytes != c.RootDiskBytes {
+	if m.ImageDigest != c.ImageDigest || m.CPU != c.CPU || m.MemoryBytes != c.MemoryBytes || m.RootDiskBytes != c.RootDiskBytes ||
+		m.RestartOnBoot != c.RestartOnBoot {
 		return false
 	}
 	if !samePolicy(m.Policy, c.Policy) || m.BootSet != c.BootSet || m.Cmdline != c.Cmdline ||
@@ -334,6 +338,70 @@ func (s *Server) listMicroVMs(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.SortFunc(out, func(a, b MicroVM) int { return strings.Compare(a.Name, b.Name) })
 	writeJSON(w, http.StatusOK, map[string]any{"microvms": out})
+}
+
+// stopMicroVM stops the Machine if it runs. A Machine that is not running is answered as it is, so
+// a repeat is 200; mvmd restarts none that was stopped, after a host's boot or otherwise.
+func (s *Server) stopMicroVM(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	ctx, cancel := context.WithTimeout(r.Context(), callTimeout)
+	defer cancel()
+	rt := s.deps.Runtime
+	m, err := rt.InspectMachine(ctx, name)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if m.State == mvmd.StateRunning || m.State == mvmd.StatePaused {
+		if err := rt.StopMachine(ctx, name); err != nil && !errors.Is(err, mvmd.ErrPrecondition) {
+			s.fail(w, err)
+			return
+		}
+		if m, err = rt.InspectMachine(ctx, name); err != nil {
+			s.fail(w, err)
+			return
+		}
+	}
+	s.answerMicroVM(ctx, w, m)
+}
+
+// startMicroVM starts the Machine unless it runs, which is answered as it is, so a repeat is 200.
+// A Machine mvmd refuses to start in its state is 409 with mvmd's reason.
+func (s *Server) startMicroVM(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	ctx, cancel := context.WithTimeout(r.Context(), callTimeout)
+	defer cancel()
+	rt := s.deps.Runtime
+	m, err := rt.InspectMachine(ctx, name)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if m.State != mvmd.StateRunning {
+		if m, err = rt.StartMachine(ctx, name); errors.Is(err, mvmd.ErrPrecondition) {
+			// A concurrent start may have won.
+			var now mvmd.Machine
+			if now, err = rt.InspectMachine(ctx, name); err == nil && now.State != mvmd.StateRunning {
+				err = mvmd.ErrPrecondition
+			}
+			m = now
+		}
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+	}
+	s.answerMicroVM(ctx, w, m)
+}
+
+// answerMicroVM writes 200 with the microVM as it is.
+func (s *Server) answerMicroVM(ctx context.Context, w http.ResponseWriter, m mvmd.Machine) {
+	sizes, err := diskSizes(ctx, s.deps.Runtime)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view(m, sizes))
 }
 
 // deleteMicroVM stops the Machine if it runs, deletes it, and deletes the disks that were made

@@ -26,8 +26,11 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
   gen host-client --ca-dir <dir> --role provisioner|reader --endpoint <ip[:port]> --out <file>
               write a client file for the host API (naru-hostd, port 7443)
   host | microvm list | microvm get <name> --config <host client file> [--host <ip[:port]>]
-  microvm create (--name <name> --image <repository@sha256:digest> [--cpu n] [--memory bytes] [--root-disk bytes] [--disk <name>=<bytes>[,ro]] | -f <request.json>) | microvm delete <name>
-              the same flags; create and delete need the provisioner role
+  microvm create (--name <name> --image <repository@sha256:digest> [--cpu n] [--memory bytes] [--root-disk bytes] [--disk <name>=<bytes>[,ro]] | -f <request.json>)
+  microvm create --name <name> --boot-set <set> --seed <user-data file> --data-disk <bytes> [--cmdline <args>] [--pod-prefix <cidr>] [--cpu n] [--memory bytes]
+              the OS form, in place of --image, --root-disk and --disk
+  microvm stop <name> | microvm start <name> | microvm delete <name>
+              the same flags; create, stop, start and delete need the provisioner role
   version | services | get config               read a Node
   logs <service> [-f]                           print a service's kept log, and with -f each new line
   apply -f <patch> [--mode no-reboot|staged|reboot] [--dry-run]

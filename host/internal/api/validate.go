@@ -42,6 +42,9 @@ type CreateRequest struct {
 	NetworkPolicy mvmd.Policy       `json:"networkPolicy"`
 	Env           map[string]string `json:"env,omitempty"`
 	Command       []string          `json:"command,omitempty"`
+	// RestartOnBoot makes mvmd start the microVM again after the host reboots, when it ran and was
+	// not stopped. Absent, it is true for the OS form and false for the image form.
+	RestartOnBoot *bool `json:"restartOnBoot,omitempty"`
 
 	// The OS form, in place of Image, RootDiskBytes, Disks, Env and Command: a microVM that boots
 	// BootSet, with Cmdline added to the kernel's command line, a data disk of DataDisk bytes, a
@@ -118,11 +121,20 @@ func validate(r CreateRequest) (plan, []string, string) {
 	}
 	p := plan{repository: m[1], disks: slices.Clone(r.Disks), create: mvmd.Create{
 		ID: r.Name, ImageDigest: m[2], CPU: r.CPU, MemoryBytes: r.Memory, RootDiskBytes: r.RootDiskBytes, Policy: r.NetworkPolicy,
+		RestartOnBoot: restartOnBoot(r.RestartOnBoot, false),
 	}}
 	for _, d := range r.Disks {
 		p.create.Disks = append(p.create.Disks, mvmd.Attachment{ID: diskID(r.Name, d.Name), ReadOnly: d.ReadOnly})
 	}
 	return p, nil, ""
+}
+
+// restartOnBoot is the request's choice, or the form's default when it made none.
+func restartOnBoot(chosen *bool, formDefault bool) bool {
+	if chosen == nil {
+		return formDefault
+	}
+	return *chosen
 }
 
 var protocols = []string{"tcp", "udp", "icmp", "icmpv6", "any"}

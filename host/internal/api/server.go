@@ -53,6 +53,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/microvms", s.listMicroVMs)
 	mux.HandleFunc("GET /v1/microvms/{name}", s.getMicroVM)
 	mux.HandleFunc("DELETE /v1/microvms/{name}", s.deleteMicroVM)
+	mux.HandleFunc("POST /v1/microvms/{name}/stop", s.stopMicroVM)
+	mux.HandleFunc("POST /v1/microvms/{name}/start", s.startMicroVM)
 	return s.recovering(s.logged(s.authorised(mux)))
 }
 
