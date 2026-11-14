@@ -2,6 +2,8 @@ package node
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -50,8 +52,8 @@ type Spec struct {
 	// ExtraDiskFirst attaches the extra disk before the data disk, so that the kernel names them in
 	// the other order.
 	ExtraDiskFirst bool
-	// SerialSocket attaches the serial port as a server socket, Dir/serial.sock, that nothing
-	// reads, as Proxmox does for `serial0: socket`. Console is then empty.
+	// SerialSocket attaches the serial port as a server socket, SerialSocketPath(Dir), that
+	// nothing reads, as Proxmox does for `serial0: socket`. Console is then empty.
 	SerialSocket bool
 	// Capture records every frame of the shared network the Node sends and receives, as a pcap file at
 	// CapturePath(Dir): the tests read what crossed the link between two hosts.
@@ -299,8 +301,14 @@ func serialArgs(spec Spec, console string) []string {
 // CapturePath is the capture of a Node's shared network in dir, when its Spec has Capture.
 func CapturePath(dir string) string { return filepath.Join(dir, "net0.pcap") }
 
-// SerialSocketPath is the socket of a Node's serial port in dir, when its Spec has SerialSocket.
-func SerialSocketPath(dir string) string { return filepath.Join(dir, "serial.sock") }
+// SerialSocketPath is the socket of a Node's serial port, when its Spec has SerialSocket. It is in
+// the temporary directory and named for dir, not inside dir: dir carries the test's name, and a unix
+// socket path may have no more than 107 bytes, which a long test name and TMPDIR pass, and QEMU then
+// never starts.
+func SerialSocketPath(dir string) string {
+	sum := sha256.Sum256([]byte(dir))
+	return filepath.Join(os.TempDir(), "naru-serial-"+hex.EncodeToString(sum[:8])+".sock")
+}
 
 // dataAndExtraDisks is the drives and devices of the data disk and, when the Node has one, the extra
 // disk, in the order the kernel finds them: the extra disk first when the Spec says so. Both are
@@ -386,6 +394,7 @@ func (n *Node) Stop() {
 	n.once.Do(func() {
 		_ = n.cmd.Process.Kill()
 		<-n.done
+		_ = os.Remove(SerialSocketPath(n.dir))
 	})
 }
 

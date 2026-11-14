@@ -292,8 +292,9 @@ type nodeConfig struct {
 	Spec struct {
 		ControlPlane bool `yaml:"controlPlane"`
 		DataDisk     struct {
-			Label      string `yaml:"label"`
-			MountPoint string `yaml:"mountPoint"`
+			Label       string `yaml:"label"`
+			MountPoint  string `yaml:"mountPoint"`
+			FormatBlank bool   `yaml:"formatBlank,omitempty"`
 		} `yaml:"dataDisk"`
 		Network struct {
 			Forwarding []string `yaml:"forwarding"`

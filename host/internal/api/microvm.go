@@ -178,7 +178,13 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 	var made []string
 	for _, d := range p.disks {
 		id := diskID(p.create.ID, d.Name)
-		if err := rt.CreateDisk(ctx, id, d.SizeBytes); err != nil {
+		// The OS form's data disk has no file system: the Node's init formats a blank one as its
+		// data disk, and refuses the boot of one mvmd has made ext4 with no label and no verity.
+		create := rt.CreateDisk
+		if osForm {
+			create = func(ctx context.Context, id string, size uint64) error { return rt.CreateRawDisk(ctx, id, size, nil) }
+		}
+		if err := create(ctx, id, d.SizeBytes); err != nil {
 			s.dropMade("", made)
 			return mvmd.Machine{}, nil, err
 		}
