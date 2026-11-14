@@ -125,6 +125,9 @@ func (c hostCall) dial() (*client.HostClient, error) {
 }
 
 func hostCmd(args []string, stdout, stderr io.Writer) error {
+	if len(args) > 0 && args[0] == "boot-set" {
+		return bootSet(args[1:], stdout, stderr)
+	}
 	c := newHostCall("host", stderr)
 	if _, err := c.parse(args, 0); err != nil {
 		return err
@@ -177,12 +180,13 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 	c := newHostCall("microvm create", stderr)
 	var disks list
 	var (
-		file   = c.fs.String("f", "", "the whole request as a JSON file; with it no other field is given")
-		name   = c.fs.String("name", "", "the microVM's name, a DNS label")
-		image  = c.fs.String("image", "", "repository@sha256:<digest>")
-		cpu    = c.fs.Uint("cpu", 1, "virtual CPUs")
-		memory = c.fs.Uint64("memory", 256<<20, "memory in bytes")
-		root   = c.fs.Uint64("root-disk", 1<<30, "root disk in bytes")
+		file    = c.fs.String("f", "", "the whole request as a JSON file; with it no other field is given")
+		name    = c.fs.String("name", "", "the microVM's name, a DNS label")
+		image   = c.fs.String("image", "", "repository@sha256:<digest>")
+		cpu     = c.fs.Uint("cpu", 1, "virtual CPUs")
+		memory  = c.fs.Uint64("memory", 256<<20, "memory in bytes")
+		root    = c.fs.Uint64("root-disk", 1<<30, "root disk in bytes")
+		network = c.fs.String("network", "", "the declared network the microVM is created on")
 
 		bootSet   = c.fs.String("boot-set", "", "the OS form: the boot set the Node offers, in place of --image")
 		cmdline   = c.fs.String("cmdline", "", "the OS form: kernel command line added to the boot set's")
@@ -198,7 +202,7 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 	if *file != "" {
 		set := map[string]bool{}
 		c.fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-		for _, f := range []string{"name", "image", "cpu", "memory", "root-disk", "disk", "boot-set", "cmdline", "seed", "data-disk", "pod-prefix"} {
+		for _, f := range []string{"name", "image", "cpu", "memory", "root-disk", "disk", "boot-set", "cmdline", "seed", "data-disk", "pod-prefix", "network"} {
 			if set[f] {
 				return fmt.Errorf("-f carries the whole request, so --%s has no effect with it", f)
 			}
@@ -243,6 +247,9 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 			}
 			spec.Disks = append(spec.Disks, disk)
 		}
+	}
+	if *file == "" {
+		spec.Network = *network
 	}
 	cl, err := c.dial()
 	if err != nil {

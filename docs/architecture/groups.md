@@ -4,15 +4,15 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
 
 ## Current decisions
 
-- **The engine is the package `orch/internal/groups`.** It is a pure-Go engine in the module `orch/`. orchd's composition site constructs it with adapters for the host API, the store, the clock and the events, and runs it while orchd holds the leader lease; leader gating is orchd's ([ADR 0042](./adr/0042-the-groups-engine-plans-from-observation-alone-and-replaces-a-stateful-member-only-after-its-fence-has-passed.md)).
+- **The engine is the package `orch/internal/groups`.** It is a pure-Go engine in the module `orch/`. orchd constructs it with adapters for the host API (`orch/internal/hostclient`), the store and the events (`orch/internal/groups/etcd`) and the clock, and runs it while orchd holds the leader lease, as its `Reconciler`; [orch.md](./orch.md) §Groups says what each adapter does; leader gating is orchd's ([ADR 0042](./adr/0042-the-groups-engine-plans-from-observation-alone-and-replaces-a-stateful-member-only-after-its-fence-has-passed.md)).
 - **Level-triggered.** Every pass observes (groups and members from the store, hosts and their microVMs from the host API, and the fence of each stateful member whose host answers), evaluates, plans and applies. The plan reads only that observation; nothing about earlier passes is kept, so a new engine continues what another started.
 - **What an operator declares (`GroupSpec`).**
   - Identity and size: `name`, `count`, `region`.
   - Constraints: `requiredLabels` (a host must carry each), `preferredLabels` (key, value and weight; a host scores the weights it matches).
-  - `template`: form, CPUs, memory, version, disks, network policy and, for an OS-form microVM, the node version.
+  - `template`: form, CPUs, memory, version, disks, `policy` (the egress and ingress rules), the `network` the members join with the `podPrefixBits` of each member's Pod prefix, `rootDiskBytes` (above zero for the image form) and, for an OS-form microVM, the node version and `userData`, its seed (`#cloud-config` when empty).
   - `rollout{maxUnavailable, maxSurge}` and `minAvailable`.
   - `stateful` and `fenceTTL`.
-- **A member** is the record of one microVM: `id` (`<group>-<n>`, also its machine ID), `group`, `host`, `templateHash`, a stored `phase` (pending or gone), `lastSeen` and the last fence deadline orch armed. The live phase (pending, running, draining, fenced-waiting, gone) is computed from observation on every pass.
+- **A member** is the record of one microVM: `id` (`<group>-<n>`, also its machine ID), `group`, `host`, `network`, `podPrefix`, `templateHash`, a stored `phase` (pending or gone), `lastSeen` and the last fence deadline orch armed. The live phase (pending, running, draining, fenced-waiting, gone) is computed from observation on every pass.
 - **What the engine keeps true.**
 
   | Behaviour | Rule |
@@ -25,10 +25,15 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
   | Node version | A template naming a node version the host does not list (its N and N-1) is refused for that host. |
   | Count lowered | Surplus members are retired by the same bound. |
 
+- **A member's Pod prefix is its own** ([ADR 0049](./adr/0049-orch-keeps-the-networks-and-allocates-each-members-pod-prefix-by-compare-and-swap-and-the-leader-tells-every-host-its-networks-members-and-peers.md)).
+  - The plan gives a new member the first subnet of `podPrefixBits` bits of the network's prefix that no member of that network that is not gone holds, across groups. A network orch does not keep, or one with no subnet left, holds the group.
+  - Creating the record is an etcd transaction with a claim key under `/naru/orch/pod-prefix-claims/<network>/<prefix>`; losing it is a conflict, and the next pass plans again. The claim is deleted when the member is written as gone, only if it still names that member.
+  - The engine reads the networks from the store. The network reconciler ([orch.md](./orch.md) §Networks) declares them on the hosts; a create that reaches a host before that fails and is made by the next pass.
 - **Stateful members are fenced.**
   - Created with `fenced=true`; the engine renews the member's deadline through the host API while its host is ready, when less than half of `fenceTTL` is left, and records the deadline on the member.
   - A voluntary move (drain, template change) stops the member, then deletes it, then creates its replacement: a stateful group may not surge.
   - When the host is lost or not ready, the member is fenced-waiting and holds its place in the count. The replacement's Create comes only after the recorded deadline has strictly passed, or after the host reports `fenceLapsedAt` for that member.
+- **A host is draining when the operator says so.** `groups.Host.Draining` is the `draining` flag of the host's inventory record ([orch.md](./orch.md) §Drain), which the host client copies on every pass whether or not the host answers; the engine's own rules above then apply unchanged, so a drain keeps the group's count, moves an image member off within `minAvailable`, moves a stateful member only after its stop and its fence, and places nothing on the host until `undrain`.
 - **A decision to wait is not an error.** A placement refusal, an invalid spec, a fence wait and a rollout waiting for room are recorded as hold events, with the reasons each host was refused.
 - **Events.** One event per applied action (with its reason), one per hold, and one `failed` event for an action that failed. A failed action does not stop the pass; the next pass plans again.
 - **Creation order.** The member record is written before the host is asked, so a crash between them leaves a record whose microVM is absent, which the next pass finds gone. A create the host refuses forgets its record at once.
@@ -42,7 +47,7 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
 ## Open questions
 
 - **Clock between orch and the hosts.** The wait compares the deadline orch armed with orch's clock, and the host ends the VMM by its own. No margin is added; the engine does not yet know the skew it must tolerate.
-- **A group that is deleted.** The engine lists the groups the store holds, so the members of a removed group are not reconciled. Lowering `count` to zero removes them.
+- **A group that is deleted.** The engine lists the groups the store holds, so the members of a removed group are not reconciled. The API therefore refuses to delete a group that has a member that is not gone: lowering `count` to zero removes them first.
 - **Tombstones.** Forgotten members stay in the store; compaction waits until their number matters.
-- **Repeated holds.** A wait that lasts is recorded on every pass; collapsing repeats belongs to the events adapter orchd supplies.
-- **Group and event records.** The store interface the engine consumes lists groups and members and writes members; writing groups and reading events belong to orchd's API layer.
+- **Repeated holds.** A wait that lasts is recorded on every pass; the events adapter writes it once per 10 minutes. The adapter's memory is per leader, so a new leader writes it again.
+- **Group and event records.** The store interface the engine consumes lists groups and members and writes members; the API layer (`orch/internal/groupsvc`) writes groups and reads events.

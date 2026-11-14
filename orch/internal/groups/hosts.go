@@ -9,6 +9,8 @@ import (
 type MachineSpec struct {
 	ID       string
 	Template Template
+	// PodPrefix is the Pod prefix the Machine is routed, or empty.
+	PodPrefix string
 	// Fenced makes the Machine start only while its fence deadline is armed.
 	Fenced bool
 }

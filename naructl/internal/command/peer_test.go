@@ -92,3 +92,27 @@ func TestGenNode_RefusesAPeerItCannotRouteTo(t *testing.T) {
 		})
 	}
 }
+
+func TestGenNode_NoMasqueradeKeepsTheSourceAddressToAPrefixWithNoRoute(t *testing.T) {
+	dep := newDeployment(t)
+	path := dep.node(t, "node-1", "--peer", "192.168.0.20=10.200.2.0/24", "--no-masquerade", "10.200.3.0/24")
+
+	assert.Equal(t, []struct{ To, Via string }{{"10.200.2.0/24", "192.168.0.20"}}, routes(t, path), "only the peer is routed to")
+	assert.Equal(t, []any{"10.200.2.0/24", "10.200.3.0/24"}, mvmdNetwork(t, path)["no_masquerade"])
+}
+
+func TestGenNode_RefusesANoMasqueradeThatIsNotACanonicalIPv4Prefix(t *testing.T) {
+	dep := newDeployment(t)
+	for _, bad := range []string{"10.200.3.5/24", "fd00::/64", "10.200.3.0"} {
+		args := []string{
+			"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
+			"--no-masquerade", bad,
+		}
+
+		out, err := run(t, args...)
+
+		require.Error(t, err, bad)
+		assert.Contains(t, out, "--no-masquerade", bad)
+	}
+}

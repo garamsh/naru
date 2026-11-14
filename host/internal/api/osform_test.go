@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 const userData = "#cloud-config\nhostname: web\n"
@@ -29,9 +30,10 @@ func TestOSForm_CreatesTheDataDiskThenTheMachineThenTheSeedAttachedBeforeTheStar
 	require.Equal(t, 201, code, string(b))
 
 	assert.Equal(t, []string{
-		"createDisk web.data", "createMachine web", "createRawDisk web.seed", "attachDisk web.seed", "start web",
+		"createRawDisk web.data", "createMachine web", "createRawDisk web.seed", "attachDisk web.seed", "start web",
 	}, e.rt.calls)
 	assert.Empty(t, e.rt.pulled, "an OS form has no image to pull")
+	assert.Empty(t, e.rt.contents["web.data"], "the data disk is blank, which init formats; mvmd's own file system would leave it no label and no verity")
 
 	m := e.rt.machines["web"]
 	assert.Equal(t, "naru", m.BootSet)
@@ -52,7 +54,7 @@ func TestOSForm_CreatesTheDataDiskThenTheMachineThenTheSeedAttachedBeforeTheStar
 		assert.True(t, bytes.Contains(vol, []byte(want)), "the seed has no %q", want)
 	}
 
-	var v MicroVM
+	var v hostapi.MicroVM
 	require.NoError(t, json.Unmarshal(b, &v))
 	assert.Equal(t, "running", v.State)
 	assert.Equal(t, "naru", v.BootSet)
@@ -71,7 +73,7 @@ func TestOSForm_AFailureAtEachStepRemovesOnlyWhatThisRequestMade(t *testing.T) {
 		machines []string
 		code     int
 	}{
-		{"the data disk", func(e *env) { e.rt.failAt["createDisk web.data"] = boom }, nil, nil, 502},
+		{"the data disk", func(e *env) { e.rt.failAt["createRawDisk web.data"] = boom }, nil, nil, 502},
 		{"the data disk of another request", func(e *env) { e.rt.disks["web.data"] = mvmdDisk("web.data") }, []string{"web.data"}, nil, 409},
 		{"the Machine", func(e *env) { e.rt.failAt["createMachine web"] = boom }, nil, nil, 502},
 		{"the seed disk", func(e *env) { e.rt.failAt["createRawDisk web.seed"] = boom }, nil, nil, 502},

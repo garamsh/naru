@@ -127,6 +127,10 @@ type Node struct {
 	// Address (spec.network.routes), and mvmd keeps a Machine's source address for traffic to it
 	// (network.no_masquerade).
 	Peers []Peer
+	// NoMasquerade are prefixes whose traffic from a Machine keeps its source address
+	// (network.no_masquerade) with no route to them, such as the Machine prefixes of the hosts a
+	// tunnel carries them to, which hostd routes through the interface it makes.
+	NoMasquerade []netip.Prefix
 	// Guest is guest.json, and FirecrackerSHA256 the digest of the Firecracker binary.
 	Guest             Manifest
 	FirecrackerSHA256 string
@@ -144,6 +148,16 @@ type Node struct {
 	// Host, when set, makes the Node serve the host API: naru-hostd runs, with a serving pair
 	// issued from Host's authority, and spec.host carries its region and labels.
 	Host *Host
+	// HostNetwork, Signer, Orch and MetricsListen are spec.host.network, spec.signer, spec.orch and
+	// spec.metrics (daemons.go). Each is left out of the configuration when nil or empty.
+	HostNetwork   *HostNetwork
+	HostOrch      *HostOrch
+	Signer        *Signer
+	Orch          *Orch
+	MetricsListen string
+	// Extensions are spec.extensions: the system extensions init mounts before any service starts,
+	// each by name and the SHA-256 of its image. Orch and the signer need "naru-orch".
+	Extensions []Extension
 
 	// TimeServers are the SNTP servers init sets the clock from, each a host or host:port, in the
 	// order they are asked. With none, spec.time is left out and the Node's clock is not set.
@@ -233,6 +247,8 @@ type file struct {
 	Path    string `yaml:"path"`
 	Mode    string `yaml:"mode,omitempty"`
 	Content string `yaml:"content"`
+	// Owner is the file's numeric owner; root's when nil.
+	Owner *fileOwner `yaml:"owner,omitempty"`
 }
 
 // pkiSpec, pkiAuthority and pkiCertificate are spec.pki as docs/architecture/config.md names it.
@@ -283,8 +299,9 @@ type nodeConfig struct {
 	Spec struct {
 		ControlPlane bool `yaml:"controlPlane"`
 		DataDisk     struct {
-			Label      string `yaml:"label"`
-			MountPoint string `yaml:"mountPoint"`
+			Label       string `yaml:"label"`
+			MountPoint  string `yaml:"mountPoint"`
+			FormatBlank bool   `yaml:"formatBlank,omitempty"`
 		} `yaml:"dataDisk"`
 		Network struct {
 			Forwarding []string `yaml:"forwarding"`
@@ -300,6 +317,10 @@ type nodeConfig struct {
 		AWS        *awsSpec        `yaml:"aws,omitempty"`
 		Storage    []storage       `yaml:"storage,omitempty"`
 		Host       *hostSpec       `yaml:"host,omitempty"`
+		Signer     *signerSpec     `yaml:"signer,omitempty"`
+		Orch       *orchSpec       `yaml:"orch,omitempty"`
+		Extensions []extensionSpec `yaml:"extensions,omitempty"`
+		Metrics    *metricsSpec    `yaml:"metrics,omitempty"`
 	} `yaml:"spec"`
 }
 
@@ -341,6 +362,9 @@ func (n Node) Check() error {
 		if err := n.Host.check(); err != nil {
 			return err
 		}
+	}
+	if err := n.checkDaemons(); err != nil {
+		return err
 	}
 	for _, name := range n.Disable {
 		if !Gaon.Has(name) {
@@ -489,6 +513,7 @@ func (n Node) UserData() ([]byte, error) {
 		}
 		c.Spec.Storage = append(c.Spec.Storage, e)
 	}
+	n.daemonSpecs(&c)
 	c.Spec.Services = n.services()
 	if n.Host != nil {
 		// After mvmd, which it dials; it is no service of the topology, so no Node leaves it out by

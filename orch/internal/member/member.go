@@ -9,8 +9,13 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
@@ -34,6 +39,10 @@ type Config struct {
 	InitialCluster string
 	// State is StateNew or StateExisting.
 	State string
+	// Join, with StateExisting and a data directory that holds no member, is the client URL of a
+	// running member. This member adds itself to that cluster and takes InitialCluster from what the
+	// cluster answers.
+	Join string
 	// Cert, Key and CA are orch's own pair and the authority etcd trusts on both ports.
 	Cert, Key, CA string
 }
@@ -56,6 +65,16 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 	client, err := url.Parse(c.ClientURL)
 	if err != nil || client.Scheme != "https" {
 		return nil, fmt.Errorf("client URL %q is not an https URL", c.ClientURL)
+	}
+	if c.Join != "" && c.State != StateExisting {
+		return nil, fmt.Errorf("--join needs the cluster state %q", StateExisting)
+	}
+	if c.Join != "" && !HasData(c.DataDir) {
+		initial, err := join(ctx, c)
+		if err != nil {
+			return nil, fmt.Errorf("join %s: %w", c.Join, err)
+		}
+		c.InitialCluster = initial
 	}
 	tlsInfo := transport.TLSInfo{CertFile: c.Cert, KeyFile: c.Key, TrustedCAFile: c.CA, ClientCertAuth: true}
 
@@ -97,6 +116,68 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 		return nil, fmt.Errorf("etcd client: %w", err)
 	}
 	return &Member{etcd: e, client: cl}, nil
+}
+
+// HasData reports whether dir holds an etcd member, which a start continues and a restore or a
+// join must not touch.
+func HasData(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "member"))
+	return err == nil
+}
+
+// join adds this member to the cluster the member at c.Join belongs to, unless an earlier attempt
+// already did, and returns the initial cluster this member starts with: every member that has a
+// name, and this one.
+func join(ctx context.Context, c Config) (string, error) {
+	conf, err := clientTLS(c)
+	if err != nil {
+		return "", err
+	}
+	cl, err := clientv3.New(clientv3.Config{Endpoints: []string{c.Join}, DialTimeout: 10 * time.Second, TLS: conf})
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = cl.Close() }()
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	list, err := cl.MemberList(ctx)
+	if err != nil {
+		return "", err
+	}
+	members := list.Members
+	if !slices.ContainsFunc(members, func(m *etcdserverpb.Member) bool { return slices.Contains(m.PeerURLs, c.PeerURL) }) {
+		added, err := addWhenHealthy(ctx, cl, c.PeerURL)
+		if err != nil {
+			return "", err
+		}
+		members = added.Members
+	}
+	var parts []string
+	for _, m := range members {
+		if m.Name != "" && m.Name != c.Name && len(m.PeerURLs) > 0 {
+			parts = append(parts, m.Name+"="+m.PeerURLs[0])
+		}
+	}
+	return strings.Join(append(parts, c.Name+"="+c.PeerURL), ","), nil
+}
+
+// addWhenHealthy adds a member, and tries again while etcd refuses because the members it already
+// has are not yet connected to each other for long enough, as a member that has just joined is not.
+func addWhenHealthy(ctx context.Context, cl *clientv3.Client, peerURL string) (*clientv3.MemberAddResponse, error) {
+	for {
+		added, err := cl.MemberAdd(ctx, []string{peerURL})
+		if err == nil {
+			return added, nil
+		}
+		if e := rpctypes.Error(err); e != rpctypes.ErrUnhealthy && e != rpctypes.ErrMemberNotEnoughStarted {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("%w (last refusal: %v)", ctx.Err(), err)
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // clientTLS is the TLS configuration of orch's own client of its member.

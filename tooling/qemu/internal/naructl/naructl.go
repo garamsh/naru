@@ -221,6 +221,8 @@ type Node struct {
 	// HostRegion and HostLabels (key=value) are gen node's --host-region and --host-label.
 	HostRegion string
 	HostLabels []string
+	// Extra are further gen node flags, each as given on the command line ("--signer").
+	Extra []string
 	// Binaries maps a service's name to its executable's path on the Node.
 	Binaries                          map[string]string
 	Disable                           []string
@@ -281,5 +283,6 @@ func (t Tool) GenNode(n Node) error {
 		flag("host-region", n.HostRegion)
 		flag("host-label", n.HostLabels...)
 	}
+	args = append(args, n.Extra...)
 	return t.run(args...)
 }

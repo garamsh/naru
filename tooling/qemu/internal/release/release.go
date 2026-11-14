@@ -1,6 +1,8 @@
 // Package release writes the assets a deployment of naru Nodes is made from: the boot disk, the
-// upgrade bundle (the kernel with its initramfs, for A/B boot), one
-// data disk that carries the test inputs and nothing of any Node, the guest manifest (the names
+// upgrade bundle (the kernel with its initramfs, for A/B boot), the Node boot set (a kernel and an
+// initramfs a host takes with no reboot, and the manifest that names them), one
+// data disk that carries the test inputs and nothing of any Node, the system extension that carries
+// orch and the signer with its description, the guest manifest (the names
 // and SHA-256 of the guest kernels and initrds the boot disk carries), the inputs file (the Firecracker
 // digest and the test image's reference), a test-only NoCloud
 // user-data per Node for Proxmox that runs gaon with certificates issued for the release, and the
@@ -159,7 +161,7 @@ type Options struct {
 	// Root is the repository root; ImageDir and GuestDir (its guest/ directory) are what make
 	// image wrote, and DiskDir what make disk wrote. Out receives the assets.
 	Root, ImageDir, DiskDir, GuestDir, Out string
-	// Version names the assets: naru-<Version>.qcow2.
+	// Version names the assets: naru-host-<Version>.qcow2.
 	Version string
 	// Naructl is the naructl binary, built static for linux/amd64: it is an asset, and it writes the
 	// user-data.
@@ -170,6 +172,31 @@ type Options struct {
 	// says the release's notes tell those Nodes to be recreated (ADR 0037).
 	PrevManifest       string
 	RequiresRecreation bool
+	// Figures is the path of a file Build writes the figures of the release's notes to (the ESP
+	// size and the largest in-place upgrade kernel), or empty for none. It is outside Out, whose
+	// every file is an asset.
+	Figures string
+}
+
+// checkExtension refuses a release whose extension description states another digest than the
+// image's, or another version than the release's: an operator would write that digest into
+// spec.extensions, and init would refuse the boot.
+func checkExtension(o Options) error {
+	info, err := fixture.ReadExtensionInfo(filepath.Join(o.Out, fixture.ReleaseExtensionName(o.Version, ".json")))
+	if err != nil {
+		return err
+	}
+	a, err := digest(filepath.Join(o.Out, fixture.ReleaseExtensionName(o.Version, ".sqfs")))
+	if err != nil {
+		return err
+	}
+	if a.SHA256 != info.SHA256 {
+		return fmt.Errorf("the extension's description states SHA-256 %s, and its image is %s (make image)", info.SHA256, a.SHA256)
+	}
+	if info.Version != o.Version {
+		return fmt.Errorf("the extension was built for version %s, not the release's %s (make image)", info.Version, o.Version)
+	}
+	return nil
 }
 
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
@@ -217,7 +244,7 @@ func Build(o Options) ([]Asset, error) {
 	}
 
 	var names []string
-	boot := "naru-" + o.Version + ".qcow2"
+	boot := fixture.BootDiskName(o.Version)
 	if err := copyFile(filepath.Join(o.DiskDir, "naru.qcow2"), filepath.Join(o.Out, boot)); err != nil {
 		return nil, fmt.Errorf("the boot disk (make disk): %w", err)
 	}
@@ -230,6 +257,14 @@ func Build(o Options) ([]Asset, error) {
 		return nil, fmt.Errorf("the upgrade bundle (make image): %w", err)
 	}
 	names = append(names, bundle)
+
+	// The Node boot set: the kernel and initramfs of the guest form that runs a naru Node as a
+	// microVM, with a manifest a host is given by name (ADR 0046).
+	bsKernel, bsInitramfs, bsManifest := BootSetAssets(o.Version)
+	if err := WriteBootSet(o.Out, o.Version, filepath.Join(o.GuestDir, "boot-sets", NodeBootSet, "vmlinux"), filepath.Join(o.ImageDir, "node-initrd.cpio.gz")); err != nil {
+		return nil, fmt.Errorf("the Node boot set (make image): %w", err)
+	}
+	names = append(names, bsKernel, bsInitramfs, bsManifest)
 
 	data := "naru-data-" + o.Version + ".qcow2"
 	if out, err := exec.Command("qemu-img", "convert", "-f", "raw", "-O", "qcow2", raw, filepath.Join(o.Out, data)).CombinedOutput(); err != nil { //nolint:gosec // paths built here
@@ -259,6 +294,19 @@ func Build(o Options) ([]Asset, error) {
 	}
 	names = append(names, inputsAsset)
 
+	// The system extension that carries naru-orchd and naru-signer: an operator delivers the image
+	// to a Node and writes its SHA-256, which the JSON states, into spec.extensions (ADR 0055).
+	for suffix, from := range map[string]string{".sqfs": fixture.ExtensionImageName, ".json": fixture.ExtensionInfoName} {
+		asset := fixture.ReleaseExtensionName(o.Version, suffix)
+		if err := copyFile(filepath.Join(o.ImageDir, fixture.ExtensionDir, from), filepath.Join(o.Out, asset)); err != nil {
+			return nil, fmt.Errorf("the extension (make image): %w", err)
+		}
+		names = append(names, asset)
+	}
+	if err := checkExtension(o); err != nil {
+		return nil, err
+	}
+
 	// naructl is the operator's tool and the one owner of the Node layout: the release ships the
 	// binary and writes the test user-data with it.
 	tool := "naructl-" + o.Version + "-linux-amd64"
@@ -274,7 +322,7 @@ func Build(o Options) ([]Asset, error) {
 	if err != nil {
 		return nil, err
 	}
-	list, err := os.ReadFile(filepath.Join(o.Root, "image/initramfs/initramfs.list"))
+	list, err := os.ReadFile(filepath.Join(o.Root, "image/host/initramfs/initramfs.list"))
 	if err != nil {
 		return nil, err
 	}
@@ -310,6 +358,15 @@ func Build(o Options) ([]Asset, error) {
 	}
 	if err := os.WriteFile(filepath.Join(o.Out, "SHA256SUMS"), []byte(sums.String()), 0o644); err != nil { //nolint:gosec // published with the assets
 		return nil, err
+	}
+	if o.Figures != "" {
+		info, err := os.Stat(kernel)
+		if err != nil {
+			return nil, err
+		}
+		if err := WriteFigures(o.Figures, FiguresOf(info.Size(), esp)); err != nil {
+			return nil, err
+		}
 	}
 	return assets, nil
 }

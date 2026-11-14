@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/netip"
@@ -30,6 +31,9 @@ type Host struct {
 	CA     *pki.CA
 	Region string
 	Labels map[string]string
+	// ClientCA is the PEM of the authority orch's certificate chains to, which naru-hostd trusts
+	// for its clients beside the host authority; empty trusts the host authority alone.
+	ClientCA string
 }
 
 var (
@@ -45,6 +49,9 @@ func (h Host) check() error {
 	}
 	if !dnsLabel.MatchString(h.Region) {
 		return fmt.Errorf("the host region %q is not a DNS label", h.Region)
+	}
+	if h.ClientCA != "" && !x509.NewCertPool().AppendCertsFromPEM([]byte(h.ClientCA)) {
+		return fmt.Errorf("the authority naru-hostd trusts for orch is not a PEM certificate")
 	}
 	for k, v := range h.Labels {
 		prefix, name, found := strings.Cut(k, "/")
@@ -65,6 +72,10 @@ func (h Host) check() error {
 type hostSpec struct {
 	Region string            `yaml:"region"`
 	Labels map[string]string `yaml:"labels,omitempty"`
+	// Network is spec.host.network.
+	Network *hostNetworkSpec `yaml:"network,omitempty"`
+	// Orch is spec.host.orch.
+	Orch *hostOrchSpec `yaml:"orch,omitempty"`
 }
 
 // servingIPs are the addresses the Node's serving certificates name: its own, its serving
@@ -90,19 +101,29 @@ func (n Node) hostFiles() ([]file, error) {
 	if err != nil {
 		return nil, fmt.Errorf("issue naru-hostd's serving pair: %w", err)
 	}
+	// The clients are checked against a bundle: the host authority's certificate, then orch's
+	// authority when orch reaches this host with its own pair.
+	clientCA := string(n.Host.CA.CertPEM)
+	if n.Host.ClientCA != "" {
+		clientCA = strings.TrimSuffix(clientCA, "\n") + "\n" + n.Host.ClientCA
+	}
 	return []file{
 		{Path: path.Join(HostDir, "tls.crt"), Mode: "0644", Content: string(pair.CertPEM)},
 		{Path: path.Join(HostDir, "tls.key"), Mode: "0600", Content: string(pair.KeyPEM)},
-		{Path: path.Join(HostDir, "client-ca.crt"), Mode: "0644", Content: string(n.Host.CA.CertPEM)},
+		{Path: path.Join(HostDir, "client-ca.crt"), Mode: "0644", Content: clientCA},
 	}, nil
 }
 
-// hostService is naru-hostd, which dials mvmd's socket.
+// hostService is naru-hostd, which dials mvmd's socket and runs nft from the image's /bin.
 func (n Node) hostService() service {
 	return service{
-		Name: HostService, Binary: HostBinary,
+		Name: HostService, Binary: HostBinary, Env: map[string]string{"PATH": "/bin"},
 		Args: []string{
 			"--listen", "0.0.0.0:" + HostPort,
+			// A Node's kernel hostname is "(none)", so the host enrolls under the Node's name.
+			"--host-id", n.Name,
+			// Orch calls the host at the address its enrollment recorded, which is the Node's, not --listen's.
+			"--advertise", net.JoinHostPort(n.Address.Addr().String(), HostPort),
 			"--cert", path.Join(HostDir, "tls.crt"), "--key", path.Join(HostDir, "tls.key"),
 			"--client-ca", path.Join(HostDir, "client-ca.crt"),
 			"--host-file", path.Join(HostDir, "host.json"), "--mvmd-socket", MvmdSocket,

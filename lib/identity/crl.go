@@ -16,12 +16,24 @@ var (
 	ErrCRLStale = errors.New("revocation list is older than the last one seen")
 )
 
-// CRL lists the serials, in lowercase hexadecimal, that are no longer trusted.
+// CRL lists the serials, in lowercase hexadecimal, that are no longer trusted, and the nonces of
+// the once-only requests the signers took, each with the expiry of its request.
 // Seq grows with every list the signer signs.
 type CRL struct {
-	Seq      uint64    `json:"seq"`
-	IssuedAt time.Time `json:"issuedAt"`
-	Serials  []string  `json:"serials"`
+	Seq      uint64               `json:"seq"`
+	IssuedAt time.Time            `json:"issuedAt"`
+	Serials  []string             `json:"serials"`
+	Nonces   map[string]time.Time `json:"nonces,omitempty"`
+}
+
+// Used reports whether nonce was taken and its request has not yet expired at now. A nil list has
+// taken none.
+func (c *CRL) Used(nonce string, now time.Time) bool {
+	if c == nil {
+		return false
+	}
+	expiresAt, ok := c.Nonces[nonce]
+	return ok && now.Before(expiresAt)
 }
 
 // Revokes reports whether serial is on the list. A nil list revokes nothing.

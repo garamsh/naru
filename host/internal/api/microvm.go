@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 // callTimeout bounds a create, which pulls an image and boots the Machine (mvmd's own bounds are
@@ -23,34 +24,14 @@ const callTimeout = 5 * time.Minute
 // seed volume may be as large as mvmd takes (1 MiB), which is more than a quarter larger here.
 const maxBody = 4 << 20
 
-// MicroVM is a microVM as the host API shows it.
-type MicroVM struct {
-	Name string `json:"name"`
-	// MachineID is mvmd's identifier of the Machine, which is the name.
-	MachineID     string      `json:"machineId"`
-	State         string      `json:"state"`
-	Failure       string      `json:"failure,omitempty"`
-	Addresses     []string    `json:"addresses"`
-	ImageDigest   string      `json:"imageDigest"`
-	CPU           uint32      `json:"cpu"`
-	Memory        uint64      `json:"memory"`
-	RootDiskBytes uint64      `json:"rootDiskBytes"`
-	Disks         []DiskSpec  `json:"disks"`
-	NetworkPolicy mvmd.Policy `json:"networkPolicy"`
-	// BootSet, Cmdline and PodPrefix are an OS-form microVM's.
-	BootSet   string `json:"bootSet,omitempty"`
-	Cmdline   string `json:"cmdline,omitempty"`
-	PodPrefix string `json:"podPrefix,omitempty"`
-	// RestartOnBoot is whether mvmd starts the microVM again after the host reboots.
-	RestartOnBoot bool `json:"restartOnBoot"`
-}
-
-func view(m mvmd.Machine, sizes map[string]uint64) MicroVM {
-	v := MicroVM{
+// view is the API's form of a Machine. The network and pod prefix are those of hostd's persisted
+// membership, which a microVM attached to a network has whoever made it.
+func (s *Server) view(m mvmd.Machine, sizes map[string]uint64) hostapi.MicroVM {
+	v := hostapi.MicroVM{
 		Name: m.ID, MachineID: m.ID, State: m.State, Failure: m.Failure, Addresses: m.Addresses,
 		ImageDigest: m.ImageDigest, CPU: m.CPU, Memory: m.MemoryBytes, RootDiskBytes: m.RootDiskBytes,
-		Disks: []DiskSpec{}, NetworkPolicy: m.Policy, BootSet: m.BootSet, Cmdline: m.Cmdline,
-		RestartOnBoot: m.RestartOnBoot,
+		Disks: []hostapi.DiskSpec{}, NetworkPolicy: m.Policy, BootSet: m.BootSet, Cmdline: m.Cmdline,
+		RestartOnBoot: m.RestartOnBoot, Fenced: m.Fenced, FenceLapsedAt: m.FenceLapsedAt,
 	}
 	if len(m.RoutedPrefixes) > 0 {
 		v.PodPrefix = m.RoutedPrefixes[0]
@@ -58,8 +39,14 @@ func view(m mvmd.Machine, sizes map[string]uint64) MicroVM {
 	if v.Addresses == nil {
 		v.Addresses = []string{}
 	}
+	if x, ok := s.memberOf(m); ok {
+		v.Network = x.Network
+		if x.Routed.IsValid() {
+			v.PodPrefix = x.Routed.String()
+		}
+	}
 	for _, d := range m.Disks {
-		v.Disks = append(v.Disks, DiskSpec{Name: diskName(m.ID, d.ID), SizeBytes: sizes[d.ID], ReadOnly: d.ReadOnly})
+		v.Disks = append(v.Disks, hostapi.DiskSpec{Name: diskName(m.ID, d.ID), SizeBytes: sizes[d.ID], ReadOnly: d.ReadOnly})
 	}
 	return v
 }
@@ -94,24 +81,27 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	if status == http.StatusBadGateway {
 		s.deps.Log.Error("mvmd failed a call", "err", err.Error())
 	}
-	writeJSON(w, status, errorBody{Error: err.Error()})
+	writeJSON(w, status, hostapi.ErrorBody{Error: err.Error()})
 }
 
 func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
-	var req CreateRequest
+	var req hostapi.CreateRequest
 	dec := json.NewDecoder(io.LimitReader(r.Body, maxBody))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil || dec.More() {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: "the body is not one JSON object of the fields the API names"})
+		writeJSON(w, http.StatusBadRequest, hostapi.ErrorBody{Error: "the body is not one JSON object of the fields the API names"})
 		return
 	}
 	p, fields, msg := validate(req)
 	if len(fields) > 0 {
-		writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: msg, Fields: fields})
+		writeJSON(w, http.StatusUnprocessableEntity, hostapi.ErrorBody{Error: msg, Fields: fields})
 		return
 	}
 	if p.create.BootSet != "" && !s.deps.MachineGateway.IsValid() {
-		writeJSON(w, http.StatusNotImplemented, errorBody{Error: "this host was started with no --machine-gateway, so it cannot write the network-config of an OS-form microVM"})
+		writeJSON(w, http.StatusNotImplemented, hostapi.ErrorBody{Error: "this host was started with no --machine-gateway, so it cannot write the network-config of an OS-form microVM"})
+		return
+	}
+	if req.Network != "" && !s.checkNetwork(w, req.Network, req.PodPrefix) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), callTimeout)
@@ -127,17 +117,23 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !matches(existing, sizes, p) {
-			writeJSON(w, http.StatusConflict, errorBody{Error: "a microVM named " + req.Name + " exists with another body"})
+			writeJSON(w, http.StatusConflict, hostapi.ErrorBody{Error: "a microVM named " + req.Name + " exists with another body"})
 			return
 		}
-		// The first attempt may have ended after the create and before the start.
-		if existing.State == mvmd.StateCreated || existing.State == mvmd.StateStopped {
+		// The first attempt may have ended after the create and before the start. A fenced microVM
+		// is started by its caller, once it has renewed the fence.
+		if !existing.Fenced && (existing.State == mvmd.StateCreated || existing.State == mvmd.StateStopped) {
 			if existing, err = rt.StartMachine(ctx, req.Name); err != nil {
 				s.fail(w, err)
 				return
 			}
 		}
-		writeJSON(w, http.StatusOK, view(existing, sizes))
+		// A repeat attaches again, which a host that restarted since needs.
+		if err := s.attach(ctx, req.Network, req.PodPrefix, existing); err != nil {
+			s.networkFail(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.view(existing, sizes))
 		return
 	case !errors.Is(err, mvmd.ErrNotFound):
 		s.fail(w, err)
@@ -149,10 +145,23 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, view(m, sizes))
+	if err := s.attach(ctx, req.Network, req.PodPrefix, m); err != nil {
+		ids := make([]string, 0, len(sizes))
+		for id := range sizes {
+			ids = append(ids, id)
+		}
+		// The microVM runs unless it is fenced, and mvmd deletes only a Machine that does not.
+		if m.State == mvmd.StateRunning || !p.create.Fenced {
+			_ = rt.StopMachine(ctx, m.ID)
+		}
+		s.dropMade(m.ID, ids)
+		s.networkFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, s.view(m, sizes))
 }
 
-// provision makes what the plan describes and starts the Machine. The image form pulls the image,
+// provision makes what the plan describes and starts the Machine, unless it is fenced. The image form pulls the image,
 // makes the disks, then the Machine. The OS form makes the data disk, then the Machine, then the
 // seed, whose network-config needs the address mvmd gave the Machine, and attaches the seed
 // read-only before the start. A failure before the start removes what this request made, and no
@@ -169,7 +178,13 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 	var made []string
 	for _, d := range p.disks {
 		id := diskID(p.create.ID, d.Name)
-		if err := rt.CreateDisk(ctx, id, d.SizeBytes); err != nil {
+		// The OS form's data disk has no file system: the Node's init formats a blank one as its
+		// data disk, and refuses the boot of one mvmd has made ext4 with no label and no verity.
+		create := rt.CreateDisk
+		if osForm {
+			create = func(ctx context.Context, id string, size uint64) error { return rt.CreateRawDisk(ctx, id, size, nil) }
+		}
+		if err := create(ctx, id, d.SizeBytes); err != nil {
 			s.dropMade("", made)
 			return mvmd.Machine{}, nil, err
 		}
@@ -188,6 +203,9 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 			return mvmd.Machine{}, nil, err
 		}
 		sizes[seedID] = seedSize
+	}
+	if p.create.Fenced {
+		return m, sizes, nil
 	}
 	started, err := rt.StartMachine(ctx, m.ID)
 	if errors.Is(err, mvmd.ErrPrecondition) {
@@ -258,13 +276,13 @@ func (s *Server) dropMade(machine string, disks []string) {
 }
 
 // matches reports whether the Machine mvmd holds is the one the plan would create: the same
-// image or boot set, resources, root disk, network policy, routed prefixes, restart on boot and disks, each disk of
+// image or boot set, resources, root disk, network policy, routed prefixes, restart on boot, fence and disks, each disk of
 // the same size. An OS-form Machine also has its seed attached read-only; the seed's contents are
 // not compared, since they hold the address mvmd chose.
 func matches(m mvmd.Machine, sizes map[string]uint64, p plan) bool {
 	c := p.create
 	if m.ImageDigest != c.ImageDigest || m.CPU != c.CPU || m.MemoryBytes != c.MemoryBytes || m.RootDiskBytes != c.RootDiskBytes ||
-		m.RestartOnBoot != c.RestartOnBoot {
+		m.RestartOnBoot != c.RestartOnBoot || m.Fenced != c.Fenced {
 		return false
 	}
 	if !samePolicy(m.Policy, c.Policy) || m.BootSet != c.BootSet || m.Cmdline != c.Cmdline ||
@@ -316,7 +334,7 @@ func (s *Server) getMicroVM(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, view(m, sizes))
+	writeJSON(w, http.StatusOK, s.view(m, sizes))
 }
 
 func (s *Server) listMicroVMs(w http.ResponseWriter, r *http.Request) {
@@ -332,11 +350,11 @@ func (s *Server) listMicroVMs(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	out := make([]MicroVM, 0, len(machines))
+	out := make([]hostapi.MicroVM, 0, len(machines))
 	for _, m := range machines {
-		out = append(out, view(m, sizes))
+		out = append(out, s.view(m, sizes))
 	}
-	slices.SortFunc(out, func(a, b MicroVM) int { return strings.Compare(a.Name, b.Name) })
+	slices.SortFunc(out, func(a, b hostapi.MicroVM) int { return strings.Compare(a.Name, b.Name) })
 	writeJSON(w, http.StatusOK, map[string]any{"microvms": out})
 }
 
@@ -401,7 +419,7 @@ func (s *Server) answerMicroVM(ctx context.Context, w http.ResponseWriter, m mvm
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, view(m, sizes))
+	writeJSON(w, http.StatusOK, s.view(m, sizes))
 }
 
 // deleteMicroVM stops the Machine if it runs, deletes it, and deletes the disks that were made
@@ -432,8 +450,14 @@ func (s *Server) deleteMicroVM(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.detach(ctx, m)
+	kept, err := s.snapshotDisks(ctx, "")
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 	for _, d := range m.Disks {
-		if !strings.HasPrefix(d.ID, name+".") {
+		if kept[d.ID] {
 			continue
 		}
 		if err := rt.DeleteDisk(ctx, d.ID); err != nil && !errors.Is(err, mvmd.ErrNotFound) {
@@ -444,14 +468,19 @@ func (s *Server) deleteMicroVM(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// removeOrphans deletes the unattached disks that carry the name's prefix.
+// removeOrphans deletes the unattached disks that carry the name's prefix and that no snapshot
+// needs.
 func (s *Server) removeOrphans(ctx context.Context, name string) {
 	disks, err := s.deps.Runtime.ListDisks(ctx)
 	if err != nil {
 		return
 	}
+	kept, err := s.snapshotDisks(ctx, "")
+	if err != nil {
+		return
+	}
 	for _, d := range disks {
-		if strings.HasPrefix(d.ID, name+".") && d.Holder == "" {
+		if strings.HasPrefix(d.ID, name+".") && d.Holder == "" && !kept[d.ID] {
 			if err := s.deps.Runtime.DeleteDisk(ctx, d.ID); err != nil {
 				s.deps.Log.Error("cannot remove a disk left by a delete", "disk", d.ID, "err", err.Error())
 			}

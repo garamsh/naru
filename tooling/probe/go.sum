@@ -1,5 +1,5 @@
-github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261112183926-d189133bba8d h1:emXfMtnBWwjrRxG693mNd4ToToxT0FI/xKQYSE5+xYE=
-github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261112183926-d189133bba8d/go.mod h1:8t2aW3JKdSjTUh5gF7F+8riZwxdh5Zv5UMKmmT0XftU=
+github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261114055347-b1a60cd64967 h1:+6RdpR+ZGNTn2jEIfqp00fkmj/q5Ir9/sQn/Q6a4SS8=
+github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261114055347-b1a60cd64967/go.mod h1:8t2aW3JKdSjTUh5gF7F+8riZwxdh5Zv5UMKmmT0XftU=
 github.com/golang/protobuf v1.5.4 h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek=
 github.com/golang/protobuf v1.5.4/go.mod h1:lnTiLA8Wa4RWRcIUkrtSVa5nRhsEGBg48fD6rSs7xps=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

@@ -49,3 +49,7 @@ Drafted for garamsh/naru#59. It supersedes [ADR 0012](./0012-gaon-runs-on-the-no
 - A client that needs a monitoring address on 2379: the fence becomes configuration of the operator's.
 - A kernel without nftables: the fence is replaced by a listen address, and TLS stands alone.
 - A client that needs the virtual address's ARP to be answered by a router, not by the Nodes' network: the announcement is replaced by a routed address.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/etcd/pin.env` is `image/node/etcd/pin.env`, `image/gaon/pin.env` is `image/host/gaon/pin.env` and `image/initramfs/build.sh` is `image/host/initramfs/build.sh`.

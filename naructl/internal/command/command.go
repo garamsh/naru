@@ -19,6 +19,8 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
        naructl <version|services|logs|get config|apply|reboot|upgrade> --config <client file> [--node <ip[:port]>] [flags]
        naructl operator <add|revoke> --admin <person file> --passphrase-file <file> --socket <path> [flags]
                                                      issue or revoke an operator through naru-signer (naructl operator -h)
+       naructl operator request|person, naructl orch csr|issue, naructl signer authorise-replica|bundle|restore
+                                                     make an identity's key, request and person file, and use root's (naructl operator -h, naructl signer -h)
        naructl topology [kubernetes]                 print the services a Node runs, and which signs, as JSON
        naructl console --orch <url> --identity <person file> --passphrase-file <file> [--listen 127.0.0.1:8484] [--ca <file>]
               serve a web console on this workstation; it signs admissions with your key, which stays in this process
@@ -34,19 +36,29 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
   microvm create --name <name> --boot-set <set> --seed <user-data file> --data-disk <bytes> [--cmdline <args>] [--pod-prefix <cidr>] [--cpu n] [--memory bytes]
               the OS form, in place of --image, --root-disk and --disk
   microvm stop <name> | microvm start <name> | microvm delete <name>
-              the same flags; create, stop, start and delete need the provisioner role
+  host boot-set add <naru-node-<version>.json> | host boot-set remove <name>
+              add a release's kernel and initramfs (the files its manifest names, beside it) to the host
+              as a boot set with no reboot, or remove one
+              all of these take the same flags; create, stop, start, delete and boot-set need the provisioner role
   orch init --out-dir <dir> --passphrase-file <file>    write the recovery key, encrypted, and its public half
-  orch backup | orch restore --snapshot <file> --recovery-key <file> --passphrase-file <file> --out <file>
+  orch backup [--out <file>]                            take a sealed snapshot now; with --out, also fetch it
+  orch restore --snapshot <file> --recovery-key <file> --passphrase-file <file> [--out <file>]
+              [--push <orch URL> --orch-ca <file> --admin <root person file> [--admin-passphrase-file <file>]]
+              open the sealed snapshot; --out writes the plain etcd snapshot, --push sends it to a naru-orchd
+              started with --restore (the plain snapshot is not written to disk without --out)
   enroll-key create [--ttl d] | enroll-key revoke <id>  | host pending | host admit <id> --code <code> --region <r> [--label k=v]
-  host label <id> --region <r> [--label k=v]            these take --orch-url, --orch-ca, --identity and --passphrase-file
+  host label <id> --region <r> [--label k=v] | host drain <id> | host undrain <id> | group apply -f <spec> | group get <name> | group list | group delete <name>
+              these take --orch-url, --orch-ca, --identity and --passphrase-file
   version | services | get config               read a Node
   logs <service> [-f]                           print a service's kept log, and with -f each new line
   apply -f <patch> [--mode no-reboot|staged|reboot] [--dry-run]
               merge a patch into the Node's configuration
   reboot      stop the Node's services and reboot it
-  upgrade --bundle <naru-upgrade-<version>.tar> --sums <SHA256SUMS>
+  upgrade --bundle <naru-host-upgrade-<version>.tar> --sums <SHA256SUMS>
               check the bundle against the sums file, then send it: the Node reboots into it once, and keeps it when healthy
   upgrade --status                              print the Node's boot slot and how its last upgrade ended
+  extension add <naru-orch-ext-<tag>.sqfs>      store a system extension image on the Node (the admin role); spec.extensions names it by SHA-256
+  extension list | extension remove <sha256>    list the images the Node stores and whether each is mounted, or remove one that is not mounted
   gen ca      --out <dir>                       write ca.pem and ca.key
   gen client  --ca <dir> --cn <name> --out <dir> write an operator's client.pem and client.key
   gen etcd-client --ca <dir> --out <dir>      write ca.crt, tls.crt and tls.key, a client pair etcd's members accept
@@ -90,6 +102,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			return reboot(args[1:], stdout, stderr)
 		case "upgrade":
 			return upgradeCmd(args[1:], stdout, stderr)
+		case "extension":
+			return extensionCmd(args[1:], stdout, stderr)
 		case "host":
 			return hostCmd(args[1:], stdout, stderr)
 		case "console":
@@ -98,6 +112,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			return microvm(args[1:], stdout, stderr)
 		case "operator":
 			return operatorCmd(args[1:], stdout, stderr)
+		case "signer":
+			return signerCmd(args[1:], stdout, stderr)
 		case "get":
 			if len(args) > 1 && args[1] == "config" {
 				return getConfig(args[2:], stdout, stderr)
@@ -288,14 +304,19 @@ func genToken(args []string, stdout, stderr io.Writer) error {
 func genNode(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("gen node", stderr)
 	var (
-		nameservers, serving, binaries, disable, timeServers, peers, members, registries, storage list
-		awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion                                string
-		hostLabels                                                                                list
-		n                                                                                         layout.Node
-		caDir, address, gateway, apiServer                                                        string
-		machinePrefix, guest, extraNIC                                                            string
-		out, networkConfig                                                                        string
-		controlPlane, pairsAsFiles                                                                bool
+		nameservers, serving, binaries, disable, timeServers, peers, members, registries, storage, noMasquerade list
+		awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion                                              string
+		hostLabels, orchCluster, orchSANs, signerPeerNames, extensions                                          list
+		hostMgmt, hostEgress, signerPeer, signerRecovery, signerRootCSR, metricsListen                          string
+		orchPeerURL, orchClientURL, orchState, orchListen, orchCert, orchCA, orchRevocation                     string
+		orchRecovery, orchKey, orchHostCA, hostClientCA, orchJoin                                               string
+		hostTunnelPort                                                                                          int
+		hostOrchURL, hostOrchCA, hostOrchKey, signerJoinPeer, signerJoinPeerCA, signerJoinAuthz                 string
+		n                                                                                                       layout.Node
+		caDir, address, gateway, apiServer                                                                      string
+		machinePrefix, guest, extraNIC                                                                          string
+		out, networkConfig                                                                                      string
+		controlPlane, pairsAsFiles, runSigner, signerReplica, orchRestore                                       bool
 	)
 	fs.StringVar(&caDir, "ca", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1")
@@ -319,8 +340,41 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&awsRole, "aws-role", "", "the ARN of the IAM role; the certificate and key are the Node Agent's pair")
 	fs.StringVar(&hostRegion, "host-region", "", "the Node serves the host API (naru-hostd) and reports this region, a DNS label; needs the host authority, gen host-ca")
 	fs.Var(&hostLabels, "host-label", "a label of the host, <key>=<value>, repeatable (with --host-region)")
+	fs.StringVar(&hostMgmt, "host-management-prefix", "", "spec.host.network: the prefix of the management plane, which no virtual network may reach, such as 192.168.0.0/24 (with --host-region)")
+	fs.StringVar(&hostEgress, "host-egress-interface", "", "spec.host.network: the interface the virtual networks' egress leaves by (with --host-management-prefix)")
+	fs.IntVar(&hostTunnelPort, "host-tunnel-port", 0, "spec.host.network: the UDP port of the WireGuard tunnel (with --host-management-prefix; default 51820)")
+	fs.BoolVar(&runSigner, "signer", false, "the Node runs naru-signer (spec.signer)")
+	fs.StringVar(&signerPeer, "signer-peer-listen", "", "spec.signer: the address of the peer listener other signers replicate from (with --signer-peer-name)")
+	fs.Var(&signerPeerNames, "signer-peer-name", "spec.signer: a name or address of the peer listener's certificate, repeatable")
+	fs.StringVar(&hostOrchURL, "host-orch-url", "", "spec.host.orch: the https URL of orch's API, which naru-hostd enrolls with (with --host-region)")
+	fs.StringVar(&hostOrchCA, "host-orch-ca-sha256", "", "spec.host.orch: the hex SHA-256 of the authority orch's certificate chains to")
+	fs.StringVar(&hostOrchKey, "host-orch-enroll-key", "", "spec.host.orch: the file holding the enrollment key, which the user data carries 0600 for naru-hostd alone")
+	fs.BoolVar(&signerReplica, "signer-replica", false, "spec.signer.replica: the signer is a replica of another and makes its join key at its first start (excludes --signer-root-csr)")
+	fs.StringVar(&signerJoinPeer, "signer-join-peer", "", "spec.signer.replica.join: host:port of the peer listener of a signer that holds the authorities (with --signer-replica)")
+	fs.StringVar(&signerJoinPeerCA, "signer-join-peer-ca", "", "spec.signer.replica.join: the file holding the PEM of the orch authority the peer's certificate chains to")
+	fs.StringVar(&signerJoinAuthz, "signer-join-authorisation", "", "spec.signer.replica.join: the file holding root's authorisation, which naructl signer authorise-replica wrote")
+	fs.StringVar(&signerRecovery, "signer-recovery-public", "", "spec.signer.bootstrap: the file holding the recovery key's public half (with --signer-root-csr)")
+	fs.StringVar(&signerRootCSR, "signer-root-csr", "", "spec.signer.bootstrap: the file holding the PEM certificate request of the first root identity")
+	fs.StringVar(&orchPeerURL, "orch-peer-url", "", "spec.orch: the https URL etcd listens on for its peers; giving it makes the Node run naru-orchd, which needs the other --orch flags and --signer")
+	fs.StringVar(&orchClientURL, "orch-client-url", "", "spec.orch: the https URL etcd listens on for clients")
+	fs.Var(&orchCluster, "orch-member", "spec.orch: <name>=<peer URL>, a member of orch's cluster, this Node among them, repeatable")
+	fs.StringVar(&orchState, "orch-state", "", "spec.orch: new, or existing for a member that joins a cluster (default new)")
+	fs.StringVar(&orchListen, "orch-listen", "", "spec.orch: the address of orch's HTTPS API (default 0.0.0.0:7500)")
+	fs.Var(&orchSANs, "orch-san", "spec.orch: a name or address of orch's certificate, repeatable")
+	fs.StringVar(&orchCert, "orch-certificate", "", "spec.orch: the file holding orch's certificate then the authority's, PEM")
+	fs.StringVar(&orchCA, "orch-ca", "", "spec.orch: the file holding the authority's certificate, PEM")
+	fs.StringVar(&orchRevocation, "orch-revocation-public-key", "", "spec.orch: the file holding the revocation public key, PKIX PEM, which the signer's init printed")
+	fs.StringVar(&orchHostCA, "orch-host-ca", "", "spec.orch: the file holding the PEM of the authority the hosts' API certificates chain to, the host authority; without it orch trusts --orch-ca for them")
+	fs.StringVar(&hostClientCA, "host-client-ca", "", "spec.host: the file holding the PEM of the authority orch's certificate chains to, which naru-hostd trusts for its clients beside the host authority (with --host-region)")
+	fs.StringVar(&orchRecovery, "orch-recovery-public", "", "spec.orch: the file holding the recovery key's public half; without it orch writes no snapshot")
+	fs.StringVar(&orchJoin, "orch-join", "", "spec.orch.join: the client URL, https://<host>:<port>, of a running member, which this member joins; it takes the initial cluster from that cluster, so no --orch-member, and excludes --orch-restore")
+	fs.BoolVar(&orchRestore, "orch-restore", false, "spec.orch.restore: orchd starts empty and waits for root's etcd snapshot (PUT /v1/restore)")
+	fs.StringVar(&orchKey, "orch-key", "", "spec.orch: the file holding orch's private key, which the user data carries 0600 for orch's user alone")
+	fs.Var(&extensions, "extension", "spec.extensions: <name>=<SHA-256 of the image>, a system extension init mounts before any service starts, repeatable; the signer and orch need naru-orch=the sha256 field of the release's naru-orch-ext-TAG.json")
+	fs.StringVar(&metricsListen, "metrics-listen", "", "spec.metrics: the IP address init and the daemons serve /metrics on, each on its own port")
 	fs.StringVar(&machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.Var(&peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
+	fs.Var(&noMasquerade, "no-masquerade", "an IPv4 prefix in canonical form, repeatable: a Machine's traffic to it keeps its source address (mvmd's network.no_masquerade) and the Node gets no route to it, such as the Machine prefixes of the hosts a WireGuard tunnel reaches")
 	fs.Var(&storage, "storage", "<name>=<label or /dev/path>, an extra disk the Node offers as XFS, found by its partition or file system label, or by its device when the value starts with /dev/ (a blank disk has no label), repeatable: the first is mounted where mvmd keeps its disks")
 	fs.StringVar(&guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
 	fs.StringVar(&n.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
@@ -342,11 +396,36 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	if err := awsTogether(fs); err != nil {
 		return err
 	}
-	if err := needs(fs, "host-region", "host-label"); err != nil {
+	if err := needs(fs, "host-region", "host-label", "host-client-ca"); err != nil {
+		return err
+	}
+	if err := needs(fs, "host-management-prefix", "host-egress-interface", "host-tunnel-port"); err != nil {
+		return err
+	}
+	if err := needs(fs, "host-orch-url", "host-orch-ca-sha256", "host-orch-enroll-key"); err != nil {
+		return err
+	}
+	if err := needs(fs, "signer-replica", "signer-join-peer", "signer-join-peer-ca", "signer-join-authorisation"); err != nil {
+		return err
+	}
+	if err := needs(fs, "signer", "signer-replica", "signer-peer-listen", "signer-peer-name", "signer-recovery-public", "signer-root-csr"); err != nil {
+		return err
+	}
+	if err := needs(fs, "orch-peer-url", "orch-client-url", "orch-member", "orch-state", "orch-listen", "orch-san", "orch-certificate", "orch-ca", "orch-revocation-public-key", "orch-recovery-public", "orch-key", "orch-restore", "orch-join", "orch-host-ca"); err != nil {
 		return err
 	}
 	var err error
 	if n.CA, err = pki.Load(caDir); err != nil {
+		return err
+	}
+	if err := genNodeDaemons(&n, daemonFlags{
+		hostMgmt: hostMgmt, hostEgress: hostEgress, hostTunnelPort: hostTunnelPort,
+		hostOrchURL: hostOrchURL, hostOrchCA: hostOrchCA, hostOrchKey: hostOrchKey,
+		signerReplica: signerReplica, signerJoinPeer: signerJoinPeer, signerJoinPeerCA: signerJoinPeerCA, signerJoinAuthz: signerJoinAuthz,
+		runSigner: runSigner, signerPeer: signerPeer, signerPeerNames: signerPeerNames, signerRecovery: signerRecovery, signerRootCSR: signerRootCSR,
+		orchPeerURL: orchPeerURL, orchClientURL: orchClientURL, orchCluster: orchCluster, orchState: orchState, orchListen: orchListen, orchSANs: orchSANs,
+		orchCert: orchCert, orchCA: orchCA, orchRevocation: orchRevocation, orchRecovery: orchRecovery, orchKey: orchKey, orchHostCA: orchHostCA, orchRestore: orchRestore, orchJoin: orchJoin, metricsListen: metricsListen, extensions: extensions,
+	}); err != nil {
 		return err
 	}
 	if _, err := os.Stat(filepath.Join(caDir, pki.APIDir)); err == nil {
@@ -359,6 +438,11 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 	if hostRegion != "" {
 		if n.Host, err = loadHost(caDir, hostRegion, hostLabels); err != nil {
 			return err
+		}
+		if hostClientCA != "" {
+			if n.Host.ClientCA, err = readText("--host-client-ca", hostClientCA); err != nil {
+				return err
+			}
 		}
 	}
 	n.Mode = layout.ModeOf(controlPlane, pairsAsFiles)
@@ -409,6 +493,13 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("--peer: %w", err)
 		}
 		n.Peers = append(n.Peers, layout.Peer{Address: a, MachinePrefix: p})
+	}
+	for _, s := range noMasquerade {
+		p, err := netip.ParsePrefix(s)
+		if err != nil || !p.Addr().Is4() || p != p.Masked() {
+			return fmt.Errorf("--no-masquerade %q is not an IPv4 prefix in canonical form", s)
+		}
+		n.NoMasquerade = append(n.NoMasquerade, p)
 	}
 	for _, s := range storage {
 		name, value, ok := strings.Cut(s, "=")

@@ -3,6 +3,8 @@ package api
 import (
 	"crypto/x509"
 	"net/http"
+
+	"github.com/garamsh/naru/lib/identity"
 )
 
 // clientCertificate returns the verified certificate of the request's client. The listener
@@ -14,7 +16,8 @@ func clientCertificate(r *http.Request) *x509.Certificate {
 	return &x509.Certificate{}
 }
 
-// Role is what a client may do, taken from its certificate's Organization.
+// Role is what a client may do, taken from its certificate's Organization, or from its
+// OrganizationalUnit when that is orch's role.
 type Role int
 
 const (
@@ -32,9 +35,14 @@ const (
 	ReaderOrganization      = "naru:host-reader"
 )
 
-// roleOf returns the highest role among the Organizations of cert.
+// roleOf returns the highest role among the Organizations of cert. A certificate that carries
+// lib/identity's orch role, as naru-signer issues to orch, is a provisioner: orch creates, stops,
+// starts and deletes microVMs and sets networks and peers on every host it admitted.
 func roleOf(cert *x509.Certificate) Role {
 	role := None
+	if r, err := identity.RoleOf(cert); err == nil && r == identity.RoleOrch {
+		role = Provisioner
+	}
 	for _, o := range cert.Subject.Organization {
 		switch o {
 		case ProvisionerOrganization:

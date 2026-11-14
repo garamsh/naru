@@ -18,7 +18,11 @@ import (
 type kubeSpec struct {
 	Spec struct {
 		ControlPlane bool `yaml:"controlPlane"`
-		Network      struct {
+		DataDisk     struct {
+			Label       string `yaml:"label"`
+			FormatBlank bool   `yaml:"formatBlank"`
+		} `yaml:"dataDisk"`
+		Network struct {
 			Routes []struct {
 				To  string `yaml:"to"`
 				Via string `yaml:"via"`
@@ -118,6 +122,15 @@ func TestKubernetesUserData_ControlPlaneRunsEveryServiceInTheTopologysOrder(t *t
 
 	assert.Equal(t, layout.Kubernetes.Names(), serviceNames(s))
 	assert.True(t, s.Spec.ControlPlane)
+}
+
+func TestKubernetesUserData_AsksInitToFormatABlankDataDiskForAMicroVMWhoseHostGivesItOneUnformatted(t *testing.T) {
+	for _, controlPlane := range []bool{true, false} {
+		s := kubeUserData(t, kubeNode(t, controlPlane, nil))
+
+		assert.Equal(t, layout.DataLabel, s.Spec.DataDisk.Label)
+		assert.True(t, s.Spec.DataDisk.FormatBlank, "a microVM's data disk is blank at its first boot, and init refuses the boot without a labelled one")
+	}
 }
 
 func TestKubernetesUserData_RoutesToEveryPeersPodPrefix(t *testing.T) {

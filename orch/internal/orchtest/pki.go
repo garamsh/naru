@@ -81,6 +81,11 @@ func (c *CA) CRL() ([]byte, error) {
 	return identity.SignCRL(c.revokeKey, identity.CRL{Seq: c.revokedSeq, IssuedAt: time.Now(), Serials: c.revoked})
 }
 
+// SignCRL signs a list with the revocation key, as a signer replica does.
+func (c *CA) SignCRL(crl identity.CRL) ([]byte, error) {
+	return identity.SignCRL(c.revokeKey, crl)
+}
+
 // Pool is a pool holding the authority.
 func (c *CA) Pool() *x509.CertPool {
 	p := x509.NewCertPool()
@@ -152,8 +157,14 @@ func (c *CA) IssueFiles(t testing.TB, dir, name string) Files {
 		t.Fatal(err)
 	}
 	f := Files{Cert: filepath.Join(dir, name+".crt"), Key: filepath.Join(dir, name+".key"), CA: filepath.Join(dir, "ca.crt")}
+	// Every member's files share one ca.crt, which an already started member may be reading: replace it
+	// whole by a rename, so a reader never sees it truncated.
 	write := func(path string, mode os.FileMode, b []byte) {
-		if err := os.WriteFile(path, b, mode); err != nil {
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, b, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmp, path); err != nil {
 			t.Fatal(err)
 		}
 	}

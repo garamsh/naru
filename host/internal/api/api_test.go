@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -18,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +28,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/host/internal/network"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -55,10 +59,16 @@ func newAuthority(t *testing.T, cn string) authority {
 // issue returns a certificate signed by the authority, as a tls pair.
 func (a authority) issue(t *testing.T, orgs []string, server bool) (tls.Certificate, []byte, []byte) {
 	t.Helper()
+	return a.issueSubject(t, pkix.Name{CommonName: "t", Organization: orgs}, server)
+}
+
+// issueSubject is issue for a certificate of the given subject.
+func (a authority) issueSubject(t *testing.T, subject pkix.Name, server bool) (tls.Certificate, []byte, []byte) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	tpl := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: "t", Organization: orgs},
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: subject,
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
@@ -84,12 +94,46 @@ type env struct {
 	hostFile string
 	pool     *x509.CertPool
 	metrics  *prometheus.Registry
+	nets     *network.Manager
+	nft      *recorder
+	tunnel   *fakeTunnel
+	state    string
+}
+
+// recorder is the network.Runner of the tests: it records what the host would have run.
+type recorder struct {
+	mu    sync.Mutex
+	calls [][]string
+	stdin []string
+}
+
+func (r *recorder) Run(_ context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, append([]string{name}, args...))
+	r.stdin = append(r.stdin, string(stdin))
+	return nil, nil
+}
+
+// ruleset is the last nftables script the host applied.
+func (r *recorder) ruleset() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.calls) - 1; i >= 0; i-- {
+		if r.calls[i][0] == "nft" {
+			return r.stdin[i]
+		}
+	}
+	return ""
 }
 
 func start(t *testing.T) *env { return startWith(t, netip.MustParseAddr("10.1.0.1")) }
 
-// startWith starts a server whose machine gateway is gateway.
-func startWith(t *testing.T, gateway netip.Addr) *env {
+// startWith starts a server whose machine gateway is gateway, with networks.
+func startWith(t *testing.T, gateway netip.Addr) *env { return startEnv(t, gateway, true) }
+
+// startEnv starts a server whose machine gateway is gateway; it has networks when networks is true.
+func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
 	t.Helper()
 	dir := t.TempDir()
 	ca := newAuthority(t, "clients")
@@ -108,10 +152,26 @@ func startWith(t *testing.T, gateway netip.Addr) *env {
 	e.pool.AppendCertsFromPEM(srvCA.pem)
 	e.hostFile = write("host.json", []byte(`{"region":"eu-1","labels":{"disk":"ssd"}}`))
 	e.metrics = prometheus.NewRegistry()
-	srv := New(Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics})
+	e.nft = &recorder{}
+	e.tunnel = &fakeTunnel{}
+	e.state = filepath.Join(dir, "networks.json")
+	e.nets = e.manager()
+	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics}
+	if networks {
+		deps.Networks = e.nets
+	}
+	srv := New(deps)
 	go func() { _ = srv.Serve(ln, conf) }()
 	t.Cleanup(func() { _ = ln.Close() })
 	return e
+}
+
+// manager is a Manager over the env's recorder, tunnel and state file, as the daemon builds it at start.
+func (e *env) manager() *network.Manager {
+	return &network.Manager{
+		Run: e.nft, Tunnel: e.tunnel, State: e.state,
+		Base: network.Config{Management: netip.MustParsePrefix("172.16.0.0/24"), TapPrefix: "tap", Egress: "eth0"},
+	}
 }
 
 func (e *env) client(pair tls.Certificate) *http.Client {
@@ -155,7 +215,7 @@ func TestHost_ReportsTheHostFileOnEveryRequest(t *testing.T) {
 	c := e.as(t, ReaderOrganization)
 	code, b := e.do(t, c, "GET", "/v1/host", nil)
 	require.Equal(t, 200, code)
-	var h Host
+	var h hostapi.Host
 	require.NoError(t, json.Unmarshal(b, &h))
 	assert.Equal(t, "eu-1", h.Region)
 	assert.Equal(t, map[string]string{"disk": "ssd"}, h.Labels)
@@ -295,11 +355,11 @@ func TestMicroVMs_GetListDelete(t *testing.T) {
 
 	code, b := e.do(t, c, "GET", "/v1/microvms/web", nil)
 	require.Equal(t, 200, code)
-	var m MicroVM
+	var m hostapi.MicroVM
 	require.NoError(t, json.Unmarshal(b, &m))
 	assert.Equal(t, "running", m.State)
 	assert.Equal(t, []string{"10.1.0.5"}, m.Addresses)
-	assert.Equal(t, []DiskSpec{{Name: "data", SizeBytes: 1 << 20}}, m.Disks)
+	assert.Equal(t, []hostapi.DiskSpec{{Name: "data", SizeBytes: 1 << 20}}, m.Disks)
 
 	_, b = e.do(t, c, "GET", "/v1/microvms", nil)
 	assert.Contains(t, string(b), `"web"`)

@@ -62,3 +62,7 @@ Drafted for garamsh/naru#46, part of goal garamsh/naru#44. The direction is deci
 - A Node has to forward a call to another Node, and init cannot do it without growing logic that ADR 0002 item 6 keeps out of init.
 - gaon needs the API from a Node that only has gaon's CA, and two authorities become the obstacle and not the protection.
 - An operator needs a verb that a read-only or an admin role cannot express, so Organization-based roles are too coarse.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/initramfs` is `image/host/initramfs`.

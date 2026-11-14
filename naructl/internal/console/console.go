@@ -16,7 +16,10 @@ type MicroVM struct {
 	Name  string `json:"name"`
 	State string `json:"state"`
 	Group string `json:"group"`
+	// Image is the image digest of an image-form microVM, or the boot set of an OS-form one.
 	Image string `json:"image"`
+	// Network is the virtual network the microVM is on, or empty.
+	Network string `json:"network"`
 }
 
 // Group is a group of microVMs orch keeps at its count.

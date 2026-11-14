@@ -40,6 +40,10 @@ func TestMain(m *testing.M) {
 
 func run(m *testing.M) int {
 	root, image, guest := os.Getenv("NARU_ROOT"), os.Getenv("NARU_IMAGE_DIR"), os.Getenv("NARU_GUEST_DIR")
+	if root == "" && (os.Getenv(fromReleaseEnv) != "" || os.Getenv(toReleaseEnv) != "") {
+		// make test-release-upgrade: the test reads two releases and uses nothing of the checkout.
+		return m.Run()
+	}
 	if root == "" || image == "" || guest == "" {
 		os.Stderr.WriteString("NARU_ROOT, NARU_IMAGE_DIR and NARU_GUEST_DIR are required; make test-qemu sets them\n")
 		return 1
@@ -49,7 +53,7 @@ func run(m *testing.M) int {
 		os.Stderr.WriteString(err.Error() + "\n")
 		return 1
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
+	defer func() { _ = os.RemoveAll(dir); _ = os.RemoveAll(fixture.ExtensionStore(dir)) }()
 	bin, err := os.MkdirTemp("", "naru36-naructl-")
 	if err != nil {
 		os.Stderr.WriteString(err.Error() + "\n")

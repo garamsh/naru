@@ -27,7 +27,7 @@ var (
 	initErr  error
 )
 
-// naruInit builds naru-init from the init module alone, as a release would, once for the package.
+// naruInit builds naru-init from the node module alone, as a release would, once for the package.
 func naruInit(t *testing.T) string {
 	t.Helper()
 	initOnce.Do(func() {
@@ -38,7 +38,7 @@ func naruInit(t *testing.T) string {
 		}
 		initBin = filepath.Join(dir, "naru-init")
 		build := exec.Command("go", "build", "-o", initBin, "./cmd/naru-init") //nolint:gosec // fixed arguments
-		build.Dir = "../../../init"
+		build.Dir = "../../../node"
 		build.Env = append(os.Environ(), "GOWORK=off")
 		if out, err := build.CombinedOutput(); err != nil {
 			initErr = &buildError{err, string(out)}

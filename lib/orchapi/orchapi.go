@@ -21,6 +21,9 @@ type Host struct {
 	Address    string            `json:"address"`
 	AdmittedAt time.Time         `json:"admittedAt"`
 	LastSeen   time.Time         `json:"lastSeen,omitzero"`
+	// Draining is whether an operator drained the host: its members move off it and nothing is
+	// placed on it until it is undrained.
+	Draining bool `json:"draining"`
 }
 
 // Pending is an enrollment waiting for a person's admission. Code is orch's own computation from
@@ -107,3 +110,6 @@ func (e *Error) Error() string { return fmt.Sprintf("orch answered %d: %s", e.St
 
 // SnapshotInfo binds a sealed snapshot to its purpose: lib/identity's Open fails under any other.
 const SnapshotInfo = "naru orch snapshot v1"
+
+// HeaderSnapshotSHA256 carries the hex SHA-256 of the plain snapshot a restore sends.
+const HeaderSnapshotSHA256 = "X-Naru-Snapshot-Sha256"

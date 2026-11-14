@@ -2,7 +2,9 @@ package fixture
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,8 +38,32 @@ type Release struct {
 	Naructl string
 }
 
-// ReadRelease reads the assets `make release` writes into dir (naru-<v>.qcow2, naru-data-<v>.qcow2,
-// naru-guest-<v>.json and naru-inputs-<v>.json) and prepares what a Node boots from them in work:
+// BootDiskName is the name of the boot disk asset of a release (ADR 0056).
+func BootDiskName(version string) string { return "naru-host-" + version + ".qcow2" }
+
+// legacyBootDiskName is the boot disk's name in releases made before ADR 0056, which ReadRelease
+// still reads.
+func legacyBootDiskName(version string) string { return "naru-" + version + ".qcow2" }
+
+// bootDiskPath is the boot disk asset in dir: under the naru-host name, or under the legacy one
+// when the release has no file under the new name.
+func bootDiskPath(dir, version string) (string, error) {
+	p := filepath.Join(dir, BootDiskName(version))
+	if _, err := os.Stat(p); err == nil {
+		return p, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	legacy := filepath.Join(dir, legacyBootDiskName(version))
+	if _, err := os.Stat(legacy); err != nil {
+		return "", fmt.Errorf("the release's boot disk, %s or %s: %w", BootDiskName(version), legacyBootDiskName(version), err)
+	}
+	return legacy, nil
+}
+
+// ReadRelease reads the assets `make release` writes into dir (naru-host-<v>.qcow2, or naru-<v>.qcow2
+// in a release made before ADR 0056, naru-data-<v>.qcow2,
+// naru-guest-<v>.json, naru-inputs-<v>.json and naru-orch-ext-<v>.sqfs with its .json) and prepares what a Node boots from them in work:
 // naru.img, the boot disk as a raw file, and inputs/, the tree of the data disk. It needs
 // qemu-img and /sbin/debugfs, which the Nodes need as well.
 func ReadRelease(dir, work string) (Release, error) {
@@ -65,7 +91,11 @@ func ReadRelease(dir, work string) (Release, error) {
 		return Release{}, err
 	}
 	r.BootDisk = filepath.Join(work, "naru.img")
-	if err := qemuImgRaw(filepath.Join(dir, "naru-"+r.Version+".qcow2"), r.BootDisk); err != nil {
+	bootAsset, err := bootDiskPath(dir, r.Version)
+	if err != nil {
+		return Release{}, err
+	}
+	if err := qemuImgRaw(bootAsset, r.BootDisk); err != nil {
 		return Release{}, err
 	}
 	data := filepath.Join(work, "data.img")
@@ -76,9 +106,17 @@ func ReadRelease(dir, work string) (Release, error) {
 	if out, err := exec.Command("/sbin/debugfs", "-R", "rdump /inputs "+work, data).CombinedOutput(); err != nil { //nolint:gosec // arguments built here
 		return Release{}, fmt.Errorf("read the data disk's inputs: %w: %s", err, out)
 	}
+	info, err := ReadExtensionInfo(filepath.Join(dir, ReleaseExtensionName(r.Version, ".json")))
+	if err != nil {
+		return Release{}, err
+	}
+	ext, err := writeStore(info, filepath.Join(dir, ReleaseExtensionName(r.Version, ".sqfs")), ExtensionStore(filepath.Join(work, "inputs")))
+	if err != nil {
+		return Release{}, err
+	}
 	r.Inputs = Inputs{
 		Dir: filepath.Join(work, "inputs"), FirecrackerSHA256: ri.FirecrackerSHA256, Guest: m,
-		Image: Image{Repository: ri.ImageRepository, Digest: ri.ImageDigest},
+		Image: Image{Repository: ri.ImageRepository, Digest: ri.ImageDigest}, Extension: ext,
 	}
 	if r.Naructl, err = StageNaructl(dir, work); err != nil {
 		return Release{}, err

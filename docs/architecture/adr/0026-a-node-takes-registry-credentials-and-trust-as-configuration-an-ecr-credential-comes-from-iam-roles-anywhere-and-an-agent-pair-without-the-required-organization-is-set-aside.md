@@ -52,3 +52,7 @@ Drafted for garamsh/naru#65, part of garamsh/naru#62 (E4) and garamsh/aurora#749
 - The bundle's age is regularly the cause of a refused pull: the answer is that the roots come from the Node's configuration or a feed, and the image carries a floor only.
 - `aws_signing_helper` is released for `CGO_ENABLED=0`, or the dlopen warning turns into a failure: the static cgo link of item 6 goes, or the helper is built another way.
 - Operators keep passwords in `spec.registries` after all and need them off the drive: the answer is that a Node takes a secret from somewhere that is not its configuration.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/cacert/`, `image/ecr-login/` and `image/rolesanywhere/` are under `image/common/`.

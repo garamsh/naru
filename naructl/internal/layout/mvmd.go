@@ -15,7 +15,7 @@ type File struct {
 	SHA256 string `json:"sha256"`
 }
 
-// Manifest is guest.json, which image/guest/build.sh writes and the release carries as
+// Manifest is guest.json, which image/host/guest/build.sh writes and the release carries as
 // naru-guest-<version>.json (ADR 0010): the guest kernels and initrds a Node boots Machines from.
 type Manifest struct {
 	Kernels         map[string]File `json:"kernels"`
@@ -106,14 +106,17 @@ func (n Node) mvmdJSON() ([]byte, error) {
 		"ipv4_gateway": first,
 		"resolvers":    []string{first},
 	}
-	if len(n.Peers) > 0 {
+	if len(n.Peers)+len(n.NoMasquerade) > 0 {
 		// A Machine's traffic to another Node's Machines keeps its source address, so the peer's
 		// Machines see who sent it (mvmd ADR 0049).
-		peers := make([]string, 0, len(n.Peers))
+		keep := make([]string, 0, len(n.Peers)+len(n.NoMasquerade))
 		for _, p := range n.Peers {
-			peers = append(peers, p.MachinePrefix.String())
+			keep = append(keep, p.MachinePrefix.String())
 		}
-		network["no_masquerade"] = peers
+		for _, p := range n.NoMasquerade {
+			keep = append(keep, p.String())
+		}
+		network["no_masquerade"] = keep
 	}
 	registry := map[string]any{"credentials_file": RegistryFilesDir + "/registry/credentials.json"}
 	helpers := map[string]string{}

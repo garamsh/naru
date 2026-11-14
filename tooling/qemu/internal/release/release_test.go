@@ -2,10 +2,13 @@ package release_test
 
 import (
 	"archive/tar"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -108,12 +111,12 @@ func userDataFiles(t *testing.T) (map[string][]byte, error) {
 // testCA is the registry authority of the user-data the tests last asked for.
 var testCA string
 
-// buildInit builds naru-init from the init module alone, as a release would, and returns its path.
+// buildInit builds naru-init from the node module alone, as a release would, and returns its path.
 func buildInit(t *testing.T) string {
 	t.Helper()
 	initBin := filepath.Join(t.TempDir(), "naru-init")
 	build := exec.Command("go", "build", "-o", initBin, "./cmd/naru-init") //nolint:gosec // fixed arguments
-	build.Dir = filepath.Join(repoRoot(t), "init")
+	build.Dir = filepath.Join(repoRoot(t), "node")
 	build.Env = append(os.Environ(), "GOWORK=off")
 	out, err := build.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -391,6 +394,13 @@ func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
 	binary.LittleEndian.PutUint64(img[1024+32:], 2048)
 	binary.LittleEndian.PutUint64(img[1024+40:], 2048+4*1024*1024-1)
 	require.NoError(t, os.WriteFile(filepath.Join(diskDir, "naru.img"), img, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(imageDir, "node-initrd.cpio.gz"), []byte("node initramfs"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(imageDir, fixture.ExtensionDir), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(imageDir, fixture.ExtensionDir, fixture.ExtensionImageName), []byte("squashfs"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(imageDir, fixture.ExtensionDir, fixture.ExtensionInfoName),
+		[]byte(`{"name":"naru-orch","version":"v9","sha256":"`+hexOf([]byte("squashfs"))+`","services":["naru-orchd","naru-signer"]}`), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(guestDir, "boot-sets", release.NodeBootSet), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "boot-sets", release.NodeBootSet, "vmlinux"), []byte("node kernel"), 0o600))
 	d := strings.Repeat("a", 64)
 	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "guest.json"), []byte(`{"kernels":{"naru":{"path":"/k","sha256":"`+d+`"}},"default_kernel":"naru",
 "guest_initrd":{"path":"/g","sha256":"`+d+`"},"converter_initrd":{"path":"/c","sha256":"`+d+`"}}`), 0o600))
@@ -446,6 +456,28 @@ func TestBuild_ShipsNaructlAsAnExecutableAssetListedInSHA256SUMS(t *testing.T) {
 	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums))
 }
 
+func TestBuild_NamesTheHostArtifactsNaruHostAndLeavesTheOldNamesOut(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+
+	assets, err := release.Build(o)
+
+	require.NoError(t, err)
+	var listed []string
+	for _, a := range assets {
+		listed = append(listed, a.Name)
+	}
+	assert.Contains(t, listed, "naru-host-v9.qcow2", "the boot disk")
+	assert.Contains(t, listed, "naru-host-upgrade-v9.tar", "the upgrade bundle")
+	assert.NotContains(t, listed, "naru-v9.qcow2")
+	assert.NotContains(t, listed, "naru-upgrade-v9.tar")
+	assert.Contains(t, listed, "naru-data-v9.qcow2", "the other assets keep their names")
+	assert.FileExists(t, filepath.Join(o.Out, "naru-host-v9.qcow2"))
+	assert.NoFileExists(t, filepath.Join(o.Out, "naru-v9.qcow2"))
+	entries, err := os.ReadDir(o.Out)
+	require.NoError(t, err)
+	assert.Len(t, entries, 14, "the assets and SHA256SUMS")
+}
+
 func TestBuild_ShipsTheUpgradeBundleListedInSHA256SUMS(t *testing.T) {
 	o := fakeBuildInputs(t, strings.Repeat("7", 64))
 
@@ -484,6 +516,115 @@ func TestBuild_TheBundleManifestRecordsTheESPOfTheBootDisk(t *testing.T) {
 	}
 }
 
+func hexOf(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+func TestBuild_ShipsTheNodeBootSetAsKernelInitramfsAndAManifestThatNamesTheirDigests(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+
+	assets, err := release.Build(o)
+
+	require.NoError(t, err)
+	kernel, err := os.ReadFile(filepath.Join(o.Out, "naru-node-kernel-v9"))
+	require.NoError(t, err, "the release holds the boot set's kernel")
+	assert.Equal(t, "node kernel", string(kernel))
+	initramfs, err := os.ReadFile(filepath.Join(o.Out, "naru-node-initramfs-v9"))
+	require.NoError(t, err, "the release holds the boot set's initramfs")
+	assert.Equal(t, "node initramfs", string(initramfs))
+	b, err := os.ReadFile(filepath.Join(o.Out, "naru-node-v9.json"))
+	require.NoError(t, err, "the release holds the boot set's manifest")
+	var m release.BootSetJSON
+	require.NoError(t, json.Unmarshal(b, &m))
+	assert.Equal(t, release.BootSetJSON{
+		Name: "naru-node-v9", Version: "v9",
+		Kernel:    release.BootSetFileJSON{File: "naru-node-kernel-v9", SHA256: hexOf(kernel), Bytes: int64(len(kernel))},
+		Initramfs: release.BootSetFileJSON{File: "naru-node-initramfs-v9", SHA256: hexOf(initramfs), Bytes: int64(len(initramfs))},
+	}, m)
+	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
+	require.NoError(t, err)
+	for _, name := range []string{"naru-node-kernel-v9", "naru-node-initramfs-v9", "naru-node-v9.json"} {
+		assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists "+name)
+	}
+	assert.Len(t, assets, 13, "the eight assets of before, the three of the boot set and the two of the extension, which SHA256SUMS makes 14 files")
+}
+
+func TestBuild_ShipsTheOrchExtensionAndItsDescriptionListedInSHA256SUMS(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+
+	_, err := release.Build(o)
+
+	require.NoError(t, err)
+	image, err := os.ReadFile(filepath.Join(o.Out, "naru-orch-ext-v9.sqfs"))
+	require.NoError(t, err, "the release holds the extension's image")
+	assert.Equal(t, "squashfs", string(image))
+	info, err := fixture.ReadExtensionInfo(filepath.Join(o.Out, "naru-orch-ext-v9.json"))
+	require.NoError(t, err, "the release holds the description an operator reads the SHA-256 from")
+	assert.Equal(t, hexOf(image), info.SHA256, "the description states the image's digest")
+	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
+	require.NoError(t, err)
+	for _, name := range []string{"naru-orch-ext-v9.sqfs", "naru-orch-ext-v9.json"} {
+		assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), name)
+	}
+}
+
+func TestBuild_RefusesAReleaseWhoseImageHasNoExtension(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+	require.NoError(t, os.Remove(filepath.Join(o.ImageDir, fixture.ExtensionDir, fixture.ExtensionImageName)))
+
+	_, err := release.Build(o)
+
+	assert.ErrorContains(t, err, "the extension's image (make image)")
+}
+
+func TestBuild_RefusesAnExtensionWhoseDescriptionStatesAnotherDigestOrVersion(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+	info := filepath.Join(o.ImageDir, fixture.ExtensionDir, fixture.ExtensionInfoName)
+	require.NoError(t, os.WriteFile(info, []byte(`{"name":"naru-orch","version":"v9","sha256":"`+strings.Repeat("d", 64)+`","services":["naru-orchd"]}`), 0o600))
+
+	_, err := release.Build(o)
+
+	assert.ErrorContains(t, err, "states SHA-256 "+strings.Repeat("d", 64))
+
+	require.NoError(t, os.WriteFile(info, []byte(`{"name":"naru-orch","version":"v1","sha256":"`+hexOf([]byte("squashfs"))+`","services":["naru-orchd"]}`), 0o600))
+
+	_, err = release.Build(o)
+
+	assert.ErrorContains(t, err, "built for version v1, not the release's v9")
+}
+
+func TestBuild_WritesTheNotesFiguresOutsideTheAssetsWhenAsked(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+	o.Figures = filepath.Join(t.TempDir(), "figures.env")
+
+	_, err := release.Build(o)
+
+	require.NoError(t, err)
+	b, err := os.ReadFile(o.Figures)
+	require.NoError(t, err)
+	esp := int64(2 << 30)
+	want := esp - esp/64 - 1<<20 - int64(len("kernel"))
+	assert.Equal(t, fmt.Sprintf("ESP_BYTES=%d\nLARGEST_UPGRADE_KERNEL_BYTES=%d\n", esp, want), string(b))
+	entries, err := os.ReadDir(o.Out)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotEqual(t, "figures.env", e.Name(), "the figures are not an asset")
+	}
+}
+
+func TestBootSetName_NormalizesAVersionToWhatMvmdTakesAndRefusesOneThatIsTooLong(t *testing.T) {
+	for version, want := range map[string]string{
+		"v0.4.0": "naru-node-v0-4-0", "V1.0.0-RC1": "naru-node-v1-0-0-rc1", "v1+build_2": "naru-node-v1-build-2",
+	} {
+		got, err := release.BootSetName(version)
+		require.NoError(t, err, version)
+		assert.Equal(t, want, got)
+		assert.Regexp(t, `^[a-z0-9-]{1,63}$`, got)
+	}
+	_, err := release.BootSetName(strings.Repeat("a", 54))
+	assert.Error(t, err, "naru-node- and 54 characters is 64")
+	_, err = release.BootSetName(strings.Repeat("a", 53))
+	assert.NoError(t, err, "63 is the longest")
+}
+
 func TestBuild_RefusesAKernelThePreviousReleasesNodesCannotTakeUnlessRecreationIsRequired(t *testing.T) {
 	o := fakeBuildInputs(t, strings.Repeat("7", 64))
 	var prev release.BundleManifestJSON
@@ -518,4 +659,13 @@ func TestUserData_EveryNodeTrustsTheRegistryServiceThroughSpecRegistries(t *test
 			assert.Equal(t, testCA, n.Spec.Registries[0].CA, name)
 		}
 	}
+}
+
+func TestInitramfsList_CarriesNeitherOrchdNorTheSignerTheExtensionDoes(t *testing.T) {
+	list, err := os.ReadFile("../../../../image/host/initramfs/initramfs.list")
+	require.NoError(t, err)
+
+	assert.Regexp(t, `(?m)^file /bin/naru-hostd `, string(list), "the list still installs the programs init runs from the initramfs")
+	assert.NotContains(t, string(list), "naru-orchd")
+	assert.NotContains(t, string(list), "naru-signer")
 }

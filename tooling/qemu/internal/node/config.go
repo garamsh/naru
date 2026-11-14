@@ -51,6 +51,12 @@ type Config struct {
 	// HostAPIHostPort, when not 0 and with HostPort, adds a forward of the host's loopback port to
 	// naru-hostd's port on the same NIC (ADR 0028).
 	HostAPIHostPort int
+	// RouteHostPort, when not 0 and with HostPort, adds a forward of the host's loopback port to
+	// naru-mvmroute's port on the same NIC, the test host's route to the microVMs' addresses.
+	RouteHostPort int
+	// ExtraForwards, with HostPort, are forwards of the host's loopback to more ports of the second NIC:
+	// the orch, the signer's socket proxy and the metrics of a multi-host scenario (see Forward).
+	ExtraForwards []Forward
 	// HostReach, with HostPort, leaves the second NIC's user-mode network unrestricted, so the
 	// guest reaches the test host at 10.0.2.2 (a time server the test runs on the host). The NIC
 	// has no gateway, so the Node still has no route off the host. Without it the NIC is
@@ -59,6 +65,8 @@ type Config struct {
 	// MemoryMiB is the Node's memory; 0 is 3072. A Kubernetes Node's initramfs holds the control-plane
 	// programs, so it asks for more (ADR 0031).
 	MemoryMiB int
+	// CPUs is the Node's virtual CPUs; 0 is 2.
+	CPUs int
 	// Routes is the Node's spec.network.routes.
 	Routes []Route
 	// NoMasquerade is mvmd's network.no_masquerade: the prefixes whose traffic from a Machine keeps

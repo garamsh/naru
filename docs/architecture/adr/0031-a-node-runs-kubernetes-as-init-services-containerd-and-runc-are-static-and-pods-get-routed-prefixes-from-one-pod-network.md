@@ -43,3 +43,7 @@ Drafted for garamsh/naru#91, on the critical path of garamsh/aurora#804. It ride
 - The Pod network needs a policy, a Service mesh or more than a flat routed prefix per Node: a CNI plugin then replaces the bridge and static routes.
 - The kubelet's Pods need to live in a service's own cgroup, or init needs to account for them: the delegated group is then wrong.
 - A Node runs out of memory with the control plane and the runtime on it, in the tests or in a deployment: the control plane then moves to Nodes of its own.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/cni/`, `image/containerd/` and `image/kubernetes/` are under `image/node/`, and `image/nftables/` and `image/util-linux/` are under `image/common/`.

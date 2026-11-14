@@ -2,8 +2,11 @@ package signer_test
 
 import (
 	"encoding/json"
+	"encoding/pem"
+	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -16,7 +19,11 @@ import (
 // serve listens on a unix socket with h and returns a client of it.
 func serve(t *testing.T, h http.Handler) *signer.Client {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "s.sock")
+	// t.TempDir carries the test's name, which with a long TMPDIR passes the 107 bytes of a socket path.
+	dir, err := os.MkdirTemp("", "s")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "s.sock")
 	l, err := net.Listen("unix", path)
 	require.NoError(t, err)
 	srv := &http.Server{Handler: h}
@@ -34,7 +41,11 @@ func TestIssueHostSendsTheStatementAndTheRequestAndReturnsTheCertificate(t *test
 	}))
 	cert, err := c.IssueHost(t.Context(), []byte("stmt"), []byte("csr"))
 	require.NoError(t, err)
-	require.Equal(t, "CERT", string(cert))
+	block, rest := pem.Decode(cert)
+	require.NotNil(t, block, "the signer's DER certificate is returned as PEM")
+	require.Empty(t, rest)
+	require.Equal(t, "CERTIFICATE", block.Type)
+	require.Equal(t, "CERT", string(block.Bytes))
 	require.Equal(t, "stmt", string(got.Statement))
 	require.Equal(t, "csr", string(got.CSR))
 }
@@ -60,4 +71,27 @@ func TestCRL(t *testing.T) {
 	crl, err := c.CRL(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, "signed-crl", string(crl))
+}
+
+func TestPushCRLSendsTheListAsTheBodyAndReturnsTheListTheSignerHolds(t *testing.T) {
+	var got []byte
+	status := http.StatusOK
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/crl", func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		if status != http.StatusOK {
+			http.Error(w, "no", status)
+			return
+		}
+		_, _ = w.Write([]byte("held-crl"))
+	})
+	c := serve(t, mux)
+	held, err := c.PushCRL(t.Context(), []byte("pushed-crl"))
+	require.NoError(t, err)
+	require.Equal(t, "pushed-crl", string(got), "the signed list goes as it is, not wrapped")
+	require.Equal(t, "held-crl", string(held))
+
+	status = http.StatusForbidden
+	_, err = c.PushCRL(t.Context(), []byte("forged"))
+	require.ErrorIs(t, err, inventory.ErrSignerRefused)
 }

@@ -34,3 +34,7 @@ Drafted for garamsh/naru#110 (garamsh/aurora#804 Amendment 1, naru criterion 3).
 - A failed restart is common: hostd gets a retry, or a field that says how many times.
 - A caller needs a stop that a host restart undoes: `restartOnBoot` is not the whole of it.
 - mvmd changes `restart_on_boot` to settable after creation: the 409 on a different value goes.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/guest/pin.env` is `image/host/guest/pin.env` and `image/initramfs/pin.env` is `image/host/mvmd/pin.env`.

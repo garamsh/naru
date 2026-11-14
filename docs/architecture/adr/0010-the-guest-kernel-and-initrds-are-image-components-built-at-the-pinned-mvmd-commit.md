@@ -58,3 +58,7 @@ The files are the 16,166,832 B `vmlinux`, the 2,970,928 B guest initrd and the 2
 - A Machine fails to boot on the guest kernel for an option `required.txt` does not list; the missing option is then added to both files.
 - A second kernel is wanted that does not come from the same tarball; the tarball rationale then splits per kernel.
 - mvmd#364 changes shape before naru's pin reaches it, so that `guest.json` no longer maps to the Driver config without renaming.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/guest/` is `image/host/guest/` (`build.sh`, `kernels/`, `kernels.env`, `pin.env`), `image/guest/kernel.sh` is `image/common/kernel/kernel.sh`, `image/initramfs/build.sh` is `image/host/initramfs/build.sh`, `image/kernel/` is `image/common/kernel/` and `image/host/kernel/`, and `image/mvmd-checkout.sh` is `image/host/mvmd/checkout.sh`.

@@ -45,7 +45,7 @@ func TestQemuArgs_AnExtraDiskIsADriveOnTheSCSIControllerAndNoneWithoutIt(t *test
 }
 
 func TestInitramfsList_InstallsMkfsXFSForStorageDisks(t *testing.T) {
-	list, err := os.ReadFile("../../../../image/initramfs/initramfs.list")
+	list, err := os.ReadFile("../../../../image/host/initramfs/initramfs.list")
 	require.NoError(t, err)
 
 	assert.Regexp(t, `(?m)^file `+regexp.QuoteMeta("/bin/mkfs.xfs")+` @OUT@/mkfs\.xfs 0755 `, string(list))

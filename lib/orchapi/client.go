@@ -191,6 +191,18 @@ func (c *Client) SetLabels(ctx context.Context, hostID string, req SetLabelsRequ
 	return out, c.do(ctx, http.MethodPut, "/v1/hosts/"+url.PathEscape(hostID)+"/labels", nil, req, &out)
 }
 
+// Drain marks the host draining: the groups engine moves its members off it and places nothing on it.
+func (c *Client) Drain(ctx context.Context, hostID string) (Host, error) {
+	var out Host
+	return out, c.do(ctx, http.MethodPost, "/v1/hosts/"+url.PathEscape(hostID)+"/drain", nil, nil, &out)
+}
+
+// Undrain lets the host be placed on again.
+func (c *Client) Undrain(ctx context.Context, hostID string) (Host, error) {
+	var out Host
+	return out, c.do(ctx, http.MethodPost, "/v1/hosts/"+url.PathEscape(hostID)+"/undrain", nil, nil, &out)
+}
+
 // Events lists the event log, oldest first.
 func (c *Client) Events(ctx context.Context) ([]Event, error) {
 	var out []Event
@@ -207,6 +219,40 @@ func (c *Client) CRL(ctx context.Context) ([]byte, error) {
 func (c *Client) Snapshot(ctx context.Context) (SnapshotResult, error) {
 	var out SnapshotResult
 	return out, c.do(ctx, http.MethodPost, "/v1/snapshot", nil, nil, &out)
+}
+
+// LatestSnapshot returns the newest sealed snapshot the member holds, which only the recovery key opens.
+func (c *Client) LatestSnapshot(ctx context.Context) ([]byte, error) {
+	var out []byte
+	return out, c.do(ctx, http.MethodGet, "/v1/snapshots/latest", nil, nil, &out)
+}
+
+// Restore sends the plain etcd snapshot in plain to a member started with --restore that holds no
+// data, and sha256Hex is its SHA-256 in hex, which the member compares before it restores anything.
+func (c *Client) Restore(ctx context.Context, plain io.Reader, sha256Hex string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.base.JoinPath("/v1/restore").String(), plain)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set(HeaderSnapshotSHA256, sha256Hex)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode/100 == 2 {
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	if err != nil {
+		return err
+	}
+	e := &Error{Status: resp.StatusCode}
+	if json.Unmarshal(raw, e) != nil || e.Message == "" {
+		e.Message = strings.TrimSpace(string(raw))
+	}
+	return e
 }
 
 // Heartbeat tells orch the calling host, which the client certificate names, is alive.

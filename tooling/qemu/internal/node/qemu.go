@@ -2,6 +2,8 @@ package node
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
 )
 
@@ -50,9 +53,12 @@ type Spec struct {
 	// ExtraDiskFirst attaches the extra disk before the data disk, so that the kernel names them in
 	// the other order.
 	ExtraDiskFirst bool
-	// SerialSocket attaches the serial port as a server socket, Dir/serial.sock, that nothing
-	// reads, as Proxmox does for `serial0: socket`. Console is then empty.
+	// SerialSocket attaches the serial port as a server socket, SerialSocketPath(Dir), that
+	// nothing reads, as Proxmox does for `serial0: socket`. Console is then empty.
 	SerialSocket bool
+	// Capture records every frame of the shared network the Node sends and receives, as a pcap file at
+	// CapturePath(Dir): the tests read what crossed the link between two hosts.
+	Capture bool
 }
 
 // Node is one running QEMU machine.
@@ -95,7 +101,7 @@ func Start(spec Spec) (*Node, error) {
 	if err := BuildCidata(cidata, "naru15-"+spec.Config.Name, naruYAML, networkConfig); err != nil {
 		return nil, err
 	}
-	dataDisk, err := BuildDataDiskWith(spec.Dir, spec.Config.Inputs.Dir, spec.Config.AgentPair)
+	dataDisk, err := BuildDataDiskWith(spec.Dir, spec.Config.Inputs.Dir, spec.Config.AgentPair, spec.Config.Inputs.Extension.StoreDir)
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +196,24 @@ func (n *Node) Reboot() error {
 	return n.launch()
 }
 
+// ReplaceUserData writes a new NoCloud drive with the user-data and network-config, which the Node's
+// next boot reads: an operator who edits spec in the hypervisor's console and restarts the machine.
+// The instance ID is the same, so the data disk is kept.
+func (n *Node) ReplaceUserData(userData, networkConfig []byte) error {
+	return BuildCidata(filepath.Join(n.dir, "cidata.img"), "naru15-"+n.Name, userData, networkConfig)
+}
+
+// ResetData stops the Node, replaces its data disk with a new one that carries only the inputs tree
+// and the extension store of inputs, and boots it again: a control host that lost its disk, whose signer and orch state
+// are gone. The boot disk, the NoCloud drive and the variable store are kept.
+func (n *Node) ResetData(inputs fixture.Inputs) error {
+	n.Stop()
+	if _, err := BuildDataDiskWith(n.dir, inputs.Dir, "", inputs.Extension.StoreDir); err != nil {
+		return err
+	}
+	return n.launch()
+}
+
 // qemuArgs is the QEMU command line of a Node, laid out as Proxmox lays out a guest: a q35
 // machine under OVMF, the boot and data disks on a virtio-scsi controller, the NoCloud drive as a
 // CD-ROM on the AHCI bus, one virtio NIC, and the serial console written to console.
@@ -215,7 +239,7 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 	}
 	args := []string{
 		"-name", name + ",process=" + name,
-		"-enable-kvm", "-cpu", cpu, "-smp", "2", "-m", strconv.Itoa(memoryMiB(spec.Config)),
+		"-enable-kvm", "-cpu", cpu, "-smp", strconv.Itoa(cpus(spec.Config)), "-m", strconv.Itoa(memoryMiB(spec.Config)),
 		"-machine", "q35",
 		"-drive", "if=pflash,format=raw,unit=0,readonly=on,file=" + OVMFCode,
 		"-drive", "if=pflash,format=raw,unit=1,file=" + vars,
@@ -246,10 +270,19 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		if spec.Config.HostAPIHostPort != 0 {
 			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.HostAPIHostPort, HostNICAddress, HostAPIPort)
 		}
+		if spec.Config.RouteHostPort != 0 {
+			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.RouteHostPort, HostNICAddress, RoutePort)
+		}
+		for _, f := range spec.Config.ExtraForwards {
+			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", f.HostPort, HostNICAddress, f.GuestPort)
+		}
 		args = append(args,
 			"-netdev", netdev,
 			"-device", "virtio-net-pci,netdev=net1,mac="+spec.Config.HostMAC(),
 		)
+	}
+	if spec.Capture {
+		args = append(args, "-object", "filter-dump,id=cap0,netdev=net0,file="+CapturePath(spec.Dir))
 	}
 	if spec.RTCBase != "" {
 		args = append(args, "-rtc", "base="+spec.RTCBase+",clock=vm")
@@ -266,8 +299,17 @@ func serialArgs(spec Spec, console string) []string {
 	return []string{"-serial", "file:" + console}
 }
 
-// SerialSocketPath is the socket of a Node's serial port in dir, when its Spec has SerialSocket.
-func SerialSocketPath(dir string) string { return filepath.Join(dir, "serial.sock") }
+// CapturePath is the capture of a Node's shared network in dir, when its Spec has Capture.
+func CapturePath(dir string) string { return filepath.Join(dir, "net0.pcap") }
+
+// SerialSocketPath is the socket of a Node's serial port, when its Spec has SerialSocket. It is in
+// the temporary directory and named for dir, not inside dir: dir carries the test's name, and a unix
+// socket path may have no more than 107 bytes, which a long test name and TMPDIR pass, and QEMU then
+// never starts.
+func SerialSocketPath(dir string) string {
+	sum := sha256.Sum256([]byte(dir))
+	return filepath.Join(os.TempDir(), "naru-serial-"+hex.EncodeToString(sum[:8])+".sock")
+}
 
 // dataAndExtraDisks is the drives and devices of the data disk and, when the Node has one, the extra
 // disk, in the order the kernel finds them: the extra disk first when the Spec says so. Both are
@@ -289,6 +331,14 @@ func dataAndExtraDisks(spec Spec, dataDisk string) []string {
 		return append(extra, data...)
 	}
 	return append(data, extra...)
+}
+
+// cpus is the virtual CPUs of the Node's VM.
+func cpus(c Config) int {
+	if c.CPUs > 0 {
+		return c.CPUs
+	}
+	return 2
 }
 
 // memoryMiB is the memory of the Node's VM.
@@ -342,6 +392,9 @@ func (n *Node) Pid() int { return n.cmd.Process.Pid }
 // ConsolePath is the file the Node's serial console is written to, for the boot now running.
 func (n *Node) ConsolePath() string { return n.console }
 
+// CapturePath is where the Node's capture is, when its Spec had Capture.
+func (n *Node) CapturePath() string { return CapturePath(n.dir) }
+
 // Done is closed once the Node's QEMU process has exited, whoever ended it.
 func (n *Node) Done() <-chan struct{} { return n.done }
 
@@ -350,6 +403,7 @@ func (n *Node) Stop() {
 	n.once.Do(func() {
 		_ = n.cmd.Process.Kill()
 		<-n.done
+		_ = os.Remove(SerialSocketPath(n.dir))
 	})
 }
 

@@ -40,3 +40,7 @@ Drafted for garamsh/naru#98. It builds on [ADR 0005](./0005-configuration-is-a-y
 - **Splitting `initramfs.list` into a common and a host-only file.** The tests and the release code read the one file; a list of exclusions leaves them as they are.
 - **Putting the boot set in `guest.json` now.** It changes two strict parsers outside this part's paths.
 - **Formatting a blank disk without being asked.** A disk that is blank because it failed to attach would be formatted as a data disk; the field makes it the Node's configuration, which `naructl` sets for a guest Node only.
+
+## Errata
+
+- 2026-11-15: decision 3 is superseded: the Node's initramfs has its own list, `image/node/initramfs/initramfs.list`, and `guest-excludes.txt` is gone ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)). The paths it names moved: `image/guest/` is `image/host/guest/`, `image/guest/kernel.sh` is `image/common/kernel/kernel.sh`, `image/guest/kernels/node/naru.config` is `image/node/kernel/naru.config`, `image/guest/pin.env` is `image/host/guest/pin.env` and `image/kernel/naru.config` is `image/common/kernel/naru.config`.

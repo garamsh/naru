@@ -1,4 +1,4 @@
-.PHONY: lint format format-apply test test-cgroup test-qemu test-harness nodes judge-serial release build image image-upgrade disk image-repro ci
+.PHONY: lint lint-imports format format-apply test test-cgroup test-qemu test-harness test-release-upgrade nodes judge-serial release build image image-upgrade disk image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -31,6 +31,12 @@ endef
 lint:
 	$(call each_module, $(count_packages); (cd "$$dir" && go vet ./... && go vet -tags qemu_real ./...))
 
+# lint-imports fails when a unit imports another unit or lib/ imports a unit
+# (docs/architecture/structure.md). It reads every Go file of every module under the root, and
+# prints how many.
+lint-imports:
+	cd tooling/importcheck && go run ./cmd/importcheck -root $(CURDIR)
+
 format:
 	$(call each_module, \
 	files=$$(cd "$$dir" && git ls-files --cached --others --exclude-standard -z -- '*.go' | tr -cd '\0' | wc -c); \
@@ -55,7 +61,7 @@ test:
 test-cgroup:
 	@set -e; \
 	bin=$$(mktemp -d); trap 'rm -rf "$$bin"' EXIT; \
-	(cd init && go test -c -o "$$bin/linux.test" ./internal/linux); \
+	(cd lib/init && go test -c -o "$$bin/linux.test" ./linux); \
 	log=$$(mktemp); trap 'rm -rf "$$bin" "$$log"' EXIT; \
 	if ! systemd-run --user --scope --quiet -p Delegate=yes sh -c \
 	  'NARU_TEST_CGROUP_ROOT=/sys/fs/cgroup$$(cut -d: -f3 /proc/self/cgroup) exec "$$0" -test.v -test.run "^TestCgroups_" -test.count=1' \
@@ -65,13 +71,19 @@ test-cgroup:
 	echo "$@: $$n test(s) passed, selected by -test.run '^TestCgroups_' in a delegated cgroup"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
-# naru-init is static: it runs in an initramfs with no libc. naructl is static too: it is a release
+# The two naru-init, naru-signer and naru-orchd are static: each is carried by an initramfs with no libc. naructl is static too: it is a release
 # asset an operator runs on any Linux amd64 host.
 build:
 	$(call each_module, $(count_packages); (cd "$$dir" && go build ./...))
-	CGO_ENABLED=0 go build -trimpath -o $(BIN)/naru-init ./init/cmd/naru-init
+	CGO_ENABLED=0 go build -trimpath -o $(BIN)/host/naru-init ./host/cmd/naru-init
+	CGO_ENABLED=0 go build -trimpath -o $(BIN)/node/naru-init ./node/cmd/naru-init
+	CGO_ENABLED=0 go build -trimpath -o $(BIN)/host/naru-signer ./host/cmd/naru-signer
+	CGO_ENABLED=0 go build -trimpath -o $(BIN)/orch/naru-orchd ./orch/cmd/naru-orchd
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o $(BIN)/naructl ./naructl/cmd/naructl
-	@echo "build: $(BIN)/naru-init: $$(file -b $(BIN)/naru-init | cut -d, -f1-4)"
+	@echo "build: $(BIN)/host/naru-init: $$(file -b $(BIN)/host/naru-init | cut -d, -f1-4)"
+	@echo "build: $(BIN)/node/naru-init: $$(file -b $(BIN)/node/naru-init | cut -d, -f1-4)"
+	@echo "build: $(BIN)/host/naru-signer: $$(file -b $(BIN)/host/naru-signer | cut -d, -f1-4)"
+	@echo "build: $(BIN)/orch/naru-orchd: $$(file -b $(BIN)/orch/naru-orchd | cut -d, -f1-4)"
 	@echo "build: $(BIN)/naructl: $$(file -b $(BIN)/naructl | cut -d, -f1-4)"
 
 # image builds the host kernel, the guest kernels and initrds, the static mke2fs and mkfs.xfs, gaon's four
@@ -79,7 +91,7 @@ build:
 # (the kernel with the initramfs inside it, ADR 0020; bzImage.bare is the kernel before that),
 # initramfs.cpio.gz, inputs.env (the Firecracker pin the tests read) and guest/,
 # which holds what the initramfs carries of the guests, with guest.json naming
-# it. The scripts skip what their inputs say is built, and verify every download.
+# it, and extensions/ (the naru-orch system extension, ADR 0055). The scripts skip what their inputs say is built, and verify every download.
 GUEST := $(IMAGE)/guest
 E2FS := $(IMAGE)/e2fsprogs
 GAON := $(IMAGE)/gaon
@@ -99,48 +111,53 @@ XFS := $(IMAGE)/xfsprogs
 VERSION ?= $(shell git describe --tags --always)
 export NARU_VERSION := $(VERSION)
 image:
-	image/kernel/build.sh $(BUILD)/kernel $(IMAGE)
-	image/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
-	image/xfsprogs/build.sh $(BUILD)/xfsprogs $(XFS)
-	image/gaon/build.sh $(BUILD)/gaon $(GAON)
-	image/etcd/build.sh $(BUILD)/etcd $(ETCD)
-	image/kubernetes/build.sh $(BUILD)/kubernetes $(K8S)
-	image/containerd/build.sh $(BUILD)/containerd $(K8S)
-	image/cni/build.sh $(BUILD)/cni $(K8S)
-	image/nftables/build.sh $(BUILD)/nftables $(K8S)
-	image/util-linux/build.sh $(BUILD)/util-linux $(K8S)
-	image/ecr-login/build.sh $(BUILD)/ecr-login $(REGTOOLS)
-	image/rolesanywhere/build.sh $(BUILD)/rolesanywhere $(REGTOOLS)
-	image/cacert/build.sh $(BUILD)/cacert $(REGTOOLS) $(TEST_ROOT)
-	image/mvmd-checkout.sh $(BUILD)/initramfs/mvmd
-	image/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
-	image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S)
-	image/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
+	image/host/kernel/build.sh $(BUILD)/kernel $(IMAGE)
+	image/common/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
+	image/common/xfsprogs/build.sh $(BUILD)/xfsprogs $(XFS)
+	image/host/gaon/build.sh $(BUILD)/gaon $(GAON)
+	image/node/etcd/build.sh $(BUILD)/etcd $(ETCD)
+	image/node/kubernetes/build.sh $(BUILD)/kubernetes $(K8S)
+	image/node/containerd/build.sh $(BUILD)/containerd $(K8S)
+	image/node/cni/build.sh $(BUILD)/cni $(K8S)
+	image/common/nftables/build.sh $(BUILD)/nftables $(K8S)
+	image/common/util-linux/build.sh $(BUILD)/util-linux $(K8S)
+	image/common/ecr-login/build.sh $(BUILD)/ecr-login $(REGTOOLS)
+	image/common/rolesanywhere/build.sh $(BUILD)/rolesanywhere $(REGTOOLS)
+	image/common/cacert/build.sh $(BUILD)/cacert $(REGTOOLS) $(TEST_ROOT)
+	image/host/mvmd/checkout.sh $(BUILD)/initramfs/mvmd
+	image/host/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
+	image/node/kernel/build.sh $(BUILD)/kernel $(BUILD)/guest $(GUEST)
+	image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(IMAGE) $(E2FS) $(ETCD) $(REGTOOLS) $(XFS) $(K8S)
+	image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S)
+	image/host/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
+	image/host/extension/build.sh $(BUILD)/extension $(IMAGE)
 
 # image-upgrade builds the two kernels the upgrade tests (ADR 0025) put on a running Node, from the
 # programs and the kernel image built: next/bzImage is the same tree with the version $(VERSION)-next
 # stamped in, and refuse/bzImage a naru-init that cannot find its configuration drive, so a trial
 # boot of it refuses and rolls back by itself. The second kernel's version carries an extra linker
-# flag, which build.sh passes to the linker as part of -X main.buildVersion=.
+# flag, which build.sh passes to the linker as part of -X github.com/garamsh/naru/lib/init/run.buildVersion=.
 UPGRADE := $(BUILD)/upgrade
-REFUSE_FLAG := -X github.com/garamsh/naru/init/internal/linux.seedLabel=naru67-absent
+REFUSE_FLAG := -X github.com/garamsh/naru/lib/init/linux.seedLabel=naru67-absent
 image-upgrade: image
 	@set -e; \
 	for v in next refuse; do \
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
 	  cp $(IMAGE)/bzImage.bare $(IMAGE)/kernel.stamp $(UPGRADE)/$$v/; \
 	done; \
-	NARU_VERSION='$(VERSION)-next' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
-	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/next $(UPGRADE)/next/initramfs.cpio.gz; \
-	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
-	image/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
+	NARU_VERSION='$(VERSION)-next' image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(UPGRADE)/next $(E2FS) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
+	NARU_VERSION='$(VERSION)-next' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
+	image/host/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/next $(UPGRADE)/next/initramfs.cpio.gz; \
+	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(E2FS) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
+	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
+	image/host/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
 
 # disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
 # disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and has room for a second one, and
 # naru.qcow2, the same disk for Proxmox's import_from. It needs mkfs.fat,
 # sgdisk and qemu-img, and neither root nor mtools.
 disk: image
-	image/disk/build.sh $(BUILD)/disk $(IMAGE)
+	image/host/disk/build.sh $(BUILD)/disk $(IMAGE)
 
 # image-repro builds the image and the disk twice from clean build directories
 # and fails unless the kernel, the initramfs, the guest manifest (which names
@@ -151,26 +168,29 @@ image-repro:
 	@set -e; \
 	for i in 1 2; do \
 	  rm -rf $(BUILD)/repro/$$i; \
-	  image/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
-	  image/e2fsprogs/build.sh $(BUILD)/repro/$$i/e2fsprogs $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
-	  image/xfsprogs/build.sh $(BUILD)/repro/$$i/xfsprogs $(BUILD)/repro/$$i/image/xfsprogs >/dev/null; \
-	  image/gaon/build.sh $(BUILD)/repro/$$i/gaon $(BUILD)/repro/$$i/image/gaon >/dev/null; \
-	  image/etcd/build.sh $(BUILD)/repro/$$i/etcd $(BUILD)/repro/$$i/image/etcd >/dev/null; \
-	  image/kubernetes/build.sh $(BUILD)/repro/$$i/kubernetes $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/containerd/build.sh $(BUILD)/repro/$$i/containerd $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/cni/build.sh $(BUILD)/repro/$$i/cni $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/nftables/build.sh $(BUILD)/repro/$$i/nftables $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/util-linux/build.sh $(BUILD)/repro/$$i/util-linux $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/ecr-login/build.sh $(BUILD)/repro/$$i/ecr-login $(BUILD)/repro/$$i/image/regtools >/dev/null; \
-	  image/rolesanywhere/build.sh $(BUILD)/repro/$$i/rolesanywhere $(BUILD)/repro/$$i/image/regtools >/dev/null; \
-	  image/cacert/build.sh $(BUILD)/repro/$$i/cacert $(BUILD)/repro/$$i/image/regtools >/dev/null; \
-	  image/mvmd-checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
-	  image/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
-	  image/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/kernel/embed.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/initramfs.cpio.gz >/dev/null; \
-	  image/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
+	  image/host/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
+	  image/common/e2fsprogs/build.sh $(BUILD)/repro/$$i/e2fsprogs $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
+	  image/common/xfsprogs/build.sh $(BUILD)/repro/$$i/xfsprogs $(BUILD)/repro/$$i/image/xfsprogs >/dev/null; \
+	  image/host/gaon/build.sh $(BUILD)/repro/$$i/gaon $(BUILD)/repro/$$i/image/gaon >/dev/null; \
+	  image/node/etcd/build.sh $(BUILD)/repro/$$i/etcd $(BUILD)/repro/$$i/image/etcd >/dev/null; \
+	  image/node/kubernetes/build.sh $(BUILD)/repro/$$i/kubernetes $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/node/containerd/build.sh $(BUILD)/repro/$$i/containerd $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/node/cni/build.sh $(BUILD)/repro/$$i/cni $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/common/nftables/build.sh $(BUILD)/repro/$$i/nftables $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/common/util-linux/build.sh $(BUILD)/repro/$$i/util-linux $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/common/ecr-login/build.sh $(BUILD)/repro/$$i/ecr-login $(BUILD)/repro/$$i/image/regtools >/dev/null; \
+	  image/common/rolesanywhere/build.sh $(BUILD)/repro/$$i/rolesanywhere $(BUILD)/repro/$$i/image/regtools >/dev/null; \
+	  image/common/cacert/build.sh $(BUILD)/repro/$$i/cacert $(BUILD)/repro/$$i/image/regtools >/dev/null; \
+	  image/host/mvmd/checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
+	  image/host/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
+	  image/node/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
+	  image/node/initramfs/build.sh $(BUILD)/repro/$$i/node-initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/host/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs $(BUILD)/repro/$$i/image/k8s >/dev/null; \
+	  image/host/kernel/embed.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/initramfs.cpio.gz >/dev/null; \
+	  image/host/extension/build.sh $(BUILD)/repro/$$i/extension $(BUILD)/repro/$$i/image >/dev/null; \
+	  image/host/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
 	done; \
-	for f in bzImage e2fsprogs/mke2fs xfsprogs/mkfs.xfs etcd/etcd regtools/docker-credential-ecr-login regtools/aws_signing_helper regtools/ca-certificates.crt gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz node-initrd.cpio.gz boot-sets.json guest/boot-sets/naru-node/vmlinux guest/guest.json naru.img naru.qcow2; do \
+	for f in bzImage e2fsprogs/mke2fs xfsprogs/mkfs.xfs etcd/etcd regtools/docker-credential-ecr-login regtools/aws_signing_helper regtools/ca-certificates.crt gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz node-initrd.cpio.gz boot-sets.json guest/boot-sets/naru-node/vmlinux guest/guest.json extensions/naru-orch.sqfs extensions/naru-orch.json naru.img naru.qcow2; do \
 	  a=$$(sha256sum $(BUILD)/repro/1/image/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/$$f | cut -d' ' -f1); \
 	  echo "$@: $$f build 1 $$a"; echo "$@: $$f build 2 $$b"; \
 	  if [ "$$a" != "$$b" ]; then echo "$@: $$f differs between the builds" >&2; exit 1; fi; \
@@ -181,7 +201,7 @@ image-repro:
 	  if [ "$$a" != "$$b" ]; then echo "$@: k8s/$$f differs between the builds" >&2; exit 1; fi; \
 	done; \
 	echo "$@: the Kubernetes programs, containerd, runc, the CNI plugins, nft, mount and umount are byte-identical across two clean builds"; \
-	echo "$@: bzImage, mke2fs, mkfs.xfs, etcd, the two credential helpers, the root bundle, the four gaon binaries, initramfs.cpio.gz, the guest form's initrd, kernel and boot-sets.json, guest.json, naru.img and naru.qcow2 are byte-identical across two clean builds"
+	echo "$@: bzImage, mke2fs, mkfs.xfs, etcd, the two credential helpers, the root bundle, the four gaon binaries, initramfs.cpio.gz, the guest form's initrd, kernel and boot-sets.json, guest.json, the naru-orch extension and its description, naru.img and naru.qcow2 are byte-identical across two clean builds"
 
 # nodes boots N (default 2) Nodes of the image under QEMU on one network, as
 # the user, and keeps them up until interrupted. Their disks and consoles are
@@ -207,13 +227,17 @@ judge-serial:
 	@test -n "$(NODE1)" -a -n "$(NODE2)" || { echo "judge-serial: usage: make judge-serial NODE1=<log> NODE2=<log>" >&2; exit 2; }
 	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_GAON),-gaon) $(if $(JUDGE_NARUCTL),-naructl "$(abspath $(JUDGE_NARUCTL))") $(if $(JUDGE_PKI),-pki) $(if $(JUDGE_NODE_API),-node-api $(JUDGE_NODE_API)) $(if $(JUDGE_NODE1_INTERFACES),-node1-interfaces $(JUDGE_NODE1_INTERFACES)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
 
-# release writes the assets of a deployment into $(RELEASE): naru-<version>.qcow2 (the boot disk),
-# naru-upgrade-<version>.tar (the upgrade bundle: the kernel and a manifest of its digest),
-# naru-data-<version>.qcow2 (the one data disk both Nodes attach), naru-guest-<version>.json,
+# release writes the assets of a deployment into $(RELEASE): naru-host-<version>.qcow2 (the boot disk),
+# naru-host-upgrade-<version>.tar (the upgrade bundle: the kernel and a manifest of its digest),
+# naru-node-kernel-<version>, naru-node-initramfs-<version> and naru-node-<version>.json (the Node boot
+# set a host takes with `naructl host boot-set add`, ADR 0046), naru-data-<version>.qcow2 (the one data
+# disk both Nodes attach), naru-guest-<version>.json,
 # naru-inputs-<version>.json (what naru-cluster reads besides the disks), naructl-<version>-linux-amd64
 # (the operator's tool, which also writes the test user-data below from a CA that lives only for the
 # run), naru-node-1.test.yaml and naru-node-2.test.yaml (test-only user-data for Proxmox: they carry
-# gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. VERSION is defined above image.
+# gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. $(BUILD)/release-figures.env,
+# outside $(RELEASE) because every file there is an asset, holds the ESP size and the largest in-place
+# upgrade kernel, which the release workflow puts in the notes. VERSION is defined above image.
 # PREV_MANIFEST is the path of the manifest.json of the previous release's upgrade bundle: the
 # release is refused when its kernel would not fit the trial slot of a Node installed from that
 # release's image (ADR 0037), unless RECREATE=1, which says the release's notes tell those Nodes to
@@ -225,7 +249,7 @@ release: disk
 	rm -rf $(RELEASE)
 	mkdir -p $(BUILD)/naructl
 	cd naructl && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o $(BUILD)/naructl/naructl ./cmd/naructl
-	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -out $(RELEASE) -version $(VERSION) $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
+	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
 
 # test-qemu boots Nodes of the image under QEMU, as the user, and reads their consoles. It needs
 # /dev/kvm with nested virtualization and the host's mkfs.ext4 (for the data disk), and fails,
@@ -245,6 +269,20 @@ test-qemu:
 	echo "$@: $$n test(s) passed, selected by -run '^Test(Node|ControlPlane)_' with -tags qemu_real"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
+# test-release-upgrade installs the release in FROM and upgrades the Node in place to the release in
+# TO, both directories as `gh release download <tag>` writes them (docs/architecture/image.md). It
+# is run before a release is cut, on the previous release and the candidate. It needs what test-qemu
+# needs, builds nothing and fails, never skips, when no test passed.
+test-release-upgrade:
+	@test -n "$(FROM)" -a -n "$(TO)" || { echo "usage: make $@ FROM=<release dir> TO=<release dir>" >&2; exit 2; }
+	@set -e; \
+	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
+	if ! (cd tooling/qemu && NARU_FROM_RELEASE_DIR=$(abspath $(FROM)) NARU_TO_RELEASE_DIR=$(abspath $(TO)) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestRelease_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	cat "$$log"; \
+	n=$$(grep -c '^--- PASS: TestRelease_' "$$log" || true); \
+	echo "$@: $$n test(s) passed, selected by -run '^TestRelease_' with -tags qemu_real"; \
+	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
+
 # test-harness drives naru-cluster as an external harness does (docs/architecture/harness.md): from
 # a directory outside the checkout, against the output of `make release`, with the gaon binaries
 # of the pin as -gaon-bin. It is a target of its own so that test-qemu stays the length it is. It
@@ -258,4 +296,4 @@ test-harness: release
 	echo "$@: $$n test(s) passed, selected by -run '^TestCluster_' with -tags qemu_real"; \
 	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
 
-ci: lint format test build
+ci: lint lint-imports format test build

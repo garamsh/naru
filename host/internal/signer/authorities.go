@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ const (
 	revocationFile   = "revocation.key"
 	recoveryPubFile  = "recovery-public.json"
 	crlFile          = "crl.json"
+	issuedFile       = "issued.json" // optional: a directory made before it has none
 	certSuffix       = ".crt"
 	keySuffix        = ".key"
 	bundleVersion    = 1
@@ -48,6 +50,9 @@ type authorities struct {
 	recovery             identity.RecoveryPublic
 	crl                  identity.CRL
 	crlSigned            []byte
+	// issued is the role of every serial the signer issued, by serial in lower-case hex. A
+	// revoke reads it to keep root's serials root's.
+	issued map[string]string
 }
 
 func newAuthority(cn string, now time.Time) (authority, error) {
@@ -186,7 +191,26 @@ func (a *authorities) save(dir string) error {
 	if err := writeFile(filepath.Join(dir, recoveryPubFile), pub); err != nil {
 		return err
 	}
+	if err := writeFile(filepath.Join(dir, issuedFile), a.marshalIssued()); err != nil {
+		return err
+	}
 	return writeFile(filepath.Join(dir, crlFile), a.crlSigned)
+}
+
+func (a *authorities) marshalIssued() []byte {
+	b, _ := json.Marshal(a.issued) // a map of strings always marshals
+	return b
+}
+
+// withIssued returns a copy of a that also records serial as issued to role.
+func (a *authorities) withIssued(serial string, role identity.Role) *authorities {
+	next := *a
+	next.issued = maps.Clone(a.issued)
+	if next.issued == nil {
+		next.issued = map[string]string{}
+	}
+	next.issued[serial] = string(role)
+	return &next
 }
 
 // writeFile writes data to path as a file of mode 0600 that is replaced whole or not at all.
@@ -270,6 +294,13 @@ func loadAuthorities(dir string) (*authorities, error) {
 	if a.crlSigned, err = os.ReadFile(filepath.Join(dir, crlFile)); err != nil { //nolint:gosec // a file of the signer's own directory
 		return nil, fmt.Errorf("read %s: %w", crlFile, err)
 	}
+	if data, err := os.ReadFile(filepath.Join(dir, issuedFile)); err == nil { //nolint:gosec // a file of the signer's own directory
+		if err := json.Unmarshal(data, &a.issued); err != nil {
+			return nil, fmt.Errorf("%w: %s: %w", errCorrupt, issuedFile, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read %s: %w", issuedFile, err)
+	}
 	if err := a.check(); err != nil {
 		return nil, err
 	}
@@ -325,6 +356,7 @@ type bundleFile struct {
 	Revocation []byte                  `json:"revocation"`
 	Recovery   identity.RecoveryPublic `json:"recovery"`
 	CRL        []byte                  `json:"crl"`
+	Issued     map[string]string       `json:"issued,omitempty"`
 }
 
 type bundleAuthority struct {
@@ -350,7 +382,7 @@ func (a *authorities) marshalBundle() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal revocation key: %w", err)
 	}
-	b.Revocation, b.Recovery, b.CRL = revDER, a.recovery, a.crlSigned
+	b.Revocation, b.Recovery, b.CRL, b.Issued = revDER, a.recovery, a.crlSigned, a.issued
 	return json.Marshal(b)
 }
 
@@ -363,7 +395,7 @@ func parseBundle(plain []byte) (*authorities, error) {
 	if b.Version != bundleVersion {
 		return nil, fmt.Errorf("%w: bundle version %d", errCorrupt, b.Version)
 	}
-	a := &authorities{recovery: b.Recovery, crlSigned: b.CRL}
+	a := &authorities{recovery: b.Recovery, crlSigned: b.CRL, issued: b.Issued}
 	var err error
 	for _, p := range []struct {
 		from bundleAuthority

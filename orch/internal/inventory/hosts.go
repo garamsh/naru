@@ -20,6 +20,23 @@ func (s *service) SetLabels(ctx context.Context, by, hostID string, req orchapi.
 	return h.api(), nil
 }
 
+func (s *service) Drain(ctx context.Context, by, hostID string) (orchapi.Host, error) {
+	return s.setDraining(ctx, by, hostID, true, EventDrained)
+}
+
+func (s *service) Undrain(ctx context.Context, by, hostID string) (orchapi.Host, error) {
+	return s.setDraining(ctx, by, hostID, false, EventUndrained)
+}
+
+func (s *service) setDraining(ctx context.Context, by, hostID string, draining bool, event string) (orchapi.Host, error) {
+	ev := orchapi.Event{Time: s.clock.Now(), Type: event, Subject: hostID, Detail: map[string]string{"by": by}}
+	h, err := s.store.UpdateHost(ctx, hostID, func(h *Host) { h.Draining = draining }, &ev)
+	if err != nil {
+		return orchapi.Host{}, err
+	}
+	return h.api(), nil
+}
+
 func (s *service) Heartbeat(ctx context.Context, hostID string) error {
 	now := s.clock.Now()
 	_, err := s.store.UpdateHost(ctx, hostID, func(h *Host) { h.LastSeen = now }, nil)

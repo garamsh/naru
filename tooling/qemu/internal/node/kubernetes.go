@@ -81,6 +81,12 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 		Kubeconfig: filepath.Join(spec.Dir, "admin.conf"),
 		Image:      spec.Inputs.Image.Repository + "@" + spec.Inputs.Image.Digest,
 	}
+	// The sandbox runs the image's command with no arguments, which would serve the microVM probe on
+	// the port the test's server listens on.
+	sandbox := c.Image
+	if spec.Inputs.Sandbox.Digest != "" {
+		sandbox = spec.Inputs.Sandbox.Repository + "@" + spec.Inputs.Sandbox.Digest
+	}
 	if err := os.WriteFile(c.Kubeconfig, admin, 0o600); err != nil {
 		return nil, err
 	}
@@ -91,7 +97,7 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 			cfg.HostPort = port // only the control-plane Node has the second NIC
 		}
 		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, cfg.Name), Mcast: mcast}
-		if start.NaruYAML, start.NetworkConfig, err = kubeNode(cfg, caDir, apiServer, c.Image, spec); err != nil {
+		if start.NaruYAML, start.NetworkConfig, err = kubeNode(cfg, caDir, apiServer, sandbox, spec); err != nil {
 			c.Stop()
 			return nil, fmt.Errorf("write the user-data of %s: %w", cfg.Name, err)
 		}
@@ -106,7 +112,7 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 }
 
 // kubeNode has naructl write the user-data and network-config of the Node c names.
-func kubeNode(c Config, caDir, apiServer, image string, spec KubeSpec) (userData, networkConfig []byte, err error) {
+func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userData, networkConfig []byte, err error) {
 	n := c.net()
 	ones, _ := net.IPMask(net.ParseIP(n.Netmask).To4()).Size()
 	dir := filepath.Join(spec.Dir, c.Name)
@@ -123,7 +129,7 @@ func kubeNode(c Config, caDir, apiServer, image string, spec KubeSpec) (userData
 		PodNetwork: KubePodNetwork, PodPrefix: KubePodPrefix(c.Index),
 		Peers: []string{QEMUNetwork(other, 2).IP + "=" + KubePodPrefix(other)},
 		MAC:   n.MAC, Gateway: n.Gateway, Nameservers: n.Nameservers, Search: n.Search,
-		LocalRegistry: true, RegistryCA: path.Join(fixture.GuestRoot, "registry", "ca.pem"), SandboxImage: image,
+		LocalRegistry: true, RegistryCA: path.Join(fixture.GuestRoot, "registry", "ca.pem"), SandboxImage: sandbox,
 		Disable: spec.Disable,
 		Out:     filepath.Join(dir, "naru.yaml"), NetworkConfig: filepath.Join(dir, "network-config"),
 	}

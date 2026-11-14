@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -44,13 +45,21 @@ type certificateResponse struct {
 }
 
 func (c *Client) call(ctx context.Context, method, path string, in any) ([]byte, error) {
-	var body io.Reader
+	var raw []byte
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
 			return nil, err
 		}
-		body = bytes.NewReader(b)
+		raw = b
+	}
+	return c.do(ctx, method, path, raw)
+}
+
+func (c *Client) do(ctx context.Context, method, path string, in []byte) ([]byte, error) {
+	var body io.Reader
+	if in != nil {
+		body = bytes.NewReader(in)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, "http://signer"+path, body)
 	if err != nil {
@@ -84,10 +93,17 @@ func (c *Client) IssueHost(ctx context.Context, statement, csr []byte) ([]byte, 
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("the signer's certificate answer: %w", err)
 	}
-	return out.Certificate, nil
+	// The signer answers the certificate as DER; the Signer interface, and the host after it, take PEM.
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: out.Certificate}), nil
 }
 
 // CRL returns the signed revocation list.
 func (c *Client) CRL(ctx context.Context) ([]byte, error) {
 	return c.call(ctx, http.MethodGet, "/v1/crl", nil)
+}
+
+// PushCRL gives the signer a revocation list another signer holds and returns the list the signer
+// holds afterwards, which is the merge of the two when each had a serial the other lacked.
+func (c *Client) PushCRL(ctx context.Context, data []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/v1/crl", data)
 }

@@ -47,6 +47,9 @@ func (e *Engine) Observe(ctx context.Context) (Observed, error) {
 	if o.Members, err = e.store.ListMembers(ctx); err != nil {
 		return Observed{}, fmt.Errorf("list members: %w", err)
 	}
+	if o.Networks, err = e.store.ListNetworks(ctx); err != nil {
+		return Observed{}, fmt.Errorf("list networks: %w", err)
+	}
 	if o.Hosts, err = e.hosts.List(ctx); err != nil {
 		return Observed{}, fmt.Errorf("list hosts: %w", err)
 	}

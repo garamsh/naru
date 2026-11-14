@@ -44,6 +44,10 @@ type Signer struct {
 
 	mu   sync.RWMutex
 	auth *authorities
+	// peered and lastPush are guarded by mu: whether orch's sync has ever pushed a list here and
+	// when it last did.
+	peered   bool
+	lastPush time.Time
 }
 
 // Open opens the signer's directory. A directory that holds no authority is blank: Init, Restore
@@ -52,7 +56,7 @@ func Open(opts Options) (*Signer, error) {
 	if err := checkDirectory(opts.Dir); err != nil {
 		return nil, err
 	}
-	s := &Signer{dir: opts.Dir, log: opts.Log, now: opts.Now}
+	s := &Signer{dir: opts.Dir, log: opts.Log, now: opts.Now, peered: peeredIn(opts.Dir)}
 	if s.now == nil {
 		s.now = time.Now
 	}

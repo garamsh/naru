@@ -35,6 +35,9 @@ const (
 // inventory, so it is never written unsealed.
 var ErrNoSealer = errors.New("no recovery public key is configured, so no snapshot is written")
 
+// ErrNoSnapshot is returned when the directory holds no sealed snapshot yet.
+var ErrNoSnapshot = errors.New("no snapshot has been written yet")
+
 // Sealer seals data to the recovery key's public half.
 type Sealer interface {
 	Seal(plain []byte) ([]byte, error)
@@ -123,6 +126,18 @@ func (t *Taker) Take(ctx context.Context) (orchapi.SnapshotResult, error) {
 		return orchapi.SnapshotResult{}, err
 	}
 	return orchapi.SnapshotResult{File: name, Size: int64(len(sealed))}, t.prune()
+}
+
+// Latest returns the newest sealed snapshot in Dir.
+func (t *Taker) Latest() ([]byte, error) {
+	names, err := List(t.Dir)
+	if errors.Is(err, os.ErrNotExist) || err == nil && len(names) == 0 {
+		return nil, ErrNoSnapshot
+	}
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(filepath.Join(t.Dir, names[0]))
 }
 
 func (t *Taker) prune() error {

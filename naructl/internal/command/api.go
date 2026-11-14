@@ -186,9 +186,9 @@ func services(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "NAME\tSTATE\tPID\tRESTARTS\tSTARTED")
+	_, _ = fmt.Fprintln(w, "NAME\tSTATE\tPID\tRESTARTS\tSTARTED\tEXTENSION")
 	for _, s := range list {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\n", s.Name, s.State, s.PID, s.Restarts, s.StartedAt)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\t%s\n", s.Name, s.State, s.PID, s.Restarts, s.StartedAt, s.Extension)
 	}
 	return w.Flush()
 }
@@ -228,11 +228,16 @@ func getConfig(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	// The document is the configuration and its status, printed as the one YAML document it is.
+	var doc map[string]any
+	if err := json.Unmarshal(cfg.Config, &doc); err != nil {
+		return fmt.Errorf("GET /v1/config: the answer is not what the Node API sends: %w", err)
+	}
+	b, err := yaml.Marshal(doc)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, "%s\n", b)
+	_, err = fmt.Fprintf(stdout, "%s", b)
 	return err
 }
 

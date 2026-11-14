@@ -45,3 +45,7 @@ Drafted for garamsh/naru#16. It supersedes the delivery of [ADR 0005](./0005-con
 - Operators need DHCP, IPv6 or several addresses per card, so the strict parser refuses what a host legitimately writes.
 - The test writer's volume reads in the kernel and not in a Proxmox-made one, which would show the test no longer stands for Proxmox.
 - The netlink module is found to carry an advisory that its pinned version has, or goes unmaintained.
+
+## Errata
+
+- 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/kernel/pin.env` is `image/common/kernel/pin.env` and `image/kernel/required.txt` is `image/host/kernel/required.txt`.

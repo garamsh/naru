@@ -4,10 +4,10 @@
 <h2>{{.Host.ID}} <small>{{.Host.Region}}</small></h2>
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 <table>
-<thead><tr><th>Name</th><th>State</th><th>Group</th><th>Image</th></tr></thead>
+<thead><tr><th>Name</th><th>State</th><th>Group</th><th>Network</th><th>Image</th></tr></thead>
 <tbody>
-{{range .MicroVMs}}<tr><td>{{.Name}}</td><td class="state-{{.State}}">{{.State}}</td><td>{{.Group}}</td><td>{{.Image}}</td></tr>
-{{else}}<tr><td colspan="4">No microVMs.</td></tr>{{end}}
+{{range .MicroVMs}}<tr><td>{{.Name}}</td><td class="state-{{.State}}">{{.State}}</td><td>{{.Group}}</td><td>{{.Network}}</td><td>{{.Image}}</td></tr>
+{{else}}<tr><td colspan="5">No microVMs.</td></tr>{{end}}
 </tbody>
 </table>
 {{else}}{{if not .NoFleet}}<p>No such host.</p>{{end}}{{end}}

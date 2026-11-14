@@ -1,4 +1,4 @@
-// Package guest reads guest.json, which image/guest/build.sh writes and the image carries: the
+// Package guest reads guest.json, which image/host/guest/build.sh writes and the image carries: the
 // guest kernels and initrds a Node boots Machines from, each with the path it has inside the image
 // and its SHA-256 (ADR 0010). The tests' mvmd configuration is made from it, so a path or a digest
 // is written once, by the build that produced the file.

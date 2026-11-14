@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -20,24 +21,61 @@ import (
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
+	"github.com/garamsh/naru/orch/internal/groupsvc"
 	"github.com/garamsh/naru/orch/internal/inventory"
+	"github.com/garamsh/naru/orch/internal/restore"
+	"github.com/garamsh/naru/orch/internal/snapshot"
 )
 
 // maxBody bounds a request body.
 const maxBody = 1 << 20
 
-// Snapshots takes a sealed etcd snapshot now.
+// Snapshots takes a sealed etcd snapshot now and returns the newest one written.
 type Snapshots interface {
 	Take(ctx context.Context) (orchapi.SnapshotResult, error)
+	Latest() ([]byte, error)
+}
+
+// Restorer restores the plain etcd snapshot read from r, whose SHA-256 the caller states in hex,
+// into a member that holds no data, and returns once the member runs. It returns
+// restore.ErrRejected for a snapshot it will not restore and ErrRestored once a restore has begun.
+type Restorer interface {
+	Restore(ctx context.Context, r io.Reader, sha256Hex string) error
+}
+
+// ErrRestored is returned by a Restorer that has already restored, or is restoring.
+var ErrRestored = errors.New("this member is not waiting for a restore")
+
+// maxRestore bounds a restore's body; etcd's default size limit is 2 GiB, and a member's keys are small.
+const maxRestore = 1 << 30
+
+// Networks is the networks service the handlers call.
+type Networks interface {
+	Apply(ctx context.Context, by, name string, spec orchapi.NetworkSpec) (orchapi.Network, error)
+	Get(ctx context.Context, name string) (orchapi.Network, error)
+	List(ctx context.Context) ([]orchapi.Network, error)
+	Delete(ctx context.Context, by, name string) error
 }
 
 // Deps is what the handlers call.
 type Deps struct {
 	Inventory inventory.Service
+	Groups    groupsvc.Service
+	Networks  Networks
 	Signer    inventory.Signer
 	Auth      auth.Authenticator
 	Snapshots Snapshots
-	Log       *slog.Logger
+	// Metrics counts the requests; nil counts none.
+	Metrics *Metrics
+	Log     *slog.Logger
+}
+
+// RestoreDeps is what a member that waits for a restore calls.
+type RestoreDeps struct {
+	Restorer Restorer
+	Auth     auth.Authenticator
+	Metrics  *Metrics
+	Log      *slog.Logger
 }
 
 type handler struct {
@@ -53,17 +91,44 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/hosts", h.guard(auth.Read, h.hosts))
 	mux.HandleFunc("GET /v1/pending", h.guard(auth.Read, h.pending))
 	mux.HandleFunc("GET /v1/events", h.guard(auth.Read, h.events))
+	mux.HandleFunc("GET /v1/microvms", h.guard(auth.Read, h.microVMs))
+	mux.HandleFunc("GET /v1/groups", h.guard(auth.Read, h.groupList))
+	mux.HandleFunc("GET /v1/groups/{name}", h.guard(auth.Read, h.groupGet))
+	mux.HandleFunc("PUT /v1/groups/{name}", h.guard(auth.Operate, h.groupApply))
+	mux.HandleFunc("DELETE /v1/groups/{name}", h.guard(auth.Operate, h.groupDelete))
+	mux.HandleFunc("GET /v1/networks", h.guard(auth.Read, h.networkList))
+	mux.HandleFunc("GET /v1/networks/{name}", h.guard(auth.Read, h.networkGet))
+	mux.HandleFunc("PUT /v1/networks/{name}", h.guard(auth.Operate, h.networkApply))
+	mux.HandleFunc("DELETE /v1/networks/{name}", h.guard(auth.Operate, h.networkDelete))
 	mux.HandleFunc("GET /v1/crl", h.guard(auth.Any, h.crl))
 	mux.HandleFunc("POST /v1/admit", h.guard(auth.Operate, h.admit))
 	mux.HandleFunc("POST /v1/enrollment-keys", h.guard(auth.Operate, h.createKey))
 	mux.HandleFunc("DELETE /v1/enrollment-keys/{id}", h.guard(auth.Operate, h.revokeKey))
 	mux.HandleFunc("PUT /v1/hosts/{id}/labels", h.guard(auth.Operate, h.labels))
+	mux.HandleFunc("POST /v1/hosts/{id}/drain", h.guard(auth.Operate, h.drain))
+	mux.HandleFunc("POST /v1/hosts/{id}/undrain", h.guard(auth.Operate, h.undrain))
 	mux.HandleFunc("POST /v1/snapshot", h.guard(auth.Administer, h.snapshot))
+	mux.HandleFunc("GET /v1/snapshots/latest", h.guard(auth.Administer, h.latestSnapshot))
+	mux.HandleFunc("PUT /v1/restore", h.guard(auth.Administer, h.alreadyRestored))
 	mux.HandleFunc("POST /v1/heartbeat", h.guard(auth.Report, h.heartbeat))
 	// Enrollment is the one path without a client certificate: a key, or a proof of one, authenticates.
 	mux.HandleFunc("POST /v1/enroll", h.enroll)
 	mux.HandleFunc("GET /v1/enroll/{hostID}", h.poll)
-	return h.middleware(mux)
+	return h.middleware(h.Metrics.count(mux))
+}
+
+// NewRestoring returns the handler of a member that holds no data and waits for a restore: PUT
+// /v1/restore, with the same certificate check and root role as the full API, and 503 for the rest.
+func NewRestoring(d RestoreDeps) http.Handler {
+	h := &handler{Deps{Auth: d.Auth, Metrics: d.Metrics, Log: d.Log}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /v1/restore", h.guard(auth.Administer, func(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+		h.restore(d.Restorer, w, r, who)
+	}))
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusServiceUnavailable, orchapi.Error{Message: "this member waits for a restore"})
+	})
+	return h.middleware(h.Metrics.count(mux))
 }
 
 // TLSConfig is the server's configuration: the client's certificate is verified against clientCA
@@ -148,7 +213,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, identity.ErrRevoked), errors.Is(err, identity.ErrRole), errors.Is(err, identity.ErrNoChain):
 		status, msg = http.StatusForbidden, err.Error()
-	case errors.Is(err, auth.ErrNoRevocationList):
+	case errors.Is(err, auth.ErrNoRevocationList), errors.Is(err, auth.ErrStaleRevocationList):
 		status, msg = http.StatusServiceUnavailable, "the revocation list is not available"
 		logger(r).Error("no revocation list", "err", err.Error())
 	case errors.Is(err, inventory.ErrRateLimited):
@@ -159,6 +224,12 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusForbidden, err.Error()
 	case errors.Is(err, inventory.ErrNotFound):
 		status, msg = http.StatusNotFound, err.Error()
+	case errors.Is(err, restore.ErrRejected):
+		status, msg = http.StatusBadRequest, err.Error()
+	case errors.Is(err, snapshot.ErrNoSnapshot):
+		status, msg = http.StatusNotFound, err.Error()
+	case errors.Is(err, ErrRestored):
+		status, msg = http.StatusConflict, err.Error()
 	case errors.Is(err, inventory.ErrConflict), errors.Is(err, inventory.ErrTooManyPending):
 		status, msg = http.StatusConflict, err.Error()
 	case errors.Is(err, inventory.ErrInvalid), errors.Is(err, orchapi.ErrBadProof):
@@ -227,9 +298,115 @@ func (h *handler) labels(w http.ResponseWriter, r *http.Request, who identity.Id
 	reply(w, r, out, err)
 }
 
+func (h *handler) drain(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	out, err := h.Inventory.Drain(r.Context(), who.Subject, r.PathValue("id"))
+	reply(w, r, out, err)
+}
+
+func (h *handler) undrain(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	out, err := h.Inventory.Undrain(r.Context(), who.Subject, r.PathValue("id"))
+	reply(w, r, out, err)
+}
+
+func (h *handler) microVMs(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Groups.MicroVMs(r.Context())
+	reply(w, r, out, err)
+}
+
+func (h *handler) groupList(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Groups.List(r.Context())
+	reply(w, r, out, err)
+}
+
+func (h *handler) groupGet(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Groups.Get(r.Context(), r.PathValue("name"))
+	reply(w, r, out, err)
+}
+
+func (h *handler) groupApply(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	var spec orchapi.GroupSpec
+	if !decode(w, r, &spec) {
+		return
+	}
+	name := r.PathValue("name")
+	if spec.Name == "" {
+		spec.Name = name
+	}
+	if spec.Name != name {
+		writeError(w, r, fmt.Errorf("%w: the body names group %q and the path %q", inventory.ErrInvalid, spec.Name, name))
+		return
+	}
+	out, err := h.Groups.Apply(r.Context(), who.Subject, spec)
+	reply(w, r, out, err)
+}
+
+func (h *handler) groupDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	if err := h.Groups.Delete(r.Context(), who.Subject, r.PathValue("name")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *handler) networkList(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Networks.List(r.Context())
+	reply(w, r, out, err)
+}
+
+func (h *handler) networkGet(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Networks.Get(r.Context(), r.PathValue("name"))
+	reply(w, r, out, err)
+}
+
+func (h *handler) networkApply(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	var spec orchapi.NetworkSpec
+	if !decode(w, r, &spec) {
+		return
+	}
+	out, err := h.Networks.Apply(r.Context(), who.Subject, r.PathValue("name"), spec)
+	reply(w, r, out, err)
+}
+
+func (h *handler) networkDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	if err := h.Networks.Delete(r.Context(), who.Subject, r.PathValue("name")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *handler) snapshot(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
 	out, err := h.Snapshots.Take(r.Context())
 	reply(w, r, out, err)
+}
+
+func (h *handler) latestSnapshot(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	sealed, err := h.Snapshots.Latest()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = w.Write(sealed)
+}
+
+// restore streams the body to the restorer. The server's read timeout is lifted for it: a snapshot
+// is larger than any other body.
+func (h *handler) restore(rs Restorer, w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(10 * time.Minute))
+	_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Minute))
+	logger(r).Info("restoring a snapshot", "subject", who.Subject)
+	if err := rs.Restore(r.Context(), http.MaxBytesReader(w, r.Body, maxRestore), r.Header.Get(orchapi.HeaderSnapshotSHA256)); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// alreadyRestored answers a restore sent to a member that runs: restoring replaces nothing.
+func (h *handler) alreadyRestored(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	writeError(w, r, ErrRestored)
 }
 
 func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request, who identity.Identity) {

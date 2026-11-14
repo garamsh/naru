@@ -7,6 +7,8 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"maps"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -81,6 +83,109 @@ func (s *Signer) IssueHost(_ context.Context, statement, csr []byte) ([]byte, er
 
 // CRL implements inventory.Signer.
 func (s *Signer) CRL(context.Context) ([]byte, error) { return s.CA.CRL() }
+
+// CRLReplica stands in for one naru-signer replica's revocation list: it takes lists with
+// PushCRL and merges them the way the signer does, serials and reissue nonces both, and Revoke adds
+// a serial to its own.
+type CRLReplica struct {
+	ca     *CA
+	mu     sync.Mutex
+	seq    uint64
+	set    map[string]struct{}
+	nonces map[string]time.Time
+	cur    []byte
+}
+
+// NewCRLReplica starts a replica holding the empty list at sequence 1.
+func NewCRLReplica(t testing.TB, ca *CA) *CRLReplica {
+	r := &CRLReplica{ca: ca, seq: 1, set: map[string]struct{}{}, nonces: map[string]time.Time{}}
+	if err := r.sign(); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func (r *CRLReplica) sign() error {
+	crl := identity.CRL{Seq: r.seq, IssuedAt: time.Now(), Nonces: maps.Clone(r.nonces)}
+	for s := range r.set {
+		crl.Serials = append(crl.Serials, s)
+	}
+	sort.Strings(crl.Serials)
+	b, err := r.ca.SignCRL(crl)
+	r.cur = b
+	return err
+}
+
+// Revoke adds the identity's serial and signs the next sequence.
+func (r *CRLReplica) Revoke(id Identity) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.set[identity.SerialOf(id.Cert)] = struct{}{}
+	r.seq++
+	return r.sign()
+}
+
+// UseNonce records a reissue nonce, live until expiresAt, and signs the next sequence.
+func (r *CRLReplica) UseNonce(nonce string, expiresAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nonces[nonce] = expiresAt
+	r.seq++
+	return r.sign()
+}
+
+// CRL returns the list the replica holds.
+func (r *CRLReplica) CRL(context.Context) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cur, nil
+}
+
+// PushCRL takes a list and returns the one held: the same with nothing new, the pushed one when it
+// is newer and holds everything held, and otherwise the union signed at the higher sequence plus one.
+func (r *CRLReplica) PushCRL(_ context.Context, data []byte) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	in, err := identity.VerifyCRL(r.ca.RevocationKey(), data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", inventory.ErrSignerRefused, err)
+	}
+	now := time.Now()
+	ownSerials, ownNonces := len(r.set), len(r.nonces)
+	for _, s := range in.Serials {
+		r.set[s] = struct{}{}
+	}
+	for n, exp := range in.Nonces {
+		if exp.After(now) {
+			r.nonces[n] = exp
+		}
+	}
+	if len(r.set) == ownSerials && len(r.nonces) == ownNonces {
+		return r.cur, nil
+	}
+	if len(r.set) == len(in.Serials) && len(r.nonces) == len(in.Nonces) && in.Seq > r.seq {
+		r.seq, r.cur = in.Seq, data
+		return r.cur, nil
+	}
+	r.seq = max(r.seq, in.Seq) + 1
+	return r.cur, r.sign()
+}
+
+// HasNonce reports whether the replica holds the reissue nonce.
+func (r *CRLReplica) HasNonce(nonce string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.nonces[nonce]
+	return ok
+}
+
+// Has reports whether the replica holds the serial.
+func (r *CRLReplica) Has(id Identity) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.set[identity.SerialOf(id.Cert)]
+	return ok
+}
 
 // Clock is a clock a test moves.
 type Clock struct {

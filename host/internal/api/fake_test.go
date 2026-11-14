@@ -2,6 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
 	"slices"
 	"sort"
 	"sync"
@@ -25,6 +29,12 @@ type fakeRuntime struct {
 	contents map[string][]byte
 	// stops counts the StopMachine calls that reached mvmd.
 	stops int
+	// fences is the state of each fenced Machine's own fence; snapshots are the snapshots held.
+	fences    map[string]mvmd.Deadline
+	snapshots map[string]mvmd.Snapshot
+	// bootSets are the boot sets added, and bootFiles the kernel and initrd each was given.
+	bootSets  map[string]mvmd.BootSet
+	bootFiles map[string][2][]byte
 }
 
 // step records a call that changes mvmd and returns the error a test set for it.
@@ -36,6 +46,8 @@ func (f *fakeRuntime) step(name string) error {
 func newFake() *fakeRuntime {
 	return &fakeRuntime{
 		machines: map[string]mvmd.Machine{}, disks: map[string]mvmd.Disk{}, failAt: map[string]error{}, contents: map[string][]byte{},
+		fences: map[string]mvmd.Deadline{}, snapshots: map[string]mvmd.Snapshot{},
+		bootSets: map[string]mvmd.BootSet{}, bootFiles: map[string][2][]byte{},
 		info: mvmd.Info{
 			APIVersion: "v1alpha2", Driver: "fake", CPUs: 8, MemoryBytes: 1 << 33, StateTotalBytes: 100, StateAvailableBytes: 60,
 			MachinePrefixes: []string{"10.1.0.0/24"},
@@ -131,7 +143,7 @@ func (f *fakeRuntime) CreateMachine(_ context.Context, c mvmd.Create) (mvmd.Mach
 		return mvmd.Machine{}, f.err
 	}
 	m := mvmd.Machine{
-		BootSet: c.BootSet, Cmdline: c.Cmdline, RoutedPrefixes: c.RoutedPrefixes, RestartOnBoot: c.RestartOnBoot,
+		BootSet: c.BootSet, Cmdline: c.Cmdline, RoutedPrefixes: c.RoutedPrefixes, RestartOnBoot: c.RestartOnBoot, Fenced: c.Fenced,
 		ID: c.ID, State: mvmd.StateCreated, ImageDigest: c.ImageDigest, CPU: c.CPU, MemoryBytes: c.MemoryBytes,
 		RootDiskBytes: c.RootDiskBytes, Disks: c.Disks, Policy: c.Policy, Addresses: []string{"10.1.0.5"},
 	}
@@ -148,6 +160,9 @@ func (f *fakeRuntime) StartMachine(_ context.Context, id string) (mvmd.Machine, 
 	m, ok := f.machines[id]
 	if !ok {
 		return mvmd.Machine{}, mvmd.ErrNotFound
+	}
+	if m.Fenced && f.fences[id].Phase != "armed" {
+		return mvmd.Machine{}, mvmd.ErrPrecondition
 	}
 	m.State = mvmd.StateRunning
 	f.machines[id] = m
@@ -203,4 +218,164 @@ func (f *fakeRuntime) Renew(context.Context, time.Duration, uint64) error { retu
 
 func (f *fakeRuntime) InspectDeadline(context.Context) (mvmd.Deadline, error) {
 	return mvmd.Deadline{}, nil
+}
+
+// fenceOf returns a fenced Machine's fence, or the error mvmd answers for another Machine.
+func (f *fakeRuntime) fenceOf(id string) (mvmd.Deadline, error) {
+	m, ok := f.machines[id]
+	if !ok {
+		return mvmd.Deadline{}, mvmd.ErrNotFound
+	}
+	if !m.Fenced {
+		return mvmd.Deadline{}, mvmd.ErrPrecondition
+	}
+	d := f.fences[id]
+	if d.Phase == "" {
+		d.Phase = "notArmed"
+	}
+	return d, nil
+}
+
+func (f *fakeRuntime) RenewMachine(_ context.Context, id string, length time.Duration, number uint64) (mvmd.Deadline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("renew " + id); err != nil {
+		return mvmd.Deadline{}, err
+	}
+	d, err := f.fenceOf(id)
+	if err != nil {
+		return mvmd.Deadline{}, err
+	}
+	if number > d.LastNumber {
+		d = mvmd.Deadline{Phase: "armed", Armed: true, Length: length, Remaining: length, LastNumber: number}
+		f.fences[id] = d
+	}
+	return d, nil
+}
+
+func (f *fakeRuntime) InspectMachineDeadline(_ context.Context, id string) (mvmd.Deadline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fenceOf(id)
+}
+
+func (f *fakeRuntime) SnapshotMachine(_ context.Context, snapshotID, machineID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("snapshot " + snapshotID); err != nil {
+		return err
+	}
+	m, ok := f.machines[machineID]
+	if !ok {
+		return mvmd.ErrNotFound
+	}
+	if (m.State != mvmd.StateRunning && m.State != mvmd.StatePaused) || m.BootSet != "" {
+		return mvmd.ErrPrecondition
+	}
+	sn := mvmd.Snapshot{
+		ID: snapshotID, MachineID: machineID, ImageDigest: m.ImageDigest, Driver: "fake 1", CPUModel: "model",
+		RootDisk: m.RootDiskBytes, SizeBytes: 42,
+	}
+	for _, d := range m.Disks {
+		sn.Disks = append(sn.Disks, mvmd.SnapshotDisk{ID: d.ID, ReadOnly: d.ReadOnly, SizeBytes: f.disks[d.ID].SizeBytes})
+	}
+	f.snapshots[snapshotID] = sn
+	return nil
+}
+
+func (f *fakeRuntime) ListSnapshots(context.Context) ([]mvmd.Snapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []mvmd.Snapshot
+	for _, s := range f.snapshots {
+		out = append(out, s)
+	}
+	return out, f.err
+}
+
+func (f *fakeRuntime) DeleteSnapshot(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("deleteSnapshot " + id); err != nil {
+		return err
+	}
+	delete(f.snapshots, id)
+	return nil
+}
+
+func (f *fakeRuntime) RestoreMachine(_ context.Context, r mvmd.Restore) (mvmd.Machine, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("restore " + r.ID); err != nil {
+		return mvmd.Machine{}, err
+	}
+	sn, ok := f.snapshots[r.SnapshotID]
+	if !ok {
+		return mvmd.Machine{}, mvmd.ErrNotFound
+	}
+	if _, ok := f.machines[r.ID]; ok {
+		return mvmd.Machine{}, mvmd.ErrConflict
+	}
+	m := mvmd.Machine{
+		ID: r.ID, State: mvmd.StateRunning, ImageDigest: sn.ImageDigest, RootDiskBytes: sn.RootDisk,
+		Policy: r.Policy, RoutedPrefixes: r.RoutedPrefixes, Addresses: []string{"10.1.0.6"},
+	}
+	for _, d := range sn.Disks {
+		if _, ok := f.disks[d.ID]; !ok {
+			return mvmd.Machine{}, fmt.Errorf("disk %s is gone: %w", d.ID, mvmd.ErrPrecondition)
+		}
+		m.Disks = append(m.Disks, mvmd.Attachment{ID: d.ID, ReadOnly: d.ReadOnly})
+	}
+	f.machines[r.ID] = m
+	return m, nil
+}
+
+func sha256Of(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// AddBootSet reads both files whole and refuses one whose SHA-256 is not the set's, as mvmd does.
+func (f *fakeRuntime) AddBootSet(_ context.Context, set mvmd.BootSet, kernel, initrd io.Reader) error {
+	k, err := io.ReadAll(kernel)
+	if err != nil {
+		return err
+	}
+	i, err := io.ReadAll(initrd)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("addBootSet " + set.Name); err != nil {
+		return err
+	}
+	if got := sha256Of(k); got != set.KernelDigest {
+		return fmt.Errorf("%w: the kernel's SHA-256 is %s", mvmd.ErrInvalid, got)
+	}
+	if got := sha256Of(i); got != set.InitrdDigest {
+		return fmt.Errorf("%w: the initrd's SHA-256 is %s", mvmd.ErrInvalid, got)
+	}
+	if have, ok := f.bootSets[set.Name]; ok && have != set {
+		return mvmd.ErrConflict
+	}
+	f.bootSets[set.Name] = set
+	f.bootFiles[set.Name] = [2][]byte{k, i}
+	return nil
+}
+
+func (f *fakeRuntime) RemoveBootSet(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("removeBootSet " + name); err != nil {
+		return err
+	}
+	for _, m := range f.machines {
+		if m.BootSet == name {
+			return mvmd.ErrPrecondition
+		}
+	}
+	delete(f.bootSets, name)
+	delete(f.bootFiles, name)
+	return nil
 }
