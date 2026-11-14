@@ -71,7 +71,7 @@ func main() {
 type runFlags struct {
 	name, dataDir, peerURL, clientURL, initial, state, listen string
 	cert, key, ca, sans, sock, snapDir, revoke, recovery      string
-	snapEvery, maxAge, crlEvery                               time.Duration
+	snapEvery, maxAge, crlEvery, groupEach                    time.Duration
 	hostCert, hostKey, hostCA                                 string
 	snapKeep                                                  int
 }

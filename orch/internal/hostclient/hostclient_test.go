@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/groups"
 	"github.com/garamsh/naru/orch/internal/hostclient"
@@ -49,6 +51,12 @@ func newHost(t *testing.T) *fakeHost {
 			_, _ = w.Write([]byte(`{"free":{"cpu":6,"memory":8589934592},"mvmd":{"kernels":[{"name":"node-1"},{"name":"node-2"}]}}`))
 		case "GET /v1/microvms":
 			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","state":"running"},{"name":"b","state":"stopped"},{"name":"c","state":"created"}]}`))
+		case "GET /v1/microvms/db-1/fence":
+			_, _ = w.Write([]byte(`{"phase":"armed","remainingSeconds":90}`))
+		case "GET /v1/microvms/db-1":
+			_, _ = w.Write([]byte(`{"name":"db-1","fenceLapsedAt":"2026-11-14T01:02:03Z"}`))
+		case "POST /v1/microvms/db-1/fence":
+			_, _ = w.Write([]byte(`{"phase":"armed"}`))
 		default:
 			w.WriteHeader(http.StatusCreated)
 		}
@@ -125,22 +133,50 @@ func TestCreateSendsTheOSForm(t *testing.T) {
 	require.Equal(t, "node-2", got["bootSet"])
 	require.EqualValues(t, 2<<30, got["dataDisk"])
 	require.NotEmpty(t, got["seed"])
-	require.NotContains(t, got, "image")
+	require.Empty(t, got["image"])
 
 	// An OS-form template with no disk has no data disk to size.
 	err = c.Create(t.Context(), "h", groups.MachineSpec{ID: "db-2", Template: groups.Template{Form: groups.FormOS, CPUs: 1, MemoryMiB: 128, NodeVersion: "node-2"}})
 	require.Error(t, err)
 }
 
-func TestFencedCreateAndFenceCallsAreRefusedWithoutReachingTheHost(t *testing.T) {
+func TestFencedCreateAsksForAFenceAndRenewalSendsLengthAndRenewalNumber(t *testing.T) {
 	h := newHost(t)
 	c := client(inventory{{ID: "h", Address: h.addr()}})
+	now := time.Date(2026, 11, 14, 1, 0, 0, 0, time.UTC)
+	c.Now = func() time.Time { return now }
+
 	err := c.Create(t.Context(), "h", groups.MachineSpec{ID: "db-1", Fenced: true, Template: groups.Template{Form: groups.FormImage, CPUs: 1, MemoryMiB: 128, Version: "r@sha256:abc"}})
-	require.ErrorIs(t, err, hostclient.ErrFenceUnsupported)
-	require.ErrorIs(t, c.RenewFence(t.Context(), "h", "db-1", timeZero()), hostclient.ErrFenceUnsupported)
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(h.bodies["POST /v1/microvms"], &got))
+	require.Equal(t, true, got["fenced"])
+
+	deadline := now.Add(90*time.Second + 500*time.Millisecond)
+	require.NoError(t, c.RenewFence(t.Context(), "h", "db-1", deadline))
+	var fr map[string]any
+	require.NoError(t, json.Unmarshal(h.bodies["POST /v1/microvms/db-1/fence"], &fr))
+	require.EqualValues(t, 90, fr["lengthSeconds"], "the length is rounded down")
+	require.EqualValues(t, deadline.UnixNano(), fr["renewal"])
+
+	require.Error(t, c.RenewFence(t.Context(), "h", "db-1", now.Add(time.Millisecond)))
+}
+
+func TestInspectFenceReadsTheDeadlineFromTheTimeLeftAndWhenItLapsed(t *testing.T) {
+	h := newHost(t)
+	c := client(inventory{{ID: "h", Address: h.addr()}})
+	now := time.Date(2026, 11, 14, 1, 0, 0, 0, time.UTC)
+	c.Now = func() time.Time { return now }
+
+	deadline, lapsed, err := c.InspectFence(t.Context(), "h", "db-1")
+	require.NoError(t, err)
+	require.Equal(t, now.Add(90*time.Second), deadline)
+	require.Equal(t, time.Date(2026, 11, 14, 1, 2, 3, 0, time.UTC), lapsed)
+
+	h.bodies = map[string][]byte{}
+	h.status["GET /v1/microvms/db-1/fence"] = 500
 	_, _, err = c.InspectFence(t.Context(), "h", "db-1")
-	require.ErrorIs(t, err, hostclient.ErrFenceUnsupported)
-	require.Empty(t, h.requests)
+	require.Error(t, err)
 }
 
 func TestDeleteAndStopTreatAMissingMachineAsDoneButStartDoesNot(t *testing.T) {
@@ -153,7 +189,7 @@ func TestDeleteAndStopTreatAMissingMachineAsDoneButStartDoesNot(t *testing.T) {
 
 	require.NoError(t, c.Delete(t.Context(), "h", "a"))
 	require.NoError(t, c.Stop(t.Context(), "h", "a"))
-	var he *hostclient.Error
+	var he *hostapi.Error
 	require.ErrorAs(t, c.Start(t.Context(), "h", "a"), &he)
 	require.Equal(t, 404, he.Status)
 	require.ErrorAs(t, c.Delete(t.Context(), "h", "b"), &he)
