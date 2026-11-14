@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,9 +11,13 @@ import (
 	"encoding/pem"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,4 +114,37 @@ func TestRunInit_PrintsTheRootCertificateAndTheRevocationKeyAsPEMOnTheConsole(t 
 	require.NoError(t, err)
 	assert.Equal(t, onDisk, block.Bytes, "the console shows the certificate the file holds")
 	assert.Contains(t, string(rest), "-----BEGIN PUBLIC KEY-----", "the revocation key follows")
+}
+
+func TestRunServe_ABlankDirectoryServesItsSocketSoThatARestoreCanReachIt(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Chmod(dir, 0o700))
+	short, err := os.MkdirTemp("", "sg")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(short) })
+	sock := filepath.Join(short, "s.sock")
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runServe(slog.New(slog.NewTextHandler(io.Discard, nil)), []string{"--dir", dir, "--socket", sock, "--peer-listen", "127.0.0.1:0"})
+	}()
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	}}}
+	require.Eventually(t, func() bool {
+		resp, err := client.Get("http://signer/v1/crl")
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusConflict
+	}, 5*time.Second, 50*time.Millisecond, "a blank signer answers on its socket, saying it holds no authorities")
+
+	require.NoError(t, syscall.Kill(os.Getpid(), syscall.SIGTERM))
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("the signer did not end on SIGTERM")
+	}
 }

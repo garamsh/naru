@@ -147,11 +147,16 @@ func runServe(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	if !s.Initialised() {
-		return signer.ErrNotInitialised
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	// A blank signer serves its socket alone, so that restore (ADR 0040) can reach it, and ends once
+	// the directory holds the authorities, so that the next start serves everything, the peer listener
+	// included, which signs its serving certificate with an authority it did not have.
+	blank := !s.Initialised()
+	if blank {
+		log.Warn("the signer holds no authorities: only the socket is served, for a restore")
+		peer = new(string)
+	}
 
 	ln, err := signer.ListenSocket(*socket, os.FileMode(m), log)
 	if err != nil {
@@ -195,9 +200,24 @@ func runServe(log *slog.Logger, args []string) error {
 			errc <- servers[i].Serve(listeners[i])
 		}()
 	}
+	filled := make(chan struct{})
+	if blank {
+		go func() {
+			for !s.Initialised() {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(500 * time.Millisecond):
+				}
+			}
+			close(filled)
+		}()
+	}
 	select {
 	case err := <-errc:
 		return err
+	case <-filled:
+		log.Info("the signer holds the authorities now: it ends to be started with all its listeners")
 	case <-ctx.Done():
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
