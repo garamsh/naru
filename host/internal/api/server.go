@@ -19,6 +19,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/garamsh/naru/host/internal/mvmd"
 )
 
@@ -33,15 +35,20 @@ type Deps struct {
 	// Invalid means unset, and an OS-form request is then refused.
 	MachineGateway netip.Addr
 	Log            *slog.Logger
+	// Metrics is the registry the host API's metrics are registered on, made once by the composition site.
+	Metrics prometheus.Registerer
 }
 
 // Server is the host API.
 type Server struct {
-	deps Deps
+	deps     Deps
+	requests *prometheus.CounterVec
 }
 
-// New returns a Server.
-func New(deps Deps) *Server { return &Server{deps: deps} }
+// New returns a Server, whose metrics are registered on deps.Metrics.
+func New(deps Deps) *Server {
+	return &Server{deps: deps, requests: newMetrics(deps.Metrics, deps.Runtime, deps.Log)}
+}
 
 // Handler returns the routes behind the middleware: a panic is answered with 500, each request is
 // logged once, and the client's role is checked before any route runs. A request that is not a GET
@@ -86,12 +93,13 @@ func (s *Server) recovering(next http.Handler) http.Handler {
 }
 
 // logged logs each request when it ends: method, path, status, the client's subject and a trace_id
-// made for it. Bodies are never logged.
+// made for it, and counts it by route and status. Bodies are never logged.
 func (s *Server) logged(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		defer func() {
+			s.observe(r.Pattern, rec.status)
 			s.deps.Log.Info("host API request", "trace_id", traceID(), "method", r.Method, "path", r.URL.Path,
 				"status", rec.status, "subject", clientCertificate(r).Subject.String(), "duration", time.Since(start).String())
 		}()

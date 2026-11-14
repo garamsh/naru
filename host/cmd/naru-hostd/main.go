@@ -17,6 +17,7 @@ import (
 	"github.com/garamsh/naru/host/internal/enroll"
 	"github.com/garamsh/naru/host/internal/fence"
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/metrics"
 )
 
 func main() {
@@ -37,6 +38,8 @@ func main() {
 		hostKey   = flag.String("host-key", "/var/lib/naru/hostd/host.key", "the host's own key, generated 0600 on first start; its certificate is written beside it")
 		hostID    = flag.String("host-id", "", "the name this host enrolls under (default: the hostname)")
 		advertise = flag.String("advertise", "", "address orch lists for this host (default: --listen)")
+
+		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -86,8 +89,18 @@ func main() {
 		}()
 	}
 
+	reg := metrics.New()
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Log: log, Metrics: reg})
+	if *metricsAddr != "" {
+		go func() {
+			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {
+				log.Error("the metrics listener stopped", "addr", *metricsAddr, "err", err.Error())
+			}
+		}()
+	}
+
 	log.Info("naru-hostd serving", "addr", *listen)
-	if err := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Log: log}).Serve(ln, conf); err != nil && ctx.Err() == nil {
+	if err := srv.Serve(ln, conf); err != nil && ctx.Err() == nil {
 		log.Error("the host API stopped", "err", err.Error())
 		os.Exit(1)
 	}
