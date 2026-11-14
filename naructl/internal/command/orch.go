@@ -56,7 +56,7 @@ const (
 
 func orchCmd(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("orch needs init, backup or restore")
+		return errors.New("orch needs init, backup, restore, csr or issue")
 	}
 	switch args[0] {
 	case "init":
@@ -65,6 +65,10 @@ func orchCmd(args []string, stdout, stderr io.Writer) error {
 		return orchBackup(args[1:], stdout, stderr)
 	case "restore":
 		return orchRestore(args[1:], stdout, stderr)
+	case "csr":
+		return orchCSR(args[1:], stdout, stderr)
+	case "issue":
+		return orchIssue(args[1:], stdout, stderr)
 	}
 	return fmt.Errorf("unknown command %q", "orch "+args[0])
 }
