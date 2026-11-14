@@ -96,6 +96,9 @@ type ClusterSpec struct {
 	// EditUserData, when set, changes the user-data naructl wrote for a Gaon Node before the Node
 	// starts: the test adds files, such as a credential helper, or a service's arguments.
 	EditUserData func(c Config, file string) error
+	// GenFlags, when set, gives gen node further flags for the Node c names: the sections of spec that
+	// naructl has a flag for (--signer, --metrics-listen, --host-management-prefix).
+	GenFlags func(c Config) []string
 	// Configure, when set, changes each Node's Config before it starts, such as to give it routes.
 	// It does not apply to a Gaon cluster, whose user-data is naructl's.
 	Configure func(*Config)
@@ -435,6 +438,9 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	a.Registries = spec.Registries
 	if a.Registries == nil {
 		a.Registries = []string{"host=" + fixture.RegistryAddr + ",ca=" + filepath.Join(spec.Inputs.Dir, "registry", "ca.pem")}
+	}
+	if spec.GenFlags != nil {
+		a.Extra = spec.GenFlags(c)
 	}
 	if err := spec.Naructl.GenNode(a); err != nil {
 		return nil, nil, err

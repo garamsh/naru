@@ -61,6 +61,9 @@ type fleetOpts struct {
 	capture bool
 	// services are added to every Node.
 	services []node.ExtraService
+	// orchExtra, when set, gives control Node i's spec.orch fields besides the ones this file sets: the
+	// seam for orch's host-client identity (W9) and for what orch's restore adds.
+	orchExtra func(i int) map[string]any
 }
 
 type fleet struct {
@@ -156,7 +159,7 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 	c := start(t, node.ClusterSpec{
 		N: o.controls + o.hosts, Gaon: true, NodeAPI: true, Host: true, Hosts: f.hosts(), Capture: o.capture,
 		Disable: []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"},
-		Forward: forward, MemoryMiB: 2048, EditUserData: f.firstUserData, ExtraServices: services,
+		Forward: forward, MemoryMiB: 2048, GenFlags: f.genFlags, ExtraServices: services,
 	})
 	f.c = c
 
@@ -195,35 +198,20 @@ func (f *fleet) personOf(name, key, certFile string, cert *x509.Certificate) per
 	return person{file: out, serial: cert.SerialNumber.Text(16)}
 }
 
-// firstUserData is ClusterSpec.EditUserData: the signer of the control Nodes, the host's network, the metrics.
-func (f *fleet) firstUserData(c node.Config, file string) error {
-	if err := seed.Set(file, map[string]any{"listen": node.HostNICAddress}, "spec", "metrics"); err != nil {
-		return err
-	}
+// genFlags is ClusterSpec.GenFlags: gen node's flags for the metrics, for the signer of the control
+// Nodes (the first one bootstraps, the others are replicas that make their join key) and for the
+// host's network.
+func (f *fleet) genFlags(c node.Config) []string {
+	flags := []string{"--metrics-listen", node.HostNICAddress}
 	if c.Index > f.opts.controls {
-		return seed.Set(file, map[string]any{
-			"managementPrefix": managementPrefix, "hostAddrs": []string{nodeIP(c.Index), node.HostNICAddress}, "tunnelPort": 51820,
-		}, "spec", "host", "network")
+		return append(flags, "--host-management-prefix", managementPrefix, "--host-egress-interface", "eth0", "--host-tunnel-port", "51820")
 	}
-	var names []string
-	for _, i := range f.controls() {
-		names = append(names, fmt.Sprintf("node-%d", i))
-	}
-	signer := map[string]any{"peerListen": nodeIP(c.Index) + ":" + signerPeerPort, "peerNames": names}
+	flags = append(flags, "--signer", "--signer-peer-listen", nodeIP(c.Index)+":"+signerPeerPort,
+		"--signer-peer-name", nodeIP(c.Index), "--signer-peer-name", fmt.Sprintf("node-%d", c.Index))
 	if c.Index == 1 {
-		pub, err := os.ReadFile(f.rec.pub)
-		if err != nil {
-			return err
-		}
-		csr, err := os.ReadFile(f.rootCSR)
-		if err != nil {
-			return err
-		}
-		signer["bootstrap"] = map[string]any{"recoveryPublicKey": string(pub), "rootCSR": string(csr)}
-	} else {
-		signer["replica"] = map[string]any{}
+		return append(flags, "--signer-recovery-public", f.rec.pub, "--signer-root-csr", f.rootCSR)
 	}
-	return seed.Set(file, signer, "spec", "signer")
+	return append(flags, "--signer-replica")
 }
 
 // edit changes Node i's user-data and boots it again with it: the operator's edit of the spec in the
@@ -262,23 +250,35 @@ func joinKeyOn(console string) string {
 	return best
 }
 
-// orchSpec is spec.orch of control Node i in a cluster of the members: root's certificate for its pair,
-// the authority, the revocation key and the recovery key's public half.
+// orchSpec is spec.orch of control Node i in a cluster of the members (lib/init/config's Orch): root's
+// certificate for its pair, the authority, the revocation key and the recovery key's public half. Its
+// private key is the spec.files entry orchKeyFile makes.
 func (f *fleet) orchSpec(i int, members []int, state string, crt string) map[string]any {
-	var cluster []string
+	cluster := map[string]string{}
 	for _, m := range members {
-		cluster = append(cluster, fmt.Sprintf("%s=https://%s:%s", orchName(m), nodeIP(m), orchPeerPort))
+		cluster[orchName(m)] = "https://" + nodeIP(m) + ":" + orchPeerPort
 	}
-	key, err := os.ReadFile(f.keys[i])
-	require.NoError(f.t, err)
 	recPub, err := os.ReadFile(f.rec.pub)
 	require.NoError(f.t, err)
-	return map[string]any{
+	spec := map[string]any{
 		"name": orchName(i), "peerURL": "https://" + nodeIP(i) + ":" + orchPeerPort, "clientURL": "https://" + nodeIP(i) + ":" + orchClientPort,
-		"initialCluster": strings.Join(cluster, ","), "initialClusterState": state, "listen": "0.0.0.0:" + orchPort,
-		"sans": []string{"127.0.0.1", nodeIP(i), node.HostNICAddress}, "certificate": crt, "key": string(key), "ca": f.rootCert,
+		"initialCluster": cluster, "initialClusterState": state, "listen": "0.0.0.0:" + orchPort,
+		"sans": []string{"127.0.0.1", nodeIP(i), node.HostNICAddress}, "certificate": crt + f.rootCert, "ca": f.rootCert,
 		"revocationPublicKey": f.revPub, "recoveryPublicKey": string(recPub),
 	}
+	if f.opts.orchExtra != nil {
+		for k, v := range f.opts.orchExtra(i) {
+			spec[k] = v
+		}
+	}
+	return spec
+}
+
+// orchKeyFile is the spec.files entry that carries orch's private key of control Node i, owned by orch's user.
+func (f *fleet) orchKeyFile(i int) map[string]any {
+	key, err := os.ReadFile(f.keys[i])
+	require.NoError(f.t, err)
+	return map[string]any{"path": "/run/naru-orchd/orch.key", "mode": "0600", "content": string(key), "owner": map[string]any{"uid": 6002, "gid": 6002}}
 }
 
 // issueOrch has root issue orch's certificate for control Node i through the first signer's socket.
@@ -307,7 +307,7 @@ func (f *fleet) authorise(i int) string {
 
 // joinSigner is the patch that has the signer of replica Node i join the first one.
 func (f *fleet) joinSigner(file string, authorisation string) error {
-	return seed.Set(file, map[string]any{"peer": nodeIP(1) + ":" + signerPeerPort, "authorisation": authorisation}, "spec", "signer", "replica", "join")
+	return seed.Set(file, map[string]any{"peer": nodeIP(1) + ":" + signerPeerPort, "peerCA": f.rootCert, "authorisation": authorisation}, "spec", "signer", "replica", "join")
 }
 
 // startOrch has the replica signers join the first signer, and starts orchd on every control Node as
@@ -325,6 +325,9 @@ func (f *fleet) startOrch() {
 				if err := f.joinSigner(file, auth[i]); err != nil {
 					return err
 				}
+			}
+			if err := seed.Append(file, f.orchKeyFile(i), "spec", "files"); err != nil {
+				return err
 			}
 			return seed.Set(file, f.orchSpec(i, members, "new", crt), "spec", "orch")
 		})

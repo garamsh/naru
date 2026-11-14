@@ -40,13 +40,13 @@ func file(frames ...[]byte) []byte {
 func TestParse_ReadsIPv4PacketsAndSelectsTheTrafficBetweenTheHostsThatIsNotWireGuard(t *testing.T) {
 	arp := make([]byte, 42)
 	arp[12], arp[13] = 0x08, 0x06
-	b := file(frame("10.78.0.1", "10.78.0.2", 17, 51820, 51820), frame("10.78.0.1", "10.78.0.2", 6, 40000, 7500), arp, frame("10.78.0.1", "8.8.8.8", 17, 1, 2))
+	b := file(frame("10.78.0.1", "10.78.0.2", 17, 51820, 51820), frame("10.78.0.1", "10.78.0.2", 6, 40000, 7500), arp, frame("10.78.0.1", "8.8.8.8", 17, 1, 2), frame("10.78.0.2", "10.78.0.1", 17, 1, 2))
 
 	c, err := pcap.Parse(b[:len(b)-5]) // the last frame is cut off, as a killed QEMU leaves it
 	require.NoError(t, err)
-	assert.Equal(t, 3, c.Frames)
+	assert.Equal(t, 4, c.Frames)
 	between := c.Between([]netip.Addr{netip.MustParseAddr("10.78.0.1"), netip.MustParseAddr("10.78.0.2")})
-	require.Len(t, between, 2)
+	require.Len(t, between, 2, "a packet with one end outside the hosts is not between them")
 	assert.True(t, between[0].IsWireGuard(51820))
 	assert.False(t, between[1].IsWireGuard(51820), "a TCP packet to another port is not WireGuard")
 }

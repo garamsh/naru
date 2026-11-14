@@ -212,8 +212,8 @@ func TestFleet_NoUnencryptedAuthorityKeyLiesOutsideTheSignersDirectory(t *testin
 	f := newFleet(t, fleetOpts{controls: 3})
 	f.startOrch()
 
-	// The probe looks for the private keys of root, of the revocation list and of the recovery key, and
-	// for a throwaway key the test plants on the last control host, which is the positive control.
+	// The probe looks for the private keys of root and of the revocation list (the recovery key's public
+	// half is a JSON document, and its private half is never on a Node here), and for a throwaway key the test plants on the last control host, which is the positive control.
 	planted, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	der, err := x509.MarshalPKCS8PrivateKey(planted)
@@ -221,9 +221,7 @@ func TestFleet_NoUnencryptedAuthorityKeyLiesOutsideTheSignersDirectory(t *testin
 	plantedKey := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 	pub, err := x509.MarshalPKIXPublicKey(&planted.PublicKey)
 	require.NoError(t, err)
-	recPub, err := os.ReadFile(f.rec.pub)
-	require.NoError(t, err)
-	public := f.rootCert + f.revPub + string(recPub) + string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pub}))
+	public := f.rootCert + f.revPub + string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pub}))
 	last := f.controls()[len(f.controls())-1]
 	const plantedPath = "/run/harness/planted.key"
 
