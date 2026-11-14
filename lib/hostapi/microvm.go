@@ -21,6 +21,10 @@ type CreateRequest struct {
 	// Fenced gives the microVM a fence of its own. It is created and not started: the caller
 	// renews the fence (POST /v1/microvms/{name}/fence), then starts it.
 	Fenced bool `json:"fenced,omitempty"`
+	// Network is the name of a declared network (PUT /v1/networks/{name}) the microVM is created on:
+	// its address, which mvmd gives it, and PodPrefix must be inside the network's prefix. Absent,
+	// the microVM is on no network and the host forwards nothing for it.
+	Network string `json:"network,omitempty"`
 
 	// The OS form, in place of Image, RootDiskBytes, Disks, Env and Command: a microVM that boots
 	// BootSet, with Cmdline added to the kernel's command line, a data disk of DataDisk bytes, a

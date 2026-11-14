@@ -85,6 +85,50 @@ func microVMPath(name string) string { return "/v1/microvms/" + url.PathEscape(n
 
 func snapshotPath(name string) string { return "/v1/snapshots/" + url.PathEscape(name) }
 
+func networkPath(name string) string { return "/v1/networks/" + url.PathEscape(name) }
+
+// PutNetwork declares the network, or replaces the one of its name, and returns it.
+func (c *Client) PutNetwork(ctx context.Context, name string, r NetworkRequest) (Network, error) {
+	var n Network
+	err := c.do(ctx, http.MethodPut, networkPath(name), r, &n)
+	return n, err
+}
+
+// Network returns the network named name.
+func (c *Client) Network(ctx context.Context, name string) (Network, error) {
+	var n Network
+	err := c.do(ctx, http.MethodGet, networkPath(name), nil, &n)
+	return n, err
+}
+
+// Networks lists the networks, ordered by name.
+func (c *Client) Networks(ctx context.Context) ([]Network, error) {
+	var out struct {
+		Networks []Network `json:"networks"`
+	}
+	err := c.do(ctx, http.MethodGet, "/v1/networks", nil, &out)
+	return out.Networks, err
+}
+
+// DeleteNetwork removes the network and detaches its microVMs from it.
+func (c *Client) DeleteNetwork(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, networkPath(name), nil, nil)
+}
+
+// SetPeers replaces the tunnel's peers and returns them.
+func (c *Client) SetPeers(ctx context.Context, peers []Peer) ([]Peer, error) {
+	var out PeersRequest
+	err := c.do(ctx, http.MethodPut, "/v1/peers", PeersRequest{Peers: peers}, &out)
+	return out.Peers, err
+}
+
+// Peers returns the tunnel's peers.
+func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
+	var out PeersRequest
+	err := c.do(ctx, http.MethodGet, "/v1/peers", nil, &out)
+	return out.Peers, err
+}
+
 // Host returns the host's region, labels, capacity and mvmd's version.
 func (c *Client) Host(ctx context.Context) (Host, error) {
 	var h Host

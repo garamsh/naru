@@ -40,9 +40,27 @@ func main() {
 		advertise = flag.String("advertise", "", "address orch lists for this host (default: --listen)")
 
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
+
+		management = flag.String("management-prefix", "", "prefix of the management plane; set, it turns the virtual networks on")
+		hostAddrs  = flag.String("host-addrs", "", "comma-separated addresses of this host that no network may reach")
+		tapPrefix  = flag.String("tap-prefix", "tap", "name prefix of the microVMs' tap devices, for the forged-source rule")
+		egress     = flag.String("egress-interface", "", "interface the networks' egress leaves by; empty gives them none")
+		tunnel     = flag.String("tunnel", "wg-naru", "name of the WireGuard interface, which must exist; empty turns the tunnel off")
+		tunnelKey  = flag.String("tunnel-key", "/run/naru-hostd/wg.key", "file of the tunnel's private key, mode 0600")
+		tunnelPort = flag.Int("tunnel-port", 51820, "UDP port the tunnel listens on")
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+	var nets api.Networks
+	if *management != "" {
+		m, err := networkManager(*management, *hostAddrs, *tapPrefix, *egress, *tunnel, *tunnelKey, *tunnelPort)
+		if err != nil {
+			log.Error("cannot set up the virtual networks", "err", err.Error())
+			os.Exit(1)
+		}
+		nets = m
+	}
 
 	conf, err := api.TLSConfig(*cert, *key, *clients)
 	if err != nil {
@@ -90,7 +108,7 @@ func main() {
 	}
 
 	reg := metrics.New()
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Log: log, Metrics: reg})
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg})
 	if *metricsAddr != "" {
 		go func() {
 			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {
