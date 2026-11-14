@@ -638,3 +638,12 @@ func TestUserData_EveryNodeTrustsTheRegistryServiceThroughSpecRegistries(t *test
 		}
 	}
 }
+
+func TestInitramfsList_CarriesNeitherOrchdNorTheSignerTheExtensionDoes(t *testing.T) {
+	list, err := os.ReadFile("../../../../image/host/initramfs/initramfs.list")
+	require.NoError(t, err)
+
+	assert.Regexp(t, `(?m)^file /bin/naru-hostd `, string(list), "the list still installs the programs init runs from the initramfs")
+	assert.NotContains(t, string(list), "naru-orchd")
+	assert.NotContains(t, string(list), "naru-signer")
+}
