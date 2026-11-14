@@ -94,7 +94,7 @@ type fleet struct {
 	// operator reads from the signer's GET /v1/ca; orchCAFile holds it and caSHA is its SHA-256.
 	orchCA, orchCAFile, caSHA string
 	// orchTrust is the authorities spec.orch.ca holds: the orch authority, which signs the members'
-	// certificates, and the operator authority, which signs the callers'.
+	// certificates, the operator authority, which signs the callers', and the host authority, which signs the hosts'.
 	orchTrust        string
 	rootKey, rootCSR string
 }
@@ -214,6 +214,7 @@ func (f *fleet) readOrchCA() {
 	var auth struct {
 		Orch     []byte `json:"orch"`
 		Operator []byte `json:"operator"`
+		Host     []byte `json:"host"`
 	}
 	eventually(f.t, "the first signer answers GET /v1/ca", func() bool {
 		resp, err := cl.Get("http://signer/v1/ca")
@@ -221,14 +222,17 @@ func (f *fleet) readOrchCA() {
 			return false
 		}
 		defer func() { _ = resp.Body.Close() }()
-		return resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&auth) == nil && len(auth.Orch) > 0 && len(auth.Operator) > 0
+		return resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&auth) == nil && len(auth.Orch) > 0 && len(auth.Operator) > 0 && len(auth.Host) > 0
 	})
 	cert, err := x509.ParseCertificate(auth.Orch)
 	require.NoError(f.t, err, "the orch authority's certificate is DER")
 	operator, err := x509.ParseCertificate(auth.Operator)
 	require.NoError(f.t, err, "the operator authority's certificate is DER")
+	host, err := x509.ParseCertificate(auth.Host)
+	require.NoError(f.t, err, "the host authority's certificate is DER")
 	f.orchCA = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
-	f.orchTrust = f.orchCA + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operator.Raw}))
+	f.orchTrust = f.orchCA + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operator.Raw})) +
+		string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: host.Raw}))
 	f.orchCAFile = f.file("orch-ca.pem", f.orchCA)
 	sum := sha256.Sum256(cert.Raw)
 	f.caSHA = hex.EncodeToString(sum[:])
