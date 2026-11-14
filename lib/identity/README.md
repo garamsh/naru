@@ -8,6 +8,7 @@ What naru's authorities and their callers agree on, in pure Go with the standard
 - The admission statement an operator signs for a host: `SignAdmission`, `VerifyAdmission`.
 - The person file and the recovery key file, each encrypted by a passphrase (scrypt N=2^15, r=8, p=1; AES-256-GCM): `EncryptPerson`, `DecryptPerson`, `GenerateRecovery`, `DecryptRecovery`.
 - The signed request a caller sends the signer, and the wire types the signer and naructl share: `SignRequest`, `VerifyRequest` (the action, an expiry and a body, signed with the caller's key and certificate).
+- The request the recovery key signs for a new root, with no certificate and a nonce: `SignRecoveryRequest`, `VerifyRecoveryRequest`, `NewNonce`.
 - The sealed box, X25519 with HKDF-SHA256 and AES-256-GCM: `Seal`, `Open`.
 
 Linked by `host` (the signer) and `naructl`, and by every unit that checks a caller's role.

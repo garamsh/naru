@@ -1,6 +1,7 @@
 package command_test
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -285,4 +286,86 @@ func TestSignerCommands_RefuseAnUnknownVerbAndAnAdminThatIsNotRoot(t *testing.T)
 	admin, pass := adminFile(t, identity.RoleReader, "pw")
 	_, err = run(t, "signer", "bundle", "--admin", admin, "--passphrase-file", pass, "--socket", socket, "--out", filepath.Join(t.TempDir(), "b"))
 	assert.ErrorContains(t, err, "refused")
+}
+
+// recoveryFiles writes an encrypted recovery key and its passphrase file.
+func recoveryFiles(t *testing.T, passphrase string) (key, pass string, rec identity.Recovery) {
+	t.Helper()
+	rec, err := identity.GenerateRecovery()
+	require.NoError(t, err)
+	enc, err := rec.Encrypt(passphrase)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	key, pass = filepath.Join(dir, "recovery.enc"), filepath.Join(dir, "pass")
+	require.NoError(t, os.WriteFile(key, enc, 0o600))
+	require.NoError(t, os.WriteFile(pass, []byte(passphrase+"\n"), 0o600))
+	return key, pass, rec
+}
+
+func TestSignerReissueRoot_SendsARequestTheRecoveryKeySignedWithANonceAndWritesTheCertificate(t *testing.T) {
+	keyFile, passFile, rec := recoveryFiles(t, "recovery pw")
+	var nonces []string
+	var csrSent []byte
+	socket := serveSocket(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body, _, err := identity.VerifyRecoveryRequest(raw, identity.ActionReissueRoot, rec.Ed25519.Public().(ed25519.PublicKey), time.Now())
+		if err != nil || r.URL.Path != "/v1/reissue-root" {
+			http.Error(w, "no", http.StatusForbidden)
+			return
+		}
+		var req identity.ReissueRootRequest
+		_ = json.Unmarshal(body, &req)
+		nonces, csrSent = append(nonces, req.Nonce), req.CSR
+		csr, _ := x509.ParseCertificateRequest(req.CSR)
+		cert := issueFrom(t, caOf(t), "root", identity.RoleRoot, csr.PublicKey)
+		_ = json.NewEncoder(w).Encode(identity.Issued{Certificate: cert.Raw, Serial: cert.SerialNumber.Text(16), NotAfter: cert.NotAfter})
+	})
+	csrPath, pub := csrFile(t)
+	out := filepath.Join(t.TempDir(), "root.crt")
+
+	text, err := run(t, "signer", "reissue-root", "--recovery-key", keyFile, "--passphrase-file", passFile, "--csr", csrPath, "--socket", socket, "--out", out)
+	require.NoError(t, err, text)
+	_, err = run(t, "signer", "reissue-root", "--recovery-key", keyFile, "--passphrase-file", passFile, "--csr", csrPath, "--socket", socket, "--out", out)
+	require.NoError(t, err)
+
+	require.Len(t, nonces, 2)
+	assert.NotEqual(t, nonces[0], nonces[1], "each run asks with a nonce of its own")
+	assert.Len(t, nonces[0], 2*identity.NonceBytes)
+	sent, err := x509.ParseCertificateRequest(csrSent)
+	require.NoError(t, err)
+	assert.True(t, pub.Equal(sent.PublicKey), "the request names the new key")
+	data, err := os.ReadFile(out)
+	require.NoError(t, err)
+	b, _ := pem.Decode(data)
+	require.NotNil(t, b)
+	cert, err := x509.ParseCertificate(b.Bytes)
+	require.NoError(t, err)
+	assert.Equal(t, identity.RoleRoot, mustRole(t, cert))
+	assert.NotContains(t, text, "recovery pw")
+}
+
+func TestSignerReissueRoot_RefusesAWrongPassphraseWithoutCallingTheSigner(t *testing.T) {
+	keyFile, _, _ := recoveryFiles(t, "recovery pw")
+	wrong := passFile(t, "another pw")
+	called := false
+	socket := serveSocket(t, func(http.ResponseWriter, *http.Request) { called = true })
+	csrPath, _ := csrFile(t)
+
+	_, err := run(t, "signer", "reissue-root", "--recovery-key", keyFile, "--passphrase-file", wrong, "--csr", csrPath, "--socket", socket,
+		"--out", filepath.Join(t.TempDir(), "root.crt"))
+
+	assert.Error(t, err)
+	assert.False(t, called)
+}
+
+func TestSignerReissueRoot_ReportsTheSignersRefusal(t *testing.T) {
+	keyFile, passFile, _ := recoveryFiles(t, "recovery pw")
+	socket := serveSocket(t, func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "replayed", http.StatusForbidden) })
+	csrPath, _ := csrFile(t)
+	out := filepath.Join(t.TempDir(), "root.crt")
+
+	_, err := run(t, "signer", "reissue-root", "--recovery-key", keyFile, "--passphrase-file", passFile, "--csr", csrPath, "--socket", socket, "--out", out)
+
+	assert.ErrorContains(t, err, "replayed")
+	assert.NoFileExists(t, out)
 }
