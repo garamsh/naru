@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/tooling/qemu/internal/seed"
 )
 
@@ -32,10 +33,17 @@ import (
 // it covers.
 
 // get is a request to the orch of control Node i as root, over mutual TLS: the status and the body.
+// Root's key is in its person file only (naructl operator person removes the plain key), so the
+// request opens the file with the fleet's passphrase.
 func (f *fleet) get(i int, method, path string) (int, []byte) {
 	f.t.Helper()
-	pair, err := tls.LoadX509KeyPair(f.rootCertFile, f.rootKey)
+	enc, err := os.ReadFile(f.root.file)
 	require.NoError(f.t, err)
+	pass, err := os.ReadFile(f.pass)
+	require.NoError(f.t, err)
+	p, err := identity.DecryptPerson(strings.TrimSpace(string(pass)), enc)
+	require.NoError(f.t, err)
+	pair := tls.Certificate{Certificate: [][]byte{p.Cert.Raw}, PrivateKey: p.Key}
 	pool := x509.NewCertPool()
 	require.True(f.t, pool.AppendCertsFromPEM([]byte(f.orchCA)))
 	cl := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
