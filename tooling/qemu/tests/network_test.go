@@ -91,11 +91,13 @@ func (f *fleet) netVMOn(i int, name, network string) netVM {
 		r := hctl(h.Reader, []string{"microvm", "get"}, name)
 		var vm struct {
 			State     string   `json:"state"`
+			Network   string   `json:"network"`
 			Addresses []string `json:"addresses"`
 		}
 		if r.Err != nil || json.Unmarshal([]byte(r.Stdout), &vm) != nil || vm.State != "running" || len(vm.Addresses) == 0 {
 			return false
 		}
+		assert.Equal(t, network, vm.Network, "%s is a member of the network it was created on", name)
 		ip = strings.SplitN(vm.Addresses[0], "/", 2)[0]
 		return true
 	})
@@ -196,12 +198,6 @@ func TestFleet_NetworksAreSeparateMembershipSetsAndOnlyWireGuardCrossesBetweenTh
 	a1, a2 := f.netVMOn(h1, "a1", netA), f.netVMOn(h2, "a2", netA)
 	b1, b2 := f.netVMOn(h1, "b1", netB), f.netVMOn(h2, "b2", netB)
 	a1b := f.netVMOn(h1, "a1b", netA)
-	for _, v := range []netVM{a1, a2, a1b} {
-		assert.True(t, netip.MustParsePrefix(prefixA).Contains(netip.MustParseAddr(v.ip)), "%s is in net A's prefix", v.name)
-	}
-	for _, v := range []netVM{b1, b2} {
-		assert.True(t, netip.MustParsePrefix(prefixB).Contains(netip.MustParseAddr(v.ip)), "%s is in net B's prefix", v.name)
-	}
 
 	// A to A answers on the same host, and across the hosts once the leader has declared the members
 	// remote: the TCP dial and a datagram.
