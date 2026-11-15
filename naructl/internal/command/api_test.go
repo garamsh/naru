@@ -239,6 +239,8 @@ type fakeNode struct {
 	// upgradeBody and upgradeQuery are what the last POST /v1/upgrade carried.
 	upgradeBody  []byte
 	upgradeQuery string
+	// upgradeRefusal is the 422 body POST /v1/upgrade answers with, when it is not nil.
+	upgradeRefusal map[string]any
 	// lastUpgrade is the outcome GET /v1/version reports, when it is not nil.
 	lastUpgrade map[string]any
 	// extensionPath and extensionBody are what the last PUT /v1/extensions/ carried.
@@ -369,7 +371,12 @@ func newFakeNodeTLS(t *testing.T, dep deployment, maxTLS uint16) *fakeNode {
 		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.upgradeBody, f.upgradeQuery = body, r.URL.RawQuery
+		refusal := f.upgradeRefusal
 		f.mu.Unlock()
+		if refusal != nil {
+			writeJSON(w, 422, refusal)
+			return
+		}
 		writeJSON(w, 202, map[string]any{"actions": []map[string]any{{"action": "upgrade", "target": "v2"}, {"action": "reboot", "target": "node"}}})
 	})
 	mux.HandleFunc("/v1/signer/{path...}", func(w http.ResponseWriter, r *http.Request) {

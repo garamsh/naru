@@ -126,8 +126,17 @@ func (c hostCall) dial() (*hostapi.Client, error) {
 }
 
 func hostCmd(args []string, stdout, stderr io.Writer) error {
-	if len(args) > 0 && args[0] == "boot-set" {
-		return bootSet(args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "boot-set":
+			return bootSet(args[1:], stdout, stderr)
+		case "network":
+			return hostNetwork(args[1:], stdout, stderr)
+		case "peers":
+			return hostPeers(args[1:], stdout, stderr)
+		case "tunnel":
+			return hostTunnel(args[1:], stdout, stderr)
+		}
 	}
 	c := newHostCall("host", stderr)
 	if _, err := c.parse(args, 0); err != nil {
@@ -158,7 +167,7 @@ func printJSON(w io.Writer, v any) error {
 // microvm runs the subcommands of naructl microvm.
 func microvm(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("microvm needs create, get, list, stop, start or delete")
+		return errors.New("microvm needs create, get, list, stop, start, delete, snapshot or fence")
 	}
 	switch args[0] {
 	case "create":
@@ -173,6 +182,10 @@ func microvm(args []string, stdout, stderr io.Writer) error {
 		return microvmLifecycle("start", args[1:], stdout, stderr)
 	case "delete":
 		return microvmDelete(args[1:], stdout, stderr)
+	case "snapshot":
+		return microvmSnapshot(args[1:], stdout, stderr)
+	case "fence":
+		return microvmFence(args[1:], stdout, stderr)
 	}
 	return fmt.Errorf("unknown command %q", "microvm "+args[0])
 }
@@ -188,6 +201,7 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 		memory  = c.fs.Uint64("memory", 256<<20, "memory in bytes")
 		root    = c.fs.Uint64("root-disk", 1<<30, "root disk in bytes")
 		network = c.fs.String("network", "", "the declared network the microVM is created on")
+		fenced  = c.fs.Bool("fenced", false, "give the microVM a fence of its own: it is created and not started, and microvm fence renew arms it")
 
 		bootSet   = c.fs.String("boot-set", "", "the OS form: the boot set the Node offers, in place of --image")
 		cmdline   = c.fs.String("cmdline", "", "the OS form: kernel command line added to the boot set's")
@@ -203,7 +217,7 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 	if *file != "" {
 		set := map[string]bool{}
 		c.fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-		for _, f := range []string{"name", "image", "cpu", "memory", "root-disk", "disk", "boot-set", "cmdline", "seed", "data-disk", "pod-prefix", "network"} {
+		for _, f := range []string{"name", "image", "cpu", "memory", "root-disk", "disk", "boot-set", "cmdline", "seed", "data-disk", "pod-prefix", "network", "fenced"} {
 			if set[f] {
 				return fmt.Errorf("-f carries the whole request, so --%s has no effect with it", f)
 			}
@@ -250,7 +264,7 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	if *file == "" {
-		spec.Network = *network
+		spec.Network, spec.Fenced = *network, *fenced
 	}
 	cl, err := c.dial()
 	if err != nil {
