@@ -24,12 +24,13 @@ out=$(cd "$2" && pwd)
 . "$here/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
 # plugin name and the directory its package is in
 plugins="bridge:plugins/main/bridge host-local:plugins/ipam/host-local loopback:plugins/main/loopback"
 
-stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/cni.stamp" ] && [ "$(cat "$out/cni.stamp")" = "$stamp" ]; then
+if build_current "$out/cni.stamp" -- "$here/pin.env" "$here/build.sh" "$here/../../build.env"; then
   complete=1
   for p in $plugins; do [ -f "$out/${p%%:*}" ] || complete=0; done
   if [ "$complete" -eq 1 ]; then
@@ -68,6 +69,7 @@ for p in $plugins; do
     -ldflags="-s -w -buildid= -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=$CNI_VERSION" \
     -o "$part/${p%%:*}" "./${p#*:}")
   name=${p%%:*}
+  require_go "$GOTOOLCHAIN" "$part/$name"
   if ! file "$part/$name" | grep -Eq 'statically linked|static-pie linked'; then
     echo "cni: $name is not a static executable: $(file "$part/$name")" >&2
     exit 1
@@ -83,4 +85,4 @@ for p in $plugins; do
   cp "$part/${p%%:*}" "$out/${p%%:*}"
   echo "cni: built $out/${p%%:*}, SHA-256 $(sha256sum "$out/${p%%:*}" | cut -d' ' -f1)"
 done
-echo "$stamp" >"$out/cni.stamp"
+echo "$STAMP" >"$out/cni.stamp"

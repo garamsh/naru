@@ -28,9 +28,10 @@ out=$(cd "$2" && pwd)
 . "$here/../../common/kernel/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
-stamp=$(cat "$here/../../common/kernel/pin.env" "$here/../../common/kernel/naru.config" "$here/required.txt" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/bzImage.bare" ] && [ -f "$build/obj/.config" ] && [ -f "$out/kernel.stamp" ] && [ "$(cat "$out/kernel.stamp")" = "$stamp" ]; then
+if build_current "$out/kernel.stamp" "$out/bzImage.bare" "$build/obj/.config" -- "$here/../../common/kernel/pin.env" "$here/../../common/kernel/naru.config" "$here/required.txt" "$here/build.sh" "$here/../../build.env"; then
   echo "kernel: $out/bzImage.bare is up to date with its inputs"
   exit 0
 fi
@@ -83,5 +84,5 @@ make -C "$src" O="$obj" ARCH=x86_64 -j"$(nproc)" bzImage >"$build/build.log" 2>&
 }
 install -m 0644 "$obj/arch/x86/boot/bzImage" "$out/bzImage.bare"
 install -m 0644 "$obj/.config" "$out/kernel.config"
-echo "$stamp" >"$out/kernel.stamp"
+echo "$STAMP" >"$out/kernel.stamp"
 echo "kernel: built $out/bzImage.bare, SHA-256 $(sha256sum "$out/bzImage.bare" | cut -d' ' -f1)"

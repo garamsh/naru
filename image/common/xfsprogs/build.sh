@@ -26,11 +26,14 @@ build=$(cd "$1" && pwd)
 out=$(cd "$2" && pwd)
 # shellcheck source=pin.env
 . "$here/pin.env"
+# shellcheck source=../util-linux/pin.env
+. "$here/../util-linux/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
-stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/mkfs.xfs" ] && [ -f "$out/xfsprogs.stamp" ] && [ "$(cat "$out/xfsprogs.stamp")" = "$stamp" ]; then
+if build_current "$out/xfsprogs.stamp" "$out/mkfs.xfs" -- "$here/pin.env" "$here/../util-linux/pin.env" "$here/build.sh" "$here/../../build.env"; then
   echo "xfsprogs: $out/mkfs.xfs is up to date with its inputs"
   exit 0
 fi
@@ -107,6 +110,7 @@ PKG_CONFIG_LIBDIR="$deps/lib/pkgconfig" ./configure --disable-shared --enable-sc
 # are given to make (libtool takes -all-static for a static executable); the header directory is set up first.
 make headers >>"$log" 2>&1 || fail "xfsprogs headers"
 make -j"$(nproc)" LDFLAGS="-all-static -Wl,--build-id=none -L$deps/lib" mkfs >>"$log" 2>&1 || fail "xfsprogs build"
+nss_gate mkfs.xfs "$log"
 
 strip --strip-all -o "$out/mkfs.xfs.part" "$work/xfsprogs-$XFSPROGS_VERSION/mkfs/mkfs.xfs"
 chmod 0755 "$out/mkfs.xfs.part"
@@ -115,6 +119,6 @@ if ! file "$out/mkfs.xfs.part" | grep -Eq 'statically linked|static-pie linked';
   exit 1
 fi
 mv "$out/mkfs.xfs.part" "$out/mkfs.xfs"
-echo "$stamp" >"$out/xfsprogs.stamp"
+echo "$STAMP" >"$out/xfsprogs.stamp"
 echo "xfsprogs: built $out/mkfs.xfs, SHA-256 $(sha256sum "$out/mkfs.xfs" | cut -d' ' -f1)"
 file "$out/mkfs.xfs"

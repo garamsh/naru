@@ -24,6 +24,8 @@ initramfs=$(cd "$(dirname "$3")" && pwd)/$(basename "$3")
 . "$here/../../common/kernel/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
 # kbuild uses a single file named *.cpio.* as it is and compresses nothing again.
 case "$initramfs" in *.cpio.gz) ;; *)
@@ -38,12 +40,7 @@ for f in "$out/bzImage.bare" "$out/kernel.stamp" "$build/obj/.config" "$initramf
   fi
 done
 
-stamp=$(
-  cat "$out/kernel.stamp" "$here/embed.sh"
-  sha256sum "$initramfs" | cut -d' ' -f1
-)
-stamp=$(echo "$stamp" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/bzImage" ] && [ -f "$out/bzImage.stamp" ] && [ "$(cat "$out/bzImage.stamp")" = "$stamp" ]; then
+if build_current "$out/bzImage.stamp" "$out/bzImage" -- "$out/kernel.stamp" "$here/embed.sh" "$initramfs"; then
   echo "embed: $out/bzImage is up to date with its inputs"
   exit 0
 fi
@@ -62,5 +59,5 @@ make -C "$src" O="$obj" ARCH=x86_64 -j"$(nproc)" bzImage >"$build/embed.log" 2>&
   exit 1
 }
 install -m 0644 "$obj/arch/x86/boot/bzImage" "$out/bzImage"
-echo "$stamp" >"$out/bzImage.stamp"
+echo "$STAMP" >"$out/bzImage.stamp"
 echo "embed: built $out/bzImage with the initramfs inside, SHA-256 $(sha256sum "$out/bzImage" | cut -d' ' -f1)"

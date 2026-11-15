@@ -1,4 +1,4 @@
-.PHONY: lint lint-imports lint-modules format format-apply test test-cgroup test-qemu test-fleet test-count test-harness test-release-upgrade nodes judge-serial release build image image-upgrade disk image-repro ci
+.PHONY: lint lint-imports lint-modules format format-apply test test-cgroup test-qemu test-fleet test-count test-harness test-release-upgrade nodes judge-serial release build image image-upgrade disk image-repro in-builder-image in-builder-image-upgrade in-builder-disk in-builder-release ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -104,7 +104,17 @@ build:
 	@echo "build: $(BIN)/orch/naru-orchd: $$(file -b $(BIN)/orch/naru-orchd | cut -d, -f1-4)"
 	@echo "build: $(BIN)/naructl: $$(file -b $(BIN)/naructl | cut -d, -f1-4)"
 
-# image builds the host kernel, the guest kernels and initrds, the static mke2fs and mkfs.xfs, gaon's four
+# The image targets run in the builder container (docs/architecture/image.md §The builder, ADR 0063):
+# image, image-upgrade, disk, release and image-repro start image/builder/run.sh, which runs the
+# target of the same name with the in-builder- prefix in the container with the repository mounted
+# at /naru. Those prefixed targets are the recipes; run them by hand only inside the builder.
+# in_builder runs one of them with the variables the recipes read. A path given in a variable must
+# be inside the repository, and the container sees it under /naru.
+BUILDER := image/builder/run.sh
+container_path = $(if $(1),$(if $(filter $(CURDIR)/%,$(abspath $(1))),/naru/$(patsubst $(CURDIR)/%,%,$(abspath $(1))),$(error $(1) is outside the repository, which is all the builder container sees)))
+in_builder = $(BUILDER) make $(1) VERSION='$(VERSION)' TEST_ROOT='$(call container_path,$(TEST_ROOT))' PREV_MANIFEST='$(call container_path,$(PREV_MANIFEST))' RECREATE='$(RECREATE)' $(2)
+
+# in-builder-image builds the host kernel, the guest kernels and initrds, the static mke2fs and mkfs.xfs, gaon's four
 # services, etcd, and the initramfs that carries them, from pinned sources, into $(IMAGE): bzImage
 # (the kernel with the initramfs inside it, ADR 0020; bzImage.bare is the kernel before that),
 # initramfs.cpio.gz, inputs.env (the Firecracker pin the tests read) and guest/,
@@ -117,7 +127,6 @@ ETCD := $(IMAGE)/etcd
 # K8S holds Kubernetes, containerd, runc, the CNI plugins, nft, mount and umount, which five
 # build scripts write into the one directory.
 K8S := $(IMAGE)/k8s
-K8S_FILES := kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy containerd containerd-shim-runc-v2 runc bridge host-local loopback nft mount umount
 # REGTOOLS holds the credential helpers and the root bundle (ADR 0026). TEST_ROOT, empty for the
 # release, is the PEM file of a throwaway root appended to the bundle: the test image's, which
 # test-qemu builds and no release carries.
@@ -128,7 +137,10 @@ XFS := $(IMAGE)/xfsprogs
 # --tags --always`, or VERSION=.
 VERSION ?= $(shell git describe --tags --always)
 export NARU_VERSION := $(VERSION)
-image:
+image image-upgrade disk release:
+	$(call in_builder,in-builder-$@)
+
+in-builder-image:
 	image/host/kernel/build.sh $(BUILD)/kernel $(IMAGE)
 	image/common/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
 	image/common/xfsprogs/build.sh $(BUILD)/xfsprogs $(XFS)
@@ -150,14 +162,14 @@ image:
 	image/host/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
 	image/host/extension/build.sh $(BUILD)/extension $(IMAGE)
 
-# image-upgrade builds the two kernels the upgrade tests (ADR 0025) put on a running Node, from the
+# in-builder-image-upgrade builds the two kernels the upgrade tests (ADR 0025) put on a running Node, from the
 # programs and the kernel image built: next/bzImage is the same tree with the version $(VERSION)-next
 # stamped in, and refuse/bzImage a naru-init that cannot find its configuration drive, so a trial
 # boot of it refuses and rolls back by itself. The second kernel's version carries an extra linker
 # flag, which build.sh passes to the linker as part of -X github.com/garamsh/naru/lib/init/run.buildVersion=.
 UPGRADE := $(BUILD)/upgrade
 REFUSE_FLAG := -X github.com/garamsh/naru/lib/init/linux.seedLabel=naru67-absent
-image-upgrade: image
+in-builder-image-upgrade: in-builder-image
 	@set -e; \
 	for v in next refuse; do \
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
@@ -170,56 +182,32 @@ image-upgrade: image
 	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
 	image/host/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
 
-# disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
+# in-builder-disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
 # disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and has room for a second one, and
 # naru.qcow2, the same disk for Proxmox's import_from. It needs mkfs.fat,
 # sgdisk and qemu-img, and neither root nor mtools.
-disk: image
+in-builder-disk: in-builder-image
 	image/host/disk/build.sh $(BUILD)/disk $(IMAGE)
 
-# image-repro builds the image and the disk twice from clean build directories
-# and fails unless the kernel, the initramfs, the guest manifest (which names
-# the SHA-256 of every guest file), the guest form's initramfs, kernel and boot set, mke2fs, mkfs.xfs, naru.img and naru.qcow2 of both are
-# byte-identical. It takes two full kernel builds, two guest kernel builds, two
-# builds of the initrds and two of mke2fs and mkfs.xfs.
+# image-repro shows that the release assets do not depend on the machine. Without REFERENCE it runs
+# `make release` twice, in two builder containers with empty build directories, and fails unless the
+# SHA256SUMS of both agree (image/repro.sh names the assets that are not reproducible, and why).
+# With REFERENCE=<the SHA256SUMS of a release another machine built from this commit> and the
+# VERSION of that release, it builds once and compares with that file: `gh release download <tag>
+# --pattern SHA256SUMS` fetches the release workflow's.
+REFERENCE ?=
 image-repro:
 	@set -e; \
-	for i in 1 2; do \
-	  rm -rf $(BUILD)/repro/$$i; \
-	  image/host/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image >/dev/null; \
-	  image/common/e2fsprogs/build.sh $(BUILD)/repro/$$i/e2fsprogs $(BUILD)/repro/$$i/image/e2fsprogs >/dev/null; \
-	  image/common/xfsprogs/build.sh $(BUILD)/repro/$$i/xfsprogs $(BUILD)/repro/$$i/image/xfsprogs >/dev/null; \
-	  image/host/gaon/build.sh $(BUILD)/repro/$$i/gaon $(BUILD)/repro/$$i/image/gaon >/dev/null; \
-	  image/node/etcd/build.sh $(BUILD)/repro/$$i/etcd $(BUILD)/repro/$$i/image/etcd >/dev/null; \
-	  image/node/kubernetes/build.sh $(BUILD)/repro/$$i/kubernetes $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/node/containerd/build.sh $(BUILD)/repro/$$i/containerd $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/node/cni/build.sh $(BUILD)/repro/$$i/cni $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/common/nftables/build.sh $(BUILD)/repro/$$i/nftables $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/common/util-linux/build.sh $(BUILD)/repro/$$i/util-linux $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/common/ecr-login/build.sh $(BUILD)/repro/$$i/ecr-login $(BUILD)/repro/$$i/image/regtools >/dev/null; \
-	  image/common/rolesanywhere/build.sh $(BUILD)/repro/$$i/rolesanywhere $(BUILD)/repro/$$i/image/regtools >/dev/null; \
-	  image/common/cacert/build.sh $(BUILD)/repro/$$i/cacert $(BUILD)/repro/$$i/image/regtools >/dev/null; \
-	  image/host/mvmd/checkout.sh $(BUILD)/repro/$$i/initramfs/mvmd; \
-	  image/host/guest/build.sh $(BUILD)/repro/$$i/initramfs/mvmd $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
-	  image/node/kernel/build.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/guest $(BUILD)/repro/$$i/image/guest >/dev/null; \
-	  image/node/initramfs/build.sh $(BUILD)/repro/$$i/node-initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/host/initramfs/build.sh $(BUILD)/repro/$$i/initramfs $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/guest $(BUILD)/repro/$$i/image/e2fsprogs $(BUILD)/repro/$$i/image/gaon $(BUILD)/repro/$$i/image/etcd $(BUILD)/repro/$$i/image/regtools $(BUILD)/repro/$$i/image/xfsprogs $(BUILD)/repro/$$i/image/k8s >/dev/null; \
-	  image/host/kernel/embed.sh $(BUILD)/repro/$$i/kernel $(BUILD)/repro/$$i/image $(BUILD)/repro/$$i/image/initramfs.cpio.gz >/dev/null; \
-	  image/host/extension/build.sh $(BUILD)/repro/$$i/extension $(BUILD)/repro/$$i/image >/dev/null; \
-	  image/host/disk/build.sh $(BUILD)/repro/$$i/disk $(BUILD)/repro/$$i/image >/dev/null; \
-	done; \
-	for f in bzImage e2fsprogs/mke2fs xfsprogs/mkfs.xfs etcd/etcd regtools/docker-credential-ecr-login regtools/aws_signing_helper regtools/ca-certificates.crt gaon/gaon-node-agent gaon/gaon-apiserver gaon/gaon-scheduler gaon/gaon-controllers initramfs.cpio.gz node-initrd.cpio.gz boot-sets.json guest/boot-sets/naru-node/vmlinux guest/guest.json extensions/naru-orch.sqfs extensions/naru-orch.json naru.img naru.qcow2; do \
-	  a=$$(sha256sum $(BUILD)/repro/1/image/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/$$f | cut -d' ' -f1); \
-	  echo "$@: $$f build 1 $$a"; echo "$@: $$f build 2 $$b"; \
-	  if [ "$$a" != "$$b" ]; then echo "$@: $$f differs between the builds" >&2; exit 1; fi; \
-	done; \
-	for f in $(K8S_FILES); do \
-	  a=$$(sha256sum $(BUILD)/repro/1/image/k8s/$$f | cut -d' ' -f1); b=$$(sha256sum $(BUILD)/repro/2/image/k8s/$$f | cut -d' ' -f1); \
-	  echo "$@: k8s/$$f build 1 $$a"; echo "$@: k8s/$$f build 2 $$b"; \
-	  if [ "$$a" != "$$b" ]; then echo "$@: k8s/$$f differs between the builds" >&2; exit 1; fi; \
-	done; \
-	echo "$@: the Kubernetes programs, containerd, runc, the CNI plugins, nft, mount and umount are byte-identical across two clean builds"; \
-	echo "$@: bzImage, mke2fs, mkfs.xfs, etcd, the two credential helpers, the root bundle, the four gaon binaries, initramfs.cpio.gz, the guest form's initrd, kernel and boot-sets.json, guest.json, the naru-orch extension and its description, naru.img and naru.qcow2 are byte-identical across two clean builds"
+	if [ -n "$(REFERENCE)" ]; then \
+	  $(MAKE) release; \
+	  image/repro.sh "$(REFERENCE)" $(RELEASE)/SHA256SUMS; \
+	else \
+	  for i in 1 2; do \
+	    rm -rf $(BUILD)/repro/$$i; \
+	    $(call in_builder,in-builder-release,BUILD=/naru/build/repro/$$i); \
+	  done; \
+	  image/repro.sh $(BUILD)/repro/1/release/SHA256SUMS $(BUILD)/repro/2/release/SHA256SUMS; \
+	fi
 
 # nodes boots N (default 2) Nodes of the image under QEMU on one network, as
 # the user, and keeps them up until interrupted. Their disks and consoles are
@@ -245,7 +233,7 @@ judge-serial:
 	@test -n "$(NODE1)" -a -n "$(NODE2)" || { echo "judge-serial: usage: make judge-serial NODE1=<log> NODE2=<log>" >&2; exit 2; }
 	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_GAON),-gaon) $(if $(JUDGE_NARUCTL),-naructl "$(abspath $(JUDGE_NARUCTL))") $(if $(JUDGE_PKI),-pki) $(if $(JUDGE_NODE_API),-node-api $(JUDGE_NODE_API)) $(if $(JUDGE_NODE1_INTERFACES),-node1-interfaces $(JUDGE_NODE1_INTERFACES)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
 
-# release writes the assets of a deployment into $(RELEASE): naru-host-<version>.qcow2 (the boot disk),
+# in-builder-release writes the assets of a deployment into $(RELEASE): naru-host-<version>.qcow2 (the boot disk),
 # naru-host-upgrade-<version>.tar (the upgrade bundle: the kernel and a manifest of its digest),
 # naru-node-kernel-<version>, naru-node-initramfs-<version> and naru-node-<version>.json (the Node boot
 # set a host takes with `naructl host boot-set add`, ADR 0046), naru-data-<version>.qcow2 (the one data
@@ -263,10 +251,10 @@ judge-serial:
 RELEASE := $(BUILD)/release
 PREV_MANIFEST ?=
 RECREATE ?=
-release: disk
+in-builder-release: in-builder-disk
 	rm -rf $(RELEASE)
 	mkdir -p $(BUILD)/naructl
-	cd naructl && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o $(BUILD)/naructl/naructl ./cmd/naructl
+	bash -c '. image/lib.sh && gobuild naructl $(BUILD)/naructl/naructl ./cmd/naructl'
 	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
 
 # test-qemu boots Nodes of the image under QEMU, as the user, and reads their consoles. It needs

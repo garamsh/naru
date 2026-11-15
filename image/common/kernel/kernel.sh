@@ -35,6 +35,8 @@ out=$(cd "$4" && pwd)
 . "$here/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
 # base is tinyconfig unless the kernel's directory says `host`.
 base=tinyconfig
@@ -50,8 +52,7 @@ case "$base" in
     ;;
 esac
 
-stamp=$(cat "$here/pin.env" "${bases[@]}" "$kdir/naru.config" "$kdir/required.txt" "$here/kernel.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/vmlinux" ] && [ -f "$out/kernel.stamp" ] && [ "$(cat "$out/kernel.stamp")" = "$stamp" ]; then
+if build_current "$out/kernel.stamp" "$out/vmlinux" -- "$here/pin.env" "${bases[@]}" "$kdir/naru.config" "$kdir/required.txt" "$here/kernel.sh" "$here/../../build.env"; then
   echo "guest kernel $name: $out/vmlinux is up to date with its inputs"
   exit 0
 fi
@@ -99,5 +100,5 @@ make -C "$src" O="$obj" ARCH=x86_64 -j"$(nproc)" vmlinux >"$build/build.log" 2>&
 }
 install -m 0644 "$obj/vmlinux" "$out/vmlinux"
 install -m 0644 "$obj/.config" "$out/kernel.config"
-echo "$stamp" >"$out/kernel.stamp"
+echo "$STAMP" >"$out/kernel.stamp"
 echo "guest kernel $name: built $out/vmlinux, SHA-256 $(sha256sum "$out/vmlinux" | cut -d' ' -f1)"

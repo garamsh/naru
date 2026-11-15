@@ -27,9 +27,10 @@ out=$(cd "$2" && pwd)
 . "$here/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
-stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/aws_signing_helper" ] && [ -f "$out/rolesanywhere.stamp" ] && [ "$(cat "$out/rolesanywhere.stamp")" = "$stamp" ]; then
+if build_current "$out/rolesanywhere.stamp" "$out/aws_signing_helper" -- "$here/pin.env" "$here/build.sh" "$here/../../build.env"; then
   echo "rolesanywhere: $out/aws_signing_helper is up to date with its inputs"
   exit 0
 fi
@@ -55,7 +56,10 @@ part=$build/aws_signing_helper.bin
 rm -f "$part"
 (cd "$src" && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -tags netgo,osusergo \
   -ldflags="-s -w -buildid= -linkmode=external -extldflags=-static -X github.com/aws/rolesanywhere-credential-helper/cmd.Version=$ROLESANYWHERE_VERSION" \
-  -o "$part" main.go)
+  -o "$part" main.go) 2>"$build/go-build.log" || { cat "$build/go-build.log" >&2; exit 1; }
+cat "$build/go-build.log" >&2
+nss_gate aws_signing_helper "$build/go-build.log"
+require_go "$GOTOOLCHAIN" "$part"
 if ! file "$part" | grep -Eq 'statically linked|static-pie linked'; then
   echo "rolesanywhere: aws_signing_helper is not a static executable: $(file "$part")" >&2
   exit 1
@@ -66,5 +70,5 @@ if [ "$version" != "$ROLESANYWHERE_VERSION" ]; then
   exit 1
 fi
 cp "$part" "$out/aws_signing_helper"
-echo "$stamp" >"$out/rolesanywhere.stamp"
+echo "$STAMP" >"$out/rolesanywhere.stamp"
 echo "rolesanywhere: built $out/aws_signing_helper, SHA-256 $(sha256sum "$out/aws_signing_helper" | cut -d' ' -f1)"

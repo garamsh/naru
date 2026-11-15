@@ -23,9 +23,10 @@ out=$(cd "$2" && pwd)
 . "$here/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
-stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/docker-credential-ecr-login" ] && [ -f "$out/ecr-login.stamp" ] && [ "$(cat "$out/ecr-login.stamp")" = "$stamp" ]; then
+if build_current "$out/ecr-login.stamp" "$out/docker-credential-ecr-login" -- "$here/pin.env" "$here/build.sh" "$here/../../build.env"; then
   echo "ecr-login: $out/docker-credential-ecr-login is up to date with its inputs"
   exit 0
 fi
@@ -53,6 +54,7 @@ pkg=github.com/awslabs/amazon-ecr-credential-helper/ecr-login
 (cd "$src/ecr-login" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOFLAGS=-mod=vendor go build -trimpath -buildvcs=false \
   -ldflags="-s -w -buildid= -X $pkg/version.Version=$ECR_LOGIN_VERSION -X $pkg/version.GitCommitSHA=$ECR_LOGIN_COMMIT" \
   -o "$part" ./cli/docker-credential-ecr-login)
+require_go "$GOTOOLCHAIN" "$part"
 if ! file "$part" | grep -Eq 'statically linked|static-pie linked'; then
   echo "ecr-login: docker-credential-ecr-login is not a static executable: $(file "$part")" >&2
   exit 1
@@ -63,5 +65,5 @@ if [ "$version" != "$ECR_LOGIN_VERSION" ]; then
   exit 1
 fi
 cp "$part" "$out/docker-credential-ecr-login"
-echo "$stamp" >"$out/ecr-login.stamp"
+echo "$STAMP" >"$out/ecr-login.stamp"
 echo "ecr-login: built $out/docker-credential-ecr-login, SHA-256 $(sha256sum "$out/docker-credential-ecr-login" | cut -d' ' -f1)"

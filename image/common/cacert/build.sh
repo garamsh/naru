@@ -21,13 +21,14 @@ out=$(cd "$2" && pwd)
 extra=${3:-}
 # shellcheck source=pin.env
 . "$here/pin.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
-extra_sum=none
+inputs=("$here/pin.env" "$here/build.sh")
 if [ -n "$extra" ]; then
-  extra_sum=$(sha256sum "$extra" | cut -d' ' -f1)
+  inputs+=("$extra")
 fi
-stamp=$(cat "$here/pin.env" "$here/build.sh" | sha256sum | cut -d' ' -f1)-$extra_sum
-if [ -f "$out/ca-certificates.crt" ] && [ -f "$out/cacert.stamp" ] && [ "$(cat "$out/cacert.stamp")" = "$stamp" ]; then
+if build_current "$out/cacert.stamp" "$out/ca-certificates.crt" -- "${inputs[@]}"; then
   echo "cacert: $out/ca-certificates.crt is up to date with its inputs"
   exit 0
 fi
@@ -53,5 +54,5 @@ if [ -n "$extra" ]; then
   cat "$extra" >>"$part"
 fi
 mv "$part" "$out/ca-certificates.crt"
-echo "$stamp" >"$out/cacert.stamp"
+echo "$STAMP" >"$out/cacert.stamp"
 echo "cacert: wrote $out/ca-certificates.crt from $CACERT_URL, SHA-256 $(sha256sum "$out/ca-certificates.crt" | cut -d' ' -f1)${extra:+, with $extra appended}"
