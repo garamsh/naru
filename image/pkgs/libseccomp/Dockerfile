@@ -17,7 +17,10 @@ WORKDIR /build
 RUN . /pin.env && fetch.sh "$GPERF_URL" "$GPERF_SHA256" gperf.tar.gz && fetch.sh "$LIBSECCOMP_URL" "$LIBSECCOMP_SHA256" src.tar.gz \
  && tar -xf gperf.tar.gz && tar -xf src.tar.gz
 RUN . /pin.env && mkdir obj-gperf && cd obj-gperf \
- && ../gperf-$GPERF_VERSION/configure --prefix=/tools && make -j"$(nproc)" && make install
+ && env -u CC -u AR -u RANLIB -u STRIP -u CFLAGS -u PKG_CONFIG_LIBDIR -u PKG_CONFIG_SYSROOT_DIR PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+      ../gperf-$GPERF_VERSION/configure --prefix=/tools \
+ && env -u CC -u AR -u RANLIB -u STRIP -u CFLAGS PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin make -j"$(nproc)" \
+ && env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin make install
 RUN . /pin.env && mkdir obj && cd obj \
  && PATH=/tools/bin:$PATH ../libseccomp-$LIBSECCOMP_VERSION/configure --prefix=/usr \
       --enable-static --disable-shared --disable-python --disable-tools \

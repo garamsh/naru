@@ -15,7 +15,8 @@ variable "NARU_VERSION" {}
 
 group "default" {
   targets = ["builder", "toolchain", "util-linux", "e2fsprogs", "liburcu", "libinih", "xfsprogs", "libmnl", "libnftnl", "jansson", "nftables", "cacert",
-    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes"]
+    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes",
+    "libseccomp", "containerd", "rolesanywhere"]
 }
 
 target "_package" {
@@ -164,4 +165,23 @@ target "kubernetes" {
   inherits = ["_package"]
   context  = "kubernetes"
   output   = ["type=oci,dest=${OUT}/kubernetes.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "libseccomp" {
+  inherits = ["_ctoolchain"]
+  context  = "libseccomp"
+  output   = ["type=oci,dest=${OUT}/libseccomp.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "containerd" {
+  inherits = ["_ctoolchain"]
+  context  = "containerd"
+  contexts = { libseccomp = "target:libseccomp" }
+  output   = ["type=oci,dest=${OUT}/containerd.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "rolesanywhere" {
+  inherits = ["_ctoolchain"]
+  context  = "rolesanywhere"
+  output   = ["type=oci,dest=${OUT}/rolesanywhere.tar,rewrite-timestamp=true,compression=uncompressed"]
 }

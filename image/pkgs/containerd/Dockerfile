@@ -19,29 +19,28 @@ ENV GOPATH=/go GOCACHE=/gocache GOFLAGS=-mod=readonly GOWORK=off GOOS=linux GOAR
 COPY --from=lib gitfetch.sh install-go.sh install-bin.sh /usr/local/bin/
 COPY pin.env /pin.env
 WORKDIR /build
-RUN . /pin.env && gitfetch.sh "$CONTAINERD_REPO" "$CONTAINERD_COMMIT" containerd && gitfetch.sh "$RUNC_REPO" "$RUNC_COMMIT" runc
-RUN . /pin.env && export GOTOOLCHAIN=go$(awk '$1 == "go" { print $2 }' containerd/go.mod) && [ "$GOTOOLCHAIN" != go ] \
+RUN mkdir -p src bin
+RUN . /pin.env && gitfetch.sh "$CONTAINERD_REPO" "$CONTAINERD_COMMIT" src/containerd && gitfetch.sh "$RUNC_REPO" "$RUNC_COMMIT" src/runc
+RUN . /pin.env && export GOTOOLCHAIN=go$(awk '$1 == "go" { print $2 }' src/containerd/go.mod) && [ "$GOTOOLCHAIN" != go ] \
  && pkg=github.com/containerd/containerd/v2 \
  && ldflags="-s -w -buildid= -X $pkg/version.Version=$CONTAINERD_VERSION -X $pkg/version.Revision=$CONTAINERD_COMMIT -X $pkg/version.Package=$pkg" \
  && tags="urfave_cli_no_docs osusergo netgo static_build no_btrfs no_devmapper no_zfs" \
- && (cd containerd \
-      && CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags "$tags" -ldflags="$ldflags" -o /build/containerd ./cmd/containerd \
-      && CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags "$tags no_grpc" -ldflags="$ldflags" -o /build/containerd-shim-runc-v2 ./cmd/containerd-shim-runc-v2) \
- && for p in containerd containerd-shim-runc-v2; do install-go.sh "$GOTOOLCHAIN" /build/$p /out/usr/bin/$p; done \
- && [ "$(/build/containerd --version | awk '{ print $3 }')" = "$CONTAINERD_VERSION" ] \
- && [ "$(/build/containerd-shim-runc-v2 -v | awk '$1 == "Version:" { print $2 }')" = "$CONTAINERD_VERSION" ]
-# runc: libpathrs, which runc's Makefile adds by default, is a Rust library the image does not
-# build; without the tag runc uses its pure Go path-safety code.
-RUN . /pin.env && export GOTOOLCHAIN=go$(awk '$1 == "go" { print $2 }' containerd/go.mod) \
- && (cd runc && CGO_ENABLED=1 PKG_CONFIG="pkg-config --static" CGO_CFLAGS="$CFLAGS" \
+ && (cd src/containerd \
+      && CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags "$tags" -ldflags="$ldflags" -o /build/bin/containerd ./cmd/containerd \
+      && CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags "$tags no_grpc" -ldflags="$ldflags" -o /build/bin/containerd-shim-runc-v2 ./cmd/containerd-shim-runc-v2) \
+ && for p in containerd containerd-shim-runc-v2; do install-go.sh "$GOTOOLCHAIN" /build/bin/$p /out/usr/bin/$p; done \
+ && [ "$(/build/bin/containerd --version | awk '{ print $3 }')" = "$CONTAINERD_VERSION" ] \
+ && [ "$(/build/bin/containerd-shim-runc-v2 -v | awk '$1 == "Version:" { print $2 }')" = "$CONTAINERD_VERSION" ]
+RUN . /pin.env && export GOTOOLCHAIN=go$(awk '$1 == "go" { print $2 }' src/containerd/go.mod) \
+ && (cd src/runc && CGO_ENABLED=1 PKG_CONFIG="pkg-config --static" CGO_CFLAGS="$CFLAGS" \
       go build -trimpath -buildvcs=false -tags seccomp,urfave_cli_no_docs,netgo,osusergo \
       -ldflags="-buildid= -linkmode=external -extldflags \"-static -Wl,--build-id=none\" -X main.gitCommit=$RUNC_COMMIT" \
-      -o /build/runc .) \
- && install-go.sh "$GOTOOLCHAIN" /build/runc /build/runc.checked \
- && install-bin.sh /build/runc /out/usr/bin/runc \
+      -o /build/bin/runc .) \
+ && install-go.sh "$GOTOOLCHAIN" /build/bin/runc /build/runc.checked \
+ && install-bin.sh /build/bin/runc /out/usr/bin/runc \
  && runc_version=$(/out/usr/bin/runc --version) \
  && [ "$(echo "$runc_version" | awk 'NR == 1 { print $3 }')" = "$RUNC_VERSION" ] \
- && [ "$(echo "$runc_version" | awk '$1 == "libseccomp:" { print $2 }')" = "$LIBSECCOMP_VERSION" ]
+ && [ "$(echo "$runc_version" | awk '$1 == "libseccomp:" { print $2 }')" = "$(pkg-config --modversion libseccomp)" ]
 
 FROM scratch
 COPY --from=build /out /
