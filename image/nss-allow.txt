@@ -4,7 +4,4 @@
 # warning unless the program is named here. One program per line: its name, then why its call cannot
 # happen. Anyone adding a line shows the call is not reached on a Node.
 #
-util-linux mount and umount look up a user name for the user= option of an fstab line; the kubelet runs them with options on the command line and no fstab, as root.
-nft the lookups resolve protocol, service, user and group names in a rule; hostd and the Node's firewall write rules with numbers.
 aws_signing_helper the PKCS#11 provider is dlopen'ed only for a private key held in a token, which a Node does not use; the key comes from a file.
-mkfs.xfs the lookups resolve a user and group name in a protofile line (mkfs.xfs -p); hostd and the Node's firstboot give no protofile.

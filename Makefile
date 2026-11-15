@@ -114,51 +114,55 @@ BUILDER := image/builder/run.sh
 container_path = $(if $(1),$(if $(filter $(CURDIR)/%,$(abspath $(1))),/naru/$(patsubst $(CURDIR)/%,%,$(abspath $(1))),$(error $(1) is outside the repository, which is all the builder container sees)))
 in_builder = $(BUILDER) make $(1) VERSION='$(VERSION)' TEST_ROOT='$(call container_path,$(TEST_ROOT))' PREV_MANIFEST='$(call container_path,$(PREV_MANIFEST))' RECREATE='$(RECREATE)' $(2)
 
-# in-builder-image builds the host kernel, the guest kernels and initrds, the static mke2fs and mkfs.xfs, gaon's four
+# in-builder-image builds the host kernel, the guest kernels and initrds, gaon's four
 # services, etcd, and the initramfs that carries them, from pinned sources, into $(IMAGE): bzImage
 # (the kernel with the initramfs inside it, ADR 0020; bzImage.bare is the kernel before that),
 # initramfs.cpio.gz, inputs.env (the Firecracker pin the tests read) and guest/,
 # which holds what the initramfs carries of the guests, with guest.json naming
 # it, and extensions/ (the naru-orch system extension, ADR 0055). The scripts skip what their inputs say is built, and verify every download.
 GUEST := $(IMAGE)/guest
-E2FS := $(IMAGE)/e2fsprogs
 GAON := $(IMAGE)/gaon
 ETCD := $(IMAGE)/etcd
-# K8S holds Kubernetes, containerd, runc, the CNI plugins, nft, mount and umount, which five
-# build scripts write into the one directory.
+# K8S holds Kubernetes, containerd, runc and the CNI plugins, which three build scripts write into
+# the one directory.
 K8S := $(IMAGE)/k8s
 # REGTOOLS holds the credential helpers and the root bundle (ADR 0026). TEST_ROOT, empty for the
 # release, is the PEM file of a throwaway root appended to the bundle: the test image's, which
 # test-qemu builds and no release carries.
 REGTOOLS := $(IMAGE)/regtools
 TEST_ROOT ?=
-XFS := $(IMAGE)/xfsprogs
+# PKGS holds the packages of image/pkgs as OCI tars, which image/pkgs/build.sh writes (it needs the
+# Docker daemon, so it runs on the host, before the builder container; ADR 0075), and PKGROOT what
+# naru-pkg unpacks from the five the initramfs takes: mke2fs, mkfs.xfs, nft, mount, umount and the
+# root bundle.
+PKGS := $(BUILD)/pkgs
+PKGROOT := $(IMAGE)/pkgs
+IMAGE_PKGS := util-linux e2fsprogs xfsprogs nftables cacert
 # VERSION is the version naru-init reports on the Node API and the release assets carry: `git describe
 # --tags --always`, or VERSION=.
 VERSION ?= $(shell git describe --tags --always)
 export NARU_VERSION := $(VERSION)
 image image-upgrade disk release:
+	image/pkgs/build.sh $(PKGS)
 	$(call in_builder,in-builder-$@)
 
 in-builder-image:
 	image/host/kernel/build.sh $(BUILD)/kernel $(IMAGE)
-	image/common/e2fsprogs/build.sh $(BUILD)/e2fsprogs $(E2FS)
-	image/common/xfsprogs/build.sh $(BUILD)/xfsprogs $(XFS)
+	bash -c '. image/lib.sh && gobuild tooling/disk $(BUILD)/naru-pkg ./cmd/naru-pkg'
+	$(BUILD)/naru-pkg unpack $(PKGROOT) $(foreach p,$(IMAGE_PKGS),$(PKGS)/$(p).tar)
 	image/host/gaon/build.sh $(BUILD)/gaon $(GAON)
 	image/node/etcd/build.sh $(BUILD)/etcd $(ETCD)
 	image/node/kubernetes/build.sh $(BUILD)/kubernetes $(K8S)
 	image/node/containerd/build.sh $(BUILD)/containerd $(K8S)
 	image/node/cni/build.sh $(BUILD)/cni $(K8S)
-	image/common/nftables/build.sh $(BUILD)/nftables $(K8S)
-	image/common/util-linux/build.sh $(BUILD)/util-linux $(K8S)
 	image/common/ecr-login/build.sh $(BUILD)/ecr-login $(REGTOOLS)
 	image/common/rolesanywhere/build.sh $(BUILD)/rolesanywhere $(REGTOOLS)
-	image/common/cacert/build.sh $(BUILD)/cacert $(REGTOOLS) $(TEST_ROOT)
+	cat $(PKGROOT)/cacert/etc/ssl/certs/ca-certificates.crt $(TEST_ROOT) >$(REGTOOLS)/ca-certificates.crt
 	image/host/mvmd/checkout.sh $(BUILD)/initramfs/mvmd
 	image/host/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
 	image/node/kernel/build.sh $(BUILD)/kernel $(BUILD)/guest $(GUEST)
-	image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(IMAGE) $(E2FS) $(ETCD) $(REGTOOLS) $(XFS) $(K8S)
-	image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S)
+	image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(IMAGE) $(PKGROOT) $(ETCD) $(REGTOOLS) $(K8S)
+	image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(PKGROOT) $(GAON) $(ETCD) $(REGTOOLS) $(K8S)
 	image/host/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
 	image/host/extension/build.sh $(BUILD)/extension $(IMAGE)
 
@@ -175,11 +179,11 @@ in-builder-image-upgrade: in-builder-image
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
 	  cp $(IMAGE)/bzImage.bare $(IMAGE)/kernel.stamp $(UPGRADE)/$$v/; \
 	done; \
-	NARU_VERSION='$(VERSION)-next' image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(UPGRADE)/next $(E2FS) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
-	NARU_VERSION='$(VERSION)-next' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
+	NARU_VERSION='$(VERSION)-next' image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(UPGRADE)/next $(PKGROOT) $(ETCD) $(REGTOOLS) $(K8S); \
+	NARU_VERSION='$(VERSION)-next' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(PKGROOT) $(GAON) $(ETCD) $(REGTOOLS) $(K8S); \
 	image/host/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/next $(UPGRADE)/next/initramfs.cpio.gz; \
-	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(E2FS) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
-	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(E2FS) $(GAON) $(ETCD) $(REGTOOLS) $(XFS) $(K8S); \
+	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(PKGROOT) $(ETCD) $(REGTOOLS) $(K8S); \
+	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(PKGROOT) $(GAON) $(ETCD) $(REGTOOLS) $(K8S); \
 	image/host/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
 
 # in-builder-disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
@@ -204,9 +208,10 @@ image-repro:
 	else \
 	  for i in 1 2; do \
 	    rm -rf $(BUILD)/repro/$$i; \
+	    NARU_PKGS_NO_CACHE=1 image/pkgs/build.sh $(BUILD)/repro/$$i/pkgs; \
 	    $(call in_builder,in-builder-release,BUILD=/naru/build/repro/$$i); \
 	  done; \
-	  image/repro.sh $(BUILD)/repro/1/release/SHA256SUMS $(BUILD)/repro/2/release/SHA256SUMS; \
+	  image/repro.sh $(BUILD)/repro/1/release/SHA256SUMS $(BUILD)/repro/2/release/SHA256SUMS $(BUILD)/repro/1/pkgs $(BUILD)/repro/2/pkgs; \
 	fi
 
 # nodes boots N (default 2) Nodes of the image under QEMU on one network, as
