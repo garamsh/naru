@@ -140,10 +140,10 @@ func genEtcdClient(fs *pflag.FlagSet) runner {
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(*out, 0o755); err != nil { //nolint:gosec // holds a certificate
+		if err := os.MkdirAll(*out, 0o755); err != nil {
 			return err
 		}
-		if err := pki.WriteFile(filepath.Join(*out, "tls.crt"), pair.CertPEM, 0o644); err != nil { //nolint:gosec // a certificate
+		if err := pki.WriteFile(filepath.Join(*out, "tls.crt"), pair.CertPEM, 0o644); err != nil {
 			return err
 		}
 		if err := pki.WriteFile(filepath.Join(*out, "tls.key"), pair.KeyPEM, 0o600); err != nil {

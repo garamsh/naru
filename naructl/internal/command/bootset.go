@@ -39,7 +39,7 @@ type bootSetFile struct {
 // readBootSetManifest reads the release's naru-node-<version>.json at path.
 func readBootSetManifest(path string) (bootSetManifest, error) {
 	var m bootSetManifest
-	b, err := os.ReadFile(path) //nolint:gosec // an argument of the command
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return m, err
 	}
@@ -70,12 +70,12 @@ func bootSetAdd(fs *pflag.FlagSet) runner {
 			return err
 		}
 		dir := filepath.Dir(args[0])
-		kernel, err := os.Open(filepath.Join(dir, m.Kernel.File)) //nolint:gosec // a name beside the manifest
+		kernel, err := os.Open(filepath.Join(dir, m.Kernel.File))
 		if err != nil {
 			return err
 		}
 		defer func() { _ = kernel.Close() }()
-		initramfs, err := os.Open(filepath.Join(dir, m.Initramfs.File)) //nolint:gosec // a name beside the manifest
+		initramfs, err := os.Open(filepath.Join(dir, m.Initramfs.File))
 		if err != nil {
 			return err
 		}

@@ -103,7 +103,7 @@ func ReadRelease(dir, work string) (Release, error) {
 		return Release{}, err
 	}
 	defer func() { _ = os.Remove(data) }()
-	if out, err := exec.Command("/sbin/debugfs", "-R", "rdump /inputs "+work, data).CombinedOutput(); err != nil { //nolint:gosec // arguments built here
+	if out, err := exec.Command("/sbin/debugfs", "-R", "rdump /inputs "+work, data).CombinedOutput(); err != nil {
 		return Release{}, fmt.Errorf("read the data disk's inputs: %w: %s", err, out)
 	}
 	info, err := ReadExtensionInfo(filepath.Join(dir, ReleaseExtensionName(r.Version, ".json")))
@@ -157,12 +157,12 @@ func copyExecutable(from, to string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(to, b, 0o755) //nolint:gosec // an executable asset
+	return os.WriteFile(to, b, 0o755)
 }
 
 // qemuImgRaw converts the qcow2 file from to a raw file at to, which stays sparse.
 func qemuImgRaw(from, to string) error {
-	if out, err := exec.Command("qemu-img", "convert", "-f", "qcow2", "-O", "raw", from, to).CombinedOutput(); err != nil { //nolint:gosec // paths built here
+	if out, err := exec.Command("qemu-img", "convert", "-f", "qcow2", "-O", "raw", from, to).CombinedOutput(); err != nil {
 		return fmt.Errorf("qemu-img convert %s: %w: %s", from, err, out)
 	}
 	return nil

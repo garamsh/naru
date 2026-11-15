@@ -119,7 +119,7 @@ func copyTree(src, dst string, links map[inode]string) error {
 			if mode&fs.ModeCharDevice != 0 {
 				kind = syscall.S_IFCHR
 			}
-			if err := syscall.Mknod(target, kind|uint32(mode.Perm()), int(st.Rdev)); err != nil { //nolint:unconvert // Rdev is uint64 or uint32 by architecture
+			if err := syscall.Mknod(target, kind|uint32(mode.Perm()), int(st.Rdev)); err != nil {
 				return err
 			}
 		default:

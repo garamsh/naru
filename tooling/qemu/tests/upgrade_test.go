@@ -82,7 +82,7 @@ func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, d
 
 	nd, err := node.Start(node.Spec{
 		Config: cfg, Disk: disk, WritableDisk: true, Dir: nodeDir,
-		Mcast: fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000)), NaruYAML: userData, NetworkConfig: networkConfig, //nolint:gosec // a port, not a secret
+		Mcast: fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000)), NaruYAML: userData, NetworkConfig: networkConfig,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {

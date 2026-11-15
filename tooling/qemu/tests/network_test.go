@@ -116,7 +116,7 @@ func (f *fleet) netVMOn(i int, name, network string) netVM {
 
 // try is the probe's answer to a request of one line, or false when it did not answer.
 func (v netVM) try(pathQuery string) (string, bool) {
-	resp, err := http.Get(v.base + pathQuery) //nolint:noctx // a test's request to a loopback listener
+	resp, err := http.Get(v.base + pathQuery)
 	if err != nil {
 		return "", false
 	}

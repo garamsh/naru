@@ -16,7 +16,7 @@ func naruCluster(t *testing.T, args ...string) (string, error) {
 	bin := filepath.Join(t.TempDir(), "naru-cluster")
 	out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput()
 	require.NoError(t, err, string(out))
-	out, err = exec.Command(bin, args...).CombinedOutput() //nolint:gosec // the binary just built
+	out, err = exec.Command(bin, args...).CombinedOutput()
 	return string(out), err
 }
 
@@ -27,7 +27,7 @@ func stubRelease(t *testing.T, topology string) string {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "naru-guest-v1.json"), []byte("{}"), 0o600))
 	script := "#!/bin/sh\n[ \"$1\" = topology ] && cat <<'EOF'\n" + topology + "\nEOF\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "naructl-v1-linux-amd64"), []byte(script), 0o755)) //nolint:gosec // a test executable
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "naructl-v1-linux-amd64"), []byte(script), 0o755))
 	return dir
 }
 
@@ -59,7 +59,7 @@ func TestNaruCluster_TheServicesToDisableAreTheReleasesNaructls(t *testing.T) {
 func TestNaruCluster_AReleaseWhoseNaructlHasNoTopologyIsRefusedAndTheErrorSaysSo(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "naru-guest-v1.json"), []byte("{}"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "naructl-v1-linux-amd64"), []byte("#!/bin/sh\necho usage >&2\nexit 1\n"), 0o755)) //nolint:gosec // a test executable
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "naructl-v1-linux-amd64"), []byte("#!/bin/sh\necho usage >&2\nexit 1\n"), 0o755))
 
 	out, err := naruCluster(t, "-release", dir, "-dir", t.TempDir())
 

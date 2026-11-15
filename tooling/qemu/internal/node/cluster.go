@@ -188,7 +188,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 	}
 	// The Nodes of one cluster meet on a multicast group and port of their own, so that
 	// clusters running side by side on one host do not share a network.
-	mcast := fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000)) //nolint:gosec // a port, not a secret
+	mcast := fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000))
 	c := &Cluster{Mcast: mcast}
 	var gen *gaonFiles
 	if spec.Gaon {
@@ -205,7 +205,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 			if err != nil {
 				return nil, fmt.Errorf("read the host authority's certificate: %w", err)
 			}
-			if err := os.WriteFile(c.HostCA, ca, 0o644); err != nil { //nolint:gosec // a certificate holds nothing secret
+			if err := os.WriteFile(c.HostCA, ca, 0o644); err != nil {
 				return nil, err
 			}
 		}
@@ -376,7 +376,7 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(spec.Dir, 0o755); err != nil { //nolint:gosec // a test directory
+	if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(g.guest, manifest, 0o600); err != nil {
@@ -420,7 +420,7 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 		return nil, err
 	}
 	g.client.CA = filepath.Join(clientDir, "ca.pem")
-	if err := os.WriteFile(g.client.CA, cert, 0o644); err != nil { //nolint:gosec // a certificate
+	if err := os.WriteFile(g.client.CA, cert, 0o644); err != nil {
 		return nil, err
 	}
 	return g, nil
@@ -436,7 +436,7 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	n := c.net()
 	ones, _ := net.IPMask(net.ParseIP(n.Netmask).To4()).Size()
 	dir := filepath.Join(spec.Dir, c.Name)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, nil, err
 	}
 	a := naructl.Node{
@@ -543,7 +543,7 @@ func (g *gaonFiles) nodeAPIFiles(spec ClusterSpec) error {
 	g.apiPort = port
 	addr := "127.0.0.1:" + strconv.Itoa(port)
 	dir := filepath.Join(spec.Dir, "api-client")
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	api := &NodeAPI{Addr: addr, Admin: filepath.Join(dir, "admin.yaml"), Reader: filepath.Join(dir, "reader.yaml"), Foreign: filepath.Join(dir, "foreign.yaml")}
@@ -703,7 +703,7 @@ func (g *gaonFiles) hostAPIFilesOf(spec ClusterSpec, i int, other string) error 
 		suffix = fmt.Sprintf("-%d", i) // node-1's directory keeps its name
 	}
 	dir := filepath.Join(spec.Dir, "host-client"+suffix)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	h := &HostAPI{

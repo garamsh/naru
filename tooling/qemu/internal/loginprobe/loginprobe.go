@@ -235,6 +235,6 @@ func sortedValues(m map[string]string) []string {
 
 // readFile returns the content of a file that may be gone or unreadable, as "".
 func readFile(path string) string {
-	b, _ := os.ReadFile(path) //nolint:gosec // a path under the process file system
+	b, _ := os.ReadFile(path)
 	return string(b)
 }

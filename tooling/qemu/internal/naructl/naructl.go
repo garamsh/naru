@@ -24,7 +24,7 @@ type Tool struct {
 
 // Build builds naructl from the checkout at root into out, static, as a release does.
 func Build(root, out string) error {
-	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out, "./cmd/naructl") //nolint:gosec // fixed arguments
+	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out, "./cmd/naructl")
 	cmd.Dir = filepath.Join(root, "naructl")
 	cmd.Env = append(os.Environ(), "GOWORK=off", "CGO_ENABLED=0")
 	if b, err := cmd.CombinedOutput(); err != nil {
@@ -43,7 +43,7 @@ func (t Tool) output(args ...string) ([]byte, error) {
 	if t.Bin == "" {
 		return nil, fmt.Errorf("no naructl binary is named")
 	}
-	cmd := exec.Command(t.Bin, args...) //nolint:gosec // the binary the caller named
+	cmd := exec.Command(t.Bin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -190,7 +190,7 @@ func (t Tool) Run(args ...string) Result {
 	if t.Bin == "" {
 		return Result{Err: fmt.Errorf("no naructl binary is named")}
 	}
-	cmd := exec.Command(t.Bin, args...) //nolint:gosec // the binary the caller named
+	cmd := exec.Command(t.Bin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

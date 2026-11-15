@@ -57,7 +57,7 @@ func (n *named) client(id, addr string) *http.Client {
 	clone := tr.Clone()
 	conf := clone.TLSClientConfig
 	roots := conf.RootCAs
-	conf.InsecureSkipVerify = true //nolint:gosec // VerifyConnection below verifies the chain and the names
+	conf.InsecureSkipVerify = true
 	dialled, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		dialled = addr

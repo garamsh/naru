@@ -82,8 +82,8 @@ func launch(t *testing.T, args ...string) *running {
 	require.NoError(t, err)
 	absRelease, err := filepath.Abs(releaseDir)
 	require.NoError(t, err)
-	r.cmd = exec.Command(naruCluster, append([]string{"-release", absRelease, "-dir", r.dir}, args...)...) //nolint:gosec // the command just built
-	r.cmd.Dir = t.TempDir()                                                                                // not the checkout
+	r.cmd = exec.Command(naruCluster, append([]string{"-release", absRelease, "-dir", r.dir}, args...)...)
+	r.cmd.Dir = t.TempDir() // not the checkout
 	r.cmd.Stdout, r.cmd.Stderr = logFile, logFile
 	require.NoError(t, r.cmd.Start())
 	go func() { _ = r.cmd.Wait(); close(r.exited) }()
@@ -176,7 +176,7 @@ func client(t *testing.T, f clusterfile.File) (*hostapi.Client, []string) {
 
 func gaonCLI(t *testing.T, global []string, args ...string) string {
 	t.Helper()
-	out, err := exec.Command(filepath.Join(gaonDir, "gaon"), append(append([]string{}, global...), args...)...).CombinedOutput() //nolint:gosec // the pin's CLI
+	out, err := exec.Command(filepath.Join(gaonDir, "gaon"), append(append([]string{}, global...), args...)...).CombinedOutput()
 	require.NoError(t, err, string(out))
 	return string(out)
 }
@@ -198,7 +198,7 @@ func markedBinaries(t *testing.T) (string, map[string]string) {
 		b, err := os.ReadFile(filepath.Join(gaonDir, name))
 		require.NoError(t, err, "make image builds the pin's binaries")
 		b = append(b, 0)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), b, 0o755)) //nolint:gosec // an executable
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), b, 0o755))
 		sum := sha256.Sum256(b)
 		sums[name] = hex.EncodeToString(sum[:])
 	}

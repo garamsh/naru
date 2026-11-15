@@ -219,7 +219,7 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 		}
 		_, _ = fmt.Fprintf(stdout, "naructl: wrote %s", out)
 		if nc != nil {
-			if err := os.WriteFile(networkConfig, nc, 0o644); err != nil { //nolint:gosec // carries no key
+			if err := os.WriteFile(networkConfig, nc, 0o644); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintf(stdout, " and %s", networkConfig)

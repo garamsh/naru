@@ -115,7 +115,7 @@ var testCA string
 func buildInit(t *testing.T) string {
 	t.Helper()
 	initBin := filepath.Join(t.TempDir(), "naru-init")
-	build := exec.Command("go", "build", "-o", initBin, "./cmd/naru-init") //nolint:gosec // fixed arguments
+	build := exec.Command("go", "build", "-o", initBin, "./cmd/naru-init")
 	build.Dir = filepath.Join(repoRoot(t), "node")
 	build.Env = append(os.Environ(), "GOWORK=off")
 	out, err := build.CombinedOutput()
@@ -133,7 +133,7 @@ func TestUserData_EachFileIsOneNaruInitParses(t *testing.T) {
 		p := filepath.Join(t.TempDir(), name)
 		require.NoError(t, os.WriteFile(p, content, 0o600))
 
-		out, err := exec.Command(initBin, "-validate", p).CombinedOutput() //nolint:gosec // the binary built above
+		out, err := exec.Command(initBin, "-validate", p).CombinedOutput()
 
 		require.NoError(t, err, "%s: %s", name, out)
 		assert.Contains(t, string(out), "valid; node=naru-"+strings.TrimSuffix(strings.TrimPrefix(name, "naru-"), ".test.yaml"))
@@ -147,7 +147,7 @@ func TestUserData_ABrokenFileIsRefusedByNaruInit(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "naru-node-1.test.yaml")
 	require.NoError(t, os.WriteFile(p, []byte(strings.Replace(string(files["naru-node-1.test.yaml"]), "kind: NodeConfig", "kind: Other", 1)), 0o600))
 
-	_, err = exec.Command(initBin, "-validate", p).CombinedOutput() //nolint:gosec // the binary built above
+	_, err = exec.Command(initBin, "-validate", p).CombinedOutput()
 
 	assert.Error(t, err, "the validation rejects what init would")
 }

@@ -20,7 +20,7 @@ func fake(t *testing.T, dir, script string) *gaoncli.Client {
 	runs := filepath.Join(dir, "runs")
 	bin := filepath.Join(dir, "gaon")
 	body := "#!/bin/sh\necho x >> " + runs + "\nn=$(wc -l < " + runs + ")\n" + script
-	require.NoError(t, os.WriteFile(bin, []byte(body), 0o700)) //nolint:gosec // a test program
+	require.NoError(t, os.WriteFile(bin, []byte(body), 0o700))
 	return gaoncli.New(bin, "127.0.0.1:1", naructl.Client{})
 }
 

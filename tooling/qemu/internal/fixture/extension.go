@@ -91,19 +91,19 @@ func writeStore(info ExtensionInfo, image, storeDir string) (Extension, error) {
 	if err := copyFile(image, stored); err != nil {
 		return Extension{}, fmt.Errorf("the extension's image (make image): %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(storeDir, info.SHA256+".json"), manifest, 0o644); err != nil { //nolint:gosec // read through the data disk by init
+	if err := os.WriteFile(filepath.Join(storeDir, info.SHA256+".json"), manifest, 0o644); err != nil {
 		return Extension{}, err
 	}
 	return Extension{ExtensionInfo: info, Image: image, StoreDir: storeDir}, nil
 }
 
 func copyFile(from, to string) error {
-	in, err := os.Open(from) //nolint:gosec // paths built here
+	in, err := os.Open(from)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(to, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644) //nolint:gosec // a staged input
+	out, err := os.OpenFile(to, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}

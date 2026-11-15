@@ -260,17 +260,17 @@ func loadAuthorities(dir string) (*authorities, error) {
 	if a.revocation, ok = rev.(ed25519.PrivateKey); !ok {
 		return nil, fmt.Errorf("%w: revocation key is not Ed25519", errCorrupt)
 	}
-	pub, err := os.ReadFile(filepath.Join(dir, recoveryPubFile)) //nolint:gosec // a file of the signer's own directory
+	pub, err := os.ReadFile(filepath.Join(dir, recoveryPubFile))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", recoveryPubFile, err)
 	}
 	if a.recovery, err = identity.ParseRecoveryPublic(pub); err != nil {
 		return nil, err
 	}
-	if a.crlSigned, err = os.ReadFile(filepath.Join(dir, crlFile)); err != nil { //nolint:gosec // a file of the signer's own directory
+	if a.crlSigned, err = os.ReadFile(filepath.Join(dir, crlFile)); err != nil {
 		return nil, fmt.Errorf("read %s: %w", crlFile, err)
 	}
-	if data, err := os.ReadFile(filepath.Join(dir, issuedFile)); err == nil { //nolint:gosec // a file of the signer's own directory
+	if data, err := os.ReadFile(filepath.Join(dir, issuedFile)); err == nil {
 		if err := json.Unmarshal(data, &a.issued); err != nil {
 			return nil, fmt.Errorf("%w: %s: %w", errCorrupt, issuedFile, err)
 		}
@@ -312,7 +312,7 @@ func parseAuthority(certDER, keyDER []byte) (authority, error) {
 }
 
 func readPEM(path, blockType string) ([]byte, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // a file of the signer's own directory
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}

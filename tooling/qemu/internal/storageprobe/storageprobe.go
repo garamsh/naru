@@ -40,7 +40,7 @@ func Run(dir string, log *slog.Logger) error {
 	if err := reflinkCopy(dir); err != nil {
 		reflink = "failed: " + err.Error()
 	}
-	log.Info("storageprobe", "fs", fs, "reflink", reflink, "marker", marker, "size", uint64(st.Blocks)*uint64(st.Bsize)) //nolint:gosec // a size
+	log.Info("storageprobe", "fs", fs, "reflink", reflink, "marker", marker, "size", uint64(st.Blocks)*uint64(st.Bsize))
 	return nil
 }
 

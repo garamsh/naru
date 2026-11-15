@@ -56,7 +56,7 @@ func window(t *testing.T) time.Duration {
 // which every Node's data disk carries, and returns its path in the guest.
 func buildLogFill(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(inputs.Dir, "bin", "naru105-logfill"), "./tests/testdata/naru105-logfill") //nolint:gosec // arguments are fixed here
+	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(inputs.Dir, "bin", "naru105-logfill"), "./tests/testdata/naru105-logfill")
 	cmd.Dir = filepath.Join(os.Getenv("NARU_ROOT"), "tooling", "qemu")
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
 	out, err := cmd.CombinedOutput()
@@ -94,7 +94,7 @@ func TestControlPlane_ThreeNodesWhoseSerialSocketNobodyReadsAnswerWithinASecondA
 				<-tick.C
 				at := time.Now()
 				d := net.Dialer{Timeout: 30 * time.Second}
-				conn, err := tls.DialWithDialer(&d, "tcp", addr, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // only the time the handshake takes is measured
+				conn, err := tls.DialWithDialer(&d, "tcp", addr, &tls.Config{InsecureSkipVerify: true})
 				took := time.Since(at)
 				if err == nil {
 					_ = conn.Close()

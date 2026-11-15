@@ -123,7 +123,7 @@ func load(certPEM, keyPEM []byte) (*CA, error) {
 
 // Write writes the authority into dir, which it creates: the certificate 0644 and the key 0600.
 func (c *CA) Write(dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // holds a certificate
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	return writePair(dir, "ca", c.CertPEM, c.KeyPEM)
@@ -131,7 +131,7 @@ func (c *CA) Write(dir string) error {
 
 // WritePair writes p into dir, which it creates, as <name>.pem (0644) and <name>.key (0600).
 func WritePair(dir, name string, p Pair) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // holds a certificate
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	return writePair(dir, name, p.CertPEM, p.KeyPEM)
@@ -151,7 +151,7 @@ func WriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm) //nolint:gosec // the caller names the path
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
 		return err
 	}

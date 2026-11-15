@@ -106,7 +106,7 @@ func Start(spec Spec) (*Node, error) {
 	n := &Node{Name: spec.Config.Name, dir: spec.Dir}
 	if size := spec.Config.ExtraDisk; size > 0 {
 		n.extra = filepath.Join(spec.Dir, "extra.img")
-		if err := os.WriteFile(n.extra, nil, 0o644); err != nil { //nolint:gosec // a test disk
+		if err := os.WriteFile(n.extra, nil, 0o644); err != nil {
 			return nil, err
 		}
 		if err := os.Truncate(n.extra, size); err != nil {
@@ -163,7 +163,7 @@ func dataDiskOf(spec Spec) (string, error) {
 		return BuildDataDiskWith(spec.Dir, spec.Config.Inputs.Dir, spec.Config.AgentPair, spec.Config.Inputs.Extension.StoreDir)
 	}
 	data := filepath.Join(spec.Dir, "data.img")
-	if err := os.WriteFile(data, nil, 0o644); err != nil { //nolint:gosec // a test disk
+	if err := os.WriteFile(data, nil, 0o644); err != nil {
 		return "", err
 	}
 	return data, os.Truncate(data, dataDiskBytes)
@@ -180,7 +180,7 @@ func (n *Node) launch() error {
 	n.done = make(chan struct{})
 	n.once = sync.Once{}
 	n.waitErr = nil
-	cmd := exec.Command("qemu-system-x86_64", n.argv(n.console)...) //nolint:gosec // arguments are built here
+	cmd := exec.Command("qemu-system-x86_64", n.argv(n.console)...)
 	// QEMU dies with the process that started it, however that process ends.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if out, err := os.Create(filepath.Join(n.dir, "qemu.log")); err == nil {

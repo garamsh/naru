@@ -188,7 +188,7 @@ func microvmCreate(fs *pflag.FlagSet) runner {
 			if err != nil {
 				return err
 			}
-			spec = hostapi.CreateRequest{ //nolint:gosec // flags, bounded by the API's own validation
+			spec = hostapi.CreateRequest{
 				Name: *name, CPU: uint32(*cpu), Memory: *memory, BootSet: *bootSet, Cmdline: *cmdline,
 				Seed: userData, DataDisk: *dataDisk, PodPrefix: *podPrefix,
 			}
@@ -196,7 +196,7 @@ func microvmCreate(fs *pflag.FlagSet) runner {
 			if err := require(c.fs, "name", "image"); err != nil {
 				return err
 			}
-			spec = hostapi.CreateRequest{Name: *name, Image: *image, CPU: uint32(*cpu), Memory: *memory, RootDiskBytes: *root} //nolint:gosec // a flag, bounded by the API's own validation
+			spec = hostapi.CreateRequest{Name: *name, Image: *image, CPU: uint32(*cpu), Memory: *memory, RootDiskBytes: *root}
 			for _, d := range disks {
 				disk, err := parseDisk(d)
 				if err != nil {

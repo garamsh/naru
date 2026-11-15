@@ -37,7 +37,7 @@ func naruInit(t *testing.T) string {
 			return
 		}
 		initBin = filepath.Join(dir, "naru-init")
-		build := exec.Command("go", "build", "-o", initBin, "./cmd/naru-init") //nolint:gosec // fixed arguments
+		build := exec.Command("go", "build", "-o", initBin, "./cmd/naru-init")
 		build.Dir = "../../../node"
 		build.Env = append(os.Environ(), "GOWORK=off")
 		if out, err := build.CombinedOutput(); err != nil {
@@ -82,7 +82,7 @@ func mustRun(t *testing.T, args ...string) {
 // validate runs naru-init -validate on the file and returns its output.
 func validate(t *testing.T, path string) string {
 	t.Helper()
-	out, err := exec.Command(naruInit(t), "-validate", path).CombinedOutput() //nolint:gosec // the binary built above
+	out, err := exec.Command(naruInit(t), "-validate", path).CombinedOutput()
 	require.NoError(t, err, "%s: %s", path, out)
 	return string(out)
 }
@@ -587,7 +587,7 @@ func TestGenNode_ABrokenDescriptionIsRefusedAndAFileInitRejectsIsNotMistakenForV
 	broken := filepath.Join(t.TempDir(), "broken.yaml")
 	require.NoError(t, os.WriteFile(broken, []byte(strings.Replace(string(b), "kind: NodeConfig", "kind: Other", 1)), 0o600))
 
-	_, err = exec.Command(naruInit(t), "-validate", broken).CombinedOutput() //nolint:gosec // the binary built above
+	_, err = exec.Command(naruInit(t), "-validate", broken).CombinedOutput()
 	assert.Error(t, err, "the validation rejects what init would")
 
 	for _, bad := range [][]string{
@@ -628,7 +628,7 @@ func TestGenNode_UserDataIsPrivateAndTwoRunsDifferOnlyInTheirKeysAndCertificates
 func TestGenNode_OverAnExistingWorldReadableFileTheUserDataIsStillPrivate(t *testing.T) {
 	dep := newDeployment(t)
 	out := filepath.Join(t.TempDir(), "node-1.yaml")
-	require.NoError(t, os.WriteFile(out, []byte("stale"), 0o644)) //nolint:gosec // the case under test
+	require.NoError(t, os.WriteFile(out, []byte("stale"), 0o644))
 
 	mustRun(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--control-plane", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out)
@@ -642,7 +642,7 @@ func TestGenNode_OverAnExistingWorldReadableFileTheUserDataIsStillPrivate(t *tes
 func TestGenClient_OverAnExistingWorldReadableKeyTheKeyIsStillPrivate(t *testing.T) {
 	dep := newDeployment(t)
 	out := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(out, "client.key"), []byte("stale"), 0o644)) //nolint:gosec // the case under test
+	require.NoError(t, os.WriteFile(filepath.Join(out, "client.key"), []byte("stale"), 0o644))
 
 	mustRun(t, "gen", "client", "--ca-dir", dep.ca, "--cn", "alice", "--out", out)
 

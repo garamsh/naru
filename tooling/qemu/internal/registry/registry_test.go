@@ -28,7 +28,7 @@ func serve(t *testing.T) *httptest.Server {
 
 func get(t *testing.T, url string) (*http.Response, string) {
 	t.Helper()
-	res, err := http.Get(url) //nolint:gosec,noctx // a test server on the loopback
+	res, err := http.Get(url)
 	require.NoError(t, err)
 	defer func() { _ = res.Body.Close() }()
 	b, err := io.ReadAll(res.Body)
@@ -68,7 +68,7 @@ func TestHandler_RefusesWhatItDoesNotHold(t *testing.T) {
 func TestHandler_IsReadOnly(t *testing.T) {
 	s := serve(t)
 
-	res, err := http.Post(s.URL+"/v2/x/blobs/uploads/", "text/plain", nil) //nolint:gosec,noctx // loopback test server
+	res, err := http.Post(s.URL+"/v2/x/blobs/uploads/", "text/plain", nil)
 	require.NoError(t, err)
 	_ = res.Body.Close()
 
@@ -90,10 +90,10 @@ func TestBasic_RefusesARequestWithoutTheCredentialAndServesOneWithIt(t *testing.
 	assert.NotEmpty(t, res.Header.Get("Www-Authenticate"))
 
 	for _, pass := range []string{"wrong", "p"} {
-		req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx // a test server on the loopback
+		req, err := http.NewRequest(http.MethodGet, url, nil)
 		require.NoError(t, err)
 		req.SetBasicAuth("u", pass)
-		got, err := http.DefaultClient.Do(req) //nolint:gosec // a test server on the loopback
+		got, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		_ = got.Body.Close()
 		if pass == "p" {
