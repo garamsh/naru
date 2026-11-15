@@ -34,6 +34,10 @@ type Manager interface {
 	StopAll()
 	// Status returns the state of every service that was started and not stopped, by name.
 	Status() []Status
+	// Exited returns a channel that is closed when the named service exits with status 0 and its
+	// restart policy is config.RestartOnFailure, so that it is not started again. It returns a nil
+	// channel for a name that is not running.
+	Exited(name string) <-chan struct{}
 }
 
 // State is what a service is doing.
@@ -44,6 +48,8 @@ const (
 	StateRunning State = "running"
 	// StateBackoff means the service exited or could not start and waits to start again.
 	StateBackoff State = "backoff"
+	// StateExited means the service exited with status 0 and its restart policy leaves it stopped.
+	StateExited State = "exited"
 )
 
 // Status is one supervised service as the Node API reports it.
@@ -80,6 +86,7 @@ type supervised struct {
 	stopOnce sync.Once
 	svc      config.Service
 	done     chan struct{}
+	exited   chan struct{}
 
 	mu     sync.Mutex
 	status Status
@@ -105,7 +112,7 @@ func (m *manager) Start(svc config.Service) error {
 	if err != nil {
 		return fmt.Errorf("cgroup of service %q: %w", svc.Name, err)
 	}
-	s := &supervised{svc: svc, stop: make(chan struct{}), done: make(chan struct{}), status: Status{Name: svc.Name, State: StateBackoff}}
+	s := &supervised{svc: svc, stop: make(chan struct{}), done: make(chan struct{}), exited: make(chan struct{}), status: Status{Name: svc.Name, State: StateBackoff}}
 	m.running[svc.Name] = s
 	go m.supervise(s, svc, leaf)
 	return nil
@@ -121,6 +128,15 @@ func (m *manager) Stop(name string) {
 	}
 	s.stopOnce.Do(func() { close(s.stop) })
 	<-s.done
+}
+
+func (m *manager) Exited(name string) <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.running[name]; ok {
+		return s.exited
+	}
+	return nil
 }
 
 func (m *manager) Restart(name string) {
@@ -201,6 +217,17 @@ func (m *manager) supervise(s *supervised, svc config.Service, leaf Leaf) {
 				}
 				select {
 				case err := <-exited:
+					if err == nil && svc.RestartPolicy == config.RestartOnFailure {
+						log.Info("exited with status 0; not restarted")
+						if err := leaf.Kill(); err != nil {
+							log.Error("kill leftovers failed", "err", err)
+						}
+						s.set(func(st *Status) { st.State, st.PID = StateExited, 0 })
+						close(s.exited)
+						<-s.stop
+						m.end(log, leaf)
+						return
+					}
 					log.Warn("exited", "err", err)
 					break wait
 				case <-s.stop:

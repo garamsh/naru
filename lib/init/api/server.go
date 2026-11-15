@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -198,7 +199,15 @@ func (s *Server) Close() error {
 // tlsConfig returns the configuration of one handshake: TLS 1.3 only, the serving pair, and a
 // client certificate required and verified against the client CA.
 func tlsConfig(a config.API) (*tls.Config, error) {
-	pair, err := tls.X509KeyPair([]byte(a.Certificate), []byte(a.Key))
+	key := []byte(a.Key)
+	if a.KeyFile != "" {
+		b, err := os.ReadFile(a.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("spec.api.keyFile: %w", err)
+		}
+		key = b
+	}
+	pair, err := tls.X509KeyPair([]byte(a.Certificate), key)
 	if err != nil {
 		return nil, fmt.Errorf("serving pair: %w", err)
 	}

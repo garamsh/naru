@@ -67,7 +67,10 @@ type node struct {
 func (n *node) ReadSeed() ([]byte, []byte, error) {
 	return []byte(n.userData), []byte(nodeNetwork), nil
 }
-func (n *node) ApplyNetwork(netcfg.Config) error    { return nil }
+func (n *node) ApplyNetwork(netcfg.Config, *slog.Logger) (netcfg.Applied, error) {
+	return netcfg.Applied{}, nil
+}
+func (n *node) RunNetwork(context.Context) error    { return nil }
 func (n *node) MountDataDisk(config.DataDisk) error { return nil }
 func (n *node) FormatBlankDataDisk(config.DataDisk, *slog.Logger) error {
 	return nil

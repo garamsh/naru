@@ -77,7 +77,9 @@ func TestParse_RefusesWhatItCannotApply(t *testing.T) {
 		"version 2":                    {"version: 2\nconfig: []\n", "version must be 1"},
 		"no version":                   {"config: []\n", "version must be 1"},
 		"an unknown key":               {head + nic + "      - type: static\n        address: 10.0.0.1/24\n        dns: x\n", "dns"},
-		"dhcp4":                        {head + nic + "      - type: dhcp4\n", `type "dhcp4" is not supported`},
+		"dhcp4 beside static":          {head + nic + "      - type: dhcp4\n      - type: static\n        address: 10.0.0.1/24\n", "only subnet"},
+		"dhcp4 with an address":        {head + nic + "      - type: dhcp4\n        address: 10.0.0.1/24\n", "takes no address"},
+		"two dhcp4 interfaces":         {head + nic + "      - type: dhcp4\n" + nic + "      - type: dhcp4\n", "at most one"},
 		"dhcp6":                        {head + nic + "      - type: dhcp6\n", `type "dhcp6" is not supported`},
 		"slaac":                        {head + nic + "      - type: ipv6_slaac\n", `type "ipv6_slaac" is not supported`},
 		"static6":                      {head + nic + "      - type: static6\n        address: 'fd00::1/64'\n", `type "static6" is not supported`},
@@ -102,4 +104,27 @@ func TestParse_RefusesWhatItCannotApply(t *testing.T) {
 			assert.ErrorContains(t, err, tt.want)
 		})
 	}
+}
+
+func TestParse_ReadsADHCP4Interface(t *testing.T) {
+	cfg, err := netcfg.Parse([]byte("version: 1\nconfig:\n  - type: physical\n    name: eth0\n    subnets:\n      - type: dhcp4\n"))
+
+	require.NoError(t, err)
+	require.Len(t, cfg.Interfaces, 1)
+	assert.Equal(t, "eth0", cfg.Interfaces[0].Name)
+	assert.True(t, cfg.Interfaces[0].DHCP)
+	assert.Empty(t, cfg.Interfaces[0].Addresses)
+}
+
+func TestParse_AnEmptyNetworkConfigIsDHCP4OnTheFirstLinkWithACarrier(t *testing.T) {
+	for name, data := range map[string]string{"empty": "", "blank": " \n\n"} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := netcfg.Parse([]byte(data))
+
+			require.NoError(t, err)
+			assert.Equal(t, netcfg.Config{Interfaces: []netcfg.Interface{{DHCP: true}}}, cfg)
+		})
+	}
+	_, err := netcfg.Parse([]byte("config: ["))
+	assert.Error(t, err, "control: a file that says something wrong is still refused")
 }

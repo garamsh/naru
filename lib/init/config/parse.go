@@ -39,6 +39,12 @@ func Parse(data []byte) (NodeConfig, error) {
 		}
 		return NodeConfig{}, fieldErrors(&tree, loadErrs)
 	}
+	if cfg.Spec.Join != nil {
+		if err := validateJoin(cfg); err != nil {
+			return NodeConfig{}, err
+		}
+		return deriveJoin(cfg), nil
+	}
 	if err := validate(cfg); err != nil {
 		return NodeConfig{}, err
 	}
@@ -169,6 +175,9 @@ func (v *validation) services(services []Service) {
 			}
 		}
 		v.serviceRuntime(field, s)
+		if p := s.RestartPolicy; p != "" && p != RestartAlways && p != RestartOnFailure {
+			v.fail(field+".restartPolicy", "must be %q or %q, got %q", RestartAlways, RestartOnFailure, p)
+		}
 		for k := range s.Env {
 			if k == "" || strings.ContainsAny(k, "=\x00") {
 				v.fail(field+".env", "has the invalid variable name %q", k)

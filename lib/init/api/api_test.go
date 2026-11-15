@@ -11,6 +11,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -689,4 +691,34 @@ func TestServer_StartFailsWhenTheServingPairIsInvalid(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Nil(t, r.server.Addr())
+}
+
+func TestServer_StartReadsTheServingKeyFromSpecAPIKeyFile(t *testing.T) {
+	r := newRig(t)
+	api := r.chosen.Config.Spec.API
+	file := filepath.Join(t.TempDir(), "host.key")
+	require.NoError(t, os.WriteFile(file, []byte(api.Key), 0o600))
+	api.Key, api.KeyFile = "", file
+	r.start(t)
+
+	status, _ := r.do(t, r.admin(t), http.MethodGet, "/v1/version", "")
+
+	assert.Equal(t, http.StatusOK, status)
+}
+
+func TestServer_StartFailsWhenTheKeyFileIsMissingOrIsNotAKey(t *testing.T) {
+	dir := t.TempDir()
+	notKey := filepath.Join(dir, "other.key")
+	require.NoError(t, os.WriteFile(notKey, []byte("nope"), 0o600))
+	for name, file := range map[string]string{"missing": filepath.Join(dir, "absent.key"), "not a key": notKey} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.chosen.Config.Spec.API.Key, r.chosen.Config.Spec.API.KeyFile = "", file
+
+			err := r.server.Start(r.chosen)
+
+			assert.Error(t, err)
+			assert.Nil(t, r.server.Addr())
+		})
+	}
 }

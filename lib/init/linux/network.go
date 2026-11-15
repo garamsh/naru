@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/netcfg"
@@ -33,8 +35,12 @@ type link struct {
 type links interface {
 	List() ([]link, error)
 	SetUp(link) error
+	// Carrier reports whether the link sees a carrier.
+	Carrier(link) bool
 	AddAddr(link, netip.Prefix) error
+	DelAddr(link, netip.Prefix) error
 	SetDefaultRoute(link, netip.Addr) error
+	DeleteDefaultRoute(link, netip.Addr) error
 	// ReplaceRoute installs the route to a prefix through a next hop, and DeleteRoute removes it;
 	// the kernel picks the device the next hop is on.
 	ReplaceRoute(netip.Prefix, netip.Addr) error
@@ -61,35 +67,96 @@ func (h *Host) DeleteRoute(r config.Route) error {
 // ApplyNetwork brings each interface of the configuration up with its
 // addresses and default gateway, and writes the resolvers. An interface that
 // has not appeared when it is first looked for is waited for up to diskWait.
-func (h *Host) ApplyNetwork(cfg netcfg.Config) error {
+// An interface that is a DHCP one gets its address, default route and resolvers
+// from a DHCPv4 lease, which RunNetwork keeps; an interface with neither name
+// nor MAC is the first Ethernet link with a carrier. It returns what the Node
+// was given: its addresses, its resolvers and the time servers of the lease.
+func (h *Host) ApplyNetwork(cfg netcfg.Config, log *slog.Logger) (netcfg.Applied, error) {
+	var applied netcfg.Applied
 	// The kernel brings lo up for ip= but for nothing else, and a service that listens on 127.0.0.1 needs it.
 	lo, err := h.findLink(netcfg.Interface{Name: "lo"})
 	if err != nil {
-		return err
+		return applied, err
 	}
 	if err := h.links.SetUp(lo); err != nil {
-		return fmt.Errorf("bring lo up: %w", err)
+		return applied, fmt.Errorf("bring lo up: %w", err)
 	}
+	var leased []netip.Addr
 	for _, want := range cfg.Interfaces {
-		l, err := h.findLink(want)
+		var l link
+		if want.Name == "" && want.MAC == nil {
+			l, err = h.firstCarrierLink()
+		} else {
+			l, err = h.findLink(want)
+		}
 		if err != nil {
-			return err
+			return applied, err
 		}
 		if err := h.links.SetUp(l); err != nil {
-			return fmt.Errorf("bring %s up: %w", l.Name, err)
+			return applied, fmt.Errorf("bring %s up: %w", l.Name, err)
+		}
+		if want.DHCP {
+			lease, err := h.startLease(l, cfg, log)
+			if err != nil {
+				return applied, err
+			}
+			applied.Addresses = append(applied.Addresses, lease.Address.Addr())
+			applied.NTP = append(applied.NTP, lease.NTP...)
+			leased = lease.DNS
+			continue
 		}
 		for _, a := range want.Addresses {
 			if err := h.links.AddAddr(l, a); err != nil {
-				return fmt.Errorf("add %s to %s: %w", a, l.Name, err)
+				return applied, fmt.Errorf("add %s to %s: %w", a, l.Name, err)
 			}
+			applied.Addresses = append(applied.Addresses, a.Addr())
 		}
 		if want.Gateway.IsValid() {
 			if err := h.links.SetDefaultRoute(l, want.Gateway); err != nil {
-				return fmt.Errorf("default route via %s on %s: %w", want.Gateway, l.Name, err)
+				return applied, fmt.Errorf("default route via %s on %s: %w", want.Gateway, l.Name, err)
 			}
 		}
 	}
-	return h.writeResolvConf(cfg)
+	applied.Nameservers = resolvers(cfg, leased)
+	return applied, h.writeResolvConf(cfg.Search, applied.Nameservers)
+}
+
+// resolvers are the nameserver entry of network-config when it has one, and the lease's
+// otherwise.
+func resolvers(cfg netcfg.Config, leased []netip.Addr) []netip.Addr {
+	if len(cfg.Nameservers) > 0 {
+		return cfg.Nameservers
+	}
+	return leased
+}
+
+// firstCarrierLink brings every Ethernet link up and returns the first one that sees a carrier,
+// waiting up to carrierWait for one.
+func (h *Host) firstCarrierLink() (link, error) {
+	deadline := time.Now().Add(h.carrierWait)
+	for {
+		all, err := h.links.List()
+		if err != nil {
+			return link{}, fmt.Errorf("list network interfaces: %w", err)
+		}
+		for _, l := range all {
+			if len(l.MAC) != 6 {
+				continue
+			}
+			if err := h.links.SetUp(l); err != nil {
+				return link{}, fmt.Errorf("bring %s up: %w", l.Name, err)
+			}
+		}
+		for _, l := range all {
+			if len(l.MAC) == 6 && h.links.Carrier(l) {
+				return l, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return link{}, errors.New("no Ethernet link has a carrier")
+		}
+		time.Sleep(diskPollInterval)
+	}
 }
 
 // findLink returns the interface with the MAC of want, or with its name when
@@ -116,15 +183,19 @@ func (h *Host) findLink(want netcfg.Interface) (link, error) {
 	}
 }
 
-func (h *Host) writeResolvConf(cfg netcfg.Config) error {
+func resolvContent(search []string, nameservers []netip.Addr) string {
 	var b bytes.Buffer
-	if len(cfg.Search) > 0 {
-		fmt.Fprintf(&b, "search %s\n", strings.Join(cfg.Search, " "))
+	if len(search) > 0 {
+		fmt.Fprintf(&b, "search %s\n", strings.Join(search, " "))
 	}
-	for _, ns := range cfg.Nameservers {
+	for _, ns := range nameservers {
 		fmt.Fprintf(&b, "nameserver %s\n", ns)
 	}
-	return writeFile(h.resolvConf, b.Bytes(), 0o644)
+	return b.String()
+}
+
+func (h *Host) writeResolvConf(search []string, nameservers []netip.Addr) error {
+	return writeFile(h.resolvConf, []byte(resolvContent(search, nameservers)), 0o644)
 }
 
 // WriteFiles writes the files of the configuration, creating their directories.
@@ -208,12 +279,33 @@ func (netlinkLinks) List() ([]link, error) {
 
 func (netlinkLinks) SetUp(l link) error { return netlink.LinkSetUp(handle(l)) }
 
+func (netlinkLinks) Carrier(l link) bool {
+	got, err := netlink.LinkByIndex(l.Index)
+	return err == nil && got.Attrs().RawFlags&unix.IFF_LOWER_UP != 0
+}
+
 func (netlinkLinks) AddAddr(l link, p netip.Prefix) error {
 	return netlink.AddrReplace(handle(l), &netlink.Addr{IPNet: ipNet(p)})
 }
 
+func (netlinkLinks) DelAddr(l link, p netip.Prefix) error {
+	err := netlink.AddrDel(handle(l), &netlink.Addr{IPNet: ipNet(p)})
+	if errors.Is(err, syscall.EADDRNOTAVAIL) {
+		return nil
+	}
+	return err
+}
+
 func (netlinkLinks) SetDefaultRoute(l link, gw netip.Addr) error {
 	return netlink.RouteReplace(&netlink.Route{LinkIndex: l.Index, Gw: gw.AsSlice()})
+}
+
+func (netlinkLinks) DeleteDefaultRoute(l link, gw netip.Addr) error {
+	err := netlink.RouteDel(&netlink.Route{LinkIndex: l.Index, Gw: gw.AsSlice()})
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
 }
 
 func (netlinkLinks) ReplaceRoute(to netip.Prefix, via netip.Addr) error {
