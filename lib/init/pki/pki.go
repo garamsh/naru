@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/config"
 )
 
@@ -413,7 +414,8 @@ func (i *Issuer) create(path string, data []byte, perm os.FileMode) error {
 // replace swaps in a renewed key and certificate. It writes both beside their
 // paths first, and renames only once both are written, the key first. When the
 // certificate's rename fails it puts the old key back, from a link made before
-// the key was replaced, so a failure leaves the old pair. What it cannot close
+// the key was replaced, so a failure leaves the old pair. Each staged file is
+// synced before the renames and the directories after them. What it cannot close
 // is a crash between the two renames, and a failure to put the old key back;
 // the error says so for the latter.
 func (i *Issuer) replace(c config.Certificate, certPEM, keyPEM []byte) (err error) {
@@ -444,10 +446,11 @@ func (i *Issuer) replace(c config.Certificate, certPEM, keyPEM []byte) (err erro
 		}
 		return err
 	}
-	return nil
+	// Both paths may sit in different directories; make each rename durable.
+	return errors.Join(atomicfile.SyncDir(filepath.Dir(keyPath)), atomicfile.SyncDir(filepath.Dir(certPath)))
 }
 
-// stage writes data to a new file beside path, with exactly perm, and returns
+// stage writes data to a new file beside path, with exactly perm, syncs it, and returns
 // its name.
 func stage(path string, data []byte, perm os.FileMode) (string, error) {
 	f, err := os.CreateTemp(filepath.Dir(path), ".naru-pki-*")
@@ -457,6 +460,9 @@ func stage(path string, data []byte, perm os.FileMode) (string, error) {
 	_, err = f.Write(data)
 	if err == nil {
 		err = f.Chmod(perm)
+	}
+	if err == nil {
+		err = f.Sync()
 	}
 	if err = errors.Join(err, f.Close()); err != nil {
 		_ = os.Remove(f.Name())
