@@ -320,6 +320,15 @@ func (c Config) MvmdJSON() ([]byte, error) {
 	if c.RegistryCA != "" {
 		registry["ca_file"] = RegistryFilesDir + "/registry/ca.pem"
 	}
+	// supervision.dir is left out unless a storage disk is mounted at wire.MvmdStorageMount, so it
+	// is "machines" under state_dir on the data disk; with the disk, the run directories are on it,
+	// where init links disks/ and snapshots/ (ADR 0073).
+	supervision := map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": supervisorCgroup}
+	for _, s := range c.Storage {
+		if s.MountPoint == wire.MvmdStorageMount {
+			supervision["dir"] = wire.MvmdStorageMount + "/machines"
+		}
+	}
 	return json.MarshalIndent(map[string]any{
 		"registry":  registry,
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
@@ -339,9 +348,7 @@ func (c Config) MvmdJSON() ([]byte, error) {
 			"output_bytes": 256 << 20, "name_set_bytes": 1 << 20,
 			"limit": "5m",
 		},
-		// supervision.dir is left out, so it is "machines" under state_dir on the data disk:
-		// the state directory and the run directories stay on one file system (mvmd ADR 0015).
-		"supervision":   map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": supervisorCgroup},
+		"supervision":   supervision,
 		"vmm_uid_range": map[string]any{"first": 100000, "count": 1000},
 		"network":       network,
 		"pull_timeout":  "4m",

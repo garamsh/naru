@@ -44,6 +44,26 @@ func Run(dir string, log *slog.Logger) error {
 	return nil
 }
 
+// Tree reports through one log line, "storagetree", how many entries dir holds under disks,
+// snapshots (not counting the store's staging directory) and machines: what mvmd keeps on a
+// storage disk mounted at wire.MvmdStorageMount.
+func Tree(dir string, log *slog.Logger) {
+	count := func(name string) int {
+		entries, err := os.ReadDir(filepath.Join(dir, name))
+		if err != nil {
+			return 0
+		}
+		n := 0
+		for _, e := range entries {
+			if e.Name() != "staging" {
+				n++
+			}
+		}
+		return n
+	}
+	log.Info("storagetree", "disks", count("disks"), "snapshots", count("snapshots"), "machines", count("machines"))
+}
+
 // mark writes the marker file and reports "written", or reports "kept" when it holds the marker.
 func mark(path string) (string, error) {
 	got, err := os.ReadFile(path)

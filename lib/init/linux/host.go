@@ -20,6 +20,7 @@ import (
 	"github.com/garamsh/naru/lib/init/netcfg"
 	"github.com/garamsh/naru/lib/init/registry"
 	"github.com/garamsh/naru/lib/init/timesync"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const (
@@ -56,6 +57,9 @@ type Host struct {
 	links          links
 
 	dataMountPoint string
+	// mvmdStorage is the storage mount point that mvmdState's disks and snapshots are linked into.
+	mvmdStorage string
+	mvmdState   string
 	// storageMounts are the mount points of the storage disks, in the order they were mounted,
 	// and unmount is syscall.Unmount when nil.
 	mu            sync.Mutex
@@ -88,6 +92,8 @@ func NewHost(diskWait time.Duration, reaper *Reaper) *Host {
 		grow:          growFS,
 
 		seedMountPoint: seedMountPoint,
+		mvmdStorage:    wire.MvmdStorageMount,
+		mvmdState:      wire.MvmdStateDir,
 		resolvConf:     resolvConf,
 		links:          netlinkLinks{},
 		carrierWait:    carrierWait,

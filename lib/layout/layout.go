@@ -25,9 +25,6 @@ var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 const (
 	// InputsDir is the tree on the data disk that carries the registry and its image.
 	InputsDir = wire.DataMount + "/inputs"
-	// MvmdDisks is the directory mvmd keeps its disk images in, which it does not let a setting
-	// move: a storage disk is mounted over it.
-	MvmdDisks = wire.DataMount + "/mvmd/disks"
 	// RegistryAddr is where the registry on every Node listens and mvmd pulls from.
 	RegistryAddr = "127.0.0.1:5000"
 
@@ -165,8 +162,8 @@ type Node struct {
 	// certificate and key are the Node Agent's pair, AgentCertDir/AgentPair.
 	AWS *AWS
 	// Storage are the extra disks the Node offers as XFS, found by file system or partition label.
-	// The first is mounted where mvmd keeps its disks (MvmdDisks); the others under init's storage
-	// root.
+	// The first is mounted at wire.MvmdStorageMount, where mvmd's disks, snapshots and run
+	// directories go; the others under init's storage root.
 	Storage []StorageDisk
 
 	// Kube, when set, makes the Node a Kubernetes Node (ADR 0031): its description is the Kubernetes
@@ -539,7 +536,7 @@ func (n Node) UserData() ([]byte, error) {
 	for i, d := range n.Storage {
 		e := storage{Name: d.Name, Label: d.Label, Device: d.Device}
 		if i == 0 {
-			e.MountPoint = MvmdDisks
+			e.MountPoint = wire.MvmdStorageMount
 		}
 		c.Spec.Storage = append(c.Spec.Storage, e)
 	}
