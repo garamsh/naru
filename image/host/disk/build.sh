@@ -25,12 +25,10 @@ img=$(cd "$2" && pwd)
 # shellcheck source=../../build.env
 . "$here/../../build.env"
 
-for f in bzImage; do
-  if [ ! -f "$img/$f" ]; then
-    echo "disk: $img/$f is missing; make image builds it" >&2
-    exit 1
-  fi
-done
+if [ ! -f "$img/bzImage" ]; then
+  echo "disk: $img/bzImage is missing; make image builds it" >&2
+  exit 1
+fi
 
 (cd "$root/tooling/disk" && CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -o "$build/naru-disk" ./cmd/naru-disk)
 
