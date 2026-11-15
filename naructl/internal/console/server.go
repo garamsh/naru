@@ -13,9 +13,11 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/orchapi"
 )
 
 //go:embed web
@@ -55,6 +57,13 @@ type Server struct {
 	cfg   Config
 	csrf  string
 	pages map[string]*template.Template
+
+	// recent holds the newest events, oldest first, and cursor is the Cursor of the last: the
+	// events page asks orch only for what came after it, so a refresh every few seconds does not
+	// read the whole log again.
+	evMu   sync.Mutex
+	recent []orchapi.Event
+	cursor string
 }
 
 // New returns a Server with a CSRF token of its own, made for this process.

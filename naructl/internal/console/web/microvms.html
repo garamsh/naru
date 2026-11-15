@@ -2,7 +2,6 @@
 {{if .NoFleet}}<p>orch does not serve microVMs yet.</p>{{end}}
 {{range .MicroVMs}}
 <h2>{{.Host.ID}} <small>{{.Host.Region}}</small></h2>
-{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 <table>
 <thead><tr><th>Name</th><th>State</th><th>Group</th><th>Network</th><th>Image</th></tr></thead>
 <tbody>

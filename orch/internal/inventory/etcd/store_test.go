@@ -3,6 +3,7 @@ package etcd_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"testing"
 	"time"
@@ -165,4 +166,45 @@ func TestAHeartbeatDoesNotWriteBackAConfigAnOlderRecordCarried(t *testing.T) {
 	resp, err := kv.Get(t.Context(), "/naru/orch/hosts/h1")
 	require.NoError(t, err)
 	require.NotContains(t, string(resp.Kvs[0].Value), "config")
+}
+
+func TestTheEventLogKeepsTheNewestEventsAndDropsTheOldest(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	s := invetcd.New(c.Members[0].Etcd())
+	const keep, extra = 10, 5
+	invetcd.KeepEvents(s, keep)
+	require.Equal(t, 20000, invetcd.MaxEvents, "the bound a store keeps by default")
+	base := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+
+	for i := range keep + extra {
+		require.NoError(t, s.AppendEvent(t.Context(), orchapi.Event{Time: base.Add(time.Duration(i) * time.Second), Type: "t", Subject: "s", Detail: map[string]string{"n": time.Duration(i).String()}}))
+	}
+
+	evs, err := s.ListEvents(t.Context(), "")
+	require.NoError(t, err)
+	require.Len(t, evs, keep, "the log stops at its bound")
+	require.True(t, evs[0].Time.Equal(base.Add(extra*time.Second)), "the oldest were the ones dropped")
+	require.True(t, evs[len(evs)-1].Time.Equal(base.Add((keep+extra-1)*time.Second)))
+
+	since, err := s.ListEvents(t.Context(), evs[len(evs)-3].Cursor)
+	require.NoError(t, err)
+	require.Len(t, since, 2)
+}
+
+func TestALogFarPastItsBoundIsTrimmedToItInOneAppend(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	kv := c.Members[0].Etcd()
+	s := invetcd.New(kv)
+	const keep = 10
+	invetcd.KeepEvents(s, keep)
+	for i := range keep + 300 { // more than keep plus etcd's 128 operations to a transaction
+		_, err := kv.Put(t.Context(), fmt.Sprintf("/naru/orch/events/%020d-seed", i), `{"type":"t"}`)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, s.AppendEvent(t.Context(), orchapi.Event{Time: time.Unix(1, 0), Type: "t"}))
+
+	evs, err := s.ListEvents(t.Context(), "")
+	require.NoError(t, err)
+	require.Len(t, evs, keep)
 }

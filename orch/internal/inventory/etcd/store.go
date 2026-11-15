@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strconv"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -30,18 +31,31 @@ const (
 	profileKey  = "/naru/orch/profile"
 )
 
+// maxEvents is how many events the log keeps. Groups write one for each action they take, and
+// a log kept forever grows for as long as orch runs and is read whole by anything that lists it;
+// this holds about a week of a busy fleet's events at a few thousand a day, and older events
+// are dropped, oldest first.
+const maxEvents = 20000
+
+// trimBatch is how many events one trim transaction deletes. etcd refuses a transaction of more
+// than --max-txn-ops operations (128 by default), so a log far past its bound is trimmed in
+// batches below that.
+const trimBatch = 100
+
 // casRetries bounds the retries of a read-modify-write that lost a race.
 const casRetries = 8
 
 // Store is the inventory over an etcd client.
 type Store struct {
 	kv clientv3.KV
+	// keepEvents is how many events the log keeps; maxEvents unless a test says less.
+	keepEvents int
 }
 
 var _ inventory.Store = (*Store)(nil)
 
 // New returns a store over kv.
-func New(kv clientv3.KV) *Store { return &Store{kv: kv} }
+func New(kv clientv3.KV) *Store { return &Store{kv: kv, keepEvents: maxEvents} }
 
 func encode(v any) string {
 	b, err := json.Marshal(v)
@@ -360,10 +374,60 @@ func (s *Store) UpdateHost(ctx context.Context, id string, change func(*inventor
 }
 
 func (s *Store) AppendEvent(ctx context.Context, ev orchapi.Event) error {
-	_, err := s.kv.Do(ctx, eventOp(ev))
-	return err
+	if _, err := s.kv.Do(ctx, eventOp(ev)); err != nil {
+		return err
+	}
+	return s.trimEvents(ctx)
 }
 
-func (s *Store) ListEvents(ctx context.Context) ([]orchapi.Event, error) {
-	return list[orchapi.Event](ctx, s, eventPrefix)
+// trimEvents drops the oldest events beyond the bound. The log is bounded here, on the appends
+// that make it grow fastest; a failed trim is tried again by the next append, so it is not an
+// error of the append that was already kept.
+func (s *Store) trimEvents(ctx context.Context) error {
+	for {
+		n, err := s.kv.Get(ctx, eventPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+		if err != nil || n.Count <= int64(s.keepEvents) {
+			return nil
+		}
+		old, err := s.kv.Get(ctx, eventPrefix, clientv3.WithPrefix(), clientv3.WithKeysOnly(),
+			clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend), clientv3.WithLimit(min(n.Count-int64(s.keepEvents), trimBatch)))
+		if err != nil || len(old.Kvs) == 0 {
+			return nil
+		}
+		ops := make([]clientv3.Op, 0, len(old.Kvs))
+		for _, kv := range old.Kvs {
+			ops = append(ops, clientv3.OpDelete(string(kv.Key)))
+		}
+		if _, err := s.kv.Txn(ctx).Then(ops...).Commit(); err != nil {
+			return nil
+		}
+	}
+}
+
+// ListEvents lists the events in the order etcd committed them. An event's Cursor is the
+// revision that committed it: unlike the time in its key, it only grows, whichever orch member
+// wrote it, so no event is committed behind a cursor a reader already holds.
+func (s *Store) ListEvents(ctx context.Context, after string) ([]orchapi.Event, error) {
+	opts := []clientv3.OpOption{clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend)}
+	if after != "" {
+		rev, err := strconv.ParseInt(after, 10, 64)
+		if err != nil || rev < 0 {
+			return nil, fmt.Errorf("%w: cursor %q is not an event cursor", inventory.ErrInvalid, after)
+		}
+		opts = append(opts, clientv3.WithMinModRev(rev+1))
+	}
+	resp, err := s.kv.Get(ctx, eventPrefix, opts...)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]orchapi.Event, 0, len(resp.Kvs))
+	for _, kv := range resp.Kvs {
+		var ev orchapi.Event
+		if err := json.Unmarshal(kv.Value, &ev); err != nil {
+			return nil, fmt.Errorf("record %s: %w", kv.Key, err)
+		}
+		ev.Cursor = strconv.FormatInt(kv.ModRevision, 10)
+		out = append(out, ev)
+	}
+	return out, nil
 }

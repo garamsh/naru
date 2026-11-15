@@ -69,6 +69,6 @@ func (s *service) Pending(ctx context.Context) ([]orchapi.Pending, error) {
 	return out, nil
 }
 
-func (s *service) Events(ctx context.Context) ([]orchapi.Event, error) {
-	return s.store.ListEvents(ctx)
+func (s *service) Events(ctx context.Context, after string) ([]orchapi.Event, error) {
+	return s.store.ListEvents(ctx, after)
 }

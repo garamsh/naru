@@ -43,6 +43,8 @@ func TestDialNetAPISpeaksTheHostAPI(t *testing.T) {
 	inv := &invFake{hosts: []orchapi.Host{{ID: "h1", Address: addr}}}
 	h := hostclient.NewNetHosts(inv, hostclient.DialNetAPI(srv.Client(), nil))
 
+	_, err := h.List(t.Context())
+	require.NoError(t, err)
 	tun, err := h.Tunnel(t.Context(), "h1")
 	require.NoError(t, err)
 	assert.Equal(t, netrec.Tunnel{PublicKey: "k", ListenPort: 51820, MachinePrefixes: []string{"10.200.1.0/24"}}, tun)
