@@ -82,6 +82,7 @@ for p in $programs; do targets+=("./cmd/$p"); done
   -tags selinux,notest,grpcnotrace -ldflags="$ldflags" -o "$part" "${targets[@]}")
 
 for p in $programs; do
+  require_go "$GOTOOLCHAIN" "$part/$p"
   if ! file "$part/$p" | grep -Eq 'statically linked|static-pie linked'; then
     echo "kubernetes: $p is not a static executable: $(file "$part/$p")" >&2
     exit 1

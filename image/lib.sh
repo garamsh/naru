@@ -23,14 +23,17 @@ build_current() {
   done
 }
 
-# require_go <file>... fails unless each file is a Go program built by the builder's Go release,
-# which NARU_GO_VERSION names (`go version -m` reads it from the binary).
+# require_go <release> <file>... fails unless each file is a Go program built by <release> (go1.26.11;
+# `go version -m` reads it from the binary). The programs of naru and of mvmd are checked against
+# NARU_GO_VERSION, the builder's own release; a project that names its own release in its script
+# (GOTOOLCHAIN) is checked against that one.
 require_go() {
-  local f got
+  local want=$1 f got
+  shift
   for f in "$@"; do
     got=$(go version -m "$f" | awk 'NR == 1 { print $2 }')
-    if [ "$got" != "$NARU_GO_VERSION" ]; then
-      echo "image: $f was built by ${got:-no Go release}, not the builder's $NARU_GO_VERSION" >&2
+    if [ "$got" != "$want" ]; then
+      echo "image: $f was built by ${got:-no Go release}, not the expected $want" >&2
       return 1
     fi
   done
@@ -56,7 +59,7 @@ nss_gate() {
 # inputs give the same bytes: nothing but the flags and the sources enters it.
 gobuild() {
   (cd "$1" && CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -ldflags="-s -w ${4:-}" -o "$2" "$3")
-  require_go "$2"
+  require_go "$NARU_GO_VERSION" "$2"
 }
 
 # require_static <dir> <name>... fails unless every named file of <dir> is a static executable: the

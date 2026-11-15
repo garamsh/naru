@@ -85,7 +85,7 @@ src=$build/mvmd
 "$here/../mvmd/checkout.sh" "$src"
 (cd "$src" && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$bin/mvmd" ./daemon/cmd/mvmd)
 (cd "$src" && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$bin/mvmd-supervisor" ./daemon/cmd/mvmd-supervisor)
-require_go "$bin/mvmd" "$bin/mvmd-supervisor"
+require_go "$NARU_GO_VERSION" "$bin/mvmd" "$bin/mvmd-supervisor"
 
 # Firecracker, from mvmd's own checked fetch. --firecracker-only fetches and verifies the
 # Firecracker binary alone: no guest kernel (which naru does not use, ADR 0010) is requested, and

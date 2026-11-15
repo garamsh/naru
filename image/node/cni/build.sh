@@ -69,6 +69,7 @@ for p in $plugins; do
     -ldflags="-s -w -buildid= -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=$CNI_VERSION" \
     -o "$part/${p%%:*}" "./${p#*:}")
   name=${p%%:*}
+  require_go "$GOTOOLCHAIN" "$part/$name"
   if ! file "$part/$name" | grep -Eq 'statically linked|static-pie linked'; then
     echo "cni: $name is not a static executable: $(file "$part/$name")" >&2
     exit 1

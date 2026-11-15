@@ -56,6 +56,7 @@ export GOWORK=off
 part=$build/etcd.bin
 rm -f "$part"
 (cd "$src/server" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$part" .)
+require_go "$GOTOOLCHAIN" "$part"
 if ! file "$part" | grep -Eq 'statically linked|static-pie linked'; then
   echo "etcd: etcd is not a static executable: $(file "$part")" >&2
   exit 1

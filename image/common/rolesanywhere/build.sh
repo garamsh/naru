@@ -59,6 +59,7 @@ rm -f "$part"
   -o "$part" main.go) 2>"$build/go-build.log" || { cat "$build/go-build.log" >&2; exit 1; }
 cat "$build/go-build.log" >&2
 nss_gate aws_signing_helper "$build/go-build.log"
+require_go "$GOTOOLCHAIN" "$part"
 if ! file "$part" | grep -Eq 'statically linked|static-pie linked'; then
   echo "rolesanywhere: aws_signing_helper is not a static executable: $(file "$part")" >&2
   exit 1

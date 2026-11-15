@@ -68,6 +68,7 @@ for pkg in node-agent/cmd/gaon-node-agent apiserver/cmd/gaon-apiserver scheduler
   (cd "$src" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$part/$(basename "$pkg")" "./$pkg")
 done
 for b in $binaries $cli; do
+  require_go "$GOTOOLCHAIN" "$part/$b"
   if ! file "$part/$b" | grep -Eq 'statically linked|static-pie linked'; then
     echo "gaon: $b is not a static executable: $(file "$part/$b")" >&2
     exit 1

@@ -54,6 +54,7 @@ pkg=github.com/awslabs/amazon-ecr-credential-helper/ecr-login
 (cd "$src/ecr-login" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOFLAGS=-mod=vendor go build -trimpath -buildvcs=false \
   -ldflags="-s -w -buildid= -X $pkg/version.Version=$ECR_LOGIN_VERSION -X $pkg/version.GitCommitSHA=$ECR_LOGIN_COMMIT" \
   -o "$part" ./cli/docker-credential-ecr-login)
+require_go "$GOTOOLCHAIN" "$part"
 if ! file "$part" | grep -Eq 'statically linked|static-pie linked'; then
   echo "ecr-login: docker-credential-ecr-login is not a static executable: $(file "$part")" >&2
   exit 1
