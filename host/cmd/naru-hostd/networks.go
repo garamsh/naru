@@ -47,13 +47,14 @@ func networkManager(ctx context.Context, c networkConfig) (*network.Manager, err
 // reconcileInterval is how often the networks' members are made to match mvmd's machines.
 const reconcileInterval = 30 * time.Second
 
+// reconcilePassTimeout bounds a pass, which holds the networks' lock while it asks mvmd.
+const reconcilePassTimeout = 10 * time.Second
+
 // startReconciler drops the members whose machine mvmd no longer holds, once before the API serves
 // and then every reconcileInterval. A pass that cannot reach mvmd is logged, and the next one tries.
 func startReconciler(ctx context.Context, m *network.Manager, rt mvmd.Runtime, log *slog.Logger) {
-	r := &network.Reconciler{Manager: m, Addresses: machineAddresses(rt), Interval: reconcileInterval, Log: log}
-	pass, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-	if err := r.Once(pass); err != nil {
+	r := &network.Reconciler{Manager: m, Addresses: machineAddresses(rt), Interval: reconcileInterval, Timeout: reconcilePassTimeout, Log: log}
+	if err := r.Once(ctx); err != nil {
 		log.Error("cannot reconcile the networks' members with the machines", "err", err.Error())
 	}
 	go r.Run(ctx)

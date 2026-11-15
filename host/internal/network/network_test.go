@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -550,4 +551,33 @@ func TestManager_ReconcileDropsTheMembersNoMachineHolds(t *testing.T) {
 		return []netip.Addr{addr("10.0.0.3"), addr("10.0.0.4")}, nil
 	}))
 	assert.Len(t, f.calls, before)
+}
+
+func TestReconciler_AHungListEndsAndBlocksNoOtherCall(t *testing.T) {
+	m := newManager(&fakeRunner{}, &fakeTunnel{}, "")
+	ctx := context.Background()
+	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16")}))
+	hung := make(chan struct{})
+	r := &network.Reconciler{
+		Manager: m, Timeout: 50 * time.Millisecond,
+		Addresses: func(ctx context.Context) ([]netip.Addr, error) {
+			close(hung)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- r.Once(ctx) }()
+	<-hung
+	attached := make(chan error, 1)
+	go func() { attached <- m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}) }()
+
+	require.ErrorIs(t, <-done, context.DeadlineExceeded, "the pass ends when its time is up")
+	select {
+	case err := <-attached:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("an Attach stayed blocked behind the pass")
+	}
+	assert.Len(t, m.Members(), 1)
 }

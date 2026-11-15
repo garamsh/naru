@@ -13,11 +13,15 @@ type Reconciler struct {
 	// Addresses lists the addresses of the host's machines.
 	Addresses func(ctx context.Context) ([]netip.Addr, error)
 	Interval  time.Duration
-	Log       *slog.Logger
+	// Timeout bounds a pass, which holds the Manager's lock while it lists the machines.
+	Timeout time.Duration
+	Log     *slog.Logger
 }
 
-// Once makes one pass.
+// Once makes one pass, which ends with an error after Timeout.
 func (r *Reconciler) Once(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
 	return r.Manager.Reconcile(ctx, r.Addresses)
 }
 
