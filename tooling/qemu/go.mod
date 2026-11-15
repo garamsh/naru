@@ -5,7 +5,7 @@ go 1.26.0
 require github.com/stretchr/testify v1.12.1
 
 require (
-	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000 // indirect
+	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000
 	github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261112183926-d189133bba8d
 	go.yaml.in/yaml/v3 v3.0.5
 )

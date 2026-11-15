@@ -132,12 +132,3 @@ func syncFS(dir string) error {
 	}
 	return errors.Join(unix.Syncfs(int(d.Fd())), d.Close())
 }
-
-// syncDir fsyncs a directory so that a rename or a removal in it is durable.
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	return errors.Join(d.Sync(), d.Close())
-}

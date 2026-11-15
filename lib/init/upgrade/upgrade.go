@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/service"
 )
 
@@ -205,10 +206,10 @@ func (u *Upgrader) Install(body io.Reader, wantSHA string) (Staged, error) {
 		}
 		if err != nil {
 			_ = os.Remove(trial)
-			_ = syncDir(dir)
+			_ = atomicfile.SyncDir(dir)
 			return err
 		}
-		return syncDir(dir)
+		return atomicfile.SyncDir(dir)
 	})
 	if err != nil {
 		return Staged{}, err
@@ -263,7 +264,7 @@ func (u *Upgrader) dropTrial(p esp) (was bool, err error) {
 		if err != nil {
 			return err
 		}
-		return syncDir(dir)
+		return atomicfile.SyncDir(dir)
 	})
 	return was, err
 }
@@ -328,7 +329,7 @@ func (u *Upgrader) Promote() error {
 		if err := os.Rename(filepath.Join(dir, trialSlot), filepath.Join(dir, defaultSlot)); err != nil {
 			return err
 		}
-		return syncDir(dir)
+		return atomicfile.SyncDir(dir)
 	})
 	if err != nil {
 		return fmt.Errorf("promote the trial slot: %w", err)

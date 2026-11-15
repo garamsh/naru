@@ -169,7 +169,7 @@ func (s *Store) Put(body io.Reader, digest string) (img Image, err error) {
 		_ = os.Remove(s.manifestPath(digest))
 		return Image{}, err
 	}
-	if err = syncDir(s.dir); err != nil {
+	if err = atomicfile.SyncDir(s.dir); err != nil {
 		return Image{}, err
 	}
 	return Image{SHA256: digest, Size: n, Manifest: m}, nil
@@ -279,7 +279,7 @@ func (s *Store) Delete(digest string) error {
 	if err := os.Remove(s.manifestPath(digest)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return syncDir(s.dir)
+	return atomicfile.SyncDir(s.dir)
 }
 
 // Open returns the stored image of digest open, with its manifest. It hashes the file, so an
@@ -330,12 +330,4 @@ func (s *Store) Sweep() error {
 // writeAtomic writes data to path through a temporary file and a rename.
 func writeAtomic(path string, data []byte) error {
 	return atomicfile.Write(path, data, 0o600)
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	return errors.Join(d.Sync(), d.Close())
 }

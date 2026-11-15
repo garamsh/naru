@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/garamsh/naru/lib/atomicfile"
 )
 
 // Name is the file's name inside naru-cluster's -dir.
@@ -67,11 +69,7 @@ func Write(dir string, f File) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, "."+Name+".tmp")
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil { //nolint:gosec // no key material in it
-		return err
-	}
-	return os.Rename(tmp, filepath.Join(dir, Name))
+	return atomicfile.Write(filepath.Join(dir, Name), append(b, '\n'), 0o644)
 }
 
 // Read reads the cluster.json at path and refuses a version it does not know.
