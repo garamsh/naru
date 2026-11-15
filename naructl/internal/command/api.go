@@ -54,15 +54,16 @@ func genAPIClient(fs *pflag.FlagSet) runner {
 
 // call is a client command: the flags every one takes, then dial and run.
 type call struct {
-	fs               *pflag.FlagSet
-	config, endpoint *string
+	fs                           *pflag.FlagSet
+	config, endpoint, serverName *string
 }
 
 func newCall(fs *pflag.FlagSet) call {
 	c := call{
-		fs:       fs,
-		config:   fs.String("config", "", "the client file written by gen api-client"),
-		endpoint: fs.String("endpoint", "", "the Node's address, an IP address with or without a port (default the client file's first endpoint)"),
+		fs:         fs,
+		config:     fs.String("config", "", "the client file written by gen api-client"),
+		endpoint:   fs.String("endpoint", "", "the Node's address, an IP address with or without a port (default the client file's first endpoint)"),
+		serverName: serverNameFlag(fs),
 	}
 	aliasString(fs, c.endpoint, "node", "endpoint")
 	return c
@@ -81,7 +82,7 @@ func (c call) dial() (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.Dial(f, *c.endpoint)
+	return client.Dial(f, *c.endpoint, *c.serverName)
 }
 
 func withTimeout() (context.Context, context.CancelFunc) {

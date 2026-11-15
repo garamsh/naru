@@ -105,3 +105,9 @@ func positional(args []string, n int) error {
 	}
 	return nil
 }
+
+// serverNameFlag declares --server-name, which every command that dials a Node API or a host API
+// takes: the name the server's certificate is verified against in place of its address.
+func serverNameFlag(fs *pflag.FlagSet) *string {
+	return fs.String("server-name", "", "the name to verify the server's certificate against instead of its address: the host ID h-<id> of a host that joined from the install seed")
+}

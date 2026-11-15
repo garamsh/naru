@@ -24,12 +24,15 @@ type Client struct {
 
 // Dial returns a Client for the Node at node, an IP address with or without a port; when node is
 // empty it is the file's first endpoint. It speaks TLS 1.3 only, trusts the file's authority and
-// presents the file's pair. Nothing is sent until a call.
-func Dial(f File, node string) (*Client, error) { return DialPort(f, node, wire.NodeAPIPort) }
+// presents the file's pair. Nothing is sent until a call. A serverName is the name the Node's
+// certificate is verified against in place of the address, and empty verifies the address.
+func Dial(f File, node, serverName string) (*Client, error) {
+	return DialPort(f, node, wire.NodeAPIPort, serverName)
+}
 
 // DialPort is Dial for a server whose port is port when node names none: the host API's.
-func DialPort(f File, node, port string) (*Client, error) {
-	hc, addr, err := mtls(f, node, port)
+func DialPort(f File, node, port, serverName string) (*Client, error) {
+	hc, addr, err := mtls(f, node, port, serverName)
 	if err != nil {
 		return nil, err
 	}
@@ -38,8 +41,9 @@ func DialPort(f File, node, port string) (*Client, error) {
 
 // mtls returns the HTTP client that speaks TLS 1.3 only, trusts the file's authority and presents
 // its pair, and the address it dials: node, or the file's first endpoint when node is empty, with
-// port when it names none.
-func mtls(f File, node, port string) (*http.Client, string, error) {
+// port when it names none. A serverName is the name the server's certificate is verified against in
+// place of the address; empty verifies the address.
+func mtls(f File, node, port, serverName string) (*http.Client, string, error) {
 	if node == "" {
 		node = f.Endpoints[0]
 	}
@@ -55,7 +59,7 @@ func mtls(f File, node, port string) (*http.Client, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("the client file's certificate and key: %w", err)
 	}
-	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{pair}}}
+	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: serverName, Certificates: []tls.Certificate{pair}}}
 	return &http.Client{Transport: tr}, addr, nil
 }
 

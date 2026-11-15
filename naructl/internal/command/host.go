@@ -74,15 +74,16 @@ func loadHost(caDir, region string, labels list) (*layout.Host, error) {
 
 // hostCall is a host API command: the flags every one takes, then dial and run.
 type hostCall struct {
-	fs               *pflag.FlagSet
-	config, endpoint *string
+	fs                           *pflag.FlagSet
+	config, endpoint, serverName *string
 }
 
 func newHostCall(fs *pflag.FlagSet) hostCall {
 	c := hostCall{
-		fs:       fs,
-		config:   fs.String("config", "", "the client file written by gen host-client"),
-		endpoint: fs.String("endpoint", "", "the host's address, an IP address with or without a port (default the client file's first endpoint)"),
+		fs:         fs,
+		config:     fs.String("config", "", "the client file written by gen host-client"),
+		endpoint:   fs.String("endpoint", "", "the host's address, an IP address with or without a port (default the client file's first endpoint)"),
+		serverName: serverNameFlag(fs),
 	}
 	aliasString(fs, c.endpoint, "host", "endpoint")
 	return c
@@ -98,7 +99,7 @@ func (c hostCall) dial() (*hostapi.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.DialHost(f, *c.endpoint)
+	return client.DialHost(f, *c.endpoint, *c.serverName)
 }
 
 // hostInfo is host: the host API's answer about the host itself.

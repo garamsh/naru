@@ -1,12 +1,19 @@
 package command_test
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -346,4 +354,96 @@ func TestHostBootSet_AddReportsTheHostsRefusalAndRefusesAManifestThatNamesAPath(
 	out, err = run(t, "host", "boot-set", "add", bad, "--config", cfg)
 	require.Error(t, err)
 	assert.Contains(t, out, "not a file name")
+}
+
+// namedServer serves h over mutual TLS with a certificate of the authority under dep.ca/<authority>
+// that names only id, a DNS name, as a host that joined from the install seed does, and returns its
+// address.
+func namedServer(t *testing.T, dep deployment, authority, id string, h http.Handler) string {
+	t.Helper()
+	ca, err := pki.Load(filepath.Join(dep.ca, authority))
+	require.NoError(t, err)
+	certBlock, _ := pem.Decode(ca.CertPEM)
+	require.NotNil(t, certBlock)
+	issuer, err := x509.ParseCertificate(certBlock.Bytes)
+	require.NoError(t, err)
+	keyBlock, _ := pem.Decode(ca.KeyPEM)
+	require.NotNil(t, keyBlock)
+	issuerKey, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	require.NoError(t, err)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: id},
+		DNSNames:     []string{id},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, issuer, &key.PublicKey, issuerKey)
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	pool.AddCert(issuer)
+	srv := httptest.NewUnstartedServer(h)
+	srv.TLS = &tls.Config{
+		ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool, MinVersion: tls.VersionTLS13,
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+	}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv.Listener.Addr().String()
+}
+
+func TestHost_ServerNameVerifiesTheCertificateAgainstTheHostIDInsteadOfTheAddress(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "host-ca", "--ca-dir", dep.ca)
+	const id = "h-0123456789abcdef"
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/host", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"region": "eu-1"})
+	})
+	addr := namedServer(t, dep, "host", id, mux)
+	cfg := filepath.Join(t.TempDir(), "c.yaml")
+	mustRun(t, "gen", "host-client", "--ca-dir", dep.ca, "--role", "reader", "--endpoint", addr, "--out", cfg)
+
+	out, err := run(t, "host", "--config", cfg)
+	require.Error(t, err, "the certificate names no address, so verifying the address fails: %s", out)
+	assert.Contains(t, err.Error(), "IP SANs")
+
+	out, err = run(t, "host", "--config", cfg, "--server-name", id)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, `"region": "eu-1"`)
+
+	_, err = run(t, "host", "--config", cfg, "--server-name", "h-ffffffffffffffff")
+	assert.Error(t, err, "a name the certificate does not hold is refused")
+	_, err = run(t, "microvm", "list", "--config", cfg, "--server-name", "h-ffffffffffffffff")
+	assert.Error(t, err, "every host API command takes the flag and verifies by it")
+	out, err = run(t, "microvm", "list", "--config", cfg, "--server-name", id)
+	assert.NotContains(t, fmt.Sprint(err), "certificate", "the right name passes the handshake on another command: %s", out)
+}
+
+func TestVersion_ServerNameReachesANodeAPIWhoseCertificateNamesOnlyTheHostID(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "api-ca", "--ca-dir", dep.ca)
+	const id = "h-0123456789abcdef"
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/version", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"version": "v9.9.9", "bootId": "b", "uptimeSeconds": 1})
+	})
+	addr := namedServer(t, dep, "api", id, mux)
+	cfg := filepath.Join(t.TempDir(), "c.yaml")
+	mustRun(t, "gen", "api-client", "--ca-dir", dep.ca, "--role", "reader", "--endpoint", addr, "--out", cfg)
+
+	out, err := run(t, "version", "--config", cfg)
+	require.Error(t, err, "the certificate names no address: %s", out)
+	assert.Contains(t, err.Error(), "IP SANs")
+
+	out, err = run(t, "version", "--config", cfg, "--server-name", id)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "v9.9.9")
+
+	_, err = run(t, "version", "--config", cfg, "--server-name", "h-ffffffffffffffff")
+	assert.Error(t, err, "a name the certificate does not hold is refused")
 }
