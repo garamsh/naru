@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/garamsh/naru/host/internal/signer"
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/metrics"
 )
@@ -89,11 +90,11 @@ func runInit(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	root, err := s.Init(signer.InitOptions{RecoveryPublic: pub, RootCSR: csr})
+	rootCert, err := initRoot(s, signer.InitOptions{RecoveryPublic: pub, RootCSR: csr})
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(*out, root.Certificate, 0o644); err != nil { //nolint:gosec // a certificate holds nothing secret
+	if err := atomicfile.Write(*out, rootCert, 0o644); err != nil {
 		return err
 	}
 	auth, err := s.Authorities()
@@ -105,14 +106,27 @@ func runInit(log *slog.Logger, args []string) error {
 		return err
 	}
 	revPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
-	if err := os.WriteFile(*revPub, revPEM, 0o644); err != nil { //nolint:gosec // a public key
+	if err := atomicfile.Write(*revPub, revPEM, 0o644); err != nil {
 		return err
 	}
 	// Init runs the first boot as a service whose output is on the console, which is where the
 	// operator reads what spec.orch needs: neither holds a secret.
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Certificate})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootCert})
 	fmt.Printf("root certificate:\n%s\nrevocation public key:\n%s", certPEM, revPEM)
 	return nil
+}
+
+// initRoot initialises the signer and returns the first root certificate. A signer that is
+// initialised already, by an init a crash stopped before the certificate reached its file, gives
+// the certificate it kept, so running init again completes the outputs.
+func initRoot(s *signer.Signer, opts signer.InitOptions) ([]byte, error) {
+	root, err := s.Init(opts)
+	if errors.Is(err, signer.ErrInitialised) {
+		if kept, kerr := s.RootCertificate(); kerr == nil {
+			return kept, nil
+		}
+	}
+	return root.Certificate, err
 }
 
 // readCSR reads a certificate request that is PEM or DER and returns its DER.
@@ -244,7 +258,7 @@ func runJoinKey(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(*out, pub, 0o644); err != nil { //nolint:gosec // a public key
+	if err := atomicfile.Write(*out, pub, 0o644); err != nil {
 		return err
 	}
 	// Init runs this as a setup whose output is on the console, which is where the operator reads

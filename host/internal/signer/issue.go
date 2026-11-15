@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -57,7 +58,7 @@ func (s *Signer) Init(opts InitOptions) (identity.Issued, error) {
 		return identity.Issued{}, err
 	}
 	a.issued = map[string]string{root.Serial: string(identity.RoleRoot)}
-	if err := a.save(s.dir); err != nil {
+	if err := a.save(s.dir, stagedFile{rootCertFile, root.Certificate}); err != nil {
 		return identity.Issued{}, err
 	}
 	s.auth = a
@@ -243,4 +244,10 @@ func parseCSR(der []byte) (*x509.CertificateRequest, error) {
 		return csr, nil
 	}
 	return nil, fmt.Errorf("%w: certificate request key is neither ECDSA nor Ed25519", ErrBadRequest)
+}
+
+// RootCertificate returns the DER certificate Init issued to the first root identity, which the
+// directory keeps so that an Init whose caller did not receive it can be completed.
+func (s *Signer) RootCertificate() ([]byte, error) {
+	return os.ReadFile(filepath.Join(s.dir, rootCertFile))
 }

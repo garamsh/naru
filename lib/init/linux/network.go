@@ -16,6 +16,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/netcfg"
 )
@@ -223,31 +224,18 @@ func (h *Host) WriteFiles(files []config.File) error {
 // ReplaceFile writes the file of the configuration over the one at its path,
 // or creates it, so a reader sees the old file or the new one and never a
 // partial one. It creates the file's directories.
-func (h *Host) ReplaceFile(f config.File) (err error) {
+func (h *Host) ReplaceFile(f config.File) error {
 	if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
 		return fmt.Errorf("write %s: %w", f.Path, err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(f.Path), ".naru-file-*")
-	if err != nil {
+	var opts []atomicfile.Option
+	if f.Owner != nil {
+		opts = append(opts, atomicfile.Owner(int(f.Owner.UID), int(f.Owner.GID)))
+	}
+	if err := atomicfile.Write(f.Path, []byte(f.Content), f.Perm(), opts...); err != nil {
 		return fmt.Errorf("write %s: %w", f.Path, err)
 	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(tmp.Name())
-			err = fmt.Errorf("write %s: %w", f.Path, err)
-		}
-	}()
-	_, err = tmp.WriteString(f.Content)
-	if err == nil {
-		err = tmp.Chmod(f.Perm())
-	}
-	if err == nil && f.Owner != nil {
-		err = tmp.Chown(int(f.Owner.UID), int(f.Owner.GID))
-	}
-	if err = errors.Join(err, tmp.Close()); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), f.Path)
+	return nil
 }
 
 // writeFile creates path, and its directories, with exactly the mode given and

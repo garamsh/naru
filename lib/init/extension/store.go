@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/garamsh/naru/lib/atomicfile"
 )
 
 // Dir is where a Node keeps its extension images, on the data disk, beside the configuration store.
@@ -318,7 +320,7 @@ func (s *Store) Sweep() error {
 	}
 	var errs []error
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), tempPrefix) {
+		if strings.HasPrefix(e.Name(), tempPrefix) || strings.HasPrefix(e.Name(), atomicfile.TempPrefix) {
 			errs = append(errs, os.Remove(filepath.Join(s.dir, e.Name())))
 		}
 	}
@@ -326,23 +328,8 @@ func (s *Store) Sweep() error {
 }
 
 // writeAtomic writes data to path through a temporary file and a rename.
-func writeAtomic(path string, data []byte) (err error) {
-	f, err := os.CreateTemp(filepath.Dir(path), tempPrefix+"*")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(f.Name())
-		}
-	}()
-	if _, err = f.Write(data); err == nil {
-		err = f.Sync()
-	}
-	if err = errors.Join(err, f.Close()); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+func writeAtomic(path string, data []byte) error {
+	return atomicfile.Write(path, data, 0o600)
 }
 
 func syncDir(dir string) error {

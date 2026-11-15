@@ -14,6 +14,7 @@ import (
 
 	"go.yaml.in/yaml/v4"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/config"
 )
 
@@ -85,11 +86,10 @@ func (s *Store) Load() (Stored, error) {
 	return Stored{Revision: raw.Revision, BaseSha256: raw.BaseSha256, Config: cfg}, nil
 }
 
-// Save writes the store atomically: a temporary file in the directory, fsync,
-// rename, and fsync of the directory. A failure leaves the previous store. A store that exists
+// Save writes the store atomically with atomicfile.Write. A failure leaves the previous store. A store that exists
 // and cannot be read is not written over: Save returns an error wrapping ErrUnreadable, since
 // the revisions in it are unknown.
-func (s *Store) Save(st Stored) (err error) {
+func (s *Store) Save(st Stored) error {
 	if _, err := os.ReadFile(filepath.Join(s.dir, FileName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("%w: %w; a reboot or repair of the data disk is needed", ErrUnreadable, err)
 	}
@@ -100,27 +100,5 @@ func (s *Store) Save(st Stored) (err error) {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(s.dir, ".store-*")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(f.Name())
-		}
-	}()
-	if _, err = f.Write(data); err == nil {
-		err = f.Sync()
-	}
-	if err = errors.Join(err, f.Close()); err != nil {
-		return err
-	}
-	if err = os.Rename(f.Name(), filepath.Join(s.dir, FileName)); err != nil {
-		return err
-	}
-	d, err := os.Open(s.dir)
-	if err != nil {
-		return err
-	}
-	return errors.Join(d.Sync(), d.Close())
+	return atomicfile.Write(filepath.Join(s.dir, FileName), data, 0o600)
 }

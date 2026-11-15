@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261114055347-b1a60cd64967
+	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1
 	google.golang.org/grpc v1.85.0
@@ -63,3 +64,5 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173 // indirect
 )
+
+replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile

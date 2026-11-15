@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -65,6 +66,9 @@ func (s *Server) signer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.ContentLength > signerMaxBody {
+		// Read the body off before answering: a server that answers and closes while the client is
+		// still writing resets the connection, and the client sees that and never the 413.
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 2*signerMaxBody))
 		writeJSON(w, http.StatusRequestEntityTooLarge, errorBody{Error: "the request body is larger than the signer reads"})
 		return
 	}

@@ -56,6 +56,9 @@ func Open(opts Options) (*Signer, error) {
 	if err := checkDirectory(opts.Dir); err != nil {
 		return nil, err
 	}
+	if err := recoverStaging(opts.Dir); err != nil {
+		return nil, fmt.Errorf("%w: finish the write a crash stopped: %w", ErrDirectory, err)
+	}
 	s := &Signer{dir: opts.Dir, log: opts.Log, now: opts.Now, peered: peeredIn(opts.Dir)}
 	if s.now == nil {
 		s.now = time.Now

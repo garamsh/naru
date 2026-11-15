@@ -3,6 +3,7 @@ module github.com/garamsh/naru/node
 go 1.26.0
 
 require (
+	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000 // indirect
 	github.com/google/nftables v0.3.0
 	github.com/mdlayher/netlink v1.11.2
 	github.com/stretchr/testify v1.12.1
@@ -39,3 +40,5 @@ require (
 	github.com/garamsh/naru/lib/init v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/vip v0.0.0-00010101000000-000000000000
 )
+
+replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile
