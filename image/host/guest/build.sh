@@ -11,7 +11,8 @@
 # kernel tarball; <build-dir> receives the guest kernels' sources; <output-dir> receives
 # kernels/<name>/vmlinux, guest-initrd.cpio, converter-initrd.cpio and guest.json, which names each
 # with the path it has inside the image and its SHA-256. The Rust toolchain is the one mvmd's
-# rust-toolchain.toml names, which rustup installs for the user, and erofs-utils builds itself.
+# rust-toolchain.toml names, which rustup installs into the builder's cargo home (the builder image
+# carries only rustup-init, pinned by SHA-256), and erofs-utils builds itself.
 # Nothing is built again when its inputs and the initrds' digests are unchanged.
 set -euo pipefail
 
@@ -58,6 +59,14 @@ for name in $GUEST_KERNELS; do
 done
 
 if ! digest_is "$out/guest-initrd.cpio" "$GUEST_INITRD_SHA256" || ! digest_is "$out/converter-initrd.cpio" "$CONVERTER_INITRD_SHA256"; then
+  # rustup 1.28 and later installs nothing by itself: install the channel, components and target
+  # each workspace's rust-toolchain.toml names, in the directory of each.
+  if ! command -v rustup >/dev/null; then
+    rustup-init -y --default-toolchain none --profile minimal --no-modify-path
+  fi
+  for dir in guest-agent converter; do
+    (cd "$src/$dir" && rustup toolchain install --no-self-update --profile minimal && rustc --version)
+  done
   make -C "$src" guest-initrd converter-initrd
   cp "$src/guest-agent/target/initrd.cpio" "$out/guest-initrd.cpio"
   cp "$src/converter/target/initrd.cpio" "$out/converter-initrd.cpio"

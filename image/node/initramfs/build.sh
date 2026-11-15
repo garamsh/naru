@@ -42,8 +42,8 @@ k8s=$(cd "$8" && pwd)
 . "$here/../../build.env"
 # shellcheck source=../../common/kernel/pin.env
 . "$here/../../common/kernel/pin.env"
-# shellcheck source=../../common/initramfs/lib.sh
-. "$here/../../common/initramfs/lib.sh"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
 bin=$build/bin
 rm -rf "$bin"

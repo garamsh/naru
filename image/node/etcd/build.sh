@@ -23,9 +23,10 @@ out=$(cd "$2" && pwd)
 . "$here/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
-stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/etcd" ] && [ -f "$out/etcd.stamp" ] && [ "$(cat "$out/etcd.stamp")" = "$stamp" ]; then
+if build_current "$out/etcd.stamp" "$out/etcd" -- "$here/pin.env" "$here/build.sh" "$here/../../build.env"; then
   echo "etcd: $out/etcd is up to date with its inputs"
   exit 0
 fi
@@ -65,5 +66,5 @@ if [ "$version" != "$ETCD_VERSION" ]; then
   exit 1
 fi
 cp "$part" "$out/etcd"
-echo "$stamp" >"$out/etcd.stamp"
+echo "$STAMP" >"$out/etcd.stamp"
 echo "etcd: built $out/etcd, SHA-256 $(sha256sum "$out/etcd" | cut -d' ' -f1)"

@@ -25,11 +25,12 @@ out=$(cd "$2" && pwd)
 . "$here/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
 programs="kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy"
 
-stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/kubernetes.stamp" ] && [ "$(cat "$out/kubernetes.stamp")" = "$stamp" ]; then
+if build_current "$out/kubernetes.stamp" -- "$here/pin.env" "$here/build.sh" "$here/../../build.env"; then
   complete=1
   for p in $programs; do [ -f "$out/$p" ] || complete=0; done
   if [ "$complete" -eq 1 ]; then
@@ -95,4 +96,4 @@ for p in $programs; do
   cp "$part/$p" "$out/$p"
   echo "kubernetes: built $out/$p, SHA-256 $(sha256sum "$out/$p" | cut -d' ' -f1)"
 done
-echo "$stamp" >"$out/kubernetes.stamp"
+echo "$STAMP" >"$out/kubernetes.stamp"

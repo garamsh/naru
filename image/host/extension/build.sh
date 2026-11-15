@@ -24,8 +24,8 @@ build=$(cd "$1" && pwd)
 out=$(cd "$2/extensions" && pwd)
 # shellcheck source=../../build.env
 . "$here/../../build.env"
-# shellcheck source=../../common/initramfs/lib.sh
-. "$here/../../common/initramfs/lib.sh"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
 name=naru-orch
 tree=$build/tree

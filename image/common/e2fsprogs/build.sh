@@ -27,9 +27,10 @@ out=$(cd "$2" && pwd)
 . "$here/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
-stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/mke2fs" ] && [ -f "$out/e2fsprogs.stamp" ] && [ "$(cat "$out/e2fsprogs.stamp")" = "$stamp" ]; then
+if build_current "$out/e2fsprogs.stamp" "$out/mke2fs" -- "$here/pin.env" "$here/build.sh" "$here/../../build.env"; then
   echo "e2fsprogs: $out/mke2fs is up to date with its inputs"
   exit 0
 fi
@@ -75,6 +76,7 @@ cd "$obj"
   exit 1
 }
 
+nss_gate mke2fs "$build/build.log"
 strip --strip-all -o "$out/mke2fs.part" "$obj/misc/mke2fs"
 chmod 0755 "$out/mke2fs.part"
 if ! file "$out/mke2fs.part" | grep -Eq 'statically linked|static-pie linked'; then
@@ -82,6 +84,6 @@ if ! file "$out/mke2fs.part" | grep -Eq 'statically linked|static-pie linked'; t
   exit 1
 fi
 mv "$out/mke2fs.part" "$out/mke2fs"
-echo "$stamp" >"$out/e2fsprogs.stamp"
+echo "$STAMP" >"$out/e2fsprogs.stamp"
 echo "e2fsprogs: built $out/mke2fs, SHA-256 $(sha256sum "$out/mke2fs" | cut -d' ' -f1)"
 file "$out/mke2fs"

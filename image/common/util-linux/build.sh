@@ -26,9 +26,10 @@ out=$(cd "$2" && pwd)
 . "$here/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
-stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/mount" ] && [ -f "$out/umount" ] && [ -f "$out/util-linux.stamp" ] && [ "$(cat "$out/util-linux.stamp")" = "$stamp" ]; then
+if build_current "$out/util-linux.stamp" "$out/mount" "$out/umount" -- "$here/pin.env" "$here/build.sh" "$here/../../build.env"; then
   echo "util-linux: $out/mount and $out/umount are up to date with their inputs"
   exit 0
 fi
@@ -74,6 +75,7 @@ make -j"$(nproc)" mount.static umount.static >"$build/build.log" 2>&1 || {
   exit 1
 }
 
+nss_gate util-linux "$build/build.log"
 for p in mount umount; do
   strip --strip-all -o "$out/$p.part" "$obj/$p.static"
   chmod 0755 "$out/$p.part"
@@ -91,4 +93,4 @@ for p in mount umount; do
   mv "$out/$p.part" "$out/$p"
   echo "util-linux: built $out/$p, SHA-256 $(sha256sum "$out/$p" | cut -d' ' -f1)"
 done
-echo "$stamp" >"$out/util-linux.stamp"
+echo "$STAMP" >"$out/util-linux.stamp"

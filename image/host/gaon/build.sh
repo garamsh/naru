@@ -28,13 +28,14 @@ out=$(cd "$2" && pwd)
 . "$here/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
 binaries="gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers"
 cli=gaon
-stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-up_to_date=1
-for b in $binaries $cli; do [ -f "$out/$b" ] || up_to_date=0; done
-if [ "$up_to_date" = 1 ] && [ -f "$out/gaon.stamp" ] && [ "$(cat "$out/gaon.stamp")" = "$stamp" ]; then
+outputs=()
+for b in $binaries $cli; do outputs+=("$out/$b"); done
+if build_current "$out/gaon.stamp" "${outputs[@]}" -- "$here/pin.env" "$here/build.sh" "$here/../../build.env"; then
   echo "gaon: $out is up to date with its inputs"
   exit 0
 fi
@@ -76,4 +77,4 @@ for b in $binaries $cli; do
   cp "$part/$b" "$out/$b"
   echo "gaon: built $out/$b, SHA-256 $(sha256sum "$out/$b" | cut -d' ' -f1)"
 done
-echo "$stamp" >"$out/gaon.stamp"
+echo "$STAMP" >"$out/gaon.stamp"

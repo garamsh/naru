@@ -55,3 +55,4 @@ Drafted for garamsh/naru#3, which is the record of the decision, and the PM deci
 ## Errata
 
 - 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/initramfs/` is `image/host/initramfs/` and `image/kernel/` is `image/host/kernel/`, with the pin and `naru.config` in `image/common/kernel/`.
+- 2026-11-15: item 4's "No containers" is superseded by [ADR 0063](./0063-the-image-is-built-inside-one-digest-pinned-builder-container-whose-toolchains-are-pinned-and-the-stage-2-direction-is-a-musl-toolchain-with-buildkit-built-packages.md): the image is built inside one digest-pinned builder container. No container runs on a Node because of it.

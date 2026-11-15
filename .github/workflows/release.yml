@@ -62,7 +62,7 @@ jobs:
           echo "image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
           grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release
           uname -r
-          gcc --version | head -n 1
+          docker version --format 'docker {{.Server.Version}}'
           nproc
           df -h / | tail -n 1
 
@@ -78,40 +78,16 @@ jobs:
           echo "release: $TAG is commit $commit"
           echo "commit=$commit" >>"$GITHUB_OUTPUT"
 
-      # Go is the version go.work names. The module cache it keeps is keyed on every go.sum; go.sum
-      # and the Go checksum database fix what a cached module means, so a hit cannot change bytes.
-      # Nothing else is cached: the kernel, the initramfs, the guest initrds and the disks are built
-      # from the pinned sources on every run.
+      # Go is the version go.work names, for `make ci` below. The image is not built with it: make
+      # release runs in the builder container (image.md §The builder), whose Go and compilers are
+      # pinned there, so nothing the runner provides reaches the assets. Nothing is cached for the
+      # image: the kernel, the initramfs, the guest initrds and the disks are built from the pinned
+      # sources on every run.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.work
           cache: true
           cache-dependency-path: "**/go.sum"
-
-      # image.md §What the host needs: the kernel's build dependencies, e2fsprogs (mke2fs -d, debugfs), dosfstools, gdisk and qemu-utils for the disk and the release.
-      - name: Install what the build needs
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            bash bc binutils bison build-essential curl dosfstools e2fsprogs file flex gdisk git \
-            gzip libelf-dev libssl-dev perl qemu-utils squashfs-tools tar xz-utils
-          for tool in /sbin/mkfs.fat /sbin/sgdisk /sbin/debugfs /sbin/mkfs.ext4 qemu-img mksquashfs; do
-            command -v "$tool" >/dev/null || { echo "release: $tool is not installed" >&2; exit 1; }
-          done
-          mke2fs -V 2>&1 | head -n 1
-
-      # Only the fetch of the mvmd checkout, whose rust-toolchain.toml names the toolchain: make image
-      # builds mvmd's guest initrds with it, so the toolchain is installed before any build. rustup is
-      # on the runner; it installs the channel, components and targets the file names, in the
-      # directory of each Rust workspace the guest inputs build.
-      - name: Fetch the pinned sources
-        run: image/host/mvmd/checkout.sh build/initramfs/mvmd
-
-      - name: Install the Rust toolchain mvmd names
-        run: |
-          for dir in guest-agent converter; do
-            (cd "build/initramfs/mvmd/$dir" && rustup toolchain install --no-self-update --profile minimal && rustc --version)
-          done
 
       # The manifest of the release with the highest version below this tag, among the
       # published ones. Versions are compared by sort -V with the first "-" of a tag read as "~",
@@ -144,7 +120,13 @@ jobs:
           echo "release: the previous release is $prev"
           echo "PREV_MANIFEST=$PWD/prev/manifest.json" >>"$GITHUB_ENV"
 
-      # make release builds the image (the kernels, the guest initrds, the initramfs) and the disks.
+      # The checks of a contributor's tree, before any asset is built from it.
+      - name: Check the tree
+        run: make ci
+
+      # make release builds the image (the kernels, the guest initrds, the initramfs) and the disks,
+      # inside the builder container: the target builds the builder from image/builder first and
+      # fails unless its config digest is the one image/builder/builder.env names.
       - name: Build the release assets
         env:
           RECREATE: ${{ inputs.requires_recreation && '1' || '' }}
@@ -162,6 +144,7 @@ jobs:
 
       - name: List the assets
         run: |
+          echo "builder: $(grep -E '^BUILDER_CONFIG_DIGEST=' image/builder/builder.env)"
           ls -l build/release
           cat build/release/SHA256SUMS
 
@@ -202,7 +185,7 @@ jobs:
       - name: Write the release notes
         run: |
           cat >notes.md <<'NOTES'
-          naru @TAG@, built from commit @COMMIT@ by the release workflow on a GitHub-hosted ubuntu-24.04 runner.
+          naru @TAG@, built from commit @COMMIT@ by the release workflow on a GitHub-hosted ubuntu-24.04 runner, inside the builder container of `image/builder`.
 
           Assets: `naru-host-@TAG@.qcow2` (the boot disk of `naru-host`), `naru-host-upgrade-@TAG@.tar` (the upgrade bundle: the kernel with its initramfs inside, and a manifest that names its version and SHA-256, which an A/B upgrade writes to the boot disk's trial slot), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-node-kernel-@TAG@`, `naru-node-initramfs-@TAG@` and `naru-node-@TAG@.json` (the Node boot set: the kernel and initramfs of the guest form that runs a Node as a microVM, and the manifest that names them with their SHA-256), `naru-orch-ext-@TAG@.sqfs` and `naru-orch-ext-@TAG@.json` (the `naru-orch` system extension that carries `naru-orchd` and `naru-signer`, and its description: the `sha256` field is what `spec.extensions` names, and the image is built for this release's version only), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-inputs-@TAG@.json` (the Firecracker digest and the test image reference that `naru-cluster` reads), `naructl-@TAG@-linux-amd64` (the operator's tool: it generates a cluster CA, each Node's user-data and client certificates, and it is the Node API's client; a static binary), `naru-node-1.test.yaml` and `naru-node-2.test.yaml` (test-only user-data for Proxmox that runs gaon) and `SHA256SUMS` of the other thirteen.
 
@@ -212,7 +195,7 @@ jobs:
           - **The data disk carries a test-only TLS authority, private key included.** `inputs/registry/key.pem` is the private key of the CA that `inputs/registry/ca.pem` and `cert.pem` belong to. It is generated for each build, is trusted only by the mvmd on the Node that holds the disk, and the registry that uses it listens on 127.0.0.1. Anyone can read the key from this public asset; do not trust the CA anywhere else.
           - **The user-data assets are test-only and carry private keys.** `naru-node-1.test.yaml` and `naru-node-2.test.yaml` hold the bootstrap tokens of both Nodes in `spec.files`, and `naru-node-1.test.yaml` also holds, in `spec.pki`, a test-only TLS authority, private key included: the CA generated for the build, from which init issues node-1's pairs at boot and gaon's controllers sign the Node Agents' certificate requests. The CA is valid ten years from the build and the certificates one year. Anyone can read that key and those tokens from this public asset: do not trust the CA anywhere else, and use the files on a throwaway deployment only. Two builds of one tree differ in the CA and the tokens.
           - **The data disk is not byte-reproducible.** The registry's TLS authority, certificate and key are generated anew for every build, and they are the only files that differ between two builds of one tree. Pin the digest of the asset published here, not the digest of a rebuild.
-          - **Relation to a workstation build.** The boot disk is the output of `make disk`, which `make image-repro` shows byte-identical across two clean builds on one workstation. This release was built on a runner whose compiler and `mke2fs` are Ubuntu 24.04's, and equality with a workstation build of the same commit has not been checked: build the commit with `make release VERSION=@TAG@` and compare `SHA256SUMS`, expecting the data disk to differ.
+          - **Relation to a workstation build.** `make release` runs in the builder container, whose base image, packages, Go and Rust installer are pinned by digest or version, so the runner's own toolchain reaches no asset. Build the commit with `make release VERSION=@TAG@` on a workstation with Docker and compare `SHA256SUMS`: every line is equal except `naru-data-@TAG@.qcow2`, `naru-node-1.test.yaml`, and `naru-node-2.test.yaml`, which differ in each build by design. `make image-repro REFERENCE=<this SHA256SUMS> VERSION=@TAG@` does the comparison.
           NOTES
           if [ -n "$RECREATE" ]; then
             cat >>notes.md <<'NOTES'

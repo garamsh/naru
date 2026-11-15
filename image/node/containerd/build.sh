@@ -32,11 +32,12 @@ out=$(cd "$2" && pwd)
 . "$here/pin.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
+# shellcheck source=../../lib.sh
+. "$here/../../lib.sh"
 
 programs="containerd containerd-shim-runc-v2 runc"
 
-stamp=$(cat "$here/pin.env" "$here/build.sh" "$here/../../build.env" | sha256sum | cut -d' ' -f1)
-if [ -f "$out/containerd.stamp" ] && [ "$(cat "$out/containerd.stamp")" = "$stamp" ]; then
+if build_current "$out/containerd.stamp" -- "$here/pin.env" "$here/build.sh" "$here/../../build.env"; then
   complete=1
   for p in $programs; do [ -f "$out/$p" ] || complete=0; done
   if [ "$complete" -eq 1 ]; then
@@ -139,7 +140,9 @@ ctr_tags="urfave_cli_no_docs osusergo netgo static_build no_btrfs no_devmapper n
   CGO_CFLAGS="-O2 -g0 -ffile-prefix-map=$build=." \
   go build -trimpath -buildvcs=false -tags seccomp,urfave_cli_no_docs,netgo,osusergo \
   -ldflags="-s -w -buildid= -linkmode=external -extldflags \"-static -Wl,--build-id=none\" -X main.gitCommit=$RUNC_COMMIT" \
-  -o "$part/runc" .)
+  -o "$part/runc" .) 2>"$build/runc-build.log" || { cat "$build/runc-build.log" >&2; exit 1; }
+cat "$build/runc-build.log" >&2
+nss_gate runc "$build/runc-build.log"
 strip --strip-all "$part/runc"
 
 for p in $programs; do
@@ -171,4 +174,4 @@ for p in $programs; do
   cp "$part/$p" "$out/$p"
   echo "containerd: built $out/$p, SHA-256 $(sha256sum "$out/$p" | cut -d' ' -f1)"
 done
-echo "$stamp" >"$out/containerd.stamp"
+echo "$STAMP" >"$out/containerd.stamp"
