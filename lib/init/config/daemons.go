@@ -38,6 +38,8 @@ const (
 	SignerDir = "/var/lib/naru/signer"
 	// SignerRunDir holds the signer's socket and the files of spec.signer.bootstrap.
 	SignerRunDir = "/run/naru-signer"
+	// SignerSocket is the unix socket naru-signer serves, the one orch dials and the Node API forwards /v1/signer to.
+	SignerSocket = SignerRunDir + "/signer.sock"
 	// OrchDataDir holds orch's etcd data and snapshots: mode 0700 and owned by OrchUID.
 	OrchDataDir = "/var/lib/naru/orch"
 	// OrchRunDir holds orch's serving pair, authority and public keys.
@@ -491,7 +493,7 @@ func metricsFlag(m *Metrics, port int) []string {
 
 func signerService(s SignerSection, node string, m *Metrics) (Service, []File) {
 	user := &User{UID: SignerUID, GID: SignerUID}
-	args := []string{"serve", "--dir=" + SignerDir, "--socket=" + SignerRunDir + "/signer.sock", "--socket-mode=0660"}
+	args := []string{"serve", "--dir=" + SignerDir, "--socket=" + SignerSocket, "--socket-mode=0660"}
 	if s.PeerListen != "" {
 		args = append(args, "--peer-listen="+s.PeerListen, "--peer-name="+strings.Join(s.PeerNames, ","))
 	}
@@ -557,7 +559,7 @@ func orchService(o Orch, node string, m *Metrics) (Service, []File) {
 		"--name=" + o.name(node), "--data-dir=" + OrchDataDir + "/etcd", "--peer-url=" + o.PeerURL, "--client-url=" + o.ClientURL,
 		cluster, "--initial-cluster-state=" + o.state(), "--listen=" + o.listen(),
 		"--san=" + strings.Join(sans, ","), "--cert=" + OrchRunDir + "/orch.crt", "--key=" + OrchKeyFile, "--ca=" + OrchRunDir + "/ca.crt",
-		"--signer-socket=" + SignerRunDir + "/signer.sock", "--snapshot-dir=" + OrchDataDir + "/snapshots",
+		"--signer-socket=" + SignerSocket, "--snapshot-dir=" + OrchDataDir + "/snapshots",
 		"--revocation-public-key=" + OrchRunDir + "/revocation.pub",
 		"--host-client-cert=" + OrchRunDir + "/orch.crt", "--host-client-key=" + OrchKeyFile,
 	}

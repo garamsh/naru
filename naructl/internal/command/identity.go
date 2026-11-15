@@ -198,12 +198,15 @@ func orchIssue(args []string, stdout, stderr io.Writer) error {
 	pass := fs.String("passphrase-file", "", "file holding the person file's passphrase")
 	csrFile := fs.String("csr", "", "the certificate request orch csr wrote, DER or PEM")
 	name := fs.String("name", "", "the certificate's CN")
-	socket := fs.String("socket", "", "naru-signer's unix socket")
+	sg := addSignerFlags(fs)
 	out := fs.String("out", "", "the file the issued certificate is written to, PEM")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := require(fs, "admin", "passphrase-file", "csr", "name", "socket", "out"); err != nil {
+	if err := sg.check(fs); err != nil {
+		return err
+	}
+	if err := require(fs, "admin", "passphrase-file", "csr", "name", "out"); err != nil {
 		return err
 	}
 	csr, err := readCSR(*csrFile)
@@ -214,7 +217,7 @@ func orchIssue(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	body, err := signerCall(*socket, http.MethodPost, "/v1/orch", signed)
+	body, err := signerCall(sg, http.MethodPost, "/v1/orch", signed)
 	if err != nil {
 		return err
 	}

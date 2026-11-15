@@ -62,7 +62,9 @@ type Deps struct {
 	Upgrades Upgrades
 	// Extensions is the store of system extension images.
 	Extensions Extensions
-	Log        *slog.Logger
+	// SignerSocket is the unix socket of the signer that /v1/signer forwards to.
+	SignerSocket string
+	Log          *slog.Logger
 }
 
 // Upgrades is the Node's in-place A/B upgrade.
@@ -79,6 +81,8 @@ type Upgrades interface {
 // Server is the Node API. It serves nothing until Start, and applies nothing until Attach.
 type Server struct {
 	deps Deps
+	// signerProxy serves /v1/signer.
+	signerProxy http.Handler
 
 	tls atomic.Pointer[tls.Config] // what each handshake uses; Reload replaces it
 
@@ -96,7 +100,9 @@ type Server struct {
 
 // New returns a Server that reads the Node through deps.
 func New(deps Deps) *Server {
-	return &Server{deps: deps}
+	s := &Server{deps: deps}
+	s.signerProxy = s.newSignerProxy()
+	return s
 }
 
 // Start serves the Node API for the configuration chosen at boot, on its spec.api.listen, and

@@ -97,7 +97,9 @@ func Main() {
 		Reboot:     reboot,
 		Upgrades:   upgrades,
 		Extensions: extensions,
-		Log:        log,
+		// The same path the signer's own --socket is derived from.
+		SignerSocket: config.SignerSocket,
+		Log:          log,
 	})
 	metricsCtx, stopMetrics := context.WithCancel(context.Background())
 	stopRenewing, booted := bootAndRenew(bootHost{host, extensions}, issuer, services, configs, server, log)
