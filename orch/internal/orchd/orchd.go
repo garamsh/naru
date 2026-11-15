@@ -127,10 +127,12 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	if c.SnapshotInterval == 0 {
 		c.SnapshotInterval = snapshot.DefaultInterval
 	}
-	tlsConf, err := serverTLS(c)
+	tlsConf, callersCA, err := serverTLS(c)
 	if err != nil {
 		return nil, err
 	}
+	// A joined host's naru-hostd trusts the authority orch's callers' certificates chain to.
+	c.Limits.OrchCA = string(callersCA)
 	awaitRestore := c.Restore && !member.HasData(c.DataDir)
 	if c.Restore && !awaitRestore {
 		d.Log.Warn("--restore ignored: the data directory holds a member", "data_dir", c.DataDir)
@@ -292,20 +294,21 @@ func (o *Orchd) keepRunning(ctx context.Context, d Deps, r Reconciler) {
 	}
 }
 
-func serverTLS(c Config) (*tls.Config, error) {
+// serverTLS is the API's TLS configuration and the PEM of the authority it trusts callers through.
+func serverTLS(c Config) (*tls.Config, []byte, error) {
 	pair, err := tls.LoadX509KeyPair(c.Cert, c.Key)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	pem, err := os.ReadFile(c.ClientCA)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pem) {
-		return nil, fmt.Errorf("%s holds no certificate", c.ClientCA)
+		return nil, nil, fmt.Errorf("%s holds no certificate", c.ClientCA)
 	}
-	return api.TLSConfig(pair, pool), nil
+	return api.TLSConfig(pair, pool), pem, nil
 }
 
 // Addr is the address the API listens on.

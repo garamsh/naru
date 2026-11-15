@@ -48,7 +48,14 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
               started with --restore (the plain snapshot is not written to disk without --out)
   enroll-key create [--ttl d] | enroll-key revoke <id>  | host pending | host admit <id> --code <code> --region <r> [--label k=v]
   host label <id> --region <r> [--label k=v] | host drain <id> | host undrain <id> | group apply -f <spec> | group get <name> | group list | group delete <name>
+  host remove <id> | host profile set -f <profile> | host profile get
+              remove forgets a host and frees its Machine prefix (its certificate stays valid: operator revoke ends it)
               these take --orch-url, --orch-ca, --identity and --passphrase-file
+  host install-seed --orch-url <url> --orch-ca-sha256 <hex> --enroll-key <file> --out <iso> [--name <label>]
+              write the NoCloud drive a new host boots the installer with (offline: it takes no --identity)
+  gen host-profile --guest <guest.json> --firecracker-sha256 <hex> --machine-pool <cidr> --orch-url <url>
+              --orch-ca-sha256 <hex> --out <file> [more flags: naructl gen host-profile -h]
+              write the fleet-wide inputs orch builds each joined host's configuration from
   version | services | get config               read a Node
   logs <service> [-f]                           print a service's kept log, and with -f each new line
   apply -f <patch> [--mode no-reboot|staged|reboot] [--dry-run]
@@ -133,6 +140,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return genHostCA(args[2:], stdout, stderr)
 	case "host-client":
 		return genHostClient(args[2:], stdout, stderr)
+	case "host-profile":
+		return genHostProfile(args[2:], stdout, stderr)
 	case "ca":
 		return genCA(args[2:], stdout, stderr)
 	case "client":
@@ -502,13 +511,9 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 		n.NoMasquerade = append(n.NoMasquerade, p)
 	}
 	for _, s := range storage {
-		name, value, ok := strings.Cut(s, "=")
-		if !ok {
-			return fmt.Errorf("--storage %q is not <name>=<label or /dev/path>", s)
-		}
-		d := layout.StorageDisk{Name: name, Label: value}
-		if strings.HasPrefix(value, "/dev/") {
-			d = layout.StorageDisk{Name: name, Device: value}
+		d, err := parseStorage(s)
+		if err != nil {
+			return err
 		}
 		n.Storage = append(n.Storage, d)
 	}

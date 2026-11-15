@@ -20,6 +20,13 @@ var (
 	ErrSignerRefused  = errors.New("the signer refused the admission")
 	ErrSignerFailed   = errors.New("the signer failed")
 	ErrTooManyPending = errors.New("too many pending enrollments")
+	// ErrPoolFull is an admission that finds every prefix of the Machine pool given to a host.
+	ErrPoolFull = errors.New("the Machine pool has no free prefix")
+	// ErrNoProfile is the admission of a host that joined from the install seed while no host profile
+	// is set, so there is nothing to build its configuration from.
+	ErrNoProfile = errors.New("no host profile is set")
+	// ErrAllocationTaken is the store's answer to an admission whose prefix another admission took first.
+	ErrAllocationTaken = errors.New("the prefix was allocated meanwhile")
 )
 
 // Event types.
@@ -32,6 +39,8 @@ const (
 	EventKeyCreated  = "enrollment-key.created"
 	EventKeyRevoked  = "enrollment-key.revoked"
 	EventCodeRefused = "host.admission-refused"
+	EventRemoved     = "host.removed"
+	EventProfileSet  = "host-profile.set"
 )
 
 // Key is an enrollment key as orch stores it: the SHA-256 of the secret, never the secret.
@@ -52,6 +61,14 @@ type Pending struct {
 	Address   string    `json:"address"`
 	KeyID     string    `json:"keyId"`
 	FirstSeen time.Time `json:"firstSeen"`
+	// Hardware is set by a host that enrolled from the install seed.
+	Hardware *orchapi.Hardware `json:"hardware,omitempty"`
+}
+
+// Allocation is the Machine prefix given to a host.
+type Allocation struct {
+	Prefix string `json:"prefix"`
+	HostID string `json:"hostId"`
 }
 
 // Host is an admitted host.
@@ -65,6 +82,11 @@ type Host struct {
 	AdmittedAt  time.Time         `json:"admittedAt"`
 	LastSeen    time.Time         `json:"lastSeen,omitzero"`
 	Draining    bool              `json:"draining,omitempty"`
+	// Config is the naru.yaml orch built at the admission of a host that joined from the install seed,
+	// and MachinePrefix the prefix it allocated for it. Both are empty for a host enrolled with its
+	// own configuration.
+	Config        []byte `json:"config,omitempty"`
+	MachinePrefix string `json:"machinePrefix,omitempty"`
 }
 
 func (h Host) api() orchapi.Host {

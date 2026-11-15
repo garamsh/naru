@@ -18,7 +18,7 @@ require (
 	go.etcd.io/etcd/server/v3 v3.6.16
 )
 
-require go.yaml.in/yaml/v3 v3.0.5 // indirect
+require go.yaml.in/yaml/v3 v3.0.5
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -28,6 +28,7 @@ require (
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/garamsh/naru/lib/identity v0.0.0-00010101000000-000000000000
+	github.com/garamsh/naru/lib/layout v0.0.0-00010101000000-000000000000
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
@@ -82,3 +83,5 @@ require (
 )
 
 replace github.com/garamsh/naru/lib/identity => ../lib/identity
+
+replace github.com/garamsh/naru/lib/layout => ../lib/layout

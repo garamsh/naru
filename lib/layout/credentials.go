@@ -22,6 +22,10 @@ const (
 	// ControlPlaneFiles is a control-plane Node whose every pair is an operator's file, with no token,
 	// no spec.pki and no signing key.
 	ControlPlaneFiles
+	// HostOnly is a Node that runs mvmd, the registry and naru-hostd and no gaon: it has no cluster
+	// authority, no token and no pair of gaon's, and serves the host API from the certificate orch's
+	// signer issued to the key the host made (a host that joined orch, ADR 0059).
+	HostOnly
 )
 
 // ModeOf is the Mode of a control-plane or worker Node whose pairs are files or not.
@@ -85,6 +89,8 @@ func (m Mode) plan(name string) plan {
 		}
 	case ControlPlaneFiles:
 		return plan{pairs: append([]pairSpec{{"agent", name}}, controlPlanePairs...), caFile: true, agent: tlsClient("agent")}
+	case HostOnly:
+		return plan{}
 	}
 	return plan{caFile: true, token: true, agent: tokenAgent}
 }
@@ -97,6 +103,9 @@ func (m Mode) check(token string, tokens, disable []string) error {
 	if !p.token {
 		if m.PairsAsFiles() && (token != "" || len(tokens) > 0) {
 			return errors.New("a Node whose pairs are files has no use for a bootstrap token")
+		}
+		if m == HostOnly && (token != "" || len(tokens) > 0) {
+			return errors.New("a Node that runs no gaon has no use for a bootstrap token")
 		}
 	} else {
 		switch {

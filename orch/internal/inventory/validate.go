@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/garamsh/naru/lib/orchapi"
 )
 
 const (
@@ -43,6 +45,30 @@ func validAttributes(region string, labels map[string]string) error {
 		}
 		if len(v) > maxLabelValue || !labelValue.MatchString(v) {
 			return invalid("label value %q of %q is not a label value", v, k)
+		}
+	}
+	return nil
+}
+
+// The bounds of what a joining host reports of its hardware: orch keeps it, and the host is not
+// yet trusted.
+const (
+	maxDevices = 64
+	maxText    = 255
+)
+
+func checkHardware(h orchapi.Hardware) error {
+	if h.CPUs < 0 || len(h.Disks) > maxDevices || len(h.Links) > maxDevices {
+		return invalid("the hardware report has a negative count or more than %d disks or links", maxDevices)
+	}
+	for _, d := range h.Disks {
+		if len(d.Name) > maxText || len(d.Model) > maxText {
+			return invalid("a disk's name or model is longer than %d bytes", maxText)
+		}
+	}
+	for _, l := range h.Links {
+		if len(l.Name) > maxText || len(l.MAC) > maxText {
+			return invalid("a link's name or address is longer than %d bytes", maxText)
 		}
 	}
 	return nil

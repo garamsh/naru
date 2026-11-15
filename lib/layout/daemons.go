@@ -21,10 +21,10 @@ const (
 
 // HostNetwork is spec.host.network: what naru-hostd's virtual networks are kept from.
 type HostNetwork struct {
-	ManagementPrefix netip.Prefix
+	ManagementPrefix netip.Prefix `yaml:"managementPrefix"`
 	// EgressInterface is empty to give the networks no egress, and TunnelPort 0 for 51820.
-	EgressInterface string
-	TunnelPort      int
+	EgressInterface string `yaml:"egressInterface,omitempty"`
+	TunnelPort      int    `yaml:"tunnelPort,omitempty"`
 }
 
 // HostOrch is spec.host.orch: what naru-hostd enrolls with orch from. EnrollKey is written to a
@@ -84,7 +84,8 @@ const OrchExtension = "naru-orch"
 
 // Extension is one entry of spec.extensions.
 type Extension struct {
-	Name, SHA256 string
+	Name   string `yaml:"name"`
+	SHA256 string `yaml:"sha256"`
 }
 
 type extensionSpec struct {

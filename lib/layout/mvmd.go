@@ -11,17 +11,17 @@ import (
 
 // File is one guest artifact: Path is where it is inside the image, SHA256 the digest of its bytes.
 type File struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Path   string `json:"path" yaml:"path"`
+	SHA256 string `json:"sha256" yaml:"sha256"`
 }
 
 // Manifest is guest.json, which image/host/guest/build.sh writes and the release carries as
 // naru-guest-<version>.json (ADR 0010): the guest kernels and initrds a Node boots Machines from.
 type Manifest struct {
-	Kernels         map[string]File `json:"kernels"`
-	DefaultKernel   string          `json:"default_kernel"`
-	GuestInitrd     File            `json:"guest_initrd"`
-	ConverterInitrd File            `json:"converter_initrd"`
+	Kernels         map[string]File `json:"kernels" yaml:"kernels"`
+	DefaultKernel   string          `json:"default_kernel" yaml:"default_kernel"`
+	GuestInitrd     File            `json:"guest_initrd" yaml:"guest_initrd"`
+	ConverterInitrd File            `json:"converter_initrd" yaml:"converter_initrd"`
 }
 
 var (

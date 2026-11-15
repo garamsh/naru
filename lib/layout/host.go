@@ -28,9 +28,19 @@ const (
 // and, kept by the operator, the clients' certificates, and the region and labels /v1/host reports.
 // The authority's key is read to issue the serving pair and never carried.
 type Host struct {
+	// CA is the host authority. It is nil on a Node whose host API certificate was issued to a key the
+	// host made (Certificate), which orch's signer holds the authority's key for.
 	CA     *pki.CA
 	Region string
 	Labels map[string]string
+	// Certificate is that certificate, PEM, and KeyFile the absolute path of the key the host made: the
+	// key is never carried. Both or neither; with them naru-hostd serves from them and trusts ClientCA
+	// alone for its clients.
+	Certificate string
+	KeyFile     string
+	// APIClientCA, with Certificate, is the PEM of the authority the Node API's clients' certificates
+	// chain to: spec.api serves with Certificate and KeyFile.
+	APIClientCA string
 	// ClientCA is the PEM of the authority orch's certificate chains to, which naru-hostd trusts
 	// for its clients beside the host authority; empty trusts the host authority alone.
 	ClientCA string
@@ -44,8 +54,22 @@ var (
 
 // check reports the first thing init would refuse in spec.host, which would stop the Node booting.
 func (h Host) check() error {
-	if h.CA == nil {
+	if issued := h.Certificate != "" || h.KeyFile != ""; issued {
+		switch {
+		case h.CA != nil:
+			return fmt.Errorf("a host with an issued certificate has no host authority to issue from")
+		case !x509.NewCertPool().AppendCertsFromPEM([]byte(h.Certificate)):
+			return fmt.Errorf("the host's certificate is not a PEM certificate")
+		case !path.IsAbs(h.KeyFile):
+			return fmt.Errorf("the host's key file %q is not an absolute path", h.KeyFile)
+		case h.ClientCA == "":
+			return fmt.Errorf("a host with an issued certificate trusts only the authority orch's certificate chains to: it is not set")
+		}
+	} else if h.CA == nil {
 		return fmt.Errorf("the host authority is not set")
+	}
+	if h.APIClientCA != "" && (h.Certificate == "" || !x509.NewCertPool().AppendCertsFromPEM([]byte(h.APIClientCA))) {
+		return fmt.Errorf("the Node API's client authority needs a PEM certificate and a host with an issued certificate")
 	}
 	if !dnsLabel.MatchString(h.Region) {
 		return fmt.Errorf("the host region %q is not a DNS label", h.Region)
@@ -97,6 +121,12 @@ func (n Node) servingIPs() []net.IP {
 // hostFiles are naru-hostd's serving pair, issued by the host authority, and the authority's
 // certificate that its clients' certificates are checked against.
 func (n Node) hostFiles() ([]file, error) {
+	if n.Host.Certificate != "" {
+		return []file{
+			{Path: path.Join(HostDir, "tls.crt"), Mode: "0644", Content: n.Host.Certificate},
+			{Path: path.Join(HostDir, "client-ca.crt"), Mode: "0644", Content: n.Host.ClientCA},
+		}, nil
+	}
 	pair, err := n.Host.CA.Server(n.Name, n.servingIPs()...)
 	if err != nil {
 		return nil, fmt.Errorf("issue naru-hostd's serving pair: %w", err)
@@ -116,6 +146,10 @@ func (n Node) hostFiles() ([]file, error) {
 
 // hostService is naru-hostd, which dials mvmd's socket and runs nft from the image's /bin.
 func (n Node) hostService() service {
+	keyFile := path.Join(HostDir, "tls.key")
+	if n.Host.KeyFile != "" {
+		keyFile = n.Host.KeyFile
+	}
 	return service{
 		Name: HostService, Binary: HostBinary, Env: map[string]string{"PATH": "/bin"},
 		Args: []string{
@@ -124,7 +158,7 @@ func (n Node) hostService() service {
 			"--host-id", n.Name,
 			// Orch calls the host at the address its enrollment recorded, which is the Node's, not --listen's.
 			"--advertise", net.JoinHostPort(n.Address.Addr().String(), HostPort),
-			"--cert", path.Join(HostDir, "tls.crt"), "--key", path.Join(HostDir, "tls.key"),
+			"--cert", path.Join(HostDir, "tls.crt"), "--key", keyFile,
 			"--client-ca", path.Join(HostDir, "client-ca.crt"),
 			"--host-file", path.Join(HostDir, "host.json"), "--mvmd-socket", MvmdSocket,
 			// The first address of the Machines' prefix, which mvmd gives its Machines as gateway.

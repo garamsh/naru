@@ -37,6 +37,9 @@ type fakeOrch struct {
 	revoked []string
 	groups  []orchapi.GroupSpec
 	deleted []string
+	// removed are the hosts DELETE /v1/hosts/{id} was called for, and profile the last host profile put.
+	removed []string
+	profile []byte
 	// drains are the calls "drain <id>" and "undrain <id>", in order.
 	drains []string
 	// networks and deletedNetworks are what the network commands sent.
@@ -153,6 +156,28 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 	})
 	mux.HandleFunc("GET /v1/snapshots/latest", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(f.latest)
+	})
+	mux.HandleFunc("DELETE /v1/hosts/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.removed = append(f.removed, r.PathValue("id"))
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("PUT /v1/profile", func(w http.ResponseWriter, r *http.Request) {
+		var req orchapi.HostProfile
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		f.profile = req.Profile
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /v1/profile", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(orchapi.HostProfile{Profile: f.profile})
 	})
 	for _, verb := range []string{"drain", "undrain"} {
 		mux.HandleFunc("POST /v1/hosts/{id}/"+verb, func(w http.ResponseWriter, r *http.Request) {

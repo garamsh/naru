@@ -40,6 +40,11 @@ type Config struct {
 	// AllowedHosts are the Host headers a request may carry; empty allows any. A loopback server lists
 	// its own addresses so that a page on another origin that resolves its name to loopback is refused.
 	AllowedHosts []string
+	// OrchURL and OrchCASHA256 are what an install seed tells a host about orch: the address it
+	// enrolls at and the SHA-256 of the authority orch's certificate chains to. Without them the
+	// install-seed page says it cannot make a seed.
+	OrchURL      string
+	OrchCASHA256 string
 	Now          func() time.Time
 	Log          *slog.Logger
 }
@@ -70,7 +75,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("console: csrf token: %w", err)
 	}
 	s := &Server{cfg: cfg, csrf: hex.EncodeToString(raw), pages: map[string]*template.Template{}}
-	for _, name := range []string{"hosts", "microvms", "groups", "events", "pending"} {
+	for _, name := range []string{"hosts", "microvms", "groups", "events", "pending", "install-seed"} {
 		t, err := template.ParseFS(webFiles, "web/base.html", "web/"+name+".html")
 		if err != nil {
 			return nil, fmt.Errorf("console: page %s: %w", name, err)
@@ -90,6 +95,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /events", s.events)
 	mux.HandleFunc("GET /pending", s.pending)
 	mux.HandleFunc("POST /pending/admit", s.admit)
+	mux.HandleFunc("GET /install-seed", s.installSeed)
+	mux.HandleFunc("POST /install-seed", s.makeSeed)
 	mux.HandleFunc("GET /static/{file}", s.static)
 	return s.guard(mux)
 }

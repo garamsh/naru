@@ -27,6 +27,14 @@ func (s *service) Admit(ctx context.Context, by string, req orchapi.AdmitRequest
 	if err != nil {
 		return orchapi.Host{}, err
 	}
+	var joined joinedPlan
+	if p.Hardware != nil {
+		// A host that enrolled from the install seed has no configuration of its own: orch builds
+		// it, so what it is built from is checked before the signer is asked for a certificate.
+		if joined, err = s.planJoined(ctx, p); err != nil {
+			return orchapi.Host{}, err
+		}
+	}
 	// The code is orch's own computation from the stored key, never a value the host sent.
 	want := normalizeCode(identity.PairingCode(p.PublicKey))
 	if subtle.ConstantTimeCompare([]byte(want), []byte(normalizeCode(req.Code))) != 1 {
@@ -49,11 +57,38 @@ func (s *service) Admit(ctx context.Context, by string, req orchapi.AdmitRequest
 	now := s.clock.Now()
 	h := Host{ID: p.HostID, PublicKey: p.PublicKey, Certificate: cert, Region: req.Region, Labels: req.Labels, Address: p.Address, AdmittedAt: now}
 	ev := orchapi.Event{Time: now, Type: EventAdmitted, Subject: p.HostID, Detail: map[string]string{"by": by, "region": req.Region}}
-	if err := s.store.Admit(ctx, p, h, ev); err != nil {
-		return orchapi.Host{}, err
+	if p.Hardware == nil {
+		if err := s.store.Admit(ctx, p, h, ev, nil); err != nil {
+			return orchapi.Host{}, err
+		}
+		return h.api(), nil
 	}
-	return h.api(), nil
+	// Another admission may take the prefix between the read of the allocations and the write, which
+	// the store refuses; the next prefix is then tried with the certificate already issued.
+	for range admitRetries {
+		prefix, err := s.nextPrefix(ctx, joined.profile.MachinePool)
+		if err != nil {
+			return orchapi.Host{}, err
+		}
+		if h.Config, err = joined.buildConfig(h, prefix, s.conf.OrchCA); err != nil {
+			return orchapi.Host{}, err
+		}
+		h.MachinePrefix = prefix.String()
+		ev.Detail["machinePrefix"] = h.MachinePrefix
+		err = s.store.Admit(ctx, p, h, ev, &Allocation{Prefix: h.MachinePrefix, HostID: h.ID})
+		if errors.Is(err, ErrAllocationTaken) {
+			continue
+		}
+		if err != nil {
+			return orchapi.Host{}, err
+		}
+		return h.api(), nil
+	}
+	return orchapi.Host{}, ErrConflict
 }
+
+// admitRetries bounds the admissions that lost the race for a prefix.
+const admitRetries = 8
 
 // certificateIsFor checks that certPEM holds a certificate for the key a host enrolled with.
 func certificateIsFor(certPEM, publicKeyDER []byte) error {

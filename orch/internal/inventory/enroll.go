@@ -35,12 +35,20 @@ func (s *service) Enroll(ctx context.Context, source string, req orchapi.EnrollR
 	if len(req.Address) > 255 {
 		return orchapi.EnrollStatus{}, invalid("the address is longer than 255 bytes")
 	}
+	if req.Hardware != nil {
+		if err := checkHardware(*req.Hardware); err != nil {
+			return orchapi.EnrollStatus{}, err
+		}
+		if a, err := hostAddress(req.Address); err != nil || !a.Is4() {
+			return orchapi.EnrollStatus{}, invalid("the address %q is not an IPv4 address", req.Address)
+		}
+	}
 
 	if h, err := s.store.GetHost(ctx, req.HostID); err == nil {
 		if !bytes.Equal(h.PublicKey, req.PublicKey) {
 			return orchapi.EnrollStatus{}, ErrConflict
 		}
-		return orchapi.EnrollStatus{State: orchapi.StateAdmitted, Certificate: h.Certificate}, nil
+		return orchapi.EnrollStatus{State: orchapi.StateAdmitted, Certificate: h.Certificate, Config: h.Config}, nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return orchapi.EnrollStatus{}, err
 	}
@@ -52,7 +60,7 @@ func (s *service) Enroll(ctx context.Context, source string, req orchapi.EnrollR
 		if !bytes.Equal(p.PublicKey, req.PublicKey) {
 			return orchapi.EnrollStatus{}, ErrConflict
 		}
-		p.Address = req.Address
+		p.Address, p.Hardware = req.Address, req.Hardware
 		return orchapi.EnrollStatus{State: orchapi.StatePending, Code: code}, s.store.PutPending(ctx, p, nil)
 	case !errors.Is(err, ErrNotFound):
 		return orchapi.EnrollStatus{}, err
@@ -65,7 +73,7 @@ func (s *service) Enroll(ctx context.Context, source string, req orchapi.EnrollR
 		return orchapi.EnrollStatus{}, ErrTooManyPending
 	}
 	now := s.clock.Now()
-	p = Pending{HostID: req.HostID, PublicKey: req.PublicKey, CSR: req.CSR, Address: req.Address, KeyID: key.ID, FirstSeen: now}
+	p = Pending{HostID: req.HostID, PublicKey: req.PublicKey, CSR: req.CSR, Address: req.Address, KeyID: key.ID, FirstSeen: now, Hardware: req.Hardware}
 	ev := orchapi.Event{Time: now, Type: EventEnrolling, Subject: req.HostID, Detail: map[string]string{"keyId": key.ID, "code": code, "address": req.Address}}
 	return orchapi.EnrollStatus{State: orchapi.StatePending, Code: code}, s.store.PutPending(ctx, p, &ev)
 }
@@ -118,7 +126,7 @@ func (s *service) Poll(ctx context.Context, hostID, timeValue, signature string)
 		if err := orchapi.VerifyProof(h.PublicKey, hostID, timeValue, signature, s.clock.Now()); err != nil {
 			return orchapi.EnrollStatus{}, err
 		}
-		return orchapi.EnrollStatus{State: orchapi.StateAdmitted, Certificate: h.Certificate}, nil
+		return orchapi.EnrollStatus{State: orchapi.StateAdmitted, Certificate: h.Certificate, Config: h.Config}, nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return orchapi.EnrollStatus{}, err
 	}
