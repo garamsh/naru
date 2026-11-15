@@ -66,3 +66,4 @@ Drafted for garamsh/naru#46, part of goal garamsh/naru#44. The direction is deci
 ## Errata
 
 - 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/initramfs` is `image/host/initramfs`.
+- 2026-11-15: `GET /v1/services` reports a fourth `state`, `exited`: a service that exited with status 0 under restart policy `on-failure`, which init does not start again (`lib/init/service`, `lib/init/api`). The states are `running`, `backoff`, `exited` and `stopped`. [init.md](../init.md) holds the current list.
