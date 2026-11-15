@@ -90,7 +90,7 @@ func TestEnrollStatus_CarriesTheConfigurationAndAPendingHostItsHardware(t *testi
 	assert.NotContains(t, string(b), "config", "a host that is not admitted is sent no configuration")
 
 	hw := orchapi.Hardware{CPUs: 4, MemoryBytes: 8 << 30,
-		Disks: []orchapi.Disk{{Name: "sda", Size: 1 << 40, Model: "SSD", Blank: true}},
+		Disks: []orchapi.Disk{{Name: "sda", Size: 1 << 40, Model: "SSD", Partitions: 1}},
 		Links: []orchapi.Link{{Name: "eth0", MAC: "52:54:00:00:00:01", Carrier: true}}}
 	b, err = json.Marshal(orchapi.EnrollRequest{HostID: "h-1", Hardware: &hw})
 	require.NoError(t, err)

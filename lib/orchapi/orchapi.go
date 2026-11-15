@@ -52,13 +52,14 @@ type Hardware struct {
 	Links       []Link `json:"links"`
 }
 
-// Disk is a block device of a joining host. Blank is whether it holds no filesystem or partition
-// table, so an operator sees which disks are free to be the data disk.
+// Disk is a block device of a joining host. Partitions is how many partitions the kernel lists on
+// it: a fact the host read, not a judgement of whether the disk is free, which only init's check of
+// the join form makes.
 type Disk struct {
-	Name  string `json:"name"`
-	Size  uint64 `json:"size"`
-	Model string `json:"model"`
-	Blank bool   `json:"blank"`
+	Name       string `json:"name"`
+	Size       uint64 `json:"size"`
+	Model      string `json:"model"`
+	Partitions int    `json:"partitions"`
 }
 
 // Link is a network interface of a joining host.

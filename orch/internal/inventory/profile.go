@@ -14,8 +14,17 @@ import (
 // maxProfile bounds the profile a caller sends.
 const maxProfile = 1 << 20
 
+// Profile is the profile with every secret redacted: no role reads one back.
 func (s *service) Profile(ctx context.Context) ([]byte, error) {
-	return s.store.GetProfile(ctx)
+	b, err := s.store.GetProfile(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p, err := layout.ParseHostProfile(b)
+	if err != nil {
+		return nil, err
+	}
+	return p.Redacted().Marshal()
 }
 
 func (s *service) SetProfile(ctx context.Context, by string, yaml []byte) error {
@@ -23,6 +32,9 @@ func (s *service) SetProfile(ctx context.Context, by string, yaml []byte) error 
 		return invalid("the host profile is larger than %d bytes", maxProfile)
 	}
 	if _, err := layout.ParseHostProfile(yaml); err != nil {
+		if errors.Is(err, layout.ErrRedacted) {
+			return fmt.Errorf("%w: %v", ErrRedacted, err)
+		}
 		return invalid("%v", err)
 	}
 	ev := orchapi.Event{Time: s.clock.Now(), Type: EventProfileSet, Subject: "host-profile", Detail: map[string]string{"by": by}}

@@ -28,6 +28,13 @@ const (
 	MachinePrefixBits = 24
 )
 
+// Redacted is what stands in a profile for a secret value (a registry's password) wherever the
+// profile is shown, and what a profile that is set may not carry in its place (ADR 0059).
+const Redacted = "<set>"
+
+// ErrRedacted is a profile whose secret is the redaction: it was read back and written again.
+var ErrRedacted = errors.New("the host profile holds " + Redacted + " where a secret belongs: a profile read back from orch is redacted, so write the password again")
+
 // HostProfile is what every joined host shares: the fleet-wide inputs of a host Node, which orch
 // keeps and builds each host's configuration from when an operator admits it (ADR 0059). It carries
 // nothing that is one host's own: no certificate, token, authority key or address. A YAML document
@@ -85,6 +92,18 @@ func ParseHostProfile(b []byte) (HostProfile, error) {
 // Marshal is the profile as YAML.
 func (p HostProfile) Marshal() ([]byte, error) { return yaml.Marshal(p) }
 
+// Redacted is the profile with every secret value replaced by Redacted, so that it can be shown.
+// Its shape, a registry's host, CA and user name, is kept.
+func (p HostProfile) Redacted() HostProfile {
+	p.Registries = append([]Registry(nil), p.Registries...)
+	for i := range p.Registries {
+		if p.Registries[i].Password != "" {
+			p.Registries[i].Password = Redacted
+		}
+	}
+	return p
+}
+
 // HasCredentials reports whether the profile carries a registry's username and password, which a
 // file of it must then be kept 0600.
 func (p HostProfile) HasCredentials() bool {
@@ -119,6 +138,11 @@ func (p HostProfile) Check() error {
 	for _, r := range p.Registries {
 		if strings.Contains(r.CA, "PRIVATE KEY") {
 			return fmt.Errorf("the CA of registry %s holds a private key: a host profile carries nothing that is one host's own", r.Host)
+		}
+	}
+	for _, r := range p.Registries {
+		if r.Password == Redacted {
+			return ErrRedacted
 		}
 	}
 	if p.Orch.URL == "" || p.Orch.CASHA256 == "" {

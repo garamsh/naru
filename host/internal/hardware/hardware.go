@@ -5,10 +5,7 @@ package hardware
 
 import (
 	"bufio"
-	"bytes"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,25 +16,20 @@ import (
 	"github.com/garamsh/naru/lib/orchapi"
 )
 
-// blankProbe is how much of the start of a disk is read to tell whether it is blank: past a partition
-// table, an ext4 or XFS superblock and btrfs's, which sits at 64 KiB.
-const blankProbe = 128 << 10
-
 // Source is where the report is read from. Live is the running system; a test points the paths at a
 // tree it built.
 type Source struct {
-	// Meminfo is /proc/meminfo, Sys /sys and Dev /dev.
-	Meminfo, Sys, Dev string
-	CPUs              int
+	// Meminfo is /proc/meminfo and Sys /sys.
+	Meminfo, Sys string
+	CPUs         int
 }
 
 // Live is the running system.
 func Live() Source {
-	return Source{Meminfo: "/proc/meminfo", Sys: "/sys", Dev: "/dev", CPUs: runtime.NumCPU()}
+	return Source{Meminfo: "/proc/meminfo", Sys: "/sys", CPUs: runtime.NumCPU()}
 }
 
-// Collect reads the report. A disk it cannot read to the end is reported as not blank: an operator
-// is never told a disk is free when it is not known to be.
+// Collect reads the report. It states what it reads and calls no disk blank: that is init's check.
 func (s Source) Collect() (*orchapi.Hardware, error) {
 	mem, err := s.memory()
 	if err != nil {
@@ -108,30 +100,20 @@ func (s Source) disks() ([]orchapi.Disk, error) {
 		}
 		out = append(out, orchapi.Disk{
 			Name: name, Size: sectors * 512, Model: readText(filepath.Join(dir, "device", "model")),
-			Blank: s.blank(name, dir),
+			Partitions: partitions(dir, name),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
-// blank is whether the disk has no partition and starts with nothing but zeros.
-func (s Source) blank(name, dir string) bool {
+// partitions counts the partitions the kernel lists under the disk.
+func partitions(dir, name string) int {
 	parts, err := filepath.Glob(filepath.Join(dir, name+"*", "partition"))
-	if err != nil || len(parts) > 0 {
-		return false
-	}
-	f, err := os.Open(filepath.Join(s.Dev, name))
 	if err != nil {
-		return false
+		return 0
 	}
-	defer func() { _ = f.Close() }()
-	buf := make([]byte, blankProbe)
-	n, err := io.ReadFull(f, buf)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return false
-	}
-	return n > 0 && len(bytes.Trim(buf[:n], "\x00")) == 0
+	return len(parts)
 }
 
 func (s Source) links() ([]orchapi.Link, error) {

@@ -164,3 +164,22 @@ func TestHostProfileNode_RefusesAPrefixOutsideThePool(t *testing.T) {
 	_, err := profile(t).Node(h)
 	assert.ErrorContains(t, err, "not a /24 of the pool")
 }
+
+func TestHostProfileRedacted_ReplacesEverySecretAndKeepsTheShape(t *testing.T) {
+	p := profile(t)
+	p.Registries = []layout.Registry{
+		{Host: "a.example", Username: "u", Password: "s3cret"},
+		{Host: "b.example", Helper: "ecr-login"},
+	}
+	shown := p.Redacted()
+	assert.Equal(t, []layout.Registry{
+		{Host: "a.example", Username: "u", Password: layout.Redacted},
+		{Host: "b.example", Helper: "ecr-login"},
+	}, shown.Registries)
+	assert.Equal(t, "s3cret", p.Registries[0].Password, "the profile itself is not changed")
+	b, err := shown.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "s3cret")
+	_, err = layout.ParseHostProfile(b)
+	assert.ErrorIs(t, err, layout.ErrRedacted, "what is shown cannot be set back")
+}

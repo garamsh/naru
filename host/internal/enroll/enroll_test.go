@@ -264,7 +264,7 @@ func joinAgent(t *testing.T, f *fakeOrch, dir string, out *lockedBuffer) *enroll
 		OrchURL: f.srv.URL, CASHA256: f.fingerprint(), EnrollKeyFile: secretFile, KeyFile: filepath.Join(dir, "host.key"),
 		Join: true, JoinConfigFile: filepath.Join(dir, "join", "config.yaml"),
 		Hardware: func() (*orchapi.Hardware, error) {
-			return &orchapi.Hardware{CPUs: 2, MemoryBytes: 1 << 30, Disks: []orchapi.Disk{{Name: "vda", Size: 1 << 30, Blank: true}}}, nil
+			return &orchapi.Hardware{CPUs: 2, MemoryBytes: 1 << 30, Disks: []orchapi.Disk{{Name: "vda", Size: 1 << 30, Partitions: 1}}}, nil
 		},
 		Out: out, CodeEvery: 150 * time.Millisecond, PollEvery: 30 * time.Millisecond, HeartbeatEvery: 30 * time.Millisecond,
 		Log: slog.New(slog.NewTextHandler(os.Stderr, nil)),

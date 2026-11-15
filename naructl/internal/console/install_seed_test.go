@@ -130,7 +130,7 @@ func TestPending_ShowsTheHardwareBesideThePairingCode(t *testing.T) {
 	orch := &fakeOrch{pending: []orchapi.Pending{
 		{HostID: "h-aaaa", PublicKey: key, FirstSeen: now, Hardware: &orchapi.Hardware{
 			CPUs: 8, MemoryBytes: 16 << 30,
-			Disks: []orchapi.Disk{{Name: "sda", Size: 500 << 30, Model: "SSD", Blank: true}, {Name: "sdb", Size: 100 << 30, Model: "USB"}},
+			Disks: []orchapi.Disk{{Name: "sda", Size: 500 << 30, Model: "SSD", Partitions: 2}, {Name: "sdb", Size: 100 << 30, Model: "USB"}},
 			Links: []orchapi.Link{{Name: "eth0", MAC: "52:54:00:12:34:56", Carrier: true}},
 		}},
 		{HostID: "h-bbbb", PublicKey: key, FirstSeen: now},
@@ -139,8 +139,8 @@ func TestPending_ShowsTheHardwareBesideThePairingCode(t *testing.T) {
 	_, body := e.get(t, "/pending")
 	assert.Contains(t, body, identity.PairingCode(key))
 	assert.Contains(t, body, "8 CPU, 16384 MiB memory")
-	assert.Contains(t, body, "sda 500 GiB SSD (blank)")
-	assert.Contains(t, body, "sdb 100 GiB USB (in use)")
+	assert.Contains(t, body, "sda 500 GiB SSD (2 partition(s))")
+	assert.Contains(t, body, "sdb 100 GiB USB (0 partition(s))")
 	assert.Contains(t, body, "eth0 52:54:00:12:34:56 (carrier)")
 	assert.Equal(t, 1, strings.Count(body, "Reported hardware"), "a host that reported none shows none")
 }

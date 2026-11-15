@@ -174,11 +174,7 @@ func newPendingRow(h orchapi.Pending) pendingRow {
 	}
 	row.Hardware = fmt.Sprintf("%d CPU, %d MiB memory", hw.CPUs, hw.MemoryBytes>>20)
 	for _, d := range hw.Disks {
-		state := "in use"
-		if d.Blank {
-			state = "blank"
-		}
-		row.Disks = append(row.Disks, fmt.Sprintf("%s %d GiB %s (%s)", d.Name, d.Size>>30, d.Model, state))
+		row.Disks = append(row.Disks, fmt.Sprintf("%s %d GiB %s (%d partition(s))", d.Name, d.Size>>30, d.Model, d.Partitions))
 	}
 	for _, l := range hw.Links {
 		carrier := "no carrier"

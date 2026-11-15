@@ -507,11 +507,5 @@ func hardwareSummary(h *orchapi.Hardware) string {
 	if h == nil {
 		return "-"
 	}
-	blank := 0
-	for _, d := range h.Disks {
-		if d.Blank {
-			blank++
-		}
-	}
-	return fmt.Sprintf("%d CPU, %d MiB, %d disk(s) (%d blank), %d link(s)", h.CPUs, h.MemoryBytes>>20, len(h.Disks), blank, len(h.Links))
+	return fmt.Sprintf("%d CPU, %d MiB, %d disk(s), %d link(s)", h.CPUs, h.MemoryBytes>>20, len(h.Disks), len(h.Links))
 }

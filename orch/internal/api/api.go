@@ -236,6 +236,8 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, inventory.ErrConflict), errors.Is(err, inventory.ErrTooManyPending),
 		errors.Is(err, inventory.ErrPoolFull), errors.Is(err, inventory.ErrNoProfile):
 		status, msg = http.StatusConflict, err.Error()
+	case errors.Is(err, inventory.ErrRedacted):
+		status, msg = http.StatusUnprocessableEntity, err.Error()
 	case errors.Is(err, inventory.ErrInvalid), errors.Is(err, orchapi.ErrBadProof):
 		status, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, inventory.ErrSignerFailed):

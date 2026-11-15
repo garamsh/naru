@@ -175,12 +175,49 @@ func TestHostPending_ShowsWhatTheHostReportedOfItself(t *testing.T) {
 	pub := hostKey(t)
 	p := pendingHost("h-aaaa", pub)
 	p.Hardware = &orchapi.Hardware{CPUs: 8, MemoryBytes: 16 << 30,
-		Disks: []orchapi.Disk{{Name: "sda", Size: 1 << 40, Blank: true}, {Name: "sdb", Size: 1 << 40}},
+		Disks: []orchapi.Disk{{Name: "sda", Size: 1 << 40}, {Name: "sdb", Size: 1 << 40}},
 		Links: []orchapi.Link{{Name: "eth0", MAC: "52:54:00:12:34:56", Carrier: true}}}
 	f := newFakeOrch(t, p, pendingHost("h-bbbb", pub))
 	op := newOperator(t, f, "operator")
 	out, err := run(t, op.args(f, "host", "pending")...)
 	require.NoError(t, err, out)
-	assert.Contains(t, out, "8 CPU, 16384 MiB, 2 disk(s) (1 blank), 1 link(s)")
+	assert.Contains(t, out, "8 CPU, 16384 MiB, 2 disk(s), 1 link(s)")
 	assert.Equal(t, 1, strings.Count(out, "CPU,"), "a host that reported none shows a dash")
+}
+
+func TestHostProfile_GetPrintsWhatOrchReturnsAndSetRefusesTheRedactionItShows(t *testing.T) {
+	f := newFakeOrch(t)
+	op := newOperator(t, f, "operator")
+	file := filepath.Join(t.TempDir(), "profile.yaml")
+	mustRun(t, profileFlags(t, file, "--registry", "host=registry.example:5000,username=robot,password-file="+writeSecret(t, "hunter2"))...)
+	written, err := os.ReadFile(file)
+	require.NoError(t, err)
+	require.Contains(t, string(written), "hunter2", "the file naructl writes holds the password; orch keeps it and shows it to no one")
+
+	// What orch returns has the password redacted; get prints that and nothing more.
+	p, err := layout.ParseHostProfile(written)
+	require.NoError(t, err)
+	shown, err := p.Redacted().Marshal()
+	require.NoError(t, err)
+	f.profile = shown
+	out, err := run(t, op.args(f, "host", "profile", "get")...)
+	require.NoError(t, err, out)
+	assert.Equal(t, string(shown), out)
+	assert.NotContains(t, out, "hunter2")
+	assert.Contains(t, out, layout.Redacted)
+
+	// A redacted profile written back is refused before it is sent.
+	back := filepath.Join(t.TempDir(), "back.yaml")
+	require.NoError(t, os.WriteFile(back, shown, 0o600))
+	f.profile = nil
+	_, err = run(t, op.args(f, "host", "profile", "set", "-f", back)...)
+	require.ErrorIs(t, err, layout.ErrRedacted)
+	assert.Nil(t, f.profile)
+}
+
+func writeSecret(t *testing.T, v string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "secret")
+	require.NoError(t, os.WriteFile(path, []byte(v+"\n"), 0o600))
+	return path
 }

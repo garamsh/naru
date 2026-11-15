@@ -22,6 +22,8 @@ var (
 	ErrTooManyPending = errors.New("too many pending enrollments")
 	// ErrPoolFull is an admission that finds every prefix of the Machine pool given to a host.
 	ErrPoolFull = errors.New("the Machine pool has no free prefix")
+	// ErrRedacted is a profile set with the redaction GET /v1/profile shows in place of a secret.
+	ErrRedacted = errors.New("the host profile holds a redacted secret")
 	// ErrNoProfile is the admission of a host that joined from the install seed while no host profile
 	// is set, so there is nothing to build its configuration from.
 	ErrNoProfile = errors.New("no host profile is set")

@@ -30,8 +30,9 @@ type Service interface {
 	// Remove deletes the host's record and frees its Machine prefix. The host's certificate stays
 	// valid: only a person's signature revokes it.
 	Remove(ctx context.Context, by, hostID string) error
-	// Profile returns the host profile's YAML, ErrNotFound when none is set. SetProfile checks the
-	// profile and replaces it.
+	// Profile returns the host profile's YAML with every secret redacted, ErrNotFound when none is
+	// set. SetProfile checks the profile and replaces it; a profile that carries the redaction is
+	// ErrRedacted.
 	Profile(ctx context.Context) ([]byte, error)
 	SetProfile(ctx context.Context, by string, yaml []byte) error
 }

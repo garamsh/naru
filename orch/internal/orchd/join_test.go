@@ -23,7 +23,7 @@ const joinDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab
 func hardware() *orchapi.Hardware {
 	return &orchapi.Hardware{
 		CPUs: 4, MemoryBytes: 8 << 30,
-		Disks: []orchapi.Disk{{Name: "vda", Size: 100 << 30, Model: "virtio", Blank: true}},
+		Disks: []orchapi.Disk{{Name: "vda", Size: 100 << 30, Model: "virtio", Partitions: 1}},
 		Links: []orchapi.Link{{Name: "eth0", MAC: "52:54:00:12:34:56", Carrier: true}},
 	}
 }
@@ -35,7 +35,7 @@ func (h host) seeded(secret string) orchapi.EnrollRequest {
 	return r
 }
 
-func profileYAML(t *testing.T, pool string) []byte {
+func profileYAML(t *testing.T, pool string, registries ...layout.Registry) []byte {
 	t.Helper()
 	f := layout.File{Path: "/x", SHA256: joinDigest}
 	p := layout.HostProfile{
@@ -45,6 +45,7 @@ func profileYAML(t *testing.T, pool string) []byte {
 		FirecrackerSHA256: joinDigest,
 		Orch:              layout.ProfileOrch{URL: "https://orch.example:8443", CASHA256: joinDigest},
 		MachinePool:       netip.MustParsePrefix(pool),
+		Registries:        registries,
 	}
 	b, err := p.Marshal()
 	require.NoError(t, err)
@@ -227,7 +228,7 @@ func TestTheProfileIsReadByAReaderSetByAnOperatorAndRefusedWhenItCarriesSomethin
 	require.NoError(t, o.op.SetProfile(t.Context(), good))
 	got, err := o.reader.Profile(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, good, got.Profile)
+	assert.Equal(t, string(good), string(got.Profile), "a profile with no secret reads back as it was set")
 	events, err := o.reader.Events(t.Context())
 	require.NoError(t, err)
 	var set int
@@ -237,6 +238,41 @@ func TestTheProfileIsReadByAReaderSetByAnOperatorAndRefusedWhenItCarriesSomethin
 		}
 	}
 	assert.Equal(t, 1, set)
+}
+
+func TestTheProfileNoRoleReadsBackHoldsNoSecretAndOneWithTheRedactionIsRefused(t *testing.T) {
+	const password = "hunter2-registry-password"
+	o := startOne(t, orchtest.Options{})
+	root := o.c.CA.Issue(t, "root", identity.RoleRoot)
+	rootClient := o.c.Client(t, 0, &root)
+	require.NoError(t, o.op.SetProfile(t.Context(), profileYAML(t, "10.200.0.0/16",
+		layout.Registry{Host: "registry.example:5000", Username: "robot", Password: password},
+		layout.Registry{Host: "other.example", Helper: "ecr-login"})))
+
+	for name, c := range map[string]*orchapi.Client{"reader": o.reader, "operator": o.op, "root": rootClient} {
+		t.Run(name, func(t *testing.T) {
+			got, err := c.Profile(t.Context())
+			require.NoError(t, err)
+			assert.NotContains(t, string(got.Profile), password)
+			p, err := layout.ParseHostProfile(got.Profile)
+			require.Error(t, err, "what is shown is not a profile that can be set")
+			assert.ErrorIs(t, err, layout.ErrRedacted)
+			require.Len(t, p.Registries, 2, "the shape stays")
+			assert.Equal(t, layout.Registry{Host: "registry.example:5000", Username: "robot", Password: layout.Redacted}, p.Registries[0])
+			assert.Equal(t, layout.Registry{Host: "other.example", Helper: "ecr-login"}, p.Registries[1], "no secret, nothing to redact")
+
+			// Setting what was read is refused, and keeps the stored profile.
+			assert.Equal(t, http.StatusUnprocessableEntity, status(o.op.SetProfile(t.Context(), got.Profile)))
+		})
+	}
+	// The stored secret is what a host is built from: the refused set changed nothing.
+	h := newHost(t, "h-0123456789abcdef")
+	_, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
+	require.NoError(t, err)
+	o.admit(t, h)
+	st, err := o.anon.PollEnrollment(t.Context(), h.id, h.key, o.c.Clock.Now())
+	require.NoError(t, err)
+	assert.Contains(t, string(st.Config), password)
 }
 
 func TestARevokedSeedKeyStillRefusesTheHostThatBootedFromIt(t *testing.T) {
