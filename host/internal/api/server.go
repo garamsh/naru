@@ -46,22 +46,27 @@ type Deps struct {
 	// Revocations is the list the listener checks clients against; its age and last fetch error are
 	// exposed as metrics. Nil means no revocation is checked.
 	Revocations *identity.RevocationList
+	// LeaderTokenFile keeps the highest leader token orch has sent (ADR 0071). Empty keeps it in
+	// memory only.
+	LeaderTokenFile string
 }
 
 // Server is the host API.
 type Server struct {
 	deps     Deps
 	requests *prometheus.CounterVec
+	tokens   leaderTokens
 }
 
 // New returns a Server, whose metrics are registered on deps.Metrics.
 func New(deps Deps) *Server {
-	return &Server{deps: deps, requests: newMetrics(deps.Metrics, deps.Runtime, deps.Revocations, deps.Log)}
+	return &Server{deps: deps, requests: newMetrics(deps.Metrics, deps.Runtime, deps.Revocations, deps.Log), tokens: leaderTokens{path: deps.LeaderTokenFile}}
 }
 
 // Handler returns the routes behind the middleware: a panic is answered with 500, each request is
 // logged once, and the client's role is checked before any route runs. A request that is not a GET
-// needs the provisioner role, and a GET the reader's, which a provisioner has too.
+// needs the provisioner role, and a GET the reader's, which a provisioner has too. A change that
+// carries a leader token is refused when the token is lower than the highest seen.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/host", s.getHost)
@@ -86,7 +91,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	mux.HandleFunc("GET /v1/tunnel", s.getTunnel)
 	s.routeBootSets(mux)
-	return s.recovering(s.logged(s.authorised(mux)))
+	return s.recovering(s.logged(s.authorised(s.leaderToken(mux))))
 }
 
 // authorised answers 403 to a client whose role does not cover the method.

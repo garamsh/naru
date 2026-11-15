@@ -18,7 +18,7 @@ const Election = "/naru/orch/leader"
 const retryAfter = time.Second
 
 // Run campaigns as name until ctx ends. While this member leads it calls lead with a context that
-// ends when the lease is lost; when lead returns, or the lease is lost, it campaigns again. A
+// carries the member's Term and ends when the lease is lost or the term is; when lead returns, or the lease is lost, it campaigns again. A
 // stopped leader's lease lapses after ttl, which bounds how long another member takes over.
 func Run(ctx context.Context, cl *clientv3.Client, name string, ttl time.Duration, log *slog.Logger, lead func(ctx context.Context)) {
 	for ctx.Err() == nil {
@@ -38,15 +38,16 @@ func term(ctx context.Context, cl *clientv3.Client, name string, ttl time.Durati
 		return err
 	}
 	defer sess.Orphan()
-	if err := concurrency.NewElection(sess, Election).Campaign(ctx, name); err != nil {
+	e := concurrency.NewElection(sess, Election)
+	if err := e.Campaign(ctx, name); err != nil {
 		return err
 	}
-	led, cancel := context.WithCancel(ctx)
-	defer cancel()
+	led, cancel := NewTerm(ctx, e.Rev(), e.Key())
+	defer cancel(nil)
 	go func() {
 		select {
 		case <-sess.Done():
-			cancel()
+			cancel(nil)
 		case <-led.Done():
 		}
 	}()

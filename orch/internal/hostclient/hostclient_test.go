@@ -16,6 +16,7 @@ import (
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/orch/internal/groups"
 	"github.com/garamsh/naru/orch/internal/hostclient"
 )
@@ -30,21 +31,24 @@ type fakeHost struct {
 	requests []string
 	bodies   map[string][]byte
 	status   map[string]int
+	codes    map[string]string
+	tokens   map[string]string
 	srv      *httptest.Server
 }
 
 func newHost(t *testing.T) *fakeHost {
 	t.Helper()
-	f := &fakeHost{bodies: map[string][]byte{}, status: map[string]int{}}
+	f := &fakeHost{bodies: map[string][]byte{}, status: map[string]int{}, codes: map[string]string{}, tokens: map[string]string{}}
 	f.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		key := r.Method + " " + r.URL.Path
 		f.requests = append(f.requests, key)
 		f.bodies[key], _ = io.ReadAll(r.Body)
+		f.tokens[key] = r.Header.Get(wire.LeaderTokenHeader)
 		if st := f.status[key]; st != 0 {
 			w.WriteHeader(st)
-			_, _ = w.Write([]byte(`{"error":"nope"}`))
+			_, _ = w.Write([]byte(`{"error":"nope","code":"` + f.codes[key] + `"}`))
 			return
 		}
 		switch key {

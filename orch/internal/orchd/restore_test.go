@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/orch/internal/leader"
 	"github.com/garamsh/naru/orch/internal/orchtest"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
@@ -27,6 +29,8 @@ type source struct {
 	ca    *orchtest.CA
 	root  orchtest.Identity
 	plain []byte
+	// revision is the revision the source store had reached after the snapshot, which the restore does not contain.
+	revision int64
 }
 
 func takeSource(t *testing.T) source {
@@ -55,7 +59,11 @@ func takeSource(t *testing.T) source {
 	require.NoError(t, err)
 	plain, err := identity.Open(rec.X25519, sealed, []byte(snapshot.Info))
 	require.NoError(t, err)
-	return source{ca: o.c.CA, root: root, plain: plain}
+	_, err = o.op.ApplyNetwork(t.Context(), "after-snapshot", orchapi.NetworkSpec{Prefix: "10.7.0.0/24"})
+	require.NoError(t, err)
+	head, err := o.c.Members[0].Etcd().Get(t.Context(), "/naru/")
+	require.NoError(t, err)
+	return source{ca: o.c.CA, root: root, plain: plain, revision: head.Header.Revision}
 }
 
 // waiting starts a member of a new cluster that waits for a restore.
@@ -102,6 +110,19 @@ func TestRestoreBringsBackWhatTheSnapshotHeldAndTheClusterGrowsBackToThree(t *te
 			return err == nil && len(l) == 1
 		}, 30*time.Second, 100*time.Millisecond, "member %d holds the restored groups", i)
 	}
+}
+
+func TestARestoredStoreElectsALeaderWhoseTokenIsAboveEveryRevisionTheLostStoreReached(t *testing.T) {
+	src := takeSource(t)
+	c := src.waiting(t)
+	require.NoError(t, c.Client(t, 0, &src.root).Restore(t.Context(), bytes.NewReader(src.plain), sumHex(src.plain)))
+
+	c.Leader(t, []int{0}, 30*time.Second)
+	resp, err := c.Members[0].Etcd().Get(t.Context(), leader.Election, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1)
+	// A host that saw the lost store's leader refuses any token not above its revision.
+	require.Greater(t, resp.Kvs[0].CreateRevision, src.revision)
 }
 
 func TestRestoreIsRootOnly(t *testing.T) {

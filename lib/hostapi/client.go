@@ -20,6 +20,7 @@ type Error struct {
 	Status  int
 	Message string
 	Fields  []string
+	Code    string
 }
 
 func (e *Error) Error() string {
@@ -85,7 +86,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, body io.Read
 		if json.Unmarshal(data, &eb) != nil || eb.Error == "" {
 			eb.Error = http.StatusText(resp.StatusCode)
 		}
-		return resp.StatusCode, &Error{Status: resp.StatusCode, Message: eb.Error, Fields: eb.Fields}
+		return resp.StatusCode, &Error{Status: resp.StatusCode, Message: eb.Error, Fields: eb.Fields, Code: eb.Code}
 	}
 	if out == nil || len(data) == 0 {
 		return resp.StatusCode, nil

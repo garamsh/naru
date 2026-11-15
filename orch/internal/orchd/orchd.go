@@ -221,13 +221,17 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	invStore := invetcd.New(m.Client())
 	svc := inventory.NewService(invStore, d.Signer, d.Clock, c.Limits)
 	groupStore := groupsetcd.New(m.Client())
+	// The engine and the leader's own inventory writes go through the guard of the leader's term;
+	// the API keeps the plain client, since any member serves an operator's write (ADR 0071).
+	leaderKV := leader.Guard(m.Client())
+	leaderInv := invetcd.New(leaderKV)
 	var hosts groups.Hosts
 	if d.NewHosts != nil {
 		hosts = d.NewHosts(svc)
 	}
 	if d.Reconciler == nil && hosts != nil {
 		d.Reconciler = groups.New(groups.Config{
-			Hosts: hosts, Store: groupStore, Clock: groupClock{d.Clock}, Events: groupsetcd.NewEvents(invStore), Interval: c.GroupInterval,
+			Hosts: hosts, Store: groupsetcd.New(leaderKV), Clock: groupClock{d.Clock}, Events: groupsetcd.NewEvents(leaderInv), Interval: c.GroupInterval,
 		})
 	}
 	networkStore := netetcd.New(m.Client())
@@ -259,7 +263,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	}()
 	go func() {
 		defer o.wg.Done()
-		leader.Run(o.runCtx, m.Client(), c.Name, c.LeaderTTL, d.Log, o.lead(d, reconcilers, func(ctx context.Context) { dropStoredConfigs(ctx, d, invStore) }))
+		leader.Run(o.runCtx, m.Client(), c.Name, c.LeaderTTL, d.Log, o.lead(d, reconcilers, func(ctx context.Context) { dropStoredConfigs(ctx, d, leaderInv) }))
 	}()
 	return true
 }

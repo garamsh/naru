@@ -154,7 +154,7 @@ type hostNet struct{ api *hostapi.Client }
 func DialNetAPI(hc *http.Client, revocations *identity.RevocationList) func(id, addr string) NetAPI {
 	n := newNamed(hc, revocations)
 	return func(id, addr string) NetAPI {
-		return hostNet{api: hostapi.NewClient((&url.URL{Scheme: "https", Host: addr}).String(), n.client(id, addr))}
+		return hostNet{api: hostapi.NewClient((&url.URL{Scheme: "https", Host: addr}).String(), withToken(n.client(id, addr)))}
 	}
 }
 

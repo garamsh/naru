@@ -49,7 +49,7 @@ func New(inv Inventory, hc *http.Client, revocations *identity.RevocationList) *
 
 // api is the host API of h.
 func (c *Client) api(h orchapi.Host) *hostapi.Client {
-	return hostapi.NewClient((&url.URL{Scheme: "https", Host: h.Address}).String(), c.hosts.client(h.ID, h.Address))
+	return hostapi.NewClient((&url.URL{Scheme: "https", Host: h.Address}).String(), withToken(c.hosts.client(h.ID, h.Address)))
 }
 
 // List returns every admitted host. A host that does not answer is listed as not ready. The

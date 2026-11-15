@@ -19,6 +19,12 @@ import (
 // clusterToken is the token embed gives a cluster that names none.
 const clusterToken = "etcd-cluster"
 
+// revisionBump is added to the restored store's revision. A host keeps the highest leader token it
+// has seen, and a token is a revision (ADR 0071), so the restored store must continue above every
+// revision the lost store reached after the snapshot; a billion is more than a cluster writes between
+// two snapshots in any lifetime.
+const revisionBump = 1_000_000_000
+
 // ErrRejected is returned when the snapshot is not one that can be restored: its SHA-256 differs
 // from the one the caller sent, or etcd's own check of it fails.
 var ErrRejected = errors.New("the snapshot is rejected")
@@ -85,6 +91,7 @@ func Apply(c Config, r io.Reader, wantSHA256 string, log *zap.Logger) error {
 	if err := snapshot.NewV3(log).Restore(snapshot.RestoreConfig{
 		SnapshotPath: file.Name(), Name: c.Name, OutputDataDir: dir,
 		PeerURLs: []string{c.PeerURL}, InitialCluster: c.InitialCluster, InitialClusterToken: clusterToken,
+		RevisionBump: revisionBump, MarkCompacted: true,
 	}); err != nil {
 		return fmt.Errorf("%w: %v", ErrRejected, err)
 	}

@@ -172,7 +172,7 @@ func startEnvRevoking(t *testing.T, gateway netip.Addr, networks bool, revocatio
 	e.tunnel = &fakeTunnel{}
 	e.state = filepath.Join(dir, "networks.json")
 	e.nets = e.manager()
-	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics, Revocations: revocations}
+	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics, Revocations: revocations, LeaderTokenFile: filepath.Join(dir, "leader-token")}
 	if networks {
 		deps.Networks = e.nets
 	}
