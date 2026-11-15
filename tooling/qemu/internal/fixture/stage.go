@@ -9,15 +9,13 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/guest"
 )
 
-// Where the staged tree appears inside a Node: the data disk is mounted at
-// /var/lib/naru, and the tree is the disk's inputs directory.
-const (
-	DataMount = "/var/lib/naru"
-	GuestRoot = DataMount + "/inputs"
-)
+// GuestRoot is where the staged tree appears inside a Node: the data disk is mounted at
+// wire.DataMount, and the tree is the disk's inputs directory.
+const GuestRoot = wire.DataMount + "/inputs"
 
 // Inputs is the staged tree and what the Node's configuration says of it.
 type Inputs struct {

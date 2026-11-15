@@ -13,10 +13,8 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
-
-// DefaultPort is the port init's Node API listens on unless spec.api.listen says another.
-const DefaultPort = "50000"
 
 // Roles a client certificate can carry; the server takes the role from the Organization.
 const (
@@ -61,11 +59,11 @@ func Issue(authority *pki.CA, role, cn string, endpoints []string) (File, error)
 	return f, nil
 }
 
-// Address returns a Node's address as host:port: an IP address, with DefaultPort when it has no
+// Address returns a Node's address as host:port: an IP address, with wire.NodeAPIPort when it has no
 // port. The Node's serving certificate names IP addresses, so a name is refused.
-func Address(s string) (string, error) { return AddressPort(s, DefaultPort) }
+func Address(s string) (string, error) { return AddressPort(s, wire.NodeAPIPort) }
 
-// AddressPort is Address with port in place of DefaultPort.
+// AddressPort is Address with port in place of wire.NodeAPIPort.
 func AddressPort(s, port string) (string, error) {
 	if ap, err := netip.ParseAddrPort(s); err == nil {
 		return ap.String(), nil

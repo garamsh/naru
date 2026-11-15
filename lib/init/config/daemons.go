@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // What init gives the daemons it runs from spec.orch, spec.signer, spec.host.network and
@@ -35,13 +37,13 @@ const (
 	OrchUID   uint32 = 6002
 
 	// SignerDir holds the authority keys: mode 0700 and owned by SignerUID, so orch's user cannot read it.
-	SignerDir = "/var/lib/naru/signer"
+	SignerDir = wire.DataMount + "/signer"
 	// SignerRunDir holds the signer's socket and the files of spec.signer.bootstrap.
 	SignerRunDir = "/run/naru-signer"
 	// SignerSocket is the unix socket naru-signer serves, the one orch dials and the Node API forwards /v1/signer to.
 	SignerSocket = SignerRunDir + "/signer.sock"
 	// OrchDataDir holds orch's etcd data and snapshots: mode 0700 and owned by OrchUID.
-	OrchDataDir = "/var/lib/naru/orch"
+	OrchDataDir = wire.DataMount + "/orch"
 	// OrchRunDir holds orch's serving pair, authority and public keys.
 	OrchRunDir = "/run/naru-orchd"
 	// OrchHostCAFile is the authority the hosts' API certificates chain to, from spec.orch.hostCA.

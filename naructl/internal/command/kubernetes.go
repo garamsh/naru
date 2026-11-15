@@ -14,6 +14,7 @@ import (
 
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // genKubernetes writes what a cluster has besides its authority: the front-proxy authority, the
@@ -58,7 +59,7 @@ func genKubernetes(fs *pflag.FlagSet) runner {
 			return err
 		}
 		conf := filepath.Join(*caDir, pki.AdminKubeconfigFile)
-		server := "https://" + net.JoinHostPort(addr.String(), layout.APIPort)
+		server := "https://" + net.JoinHostPort(addr.String(), wire.KubeAPIPort)
 		if *adminAddress != "" {
 			server = "https://" + *adminAddress
 		}

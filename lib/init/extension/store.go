@@ -18,10 +18,11 @@ import (
 	"sync"
 
 	"github.com/garamsh/naru/lib/atomicfile"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Dir is where a Node keeps its extension images, on the data disk, beside the configuration store.
-const Dir = "/var/lib/naru/extensions"
+const Dir = wire.DataMount + "/extensions"
 
 // MaxBytes is the largest image a Node takes.
 const MaxBytes = 1 << 30

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/lib/vip"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 func main() {
@@ -28,8 +29,8 @@ func main() {
 		api     = vip.API{}
 		etcd    = vip.Etcd{}
 	)
-	flag.StringVar(&api.Port, "port", "6443", "the API server's port, which must answer an HTTP request over TLS for a member to be alive")
-	flag.StringVar(&etcd.Port, "etcd-port", "2379", "etcd's client port, whose /health must answer for a member to be alive")
+	flag.StringVar(&api.Port, "port", wire.KubeAPIPort, "the API server's port, which must answer an HTTP request over TLS for a member to be alive")
+	flag.StringVar(&etcd.Port, "etcd-port", wire.EtcdClientPort, "etcd's client port, whose /health must answer for a member to be alive")
 	flag.StringVar(&etcd.CAFile, "etcd-ca-file", "", "the CA that signed the serving certificates of etcd and of the API server")
 	flag.StringVar(&etcd.CertFile, "etcd-cert-file", "", "the client certificate etcd accepts")
 	flag.StringVar(&etcd.KeyFile, "etcd-key-file", "", "the key of -etcd-cert-file")

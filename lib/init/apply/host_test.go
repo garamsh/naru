@@ -13,6 +13,7 @@ import (
 	"github.com/garamsh/naru/lib/init/apply"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/store"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 func hostRig(t *testing.T) *rig {
@@ -67,7 +68,7 @@ spec:
     orch:
       url: https://192.168.0.10:7500
       caSHA256: ` + strings.Repeat("ab", 32) + `
-      enrollKey: ` + config.JoinKeyPrefix + strings.Repeat("cd", 32) + `
+      enrollKey: ` + wire.EnrollKeyPrefix + strings.Repeat("cd", 32) + `
 `))
 	require.NoError(t, err)
 	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Certificates: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})

@@ -12,6 +12,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Where a host that joined orch keeps what it made, and what its configuration says in place of
@@ -19,7 +20,7 @@ import (
 const (
 	// HostKeyFile is the key naru-hostd made on the data disk at its first start. The certificate orch
 	// issued for it is a file of spec.files; the key is never copied.
-	HostKeyFile = DataMount + "/hostd/host.key"
+	HostKeyFile = wire.DataMount + "/hostd/host.key"
 	// JoinedEnrollKey is what spec.host.orch.enrollKey says in a joined host's configuration. init
 	// requires the field, but orch never held the key the host joined with, only its hash, and a host
 	// that holds its certificate presents the certificate, not a key (ADR 0059).

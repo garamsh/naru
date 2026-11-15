@@ -26,6 +26,7 @@ require (
 )
 
 require (
+	github.com/garamsh/naru/lib/wire v0.0.0-00010101000000-000000000000
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/sys v0.49.0
@@ -38,3 +39,5 @@ replace github.com/garamsh/naru/lib/metrics => ../metrics
 replace github.com/garamsh/naru/lib/atomicfile => ../atomicfile
 
 replace github.com/garamsh/naru/lib/orchapi => ../orchapi
+
+replace github.com/garamsh/naru/lib/wire => ../wire

@@ -6,10 +6,8 @@ import (
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
-
-// HostPort is the port naru-hostd serves the host API on unless a client file's endpoint says another.
-const HostPort = "7443"
 
 // Roles of a host API client certificate.
 const (
@@ -31,7 +29,7 @@ func IssueHost(authority *pki.CA, role, cn string, endpoints []string) (File, er
 	}
 	f := File{CA: string(authority.CertPEM)}
 	for _, e := range endpoints {
-		hostPort, err := AddressPort(e, HostPort)
+		hostPort, err := AddressPort(e, wire.HostAPIPort)
 		if err != nil {
 			return File{}, err
 		}
@@ -49,7 +47,7 @@ func IssueHost(authority *pki.CA, role, cn string, endpoints []string) (File, er
 // port; when node is empty it is the file's first endpoint. It speaks TLS 1.3 only, trusts the
 // file's authority and presents the file's pair. Nothing is sent until a call.
 func DialHost(f File, node string) (*hostapi.Client, error) {
-	hc, addr, err := mtls(f, node, HostPort)
+	hc, addr, err := mtls(f, node, wire.HostAPIPort)
 	if err != nil {
 		return nil, err
 	}

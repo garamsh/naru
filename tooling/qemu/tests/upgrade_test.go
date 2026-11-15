@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
@@ -33,7 +34,7 @@ import (
 const upgradeTimeout = 6 * time.Minute
 
 // storeFile is the Node's stored configuration on the data disk.
-const storeFile = node.DataMount + "/config/store.yaml"
+const storeFile = wire.DataMount + "/config/store.yaml"
 
 // startUpgradeNode boots a one-Node cluster that runs gaon, with the Node API, on a copy of the boot
 // disk of the build with its ESP writable, with the user-data of the naructl of the checkout. It

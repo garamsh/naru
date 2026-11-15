@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
 )
@@ -299,12 +300,12 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		if spec.Config.HostReach {
 			restrict = ""
 		}
-		netdev := fmt.Sprintf("user,id=net1%s,hostfwd=tcp:127.0.0.1:%d-%s:%s", restrict, spec.Config.HostPort, HostNICAddress, APIPort)
+		netdev := fmt.Sprintf("user,id=net1%s,hostfwd=tcp:127.0.0.1:%d-%s:%s", restrict, spec.Config.HostPort, HostNICAddress, wire.KubeAPIPort)
 		if spec.Config.APIHostPort != 0 {
-			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.APIHostPort, HostNICAddress, NodeAPIPort)
+			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.APIHostPort, HostNICAddress, wire.NodeAPIPort)
 		}
 		if spec.Config.HostAPIHostPort != 0 {
-			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.HostAPIHostPort, HostNICAddress, HostAPIPort)
+			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.HostAPIHostPort, HostNICAddress, wire.HostAPIPort)
 		}
 		if spec.Config.RouteHostPort != 0 {
 			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.RouteHostPort, HostNICAddress, RoutePort)

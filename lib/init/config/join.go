@@ -5,24 +5,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"slices"
-	"strings"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // What init derives for the join form, the configuration of a host that has not joined an orch yet
 // (docs/architecture/adr/0058-a-host-boots-from-a-join-form-that-names-an-orch-and-an-enrollment-key-and-init-applies-the-configuration-hostd-brings-back.md).
 const (
-	// DataLabel and DataMount are the data disk's file system label and its mount point. They are
-	// naructl's layout.DataLabel and layout.DataMount; lib/ cannot import a unit, so the two are
-	// kept equal by hand.
-	DataLabel = "NARUDATA"
-	DataMount = "/var/lib/naru"
-
-	// JoinKeyPrefix starts every enrollment key orch issues; the rest is 64 hexadecimal digits.
-	JoinKeyPrefix = "naru-ek-"
 	// HostdKeyFile is the host's private key, which hostd creates when it joins.
-	HostdKeyFile = DataMount + "/hostd/host.key"
+	HostdKeyFile = wire.DataMount + "/hostd/host.key"
 	// JoinConfigFile is where hostd writes the configuration it brings back from orch.
-	JoinConfigFile = DataMount + "/join/config.yaml"
+	JoinConfigFile = wire.DataMount + "/join/config.yaml"
 )
 
 // Join is the join form: the one section of a configuration that has no other. A host that boots
@@ -51,10 +44,10 @@ const (
 	RestartOnFailure = "on-failure"
 )
 
-// joinDataDisk is the data disk of a join form: the disk labelled DataLabel, or else the first
+// joinDataDisk is the data disk of a join form: the disk labelled wire.DataLabel, or else the first
 // blank disk that is not the boot disk, which init formats.
 func joinDataDisk() DataDisk {
-	return DataDisk{Label: DataLabel, MountPoint: DataMount, FormatBlank: true}
+	return DataDisk{Label: wire.DataLabel, MountPoint: wire.DataMount, FormatBlank: true}
 }
 
 func joinService(j Join) Service {
@@ -71,8 +64,8 @@ func joinService(j Join) Service {
 		},
 		RestartPolicy: RestartOnFailure,
 		Dirs: []Dir{
-			{Path: DataMount + "/hostd", Mode: "0700"},
-			{Path: DataMount + "/join", Mode: "0700"},
+			{Path: wire.DataMount + "/hostd", Mode: "0700"},
+			{Path: wire.DataMount + "/join", Mode: "0700"},
 		},
 	}
 }
@@ -102,22 +95,13 @@ func validateJoin(cfg NodeConfig) error {
 	if d, err := hex.DecodeString(j.Orch.CASHA256); err != nil || len(d) != sha256.Size {
 		v.fail("spec.join.orch.caSHA256", "must be the SHA-256 of the authority, 64 hexadecimal digits")
 	}
-	if !joinKeyShape(j.EnrollKey) {
-		v.fail("spec.join.enrollKey", "must be an enrollment key: %s followed by 64 lowercase hexadecimal digits", JoinKeyPrefix)
+	if !wire.IsEnrollKey(j.EnrollKey) {
+		v.fail("spec.join.enrollKey", "must be an enrollment key: %s followed by 64 lowercase hexadecimal digits", wire.EnrollKeyPrefix)
 	}
 	for _, f := range otherFields(cfg.Spec) {
 		v.fail("spec."+f, "must not be set beside spec.join: the join form holds no other field")
 	}
 	return errors.Join(v.errs...)
-}
-
-func joinKeyShape(k string) bool {
-	rest, ok := strings.CutPrefix(k, JoinKeyPrefix)
-	if !ok || len(rest) != 64 {
-		return false
-	}
-	_, err := hex.DecodeString(rest)
-	return err == nil && rest == strings.ToLower(rest)
 }
 
 // otherFields names the fields of s other than join, in the order Spec lists them. What init

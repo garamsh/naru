@@ -18,7 +18,7 @@ import (
 
 const (
 	mkfsXFS = "/bin/mkfs.xfs"
-	// blankProbe is how much of the start of a disk must be zeros for it to count as blank.
+	// blankProbe is how much of each end of a disk must be zeros for it to count as blank.
 	blankProbe = 1 << 20
 	// xfsIocFSGrowFSData is XFS_IOC_FSGROWFSDATA, _IOW('X', 110, struct xfs_growfs_data).
 	xfsIocFSGrowFSData = 0x4010586e
@@ -71,7 +71,7 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	switch {
 	case err == nil:
 	case errors.Is(err, xfs.ErrNotXFS):
-		blank, berr := isBlank(f)
+		blank, berr := isBlankDisk(f)
 		if berr != nil {
 			return fmt.Errorf("storage %q: probe %s: %w", s.Name, dev, berr)
 		}
@@ -122,10 +122,28 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	return nil
 }
 
-// isBlank reports whether the first blankProbe bytes of r are all zero, or all of r if it is shorter.
-func isBlank(r io.ReaderAt) (bool, error) {
+// isBlankDisk is the one rule for a blank disk, for the data disk and for a storage disk: f holds at
+// least one byte, and its first and its last blankProbe bytes (all of it when it is smaller) are
+// zeros, so it has no partition table, no file system signature and no backup GPT. Data only
+// between the two probes is not seen.
+func isBlankDisk(f *os.File) (bool, error) {
+	size, err := f.Seek(0, io.SeekEnd)
+	if err != nil || size == 0 {
+		return false, err
+	}
+	if ok, err := zeros(f, 0); err != nil || !ok {
+		return false, err
+	}
+	if size <= blankProbe {
+		return true, nil
+	}
+	return zeros(f, size-blankProbe)
+}
+
+// zeros reports whether the blankProbe bytes of r at off, or those that exist, are all zero.
+func zeros(r io.ReaderAt, off int64) (bool, error) {
 	buf := make([]byte, blankProbe)
-	n, err := r.ReadAt(buf, 0)
+	n, err := r.ReadAt(buf, off)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, err
 	}

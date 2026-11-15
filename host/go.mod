@@ -54,6 +54,7 @@ require (
 )
 
 require (
+	github.com/garamsh/naru/lib/wire v0.0.0-00010101000000-000000000000
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
@@ -67,3 +68,5 @@ require (
 )
 
 replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile
+
+replace github.com/garamsh/naru/lib/wire => ../lib/wire

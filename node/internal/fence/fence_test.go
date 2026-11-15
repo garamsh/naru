@@ -2,6 +2,7 @@ package fence_test
 
 import (
 	"net/netip"
+	"strconv"
 	"testing"
 
 	"github.com/google/nftables"
@@ -11,8 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/node/internal/fence"
 )
+
+func TestPorts_AreEtcdsPortsAsTheLayoutAndTheVIPNameThem(t *testing.T) {
+	assert.Equal(t, wire.EtcdClientPort, strconv.Itoa(fence.ClientPort))
+	assert.Equal(t, wire.EtcdPeerPort, strconv.Itoa(fence.PeerPort))
+}
 
 func TestAllowed_DropsDuplicatesAndRefusesWhatEtcdDoesNotListenOn(t *testing.T) {
 	a := netip.MustParseAddr("10.0.0.1")

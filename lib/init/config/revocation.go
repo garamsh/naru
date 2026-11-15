@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // DefaultRevocationMaxAge is how old a revocation list that cannot be refreshed may be before a
@@ -18,7 +19,7 @@ const (
 	// HostdRevocationSeedFile holds spec.host.revocationList.
 	HostdRevocationSeedFile = "/run/naru-hostd/crl-seed.json"
 	// APIRevocationFile is where the Node API keeps the last list it verified, on the data disk.
-	APIRevocationFile = DataMount + "/api/crl.json"
+	APIRevocationFile = wire.DataMount + "/api/crl.json"
 )
 
 // RevocationFrom is where a service of the Node reads the signed revocation list: the socket of the
