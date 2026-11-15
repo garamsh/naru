@@ -221,6 +221,9 @@ type Node struct {
 	// HostRegion and HostLabels (key=value) are gen node's --host-region and --host-label.
 	HostRegion string
 	HostLabels []string
+	// Storage are <name>=<device or label> entries (gen node --storage), the first holding mvmd's
+	// disks, snapshots and run directories.
+	Storage []string
 	// Extra are further gen node flags, each as given on the command line ("--signer").
 	Extra []string
 	// Binaries maps a service's name to its executable's path on the Node.
@@ -264,6 +267,7 @@ func (t Tool) GenNode(n Node) error {
 	flag("time-server", n.TimeServers...)
 	flag("peer", n.Peers...)
 	flag("registry", n.Registries...)
+	flag("storage", n.Storage...)
 	if n.AWSRegion != "" {
 		flag("aws-region", n.AWSRegion)
 		flag("aws-trust-anchor", n.AWSTrustAnchor)
