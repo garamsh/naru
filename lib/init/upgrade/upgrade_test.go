@@ -639,6 +639,19 @@ func TestUpgrader_WatchGivesUpAtOnceOnABootThatRefused(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), n.clock.now(), "no waiting")
 }
 
+func TestUpgrader_WatchPromotesATrialWhoseServiceExitedCleanlyAndStaysStopped(t *testing.T) {
+	n := newNode(t)
+	u := stage(t, n)
+
+	u.Watch(context.Background(), true, &counting{script: func(int) []service.Status {
+		return []service.Status{{Name: "a", State: service.StateRunning}, {Name: "once", State: service.StateExited}}
+	}}, func() { t.Fatal("rebooted") })
+
+	a, _ := n.slot("BOOTX64.EFI")
+	assert.Equal(t, "kernel-B", a)
+	assert.Contains(t, n.logs.String(), "upgrade promoted")
+}
+
 func TestUpgrader_WatchGivesUpWhenAServiceIsNotRunningWithinTheBound(t *testing.T) {
 	n := newNode(t)
 	u := stage(t, n)

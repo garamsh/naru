@@ -372,7 +372,8 @@ type Services interface {
 
 // Watch judges a trial boot and acts on it, and returns once it has. booted is whether the boot
 // sequence finished without a refusal. A refusal gives up at once. Otherwise the trial is healthy
-// when every started service has been running, and has not restarted, for Settle; a healthy trial
+// when every started service has been running, or has exited with status 0 and stays stopped
+// (service.StateExited), and has not restarted, for Settle; a healthy trial
 // is promoted. A trial that is not healthy Bound after init started, or whose promotion fails,
 // gives up. To give up is to record the reason and call reboot, which must reboot without
 // promoting. Watch ends early when ctx does.
@@ -388,7 +389,7 @@ func (u *Upgrader) Watch(ctx context.Context, booted bool, svcs Services, reboot
 		ok, now := true, map[string]int{}
 		for _, s := range svcs.Status() {
 			now[s.Name] = s.Restarts
-			ok = ok && s.State == service.StateRunning
+			ok = ok && (s.State == service.StateRunning || s.State == service.StateExited)
 		}
 		if !ok || !sameCounts(prev, now) {
 			since = u.cfg.Now()
