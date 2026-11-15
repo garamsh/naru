@@ -41,16 +41,12 @@ func (h *Host) startLease(l link, cfg netcfg.Config, log *slog.Logger) (dhcp4.Le
 	if open == nil {
 		open = openPacketTransport
 	}
-	transport, err := open(l)
-	if err != nil {
-		return dhcp4.Lease{}, fmt.Errorf("DHCPv4 on %s: %w", l.Name, err)
-	}
 	var clock dhcp4.Clock = realClock{}
 	if h.dhcpClock != nil {
 		clock = h.dhcpClock
 	}
 	s := &leaseState{host: h, link: l, cfg: cfg, log: log}
-	s.client = &dhcp4.Client{HWAddr: l.MAC, Transport: transport, Clock: clock, Handler: s, Log: log}
+	s.client = &dhcp4.Client{HWAddr: l.MAC, Open: func() (dhcp4.Transport, error) { return open(l) }, Clock: clock, Handler: s, Log: log}
 	wait := h.leaseWait
 	if wait == 0 {
 		wait = leaseWait

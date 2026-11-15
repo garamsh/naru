@@ -3,6 +3,7 @@ package dhcp4_test
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -77,6 +78,8 @@ type server struct {
 	ack      func(*dhcp4.Message)
 	dropWhen func(dhcp4.Message, sent) bool
 	nak      bool
+
+	open, opened, closed int
 }
 
 type sent struct {
@@ -134,6 +137,40 @@ func (s *server) Recv(ctx context.Context) ([]byte, error) {
 	}
 }
 
+// conn is one open transport of the server: closing it drops the replies still queued, as closing a
+// socket drops its queue.
+type conn struct{ s *server }
+
+func (c conn) Send(from, to netip.Addr, b []byte) error { return c.s.Send(from, to, b) }
+func (c conn) Recv(ctx context.Context) ([]byte, error) { return c.s.Recv(ctx) }
+
+func (c conn) Close() error {
+	c.s.mu.Lock()
+	defer c.s.mu.Unlock()
+	c.s.open--
+	c.s.closed++
+	for len(c.s.replies) > 0 {
+		<-c.s.replies
+	}
+	return nil
+}
+
+// dial opens a transport on the server.
+func (s *server) dial() (dhcp4.Transport, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.open++
+	s.opened++
+	return conn{s}, nil
+}
+
+// sockets reports how many transports are open now, and how many were opened and closed in all.
+func (s *server) sockets() (open, opened, closed int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.open, s.opened, s.closed
+}
+
 func (s *server) received() []sent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -173,7 +210,7 @@ func (h *handler) counts() (bound, expired int) {
 }
 
 func newClient(s *server, clock *fakeClock, h *handler) *dhcp4.Client {
-	return &dhcp4.Client{HWAddr: hw, Transport: s, Clock: clock, Handler: h, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	return &dhcp4.Client{HWAddr: hw, Open: s.dial, Clock: clock, Handler: h, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
 func acquire(t *testing.T, s *server, clock *fakeClock) dhcp4.Lease {
@@ -330,6 +367,52 @@ func TestClient_RunRenewsAtT1ByAskingTheServerThatGaveTheLease(t *testing.T) {
 	assert.Less(t, clock.Now().Sub(epoch), 600*time.Second)
 	_, expired := h.counts()
 	assert.Zero(t, expired)
+}
+
+func TestClient_HoldsATransportOnlyForTheLengthOfAnExchange(t *testing.T) {
+	s := newServer()
+	clock := newClock()
+	h := &handler{}
+	lease := acquire(t, s, clock)
+	open, opened, closed := s.sockets()
+	assert.Equal(t, [3]int{0, 1, 1}, [3]int{open, opened, closed}, "an acquisition opens one and closes it")
+	go func() { _ = newClient(s, clock, h).Run(t.Context(), lease) }()
+
+	time.Sleep(20 * time.Millisecond)
+	open, opened, _ = s.sockets()
+	assert.Zero(t, open, "none is held while the client waits for T1")
+	assert.Equal(t, 1, opened)
+	step(t, clock, func() bool { b, _ := h.counts(); return b == 1 })
+
+	open, opened, closed = s.sockets()
+	assert.Equal(t, [3]int{0, 2, 2}, [3]int{open, opened, closed}, "the renewal opened another and closed it")
+}
+
+func TestClient_AcquireWaitsAndTriesAgainWhenTheTransportDoesNotOpen(t *testing.T) {
+	s := newServer()
+	clock := newClock()
+	var mu sync.Mutex
+	failing := true
+	c := newClient(s, clock, &handler{})
+	c.Open = func() (dhcp4.Transport, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failing {
+			return nil, errors.New("no file descriptors")
+		}
+		return s.dial()
+	}
+	done := make(chan error, 1)
+	go func() { _, err := c.Acquire(t.Context()); done <- err }()
+
+	time.Sleep(20 * time.Millisecond)
+	assert.Empty(t, s.received(), "nothing is sent without a transport")
+	mu.Lock()
+	failing = false
+	mu.Unlock()
+	step(t, clock, func() bool { return len(s.received()) >= 2 })
+
+	require.NoError(t, <-done)
 }
 
 func TestClient_RunRebindsByBroadcastAtT2WhenTheServerDoesNotAnswerTheRenewal(t *testing.T) {

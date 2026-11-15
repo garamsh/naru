@@ -29,6 +29,9 @@ type link struct {
 	Index int
 	Name  string
 	MAC   net.HardwareAddr
+	// Loopback is the kernel's IFF_LOOPBACK flag. The kernel gives lo a 6-byte zero MAC, so the
+	// MAC does not tell it from an Ethernet link.
+	Loopback bool
 }
 
 // links is the kernel's network interfaces, reached through netlink.
@@ -130,7 +133,7 @@ func resolvers(cfg netcfg.Config, leased []netip.Addr) []netip.Addr {
 	return leased
 }
 
-// firstCarrierLink brings every Ethernet link up and returns the first one that sees a carrier,
+// firstCarrierLink brings every Ethernet link up, loopback excluded, and returns the first one that sees a carrier,
 // waiting up to carrierWait for one.
 func (h *Host) firstCarrierLink() (link, error) {
 	deadline := time.Now().Add(h.carrierWait)
@@ -140,7 +143,7 @@ func (h *Host) firstCarrierLink() (link, error) {
 			return link{}, fmt.Errorf("list network interfaces: %w", err)
 		}
 		for _, l := range all {
-			if len(l.MAC) != 6 {
+			if !isEthernet(l) {
 				continue
 			}
 			if err := h.links.SetUp(l); err != nil {
@@ -148,7 +151,7 @@ func (h *Host) firstCarrierLink() (link, error) {
 			}
 		}
 		for _, l := range all {
-			if len(l.MAC) == 6 && h.links.Carrier(l) {
+			if isEthernet(l) && h.links.Carrier(l) {
 				return l, nil
 			}
 		}
@@ -158,6 +161,10 @@ func (h *Host) firstCarrierLink() (link, error) {
 		time.Sleep(diskPollInterval)
 	}
 }
+
+// isEthernet reports whether l is a link a DHCP client can lease on: it has a MAC and is not
+// loopback.
+func isEthernet(l link) bool { return len(l.MAC) == 6 && !l.Loopback }
 
 // findLink returns the interface with the MAC of want, or with its name when
 // it has no MAC.
@@ -272,7 +279,7 @@ func (netlinkLinks) List() ([]link, error) {
 	out := make([]link, 0, len(all))
 	for _, l := range all {
 		a := l.Attrs()
-		out = append(out, link{Index: a.Index, Name: a.Name, MAC: a.HardwareAddr})
+		out = append(out, link{Index: a.Index, Name: a.Name, MAC: a.HardwareAddr, Loopback: a.RawFlags&unix.IFF_LOOPBACK != 0})
 	}
 	return out, nil
 }

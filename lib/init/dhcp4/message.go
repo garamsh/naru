@@ -34,6 +34,7 @@ const (
 	OptRequestedIP   byte   = 50
 	OptLeaseTime     byte   = 51
 	OptMessageType   byte   = 53
+	OptOverload      byte   = 52
 	OptServerID      byte   = 54
 	OptParameterList byte   = 55
 	OptRenewalTime   byte   = 58
@@ -44,6 +45,8 @@ const (
 	opRequest        byte   = 1
 	opReply          byte   = 2
 	hardwareEthernet byte   = 1
+	snameOffset             = 44
+	fileOffset              = 108
 	headerLen               = 236
 	minMessageLen           = 300
 	broadcastFlag           = 0x8000
@@ -100,8 +103,14 @@ func (m Message) Encode() []byte {
 	}
 	slices.Sort(codes)
 	for _, c := range codes {
-		b = append(b, c, byte(len(m.Options[c])))
-		b = append(b, m.Options[c]...)
+		// RFC 3396: a value of more than 255 bytes is split into instances of the option.
+		v := m.Options[c]
+		for first := true; first || len(v) > 0; first = false {
+			n := min(len(v), 255)
+			b = append(b, c, byte(n))
+			b = append(b, v[:n]...)
+			v = v[n:]
+		}
 	}
 	b = append(b, optEnd)
 	for len(b) < minMessageLen {
@@ -130,25 +139,48 @@ func Decode(b []byte) (Message, error) {
 		CHAddr:    slices.Clone(net.HardwareAddr(b[28:34])),
 		Options:   map[byte][]byte{},
 	}
-	for opts := b[headerLen+4:]; len(opts) > 0; {
+	// The options field comes first. Option 52 then names the file and sname fields as more
+	// options (RFC 2131 section 4.1), read in that order (RFC 3396 section 4.1).
+	if err := readOptions(b[headerLen+4:], m.Options); err != nil {
+		return Message{}, err
+	}
+	if v := m.Options[OptOverload]; len(v) == 1 {
+		var more [][]byte
+		if v[0]&1 != 0 {
+			more = append(more, b[fileOffset:headerLen])
+		}
+		if v[0]&2 != 0 {
+			more = append(more, b[snameOffset:fileOffset])
+		}
+		for _, area := range more {
+			if err := readOptions(area, m.Options); err != nil {
+				return Message{}, err
+			}
+		}
+	}
+	return m, nil
+}
+
+// readOptions adds the options of one area to into. An option that occurs again is concatenated to
+// its earlier instances (RFC 3396).
+func readOptions(opts []byte, into map[byte][]byte) error {
+	for len(opts) > 0 {
 		code := opts[0]
 		if code == optEnd {
-			break
+			return nil
 		}
 		if code == optPad {
 			opts = opts[1:]
 			continue
 		}
 		if len(opts) < 2 || len(opts) < 2+int(opts[1]) {
-			return Message{}, fmt.Errorf("dhcp4: option %d is cut short", code)
+			return fmt.Errorf("dhcp4: option %d is cut short", code)
 		}
 		n := int(opts[1])
-		if _, seen := m.Options[code]; !seen {
-			m.Options[code] = slices.Clone(opts[2 : 2+n])
-		}
+		into[code] = append(into[code], opts[2:2+n]...)
 		opts = opts[2+n:]
 	}
-	return m, nil
+	return nil
 }
 
 // addrs reads an option that is a list of IPv4 addresses.

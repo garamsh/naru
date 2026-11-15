@@ -24,10 +24,12 @@ var (
 
 // Transport moves DHCP messages. Send gives a message to the network with the given IPv4 source
 // (the zero Addr before the client has an address) and destination (the zero Addr for the
-// broadcast address); Recv returns the next message addressed to the client, or ctx's error.
+// broadcast address); Recv returns the next message addressed to the client, or ctx's error. Close
+// releases what the transport holds, and a message that has not been received is lost with it.
 type Transport interface {
 	Send(from, to netip.Addr, msg []byte) error
 	Recv(ctx context.Context) ([]byte, error)
+	Close() error
 }
 
 // Clock is the time the client waits on.
@@ -71,11 +73,13 @@ const (
 
 // Client runs the DHCPv4 exchange for one interface.
 type Client struct {
-	HWAddr    net.HardwareAddr
-	Transport Transport
-	Clock     Clock
-	Handler   Handler
-	Log       *slog.Logger
+	HWAddr net.HardwareAddr
+	// Open returns a new Transport. The client opens one for each exchange and closes it when the
+	// exchange ends, so that nothing queues for it in between.
+	Open    func() (Transport, error)
+	Clock   Clock
+	Handler Handler
+	Log     *slog.Logger
 }
 
 // Acquire runs DISCOVER, OFFER, REQUEST and ACK until a server gives a lease or ctx ends. It
@@ -107,9 +111,14 @@ func (c *Client) Acquire(ctx context.Context) (Lease, error) {
 }
 
 func (c *Client) acquireOnce(ctx context.Context, timeout time.Duration) (Lease, error) {
+	tr, err := c.open(ctx, timeout)
+	if err != nil {
+		return Lease{}, err
+	}
+	defer c.close(tr)
 	discover := c.message(Discover)
 	discover.Broadcast = true
-	offer, err := c.exchange(ctx, netip.Addr{}, netip.Addr{}, discover, timeout, func(m Message) bool {
+	offer, err := c.exchange(ctx, tr, netip.Addr{}, netip.Addr{}, discover, timeout, func(m Message) bool {
 		if m.Type() != Offer {
 			return false
 		}
@@ -130,7 +139,7 @@ func (c *Client) acquireOnce(ctx context.Context, timeout time.Duration) (Lease,
 	request.Options[OptRequestedIP] = offered.Address.Addr().AsSlice()
 	request.Options[OptServerID] = offered.Server.AsSlice()
 	sent := c.Clock.Now()
-	ack, err := c.exchange(ctx, netip.Addr{}, netip.Addr{}, request, timeout, ackOrNak)
+	ack, err := c.exchange(ctx, tr, netip.Addr{}, netip.Addr{}, request, timeout, ackOrNak)
 	if err != nil {
 		return Lease{}, err
 	}
@@ -191,7 +200,7 @@ func (c *Client) keep(ctx context.Context, lease Lease) (Lease, error) {
 			sent := c.Clock.Now()
 			req := c.message(Request)
 			req.CIAddr = lease.Address.Addr()
-			ack, err := c.exchange(ctx, lease.Address.Addr(), stage.to, req, attemptTime, ackOrNak)
+			ack, err := c.renewOnce(ctx, lease.Address.Addr(), stage.to, req)
 			switch {
 			case err == nil && ack.Type() == Nak:
 				return Lease{}, errNak
@@ -257,10 +266,43 @@ func (c *Client) message(t MessageType) Message {
 	}
 }
 
-// exchange sends req and returns the first reply that accept takes, or ErrTimeout after timeout.
-func (c *Client) exchange(ctx context.Context, from, to netip.Addr, req Message, timeout time.Duration, accept func(Message) bool) (Message, error) {
+// renewOnce is one REQUEST of a renewal or a rebinding, on a transport of its own.
+func (c *Client) renewOnce(ctx context.Context, from, to netip.Addr, req Message) (Message, error) {
+	tr, err := c.open(ctx, attemptTime)
+	if err != nil {
+		return Message{}, err
+	}
+	defer c.close(tr)
+	return c.exchange(ctx, tr, from, to, req, attemptTime, ackOrNak)
+}
+
+// open returns a new transport. When it cannot be opened it waits out timeout, as for a request
+// that went unanswered, and returns ErrTimeout, so that a caller that tries again does not spin.
+func (c *Client) open(ctx context.Context, timeout time.Duration) (Transport, error) {
+	tr, err := c.Open()
+	if err == nil {
+		return tr, nil
+	}
+	c.Log.Warn("opening the transport failed", "err", err)
+	select {
+	case <-c.Clock.After(timeout):
+		return nil, ErrTimeout
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (c *Client) close(tr Transport) {
+	if err := tr.Close(); err != nil {
+		c.Log.Warn("closing the transport failed", "err", err)
+	}
+}
+
+// exchange sends req on tr and returns the first reply that accept takes, or ErrTimeout after
+// timeout.
+func (c *Client) exchange(ctx context.Context, tr Transport, from, to netip.Addr, req Message, timeout time.Duration, accept func(Message) bool) (Message, error) {
 	expire := c.Clock.After(timeout)
-	if err := c.Transport.Send(from, to, req.Encode()); err != nil {
+	if err := tr.Send(from, to, req.Encode()); err != nil {
 		c.Log.Warn("send failed", "type", req.Type(), "err", err)
 		select {
 		case <-expire:
@@ -279,7 +321,7 @@ func (c *Client) exchange(ctx context.Context, from, to netip.Addr, req Message,
 		}
 	}()
 	for {
-		b, err := c.Transport.Recv(wait)
+		b, err := tr.Recv(wait)
 		if err != nil {
 			switch {
 			case ctx.Err() != nil:
