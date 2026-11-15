@@ -32,10 +32,15 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
   gen host-client --ca-dir <dir> --role provisioner|reader --endpoint <ip[:port]> --out <file>
               write a client file for the host API (naru-hostd, port 7443)
   host | microvm list | microvm get <name> --config <host client file> [--host <ip[:port]>]
-  microvm create (--name <name> --image <repository@sha256:digest> [--cpu n] [--memory bytes] [--root-disk bytes] [--disk <name>=<bytes>[,ro]] | -f <request.json>)
+  microvm create (--name <name> --image <repository@sha256:digest> [--cpu n] [--memory bytes] [--root-disk bytes] [--disk <name>=<bytes>[,ro]] [--fenced] | -f <request.json>)
   microvm create --name <name> --boot-set <set> --seed <user-data file> --data-disk <bytes> [--cmdline <args>] [--pod-prefix <cidr>] [--cpu n] [--memory bytes]
               the OS form, in place of --image, --root-disk and --disk
   microvm stop <name> | microvm start <name> | microvm delete <name>
+  microvm snapshot <name> --name <snapshot> | microvm fence get <name> | microvm fence renew <name> --length <s> --renewal <n>
+  snapshot list | snapshot get <name> | snapshot delete <name> | snapshot resume <name> --name <microvm> [--network <name>] [--pod-prefix <cidr>]
+  host network put <name> --prefix <cidr> [--api-endpoint <ip>] [--remote-member <cidr>]... | host network get <name> | host network list | host network delete <name>
+  host peers get | host peers set -f <peers.json> | host tunnel
+              the host's own networks, its tunnel to other hosts and their peers (naructl network is the management plane's)
   host boot-set add <naru-node-<version>.json> | host boot-set remove <name>
               add a release's kernel and initramfs (the files its manifest names, beside it) to the host
               as a boot set with no reboot, or remove one
@@ -119,6 +124,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 			return consoleCmd(args[1:], stdout, stderr)
 		case "microvm":
 			return microvm(args[1:], stdout, stderr)
+		case "snapshot":
+			return snapshotCmd(args[1:], stdout, stderr)
 		case "operator":
 			return operatorCmd(args[1:], stdout, stderr)
 		case "signer":

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
 	"github.com/garamsh/naru/naructl/internal/client"
@@ -116,7 +117,7 @@ func (c hostCall) parse(args []string, positional int) ([]string, error) {
 	return call{fs: c.fs, config: c.config}.parse(args, positional)
 }
 
-func (c hostCall) dial() (*client.HostClient, error) {
+func (c hostCall) dial() (*hostapi.Client, error) {
 	f, err := client.LoadFile(*c.config)
 	if err != nil {
 		return nil, err
@@ -125,8 +126,17 @@ func (c hostCall) dial() (*client.HostClient, error) {
 }
 
 func hostCmd(args []string, stdout, stderr io.Writer) error {
-	if len(args) > 0 && args[0] == "boot-set" {
-		return bootSet(args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "boot-set":
+			return bootSet(args[1:], stdout, stderr)
+		case "network":
+			return hostNetwork(args[1:], stdout, stderr)
+		case "peers":
+			return hostPeers(args[1:], stdout, stderr)
+		case "tunnel":
+			return hostTunnel(args[1:], stdout, stderr)
+		}
 	}
 	c := newHostCall("host", stderr)
 	if _, err := c.parse(args, 0); err != nil {
@@ -157,7 +167,7 @@ func printJSON(w io.Writer, v any) error {
 // microvm runs the subcommands of naructl microvm.
 func microvm(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("microvm needs create, get, list, stop, start or delete")
+		return errors.New("microvm needs create, get, list, stop, start, delete, snapshot or fence")
 	}
 	switch args[0] {
 	case "create":
@@ -172,6 +182,10 @@ func microvm(args []string, stdout, stderr io.Writer) error {
 		return microvmLifecycle("start", args[1:], stdout, stderr)
 	case "delete":
 		return microvmDelete(args[1:], stdout, stderr)
+	case "snapshot":
+		return microvmSnapshot(args[1:], stdout, stderr)
+	case "fence":
+		return microvmFence(args[1:], stdout, stderr)
 	}
 	return fmt.Errorf("unknown command %q", "microvm "+args[0])
 }
@@ -187,6 +201,7 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 		memory  = c.fs.Uint64("memory", 256<<20, "memory in bytes")
 		root    = c.fs.Uint64("root-disk", 1<<30, "root disk in bytes")
 		network = c.fs.String("network", "", "the declared network the microVM is created on")
+		fenced  = c.fs.Bool("fenced", false, "give the microVM a fence of its own: it is created and not started, and microvm fence renew arms it")
 
 		bootSet   = c.fs.String("boot-set", "", "the OS form: the boot set the Node offers, in place of --image")
 		cmdline   = c.fs.String("cmdline", "", "the OS form: kernel command line added to the boot set's")
@@ -198,11 +213,11 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 	if _, err := c.parse(args, 0); err != nil {
 		return err
 	}
-	var spec client.MicroVMSpec
+	var spec hostapi.CreateRequest
 	if *file != "" {
 		set := map[string]bool{}
 		c.fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-		for _, f := range []string{"name", "image", "cpu", "memory", "root-disk", "disk", "boot-set", "cmdline", "seed", "data-disk", "pod-prefix", "network"} {
+		for _, f := range []string{"name", "image", "cpu", "memory", "root-disk", "disk", "boot-set", "cmdline", "seed", "data-disk", "pod-prefix", "network", "fenced"} {
 			if set[f] {
 				return fmt.Errorf("-f carries the whole request, so --%s has no effect with it", f)
 			}
@@ -231,7 +246,7 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		spec = client.MicroVMSpec{ //nolint:gosec // flags, bounded by the API's own validation
+		spec = hostapi.CreateRequest{ //nolint:gosec // flags, bounded by the API's own validation
 			Name: *name, CPU: uint32(*cpu), Memory: *memory, BootSet: *bootSet, Cmdline: *cmdline,
 			Seed: userData, DataDisk: *dataDisk, PodPrefix: *podPrefix,
 		}
@@ -239,7 +254,7 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 		if err := require(c.fs, "name", "image"); err != nil {
 			return err
 		}
-		spec = client.MicroVMSpec{Name: *name, Image: *image, CPU: uint32(*cpu), Memory: *memory, RootDiskBytes: *root} //nolint:gosec // a flag, bounded by the API's own validation
+		spec = hostapi.CreateRequest{Name: *name, Image: *image, CPU: uint32(*cpu), Memory: *memory, RootDiskBytes: *root} //nolint:gosec // a flag, bounded by the API's own validation
 		for _, d := range disks {
 			disk, err := parseDisk(d)
 			if err != nil {
@@ -249,7 +264,7 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	if *file == "" {
-		spec.Network = *network
+		spec.Network, spec.Fenced = *network, *fenced
 	}
 	cl, err := c.dial()
 	if err != nil {
@@ -257,7 +272,7 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hostCallTimeout)
 	defer cancel()
-	m, created, err := cl.Create(ctx, spec)
+	m, created, err := cl.CreateMicroVMReport(ctx, spec)
 	if err != nil {
 		return err
 	}
@@ -269,14 +284,14 @@ func microvmCreate(args []string, stdout, stderr io.Writer) error {
 	return printJSON(stdout, m)
 }
 
-func parseDisk(s string) (client.Disk, error) {
+func parseDisk(s string) (hostapi.DiskSpec, error) {
 	s, ro := strings.CutSuffix(s, ",ro")
 	name, size, ok := strings.Cut(s, "=")
 	n, err := strconv.ParseUint(size, 10, 64)
 	if !ok || err != nil || name == "" {
-		return client.Disk{}, fmt.Errorf("%q is not <name>=<bytes>[,ro]", s)
+		return hostapi.DiskSpec{}, fmt.Errorf("%q is not <name>=<bytes>[,ro]", s)
 	}
-	return client.Disk{Name: name, SizeBytes: n, ReadOnly: ro}, nil
+	return hostapi.DiskSpec{Name: name, SizeBytes: n, ReadOnly: ro}, nil
 }
 
 func microvmGet(args []string, stdout, stderr io.Writer) error {
@@ -291,7 +306,7 @@ func microvmGet(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, cancel := withTimeout()
 	defer cancel()
-	m, err := cl.Get(ctx, rest[0])
+	m, err := cl.MicroVM(ctx, rest[0])
 	if err != nil {
 		return err
 	}
@@ -309,7 +324,7 @@ func microvmList(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, cancel := withTimeout()
 	defer cancel()
-	ms, err := cl.List(ctx)
+	ms, err := cl.MicroVMs(ctx)
 	if err != nil {
 		return err
 	}
@@ -334,9 +349,9 @@ func microvmLifecycle(verb string, args []string, stdout, stderr io.Writer) erro
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hostCallTimeout)
 	defer cancel()
-	act := cl.Stop
+	act := cl.StopMicroVM
 	if verb == "start" {
-		act = cl.Start
+		act = cl.StartMicroVM
 	}
 	m, err := act(ctx, rest[0])
 	if err != nil {
@@ -358,7 +373,7 @@ func microvmDelete(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hostCallTimeout)
 	defer cancel()
-	if err := cl.Delete(ctx, rest[0]); err != nil {
+	if err := cl.DeleteMicroVM(ctx, rest[0]); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "deleted %s\n", rest[0])

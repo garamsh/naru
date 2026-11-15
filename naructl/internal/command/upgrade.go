@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/garamsh/naru/naructl/internal/client"
 	"github.com/garamsh/naru/naructl/internal/upgrade"
 )
 
@@ -48,13 +47,22 @@ func upgradeCmd(args []string, stdout, stderr io.Writer) error {
 	if err := upgrade.Check(*bundle, want); err != nil {
 		return err
 	}
-	node, err := c.dialUpgrade()
+	cl, err := c.dial()
+	if err != nil {
+		return err
+	}
+	b, err := os.Open(*bundle)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = b.Close() }()
+	info, err := b.Stat()
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), upgradeTimeout)
 	defer cancel()
-	actions, err := node.Push(ctx, *bundle, want)
+	actions, err := cl.Upgrade(ctx, want, b, info.Size())
 	if err != nil {
 		return err
 	}
@@ -66,22 +74,14 @@ func upgradeCmd(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func (c call) dialUpgrade() (*upgrade.Node, error) {
-	f, err := client.LoadFile(*c.config)
-	if err != nil {
-		return nil, err
-	}
-	return upgrade.Dial(f, *c.node)
-}
-
 func upgradeStatus(c call, stdout io.Writer) error {
-	node, err := c.dialUpgrade()
+	cl, err := c.dial()
 	if err != nil {
 		return err
 	}
 	ctx, cancel := withTimeout()
 	defer cancel()
-	s, err := node.Status(ctx)
+	s, err := cl.Version(ctx)
 	if err != nil {
 		return err
 	}

@@ -44,41 +44,53 @@ func NewClient(base string, hc *http.Client) *Client {
 // do sends in as JSON when it is not nil and decodes a JSON answer into out when it is not nil.
 // An answer of 400 or above is an *Error.
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	_, err := c.send(ctx, method, path, in, out)
+	return err
+}
+
+// send is do that also returns the status of the answer.
+func (c *Client) send(ctx context.Context, method, path string, in, out any) (int, error) {
 	var body io.Reader
+	contentType := ""
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
-			return err
+			return 0, err
 		}
-		body = bytes.NewReader(b)
+		body, contentType = bytes.NewReader(b), "application/json"
 	}
+	return c.exchange(ctx, method, path, body, contentType, out)
+}
+
+// exchange sends body, whatever it is, and decodes a JSON answer into out when it is not nil.
+func (c *Client) exchange(ctx context.Context, method, path string, body io.Reader, contentType string, out any) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
 	if err != nil {
-		return err
+		return resp.StatusCode, err
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
 		var eb ErrorBody
 		if json.Unmarshal(data, &eb) != nil || eb.Error == "" {
 			eb.Error = http.StatusText(resp.StatusCode)
 		}
-		return &Error{Status: resp.StatusCode, Message: eb.Error, Fields: eb.Fields}
+		return resp.StatusCode, &Error{Status: resp.StatusCode, Message: eb.Error, Fields: eb.Fields}
 	}
 	if out == nil || len(data) == 0 {
-		return nil
+		return resp.StatusCode, nil
 	}
-	return json.Unmarshal(data, out)
+	return resp.StatusCode, json.Unmarshal(data, out)
 }
 
 func microVMPath(name string) string { return "/v1/microvms/" + url.PathEscape(name) }
@@ -150,6 +162,13 @@ func (c *Client) CreateMicroVM(ctx context.Context, r CreateRequest) (MicroVM, e
 	var m MicroVM
 	err := c.do(ctx, http.MethodPost, "/v1/microvms", r, &m)
 	return m, err
+}
+
+// CreateMicroVMReport is CreateMicroVM that also reports whether the microVM was made by this
+// request, and not by an earlier one with the same body.
+func (c *Client) CreateMicroVMReport(ctx context.Context, r CreateRequest) (m MicroVM, created bool, err error) {
+	status, err := c.send(ctx, http.MethodPost, "/v1/microvms", r, &m)
+	return m, status == http.StatusCreated, err
 }
 
 // MicroVM returns the microVM named name.
