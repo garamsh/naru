@@ -15,6 +15,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
@@ -470,6 +471,13 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	if a.Registries == nil {
 		a.Registries = []string{"host=" + fixture.RegistryAddr + ",ca=" + filepath.Join(spec.Inputs.Dir, "registry", "ca.pem")}
 	}
+	for i, s := range c.Storage {
+		// naructl mounts the first disk where mvmd keeps its disks and the others under its own directory.
+		if i == 0 && s.MountPoint != "" && s.MountPoint != wire.MvmdStorageMount {
+			return nil, nil, fmt.Errorf("storage %q is mounted at %s; a Gaon Node mounts its first disk at %s", s.Name, s.MountPoint, wire.MvmdStorageMount)
+		}
+		a.Storage = append(a.Storage, s.Name+"="+s.Device)
+	}
 	if spec.GenFlags != nil {
 		a.Extra = spec.GenFlags(c)
 	}
@@ -490,6 +498,11 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 			svc["env"] = e.Env
 		}
 		if err := appendService(a.Out, svc); err != nil {
+			return nil, nil, err
+		}
+	}
+	if c.StorageProbe != "" {
+		if err := appendService(a.Out, storageProbeService(c.StorageProbe)); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -733,7 +746,7 @@ func (g *gaonFiles) hostAPIFilesOf(spec ClusterSpec, i int, other string) error 
 }
 
 // appendService appends svc to the services of the user-data in file, the last to start.
-func appendService(file string, svc map[string]any) error {
+func appendService(file string, svc any) error {
 	b, err := os.ReadFile(file)
 	if err != nil {
 		return err

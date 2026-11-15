@@ -188,6 +188,11 @@ type service struct {
 	ControlPlane bool              `yaml:"controlPlane,omitempty"`
 }
 
+// storageProbeService is the naru-storageprobe service that reports on the file system mounted at dir.
+func storageProbeService(dir string) service {
+	return service{Name: "storageprobe", Binary: path.Join(fixture.GuestRoot, "bin/naru-storageprobe"), Args: []string{"-dir", dir}}
+}
+
 type route struct {
 	To  string `yaml:"to"`
 	Via string `yaml:"via"`
@@ -278,7 +283,7 @@ func (c Config) NaruYAML() ([]byte, error) {
 		n.Spec.Storage = append(n.Spec.Storage, storage(s))
 	}
 	if c.StorageProbe != "" {
-		n.Spec.Services = append(n.Spec.Services, service{Name: "storageprobe", Binary: path.Join(root, "bin/naru-storageprobe"), Args: []string{"-dir", c.StorageProbe}})
+		n.Spec.Services = append(n.Spec.Services, storageProbeService(c.StorageProbe))
 	}
 	if c.Probe {
 		n.Spec.Services = append(n.Spec.Services, service{
