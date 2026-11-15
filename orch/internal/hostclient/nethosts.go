@@ -7,6 +7,7 @@ import (
 	"net/url"
 
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/orch/internal/netrec"
 )
 
@@ -121,9 +122,9 @@ type hostNet struct{ api *hostapi.Client }
 
 // DialNetAPI returns the dial func for NewNetHosts that reaches a host at its recorded address
 // through hc, which carries orch's client identity for the host API. The host's certificate is
-// accepted when it chains to hc's authority and names the address or the host's ID.
-func DialNetAPI(hc *http.Client) func(id, addr string) NetAPI {
-	n := newNamed(hc)
+// accepted when it chains to hc's authority, names the address or the host's ID and is not on revocations.
+func DialNetAPI(hc *http.Client, revocations *identity.RevocationList) func(id, addr string) NetAPI {
+	n := newNamed(hc, revocations)
 	return func(id, addr string) NetAPI {
 		return hostNet{api: hostapi.NewClient((&url.URL{Scheme: "https", Host: addr}).String(), n.client(id, addr))}
 	}

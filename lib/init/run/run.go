@@ -99,8 +99,9 @@ func Main() {
 		Upgrades:   upgrades,
 		Extensions: extensions,
 		// The same path the signer's own --socket is derived from.
-		SignerSocket: config.SignerSocket,
-		Log:          log,
+		SignerSocket:   config.SignerSocket,
+		RevocationFile: config.APIRevocationFile,
+		Log:            log,
 	})
 	metricsCtx, stopMetrics := context.WithCancel(context.Background())
 	var engine *apply.Engine
@@ -109,7 +110,7 @@ func Main() {
 		engine = newEngine(*booted, configs, services, host, issuer, server)
 		server.Attach(engine)
 		log.Info("the apply engine is ready", "revision", booted.Revision)
-		serveMetrics(metricsCtx, booted.Config.Spec.MetricsAddr(), services, log)
+		serveMetrics(metricsCtx, booted.Config.Spec.MetricsAddr(), services, server.Revocations, log)
 	}
 	handingOff, stopHandoff := context.WithCancel(context.Background())
 	if booted != nil && booted.Config.Spec.Join != nil {

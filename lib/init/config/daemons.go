@@ -416,7 +416,7 @@ func (v *validation) hostNetwork(spec Spec) {
 // hostdOwned are the flags of naru-hostd that init writes, from spec.host.network and
 // spec.metrics. A stored configuration holds them in the service's args, so Parse removes them
 // and writes the ones the sections give: the flags follow the sections.
-var hostdOwned = []string{"management-prefix", "egress-interface", "tunnel-port", "metrics-addr", "orch-url", "orch-ca-sha256", "enroll-key-file"}
+var hostdOwned = []string{"management-prefix", "egress-interface", "tunnel-port", "metrics-addr", "orch-url", "orch-ca-sha256", "enroll-key-file", "revocation-public-key", "revocation-max-age", "revocation-signer-socket", "revocation-seed"}
 
 func (v *validation) hostdArgs(services []Service) {
 	for i, s := range services {
@@ -441,7 +441,7 @@ func derive(cfg NodeConfig) NodeConfig {
 	spec := cfg.Spec
 	dirs := []string{OrchRunDir + "/", SignerRunDir + "/"}
 	spec.Files = slices.DeleteFunc(slices.Clone(spec.Files), func(f File) bool {
-		return f.Path == HostdEnrollKeyFile || f.Path != OrchKeyFile && slices.ContainsFunc(dirs, func(d string) bool { return strings.HasPrefix(f.Path, d) })
+		return f.Path == HostdEnrollKeyFile || f.Path == HostdRevocationKeyFile || f.Path == HostdRevocationSeedFile || f.Path != OrchKeyFile && slices.ContainsFunc(dirs, func(d string) bool { return strings.HasPrefix(f.Path, d) })
 	})
 	var services []Service
 	for _, s := range spec.Services {
@@ -463,6 +463,11 @@ func derive(cfg NodeConfig) NodeConfig {
 				s.Args = append(s.Args, "--orch-url="+h.Orch.URL, "--orch-ca-sha256="+h.Orch.CASHA256, "--enroll-key-file="+HostdEnrollKeyFile)
 				spec.Files = append(spec.Files, File{Path: HostdEnrollKeyFile, Mode: "0600", Content: h.Orch.EnrollKey, Restart: []string{HostdService}})
 			}
+			if h := spec.Host; h != nil && h.RevocationPublicKey != "" {
+				args, files := hostdRevocation(spec)
+				s.Args = append(s.Args, args...)
+				spec.Files = append(spec.Files, files...)
+			}
 			if spec.Metrics != nil {
 				s.Args = append(s.Args, "--metrics-addr="+net.JoinHostPort(spec.Metrics.Listen, strconv.Itoa(HostdMetricsPort)))
 			}
@@ -482,6 +487,25 @@ func derive(cfg NodeConfig) NodeConfig {
 	spec.Services = services
 	cfg.Spec = spec
 	return cfg
+}
+
+// hostdRevocation returns the flags and files that give naru-hostd the revocation list's key, max
+// age, source and the list delivered with the configuration.
+func hostdRevocation(spec Spec) ([]string, []File) {
+	h := spec.Host
+	args := []string{"--revocation-public-key=" + HostdRevocationKeyFile}
+	files := []File{{Path: HostdRevocationKeyFile, Mode: "0644", Content: h.RevocationPublicKey, Restart: []string{HostdService}}}
+	if age, err := RevocationMaxAgeOf(h.RevocationMaxAge); err == nil && h.RevocationMaxAge != "" {
+		args = append(args, "--revocation-max-age="+age.String())
+	}
+	if from, ok := spec.RevocationFrom(); ok && from.Socket != "" {
+		args = append(args, "--revocation-signer-socket="+from.Socket)
+	}
+	if h.RevocationList != "" {
+		args = append(args, "--revocation-seed="+HostdRevocationSeedFile)
+		files = append(files, File{Path: HostdRevocationSeedFile, Mode: "0644", Content: h.RevocationList, Restart: []string{HostdService}})
+	}
+	return args, files
 }
 
 func metricsFlag(m *Metrics, port int) []string {

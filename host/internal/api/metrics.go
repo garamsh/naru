@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/identity"
 )
 
 // machineStates are the states a microVM is reported in; each is exposed on every scrape, so a
@@ -49,13 +50,42 @@ func (c microvmCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-// newMetrics registers the host API's metrics on reg: requests by route and code, and microVMs by
-// state.
-func newMetrics(reg prometheus.Registerer, rt mvmd.Runtime, log *slog.Logger) *prometheus.CounterVec {
+var (
+	listAgeDesc = prometheus.NewDesc("naru_hostd_revocation_list_age_seconds", "Seconds since the revocation list held was fetched; absent while none is held.", nil, nil)
+	listSeqDesc = prometheus.NewDesc("naru_hostd_revocation_list_seq", "Sequence number of the revocation list held; absent while none is held.", nil, nil)
+	listErrDesc = prometheus.NewDesc("naru_hostd_revocation_list_fetch_error", "1 while the last fetch of the revocation list failed, labelled with why.", []string{"error"}, nil)
+)
+
+// revocationCollector exposes the revocation list's age, sequence number and last fetch error.
+type revocationCollector struct{ list *identity.RevocationList }
+
+func (revocationCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- listAgeDesc
+	ch <- listSeqDesc
+	ch <- listErrDesc
+}
+
+func (c revocationCollector) Collect(ch chan<- prometheus.Metric) {
+	st := c.list.Status()
+	if age, held := c.list.Age(); held {
+		ch <- prometheus.MustNewConstMetric(listAgeDesc, prometheus.GaugeValue, age.Seconds())
+		ch <- prometheus.MustNewConstMetric(listSeqDesc, prometheus.GaugeValue, float64(st.Seq))
+	}
+	if st.LastError != "" {
+		ch <- prometheus.MustNewConstMetric(listErrDesc, prometheus.GaugeValue, 1, st.LastError)
+	}
+}
+
+// newMetrics registers the host API's metrics on reg: requests by route and code, microVMs by
+// state and, when list is not nil, the revocation list's age and last fetch error.
+func newMetrics(reg prometheus.Registerer, rt mvmd.Runtime, list *identity.RevocationList, log *slog.Logger) *prometheus.CounterVec {
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "naru_hostd_requests_total", Help: "Requests to the host API by route and status code.",
 	}, []string{"route", "code"})
 	reg.MustRegister(requests, microvmCollector{rt: rt, log: log})
+	if list != nil {
+		reg.MustRegister(revocationCollector{list})
+	}
 	return requests
 }
 

@@ -23,6 +23,7 @@ import (
 
 	"github.com/garamsh/naru/host/internal/mvmd"
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/identity"
 )
 
 // Deps is what the server reads and acts through.
@@ -41,6 +42,9 @@ type Deps struct {
 	Log      *slog.Logger
 	// Metrics is the registry the host API's metrics are registered on, made once by the composition site.
 	Metrics prometheus.Registerer
+	// Revocations is the list the listener checks clients against; its age and last fetch error are
+	// exposed as metrics. Nil means no revocation is checked.
+	Revocations *identity.RevocationList
 }
 
 // Server is the host API.
@@ -51,7 +55,7 @@ type Server struct {
 
 // New returns a Server, whose metrics are registered on deps.Metrics.
 func New(deps Deps) *Server {
-	return &Server{deps: deps, requests: newMetrics(deps.Metrics, deps.Runtime, deps.Log)}
+	return &Server{deps: deps, requests: newMetrics(deps.Metrics, deps.Runtime, deps.Revocations, deps.Log)}
 }
 
 // Handler returns the routes behind the middleware: a panic is answered with 500, each request is
@@ -152,8 +156,9 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 // TLSConfig returns the configuration of the listener: TLS 1.3 only, the serving pair at
 // certFile and keyFile, and a client certificate required and verified against the client CA at
-// clientCAFile.
-func TLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
+// clientCAFile. When revocations is not nil, a certificate on the signer's list is refused at the
+// handshake, and so is every client while the list is older than its max age or was never had.
+func TLSConfig(certFile, keyFile, clientCAFile string, revocations *identity.RevocationList) (*tls.Config, error) {
 	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, err
@@ -166,10 +171,14 @@ func TLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
 	if !pool.AppendCertsFromPEM(ca) {
 		return nil, errors.New(clientCAFile + " holds no certificate")
 	}
-	return &tls.Config{
+	conf := &tls.Config{
 		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{pair},
 		ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert, NextProtos: []string{"http/1.1"},
-	}, nil
+	}
+	if revocations != nil {
+		conf.VerifyConnection = revocations.VerifyConnection
+	}
+	return conf, nil
 }
 
 // Serve serves the API on ln until it is closed. A refused handshake is not logged: it would fill

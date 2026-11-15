@@ -41,7 +41,7 @@ func TestDialNetAPISpeaksTheHostAPI(t *testing.T) {
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "https://")
 	inv := &invFake{hosts: []orchapi.Host{{ID: "h1", Address: addr}}}
-	h := hostclient.NewNetHosts(inv, hostclient.DialNetAPI(srv.Client()))
+	h := hostclient.NewNetHosts(inv, hostclient.DialNetAPI(srv.Client(), nil))
 
 	tun, err := h.Tunnel(t.Context(), "h1")
 	require.NoError(t, err)

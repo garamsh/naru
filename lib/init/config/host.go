@@ -24,6 +24,19 @@ type Host struct {
 	Network *HostNetwork `yaml:"network,omitempty"`
 	// Orch is how naru-hostd enrolls with orch. It is nil when the host does not enroll.
 	Orch *HostOrch `yaml:"orch,omitempty"`
+	// RevocationPublicKey is the PKIX PEM of the key that signs the revocation list. With it
+	// naru-hostd refuses a client certificate on the list, orch's among them, and every client while
+	// no list newer than RevocationMaxAge can be had. Without it no revocation is checked. The list
+	// is read from the signer on this Node when spec.signer is set, and otherwise fetched from orch,
+	// at Orch.
+	RevocationPublicKey string `yaml:"revocationPublicKey,omitempty"`
+	// RevocationMaxAge is a Go duration: how long a list that cannot be refreshed is used. It is
+	// DefaultRevocationMaxAge when empty.
+	RevocationMaxAge string `yaml:"revocationMaxAge,omitempty"`
+	// RevocationList is the signed list orch held when it admitted the host, so that a host which
+	// restarts before orch answers has one. init writes it for naru-hostd, which takes it when it is
+	// newer than the list it kept.
+	RevocationList string `yaml:"revocationList,omitempty"`
 }
 
 var (

@@ -1,6 +1,8 @@
 package layout_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"net"
 	"net/netip"
 	"slices"
@@ -10,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
 )
@@ -118,6 +121,52 @@ func TestHostProfileNode_ServesTheNodeAPIFromTheHostCertificateAndItsKeyFile(t *
 	assert.Equal(t, h.Certificate, raw.Spec.API["certificate"])
 	assert.Equal(t, layout.HostKeyFile, raw.Spec.API["keyFile"])
 	assert.NotContains(t, raw.Spec.API, "key")
+}
+
+func TestHostProfileNode_CarriesTheRevocationKeyAndListToHostdAndTheNodeAPI(t *testing.T) {
+	p := profile(t)
+	ca, err := pki.New("clients")
+	require.NoError(t, err)
+	p.APIClientCA = string(ca.CertPEM)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pubPEM, err := identity.EncodeRevocationPublic(pub)
+	require.NoError(t, err)
+	list, err := identity.SignCRL(priv, identity.CRL{Seq: 4})
+	require.NoError(t, err)
+	h := joined(t)
+	h.RevocationPublicKey, h.CRL = pubPEM, string(list)
+	n, err := p.Node(h)
+	require.NoError(t, err)
+	data, err := n.UserData()
+	require.NoError(t, err)
+
+	var raw struct {
+		Spec struct {
+			Host map[string]any    `yaml:"host"`
+			API  map[string]string `yaml:"api"`
+		} `yaml:"spec"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &raw))
+	assert.Equal(t, pubPEM, raw.Spec.Host["revocationPublicKey"])
+	assert.Equal(t, string(list), raw.Spec.Host["revocationList"])
+	assert.Equal(t, pubPEM, raw.Spec.API["revocationPublicKey"])
+}
+
+func TestHostProfileNode_WithNoRevocationKeyCarriesNoneAndRefusesAListWithoutOne(t *testing.T) {
+	p := profile(t)
+	h := joined(t)
+	n, err := p.Node(h)
+	require.NoError(t, err)
+	data, err := n.UserData()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "revocation")
+
+	h.CRL = "{}"
+	n, err = p.Node(h)
+	require.NoError(t, err)
+	_, err = n.UserData()
+	assert.ErrorContains(t, err, "needs the key")
 }
 
 func TestParseHostProfile_RefusesWhatIsOneHostsOwn(t *testing.T) {

@@ -72,6 +72,10 @@ type JoinedHost struct {
 	MachinePrefix netip.Prefix
 	Certificate   string
 	OrchCA        string
+	// RevocationPublicKey is the PKIX PEM of the key that signs the revocation list, and CRL the
+	// signed list orch held when the host was admitted (ADR 0062).
+	RevocationPublicKey string
+	CRL                 string
 }
 
 // ParseHostProfile reads a profile and checks it. A field the type does not have is refused, which
@@ -195,6 +199,7 @@ func (p HostProfile) Node(h JoinedHost) (Node, error) {
 		Host: &Host{
 			Region: h.Region, Labels: h.Labels, Certificate: h.Certificate, KeyFile: HostKeyFile,
 			ClientCA: h.OrchCA, APIClientCA: p.APIClientCA,
+			RevocationPublicKey: h.RevocationPublicKey, RevocationList: h.CRL,
 		},
 		HostOrch: &HostOrch{URL: p.Orch.URL, CASHA256: p.Orch.CASHA256, EnrollKey: JoinedEnrollKey},
 	}, nil

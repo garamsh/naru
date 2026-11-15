@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/prefixes"
@@ -104,6 +105,9 @@ func hostAddress(s string) (netip.Addr, error) {
 type joinedPlan struct {
 	profile layout.HostProfile
 	addr    netip.Addr
+	// crl is the signed revocation list the host's configuration starts with; nil when orch
+	// has no revocation key.
+	crl []byte
 }
 
 func (s *service) planJoined(ctx context.Context, p Pending) (joinedPlan, error) {
@@ -122,14 +126,38 @@ func (s *service) planJoined(ctx context.Context, p Pending) (joinedPlan, error)
 	if err != nil || !addr.Is4() {
 		return joinedPlan{}, invalid("the address %q the host reported is not an IPv4 address", p.Address)
 	}
-	return joinedPlan{profile: prof, addr: addr}, nil
+	plan := joinedPlan{profile: prof, addr: addr}
+	if s.conf.RevocationPublicKey != "" {
+		if plan.crl, err = s.currentList(ctx); err != nil {
+			return joinedPlan{}, err
+		}
+	}
+	return plan, nil
+}
+
+// currentList is the signer's revocation list, checked against the key a joined host will verify it
+// with, so that an admission does not hand out a configuration the host would refuse.
+func (s *service) currentList(ctx context.Context) ([]byte, error) {
+	key, err := identity.ParseRevocationPublic([]byte(s.conf.RevocationPublicKey))
+	if err != nil {
+		return nil, fmt.Errorf("%w: the revocation public key: %v", ErrConflict, err)
+	}
+	list, err := s.signer.CRL(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: the revocation list: %v", ErrSignerFailed, err)
+	}
+	if _, err := identity.VerifyCRL(key, list); err != nil {
+		return nil, fmt.Errorf("%w: the revocation list: %v", ErrSignerFailed, err)
+	}
+	return list, nil
 }
 
 // buildConfig is the naru.yaml of the joined host h.
-func (j joinedPlan) buildConfig(h Host, prefix netip.Prefix, orchCA string) ([]byte, error) {
+func (j joinedPlan) buildConfig(h Host, prefix netip.Prefix, orchCA, revocationKey string) ([]byte, error) {
 	n, err := j.profile.Node(layout.JoinedHost{
 		ID: h.ID, Address: j.addr, Region: h.Region, Labels: h.Labels,
 		MachinePrefix: prefix, Certificate: string(h.Certificate), OrchCA: orchCA,
+		RevocationPublicKey: revocationKey, CRL: string(j.crl),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrConflict, err)

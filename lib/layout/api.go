@@ -9,12 +9,23 @@ type apiSpec struct {
 	// of the two.
 	Key     string `yaml:"key,omitempty"`
 	KeyFile string `yaml:"keyFile,omitempty"`
+	// RevocationPublicKey is the PEM of the key that signs the revocation list the API checks its
+	// clients against (spec.api.revocationPublicKey).
+	RevocationPublicKey string `yaml:"revocationPublicKey,omitempty"`
 }
 
 // specAPI is the Node's spec.api: the Node API authority's certificate as the client CA, and a
 // serving pair from that authority naming the Node's address, its serving addresses and the
 // loopback. The authority's key is not carried. It is nil when the Node has no API authority.
 func (n Node) specAPI() (*apiSpec, error) {
+	a, err := n.apiAuthority()
+	if a != nil {
+		a.RevocationPublicKey = n.revocationKey()
+	}
+	return a, err
+}
+
+func (n Node) apiAuthority() (*apiSpec, error) {
 	if h := n.Host; h != nil && h.APIClientCA != "" {
 		// A Node that runs no gaon has no API authority to issue from: it serves the Node API with the
 		// certificate its host API has, whose key is the one the host made, which stays in its file.

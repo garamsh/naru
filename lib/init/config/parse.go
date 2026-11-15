@@ -126,6 +126,7 @@ func validate(cfg NodeConfig) error {
 	v.host(cfg.Spec.Host, cfg.Spec.Files)
 	v.hostNetwork(cfg.Spec)
 	v.hostOrch(cfg.Spec)
+	v.revocation(cfg.Spec)
 	v.hostdArgs(cfg.Spec.Services)
 	v.extensions(cfg.Spec)
 	v.signer(cfg.Spec.Signer)

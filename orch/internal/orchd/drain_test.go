@@ -131,7 +131,7 @@ func startDrainFleet(t *testing.T) *drainFleet {
 	t.Helper()
 	insecure := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // the fake host APIs serve a throwaway certificate
 	d := &drainFleet{apis: newHostAPIs()}
-	d.one = startOne(t, orchtest.Options{NewHosts: func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, insecure) }})
+	d.one = startOne(t, orchtest.Options{NewHosts: func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, insecure, nil) }})
 	for _, id := range []string{"host-a", "host-b"} {
 		h := newHost(t, id)
 		req := h.request(d.secret)
@@ -257,4 +257,14 @@ func TestDrainMovesAStatefulMemberOnlyAfterItIsStopped(t *testing.T) {
 	require.NotEqual(t, -1, idx("stop "+from+"/"+first), "the member was stopped: %v", ops)
 	require.Less(t, idx("stop "+from+"/"+first), idx("delete "+from+"/"+first), "it was stopped before it was deleted")
 	require.Less(t, idx("delete "+from+"/"+first), idx("create "+to+"/"+moved), "and gone before its replacement was made: %v", ops)
+}
+
+func TestRevocationListIsServedWithoutACertificate(t *testing.T) {
+	d := startDrainFleet(t)
+
+	list, err := d.anon.CRL(t.Context())
+	require.NoError(t, err, "no certificate")
+	require.NotEmpty(t, list)
+	_, err = d.anon.Drain(t.Context(), "host-a")
+	require.Equal(t, http.StatusUnauthorized, status(err), "control: the other routes still need one")
 }

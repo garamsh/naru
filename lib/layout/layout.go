@@ -523,7 +523,10 @@ func (n Node) UserData() ([]byte, error) {
 			return nil, err
 		}
 		c.Spec.Files = append(c.Spec.Files, hostFiles...)
-		c.Spec.Host = &hostSpec{Region: n.Host.Region, Labels: n.Host.Labels}
+		c.Spec.Host = &hostSpec{
+			Region: n.Host.Region, Labels: n.Host.Labels,
+			RevocationPublicKey: n.revocationKey(), RevocationList: n.Host.RevocationList,
+		}
 	}
 	if n.Mode.plan(n.Name).specPKI {
 		c.Spec.PKI = n.pkiSpec()

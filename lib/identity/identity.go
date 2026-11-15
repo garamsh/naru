@@ -77,10 +77,8 @@ func Authenticate(chains [][]*x509.Certificate, crl *CRL) (Identity, error) {
 		return Identity{}, ErrNoChain
 	}
 	chain := chains[0]
-	for _, c := range chain {
-		if crl.Revokes(SerialOf(c)) {
-			return Identity{}, fmt.Errorf("%w: serial %s", ErrRevoked, SerialOf(c))
-		}
+	if err := crl.CheckChain(chain); err != nil {
+		return Identity{}, err
 	}
 	leaf := chain[0]
 	role, err := RoleOf(leaf)

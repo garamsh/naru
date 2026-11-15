@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/init/apply"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/service"
@@ -65,7 +66,10 @@ type Deps struct {
 	Extensions Extensions
 	// SignerSocket is the unix socket of the signer that /v1/signer forwards to.
 	SignerSocket string
-	Log          *slog.Logger
+	// RevocationFile is where the API keeps the last revocation list it verified, so that a reboot
+	// within the max age needs no fetch first. Empty keeps none.
+	RevocationFile string
+	Log            *slog.Logger
 }
 
 // Upgrades is the Node's in-place A/B upgrade.
@@ -86,6 +90,10 @@ type Server struct {
 	signerProxy http.Handler
 
 	tls atomic.Pointer[tls.Config] // what each handshake uses; Reload replaces it
+	// revocations is the list the handshakes check clients against, nil when none is checked.
+	revocations atomic.Pointer[identity.RevocationList]
+	// crlSource is where the list is read from, decided at Start from the Node's configuration.
+	crlSource identity.CRLSource
 
 	mu     sync.Mutex
 	chosen store.Stored // what GET /v1/config reports until an engine is attached
@@ -116,14 +124,26 @@ func (s *Server) Start(chosen store.Stored) error {
 		s.deps.Log.Info("the Node API is off: the configuration has no spec.api")
 		return nil
 	}
-	conf, err := tlsConfig(*a)
+	var err error
+	if s.crlSource, err = revocationSource(chosen.Config.Spec, s.deps.SignerSocket); err != nil {
+		return fmt.Errorf("Node API: %w", err)
+	}
+	rev, err := s.newRevocations(*a, nil)
 	if err != nil {
 		return fmt.Errorf("Node API: %w", err)
+	}
+	conf, err := tlsConfig(*a, rev)
+	if err != nil {
+		return fmt.Errorf("Node API: %w", err)
+	}
+	if rev == nil {
+		s.deps.Log.Warn("the Node API has no spec.api.revocationPublicKey: client certificates are checked against the client CA only, not against the revocation list")
 	}
 	ln, err := net.Listen("tcp", a.ListenAddr())
 	if err != nil {
 		return fmt.Errorf("Node API: %w", err)
 	}
+	s.revocations.Store(rev)
 	s.tls.Store(conf)
 
 	srv := &http.Server{
@@ -167,12 +187,17 @@ func (s *Server) Reload(a config.API) error {
 	if s.tls.Load() == nil {
 		return errors.New("Node API: not serving")
 	}
-	conf, err := tlsConfig(a)
+	rev, err := s.newRevocations(a, s.revocations.Load())
 	if err != nil {
 		return fmt.Errorf("Node API: %w", err)
 	}
+	conf, err := tlsConfig(a, rev)
+	if err != nil {
+		return fmt.Errorf("Node API: %w", err)
+	}
+	s.revocations.Store(rev)
 	s.tls.Store(conf)
-	s.deps.Log.Info("the Node API reloaded its serving pair and client CA")
+	s.deps.Log.Info("the Node API reloaded its serving pair, client CA and revocation key")
 	return nil
 }
 
@@ -197,8 +222,9 @@ func (s *Server) Close() error {
 }
 
 // tlsConfig returns the configuration of one handshake: TLS 1.3 only, the serving pair, and a
-// client certificate required and verified against the client CA.
-func tlsConfig(a config.API) (*tls.Config, error) {
+// client certificate required and verified against the client CA and, when revocations is not nil,
+// checked against the signer's revocation list.
+func tlsConfig(a config.API, revocations *identity.RevocationList) (*tls.Config, error) {
 	key := []byte(a.Key)
 	if a.KeyFile != "" {
 		b, err := os.ReadFile(a.KeyFile)
@@ -215,11 +241,15 @@ func tlsConfig(a config.API) (*tls.Config, error) {
 	if !pool.AppendCertsFromPEM([]byte(a.ClientCA)) {
 		return nil, errors.New("clientCA holds no certificate")
 	}
-	return &tls.Config{
+	conf := &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{pair},
 		ClientCAs:    pool,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		NextProtos:   []string{"http/1.1"},
-	}, nil
+	}
+	if revocations != nil {
+		conf.VerifyConnection = revocations.VerifyConnection
+	}
+	return conf, nil
 }

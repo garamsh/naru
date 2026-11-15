@@ -81,7 +81,7 @@ func (s *service) Admit(ctx context.Context, by string, req orchapi.AdmitRequest
 	h.MachinePrefix = res.Prefix
 	// The configuration is built here only to refuse an admission it cannot be built for; it is not
 	// stored, and is built again from the record on each answer.
-	if _, err := joined.buildConfig(h, prefix, s.conf.OrchCA); err != nil {
+	if _, err := joined.buildConfig(h, prefix, s.conf.OrchCA, s.conf.RevocationPublicKey); err != nil {
 		return orchapi.Host{}, err
 	}
 	ev.Detail["machinePrefix"] = h.MachinePrefix

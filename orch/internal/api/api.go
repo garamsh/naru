@@ -100,7 +100,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/networks/{name}", h.guard(auth.Read, h.networkGet))
 	mux.HandleFunc("PUT /v1/networks/{name}", h.guard(auth.Operate, h.networkApply))
 	mux.HandleFunc("DELETE /v1/networks/{name}", h.guard(auth.Operate, h.networkDelete))
-	mux.HandleFunc("GET /v1/crl", h.guard(auth.Any, h.crl))
+	mux.HandleFunc("GET /v1/crl", h.crl)
 	mux.HandleFunc("POST /v1/admit", h.guard(auth.Operate, h.admit))
 	mux.HandleFunc("POST /v1/enrollment-keys", h.guard(auth.Operate, h.createKey))
 	mux.HandleFunc("DELETE /v1/enrollment-keys/{id}", h.guard(auth.Operate, h.revokeKey))
@@ -230,7 +230,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, identity.ErrRevoked), errors.Is(err, identity.ErrRole), errors.Is(err, identity.ErrNoChain):
 		status, msg = http.StatusForbidden, err.Error()
-	case errors.Is(err, auth.ErrNoRevocationList), errors.Is(err, auth.ErrStaleRevocationList):
+	case errors.Is(err, identity.ErrNoRevocationList), errors.Is(err, identity.ErrStaleRevocationList):
 		status, msg = http.StatusServiceUnavailable, "the revocation list is not available"
 		logger(r).Error("no revocation list", "err", err.Error())
 	case errors.Is(err, inventory.ErrRateLimited):
@@ -280,7 +280,10 @@ func (h *handler) events(w http.ResponseWriter, r *http.Request, _ identity.Iden
 	reply(w, r, out, err)
 }
 
-func (h *handler) crl(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+// crl answers without a client certificate: the list is signed by the revocation key and holds
+// only serial numbers, so it is public, and a host that has none of the certificates orch accepts
+// needs it to check the ones it is offered (ADR 0062).
+func (h *handler) crl(w http.ResponseWriter, r *http.Request) {
 	out, err := h.Signer.CRL(r.Context())
 	reply(w, r, out, err)
 }

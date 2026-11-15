@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/groups"
 )
@@ -36,11 +37,10 @@ type Client struct {
 var _ groups.Hosts = (*Client)(nil)
 
 // New returns a client that dials the hosts of inv through hc, which carries orch's client
-// identity for the host API.
-// A host's certificate is accepted when it chains to hc's authority and names the host's address or
-// its ID.
-func New(inv Inventory, hc *http.Client) *Client {
-	return &Client{inv: inv, hosts: newNamed(hc), Now: time.Now}
+// identity for the host API. A host's certificate is accepted when it chains to hc's authority,
+// names the host's address or its ID and, when revocations is not nil, is not on that list.
+func New(inv Inventory, hc *http.Client, revocations *identity.RevocationList) *Client {
+	return &Client{inv: inv, hosts: newNamed(hc, revocations), Now: time.Now}
 }
 
 // api is the host API of h.

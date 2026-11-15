@@ -14,6 +14,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
@@ -168,9 +169,9 @@ func (c *Cluster) member(t testing.TB, i, peerPort, clientPort int) (orchd.Confi
 		Listen: "127.0.0.1:0", ClientCA: files.CA, SnapshotDir: filepath.Join(dir, "snapshots"),
 		LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval, GroupInterval: o.GroupInterval, NetworkInterval: o.NetworkInterval,
 	}
-	deps := orchd.Deps{Signer: c.Signer, Auth: &auth.Revocations{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name)}
+	deps := orchd.Deps{Signer: c.Signer, Auth: auth.Revocations{List: &identity.RevocationList{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name), RevocationKey: c.CA.RevocationKey()}
 	if i < len(o.CRLPeers) {
-		deps.CRLPeer, deps.RevocationKey = o.CRLPeers[i], c.CA.RevocationKey()
+		deps.CRLPeer = o.CRLPeers[i]
 	}
 	return cfg, deps
 }

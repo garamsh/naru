@@ -6,6 +6,7 @@ require (
 	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/identity v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/metrics v0.0.0-00010101000000-000000000000
+	github.com/garamsh/naru/lib/orchapi v0.0.0-00010101000000-000000000000
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1
 	github.com/vishvananda/netlink v1.3.1
@@ -35,3 +36,5 @@ replace github.com/garamsh/naru/lib/identity => ../identity
 replace github.com/garamsh/naru/lib/metrics => ../metrics
 
 replace github.com/garamsh/naru/lib/atomicfile => ../atomicfile
+
+replace github.com/garamsh/naru/lib/orchapi => ../orchapi

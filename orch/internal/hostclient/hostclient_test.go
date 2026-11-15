@@ -69,7 +69,7 @@ func newHost(t *testing.T) *fakeHost {
 func (f *fakeHost) addr() string { u, _ := url.Parse(f.srv.URL); return u.Host }
 
 func client(inv inventory) *hostclient.Client {
-	return hostclient.New(inv, &http.Client{Transport: &http.Transport{TLSClientConfig: insecure()}})
+	return hostclient.New(inv, &http.Client{Transport: &http.Transport{TLSClientConfig: insecure()}}, nil)
 }
 
 func TestListReportsReadinessCapacityKernelsAndMachines(t *testing.T) {
