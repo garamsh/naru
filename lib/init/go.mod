@@ -3,6 +3,7 @@ module github.com/garamsh/naru/lib/init
 go 1.26.0
 
 require (
+	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/identity v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/metrics v0.0.0-00010101000000-000000000000
 	github.com/prometheus/client_golang v1.25.0
@@ -32,3 +33,5 @@ require (
 replace github.com/garamsh/naru/lib/identity => ../identity
 
 replace github.com/garamsh/naru/lib/metrics => ../metrics
+
+replace github.com/garamsh/naru/lib/atomicfile => ../atomicfile

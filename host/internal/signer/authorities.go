@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/identity"
 )
 
@@ -29,6 +30,7 @@ const (
 	recoveryPubFile  = "recovery-public.json"
 	crlFile          = "crl.json"
 	issuedFile       = "issued.json" // optional: a directory made before it has none
+	rootCertFile     = "root.crt"    // the first root identity's certificate: Init returns it once, and a crash after Init must not lose it
 	certSuffix       = ".crt"
 	keySuffix        = ".key"
 	bundleVersion    = 1
@@ -158,43 +160,37 @@ func authorityFiles() []string {
 	}
 }
 
-// save writes the authorities into dir, each file 0600. The list goes last, so a directory that
-// holds it holds everything.
-func (a *authorities) save(dir string) error {
+// save writes the authorities into dir, each file 0600, with the extra files, as one commit: a
+// crash leaves the directory as it was, or holds every file. See commitFiles.
+func (a *authorities) save(dir string, extra ...stagedFile) error {
 	pairs := []struct {
 		name string
 		ca   authority
 	}{{hostCAFile, a.host}, {operatorCAFile, a.operator}, {orchCAFile, a.orch}}
+	var files []stagedFile
 	for _, p := range pairs {
 		keyDER, err := x509.MarshalPKCS8PrivateKey(p.ca.key)
 		if err != nil {
 			return fmt.Errorf("marshal %s key: %w", p.name, err)
 		}
-		if err := writeFile(filepath.Join(dir, p.name+certSuffix), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: p.ca.cert.Raw})); err != nil {
-			return err
-		}
-		if err := writeFile(filepath.Join(dir, p.name+keySuffix), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})); err != nil {
-			return err
-		}
+		files = append(files,
+			stagedFile{p.name + certSuffix, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: p.ca.cert.Raw})},
+			stagedFile{p.name + keySuffix, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})})
 	}
 	revDER, err := x509.MarshalPKCS8PrivateKey(a.revocation)
 	if err != nil {
 		return fmt.Errorf("marshal revocation key: %w", err)
 	}
-	if err := writeFile(filepath.Join(dir, revocationFile), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: revDER})); err != nil {
-		return err
-	}
 	pub, err := a.recovery.MarshalPublic()
 	if err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(dir, recoveryPubFile), pub); err != nil {
-		return err
-	}
-	if err := writeFile(filepath.Join(dir, issuedFile), a.marshalIssued()); err != nil {
-		return err
-	}
-	return writeFile(filepath.Join(dir, crlFile), a.crlSigned)
+	files = append(files,
+		stagedFile{revocationFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: revDER})},
+		stagedFile{recoveryPubFile, pub},
+		stagedFile{issuedFile, a.marshalIssued()},
+		stagedFile{crlFile, a.crlSigned})
+	return commitFiles(dir, append(files, extra...))
 }
 
 func (a *authorities) marshalIssued() []byte {
@@ -215,27 +211,7 @@ func (a *authorities) withIssued(serial string, role identity.Role) *authorities
 
 // writeFile writes data to path as a file of mode 0600 that is replaced whole or not at all.
 func writeFile(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-")
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

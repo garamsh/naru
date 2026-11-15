@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+
+	"github.com/garamsh/naru/lib/atomicfile"
 )
 
 // Tunnel is the host's end of the WireGuard tunnel: an interface the host made, with the key it
@@ -68,25 +70,5 @@ func writeFile(path string, data []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return atomicfile.Write(path, data, 0o600)
 }

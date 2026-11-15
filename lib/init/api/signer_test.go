@@ -192,7 +192,12 @@ func TestSigner_ABodyLargerThanTheSignerReadsIsRefusedAndOneAtTheBoundIsNot(t *t
 	require.NoError(t, err)
 	_ = resp.Body.Close()
 	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode, "a body of no known length is cut at the bound")
-	assert.Len(t, f.requests(), 1, "no oversize body was delivered whole")
+	// The proxy streams, so the signer may have begun to receive the cut body before it was refused;
+	// what must not happen is a body over the bound reaching it whole.
+	for _, got := range f.requests() {
+		assert.LessOrEqual(t, len(got.body), bound, "no oversize body was delivered whole")
+	}
+	assert.NotEmpty(t, f.requests(), "the control: the body of the bound was forwarded")
 }
 
 func TestSigner_APathThatIsNotCleanIsRefused(t *testing.T) {

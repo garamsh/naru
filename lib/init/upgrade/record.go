@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+
+	"github.com/garamsh/naru/lib/atomicfile"
 )
 
 // What an upgrade ended as.
@@ -84,9 +86,8 @@ func readJSON(path string, into any) error {
 	return json.Unmarshal(b, into)
 }
 
-// writeJSON writes dir/name atomically: a temporary file, fsync, rename and fsync of the
-// directory, as the configuration store does.
-func writeJSON(dir, name string, v any) (err error) {
+// writeJSON writes dir/name atomically with atomicfile.Write.
+func writeJSON(dir, name string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -94,23 +95,5 @@ func writeJSON(dir, name string, v any) (err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".upgrade-*")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(f.Name())
-		}
-	}()
-	if _, err = f.Write(b); err == nil {
-		err = f.Sync()
-	}
-	if err = errors.Join(err, f.Close()); err != nil {
-		return err
-	}
-	if err = os.Rename(f.Name(), filepath.Join(dir, name)); err != nil {
-		return err
-	}
-	return syncDir(dir)
+	return atomicfile.Write(filepath.Join(dir, name), b, 0o600)
 }

@@ -9,6 +9,7 @@ replace github.com/garamsh/naru/lib/hostapi => ../lib/hostapi
 replace github.com/garamsh/naru/lib/orchapi => ../lib/orchapi
 
 require (
+	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/metrics v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/orchapi v0.0.0-00010101000000-000000000000
@@ -85,3 +86,5 @@ require (
 replace github.com/garamsh/naru/lib/identity => ../lib/identity
 
 replace github.com/garamsh/naru/lib/layout => ../lib/layout
+
+replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile

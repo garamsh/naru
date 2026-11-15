@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/garamsh/naru/lib/identity"
 )
@@ -153,8 +154,10 @@ func readJSON(r *http.Request, v any) error {
 	return nil
 }
 
-// ListenSocket listens on the unix socket at path, replacing a stale one, and sets its mode. The
-// group that may reach the socket is the deployment's to set.
+// ListenSocket listens on the unix socket at path, replacing a stale one, and gives it mode. The
+// socket is bound in a directory only the signer's user enters, given its mode there and renamed
+// to path, so it is never at path with a mode other than the one asked. The group that may reach
+// the socket is the deployment's to set.
 func ListenSocket(path string, mode os.FileMode, log *slog.Logger) (net.Listener, error) {
 	if fi, err := os.Lstat(path); err == nil {
 		if fi.Mode()&os.ModeSocket == 0 {
@@ -164,13 +167,23 @@ func ListenSocket(path string, mode os.FileMode, log *slog.Logger) (net.Listener
 			return nil, fmt.Errorf("remove stale socket: %w", err)
 		}
 	}
-	l, err := net.Listen("unix", path)
+	dir, err := os.MkdirTemp(filepath.Dir(path), ".sock-")
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", path, err)
 	}
-	if err := os.Chmod(path, mode); err != nil {
+	defer func() { _ = os.Remove(dir) }()
+	bound := filepath.Join(dir, "s")
+	l, err := net.Listen("unix", bound)
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s: %w", path, err)
+	}
+	if err := os.Chmod(bound, mode); err != nil {
 		_ = l.Close()
 		return nil, fmt.Errorf("set mode of %s: %w", path, err)
+	}
+	if err := os.Rename(bound, path); err != nil {
+		_ = l.Close()
+		return nil, fmt.Errorf("listen on %s: %w", path, err)
 	}
 	log.Info("listening", "socket", path, "mode", mode.String())
 	return l, nil
