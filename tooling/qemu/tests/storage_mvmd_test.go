@@ -16,7 +16,7 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
-var treeField = regexp.MustCompile(`storagetree disks=(\d+) snapshots=(\d+) machines=(\d+)`)
+var treeField = regexp.MustCompile(`storagetree (?:service=\S+ )?disks=(\d+) snapshots=(\d+) machines=(\d+)`)
 
 // onStorage is what naru-storageprobe last counted on the storage disk: disks, snapshots and
 // run directories.
