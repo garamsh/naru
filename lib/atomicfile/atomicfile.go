@@ -63,7 +63,7 @@ func Write(path string, data []byte, perm os.FileMode, opts ...Option) (err erro
 
 // SyncDir makes the entries of the directory at dir durable.
 func SyncDir(dir string) error {
-	d, err := os.Open(dir) //nolint:gosec // the directory of a file the caller writes
+	d, err := os.Open(dir)
 	if err != nil {
 		return err
 	}

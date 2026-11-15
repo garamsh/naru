@@ -22,10 +22,10 @@ func hostdStatus(addr, certFile, keyFile string) (int, error) {
 		return 0, err
 	}
 	c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
-		TLSClientConfig:   &tls.Config{Certificates: []tls.Certificate{pair}, InsecureSkipVerify: true}, //nolint:gosec // a test's request to a loopback forward; the server's certificate is not what is under test
+		TLSClientConfig:   &tls.Config{Certificates: []tls.Certificate{pair}, InsecureSkipVerify: true},
 		DisableKeepAlives: true,
 	}}
-	resp, err := c.Get("https://" + addr + "/v1/microvms") //nolint:noctx // bounded by the client's timeout
+	resp, err := c.Get("https://" + addr + "/v1/microvms")
 	if err != nil {
 		return 0, err
 	}
@@ -37,7 +37,7 @@ func hostdStatus(addr, certFile, keyFile string) (int, error) {
 // hostCertSerial is the serial, in hex, of the certificate naru-hostd at addr presents.
 func hostCertSerial(t *testing.T, addr string) string {
 	t.Helper()
-	conn, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // only the presented certificate is read
+	conn, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true})
 	require.NoError(t, err)
 	defer func() { _ = conn.Close() }()
 	return conn.ConnectionState().PeerCertificates[0].SerialNumber.Text(16)
