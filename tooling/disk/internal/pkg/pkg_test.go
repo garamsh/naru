@@ -138,6 +138,16 @@ func TestUnpack_KeepsAnEntryInsideTheDirectory(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(parent, "escape"))
 }
 
+func TestUnpack_KeepsAnEntryInsideTheDirectoryThroughASymlink(t *testing.T) {
+	parent := t.TempDir()
+	outside := filepath.Join(parent, "outside")
+	require.NoError(t, os.Mkdir(outside, 0o755))
+	path, _ := image(t, layerTarball(t, []entry{symlink("usr", outside), file("usr/escape", "x", 0o644)}, false))
+	// The entry is refused or kept inside; either way nothing is written where the symlink points.
+	_ = pkg.Unpack(path, filepath.Join(parent, "p", "out"))
+	assert.NoFileExists(t, filepath.Join(outside, "escape"))
+}
+
 func TestUnpack_RefusesATarThatIsNotAnImage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.tar")
 	var buf bytes.Buffer

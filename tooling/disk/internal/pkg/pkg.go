@@ -43,8 +43,8 @@ func Digest(file string) (string, error) {
 }
 
 // Unpack writes the files of the image in the OCI layout tar at file into dir, applying its layers in
-// order, whiteouts included. dir is emptied first. Entry names are confined to dir lexically (a
-// ".." cannot leave it); the layers are this repository's own build output, not untrusted input.
+// order, whiteouts included. dir is emptied first. Every operation goes through an os.Root on dir, so
+// neither a ".." nor a symlink an earlier entry made can lead an entry outside it.
 func Unpack(file, dir string) error {
 	manifest, blobs, err := open(file)
 	if err != nil {
@@ -77,8 +77,13 @@ func Unpack(file, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	for i, l := range m.Layers {
-		if err := applyLayer(filepath.Join(scratch, fmt.Sprint(i)), l.MediaType, dir); err != nil {
+		if err := applyLayer(filepath.Join(scratch, fmt.Sprint(i)), l.MediaType, root); err != nil {
 			return fmt.Errorf("pkg: layer %s of %s: %w", l.Digest, file, err)
 		}
 	}
@@ -189,7 +194,7 @@ func extractLayers(file string, want map[string]string) error {
 }
 
 // applyLayer unpacks one layer over dir.
-func applyLayer(file, media, dir string) error {
+func applyLayer(file, media string, root *os.Root) error {
 	f, err := os.Open(file)
 	if err != nil {
 		return err
@@ -217,40 +222,41 @@ func applyLayer(file, media, dir string) error {
 		if err != nil {
 			return err
 		}
-		if err := applyEntry(tr, h, dir); err != nil {
+		if err := applyEntry(tr, h, root); err != nil {
 			return fmt.Errorf("%s: %w", h.Name, err)
 		}
 	}
 }
 
-func applyEntry(tr *tar.Reader, h *tar.Header, dir string) error {
+func applyEntry(tr *tar.Reader, h *tar.Header, root *os.Root) error {
 	rel := path.Clean("/" + h.Name)[1:]
 	if rel == "" {
 		return nil
 	}
-	target := filepath.Join(dir, filepath.FromSlash(rel))
+	target := filepath.FromSlash(rel)
+	parent := filepath.Dir(target)
 	base := path.Base(rel)
 	switch {
 	case base == ".wh..wh..opq":
 		// The directory's lower contents are hidden; its own entries follow in this layer.
-		return emptyDir(filepath.Dir(target))
+		return emptyDir(root, parent)
 	case strings.HasPrefix(base, ".wh."):
-		return os.RemoveAll(filepath.Join(filepath.Dir(target), strings.TrimPrefix(base, ".wh.")))
+		return root.RemoveAll(filepath.Join(parent, strings.TrimPrefix(base, ".wh.")))
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := root.MkdirAll(parent, 0o755); err != nil {
 		return err
 	}
 	switch h.Typeflag {
 	case tar.TypeDir:
-		if err := os.MkdirAll(target, 0o755); err != nil {
+		if err := root.MkdirAll(target, 0o755); err != nil {
 			return err
 		}
-		return os.Chmod(target, h.FileInfo().Mode().Perm())
+		return root.Chmod(target, h.FileInfo().Mode().Perm())
 	case tar.TypeReg:
-		if err := os.RemoveAll(target); err != nil {
+		if err := root.RemoveAll(target); err != nil {
 			return err
 		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_EXCL, h.FileInfo().Mode().Perm())
+		out, err := root.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_EXCL, h.FileInfo().Mode().Perm())
 		if err != nil {
 			return err
 		}
@@ -261,32 +267,37 @@ func applyEntry(tr *tar.Reader, h *tar.Header, dir string) error {
 		if err != nil {
 			return err
 		}
-		return os.Chmod(target, h.FileInfo().Mode().Perm())
+		return root.Chmod(target, h.FileInfo().Mode().Perm())
 	case tar.TypeSymlink:
-		if err := os.RemoveAll(target); err != nil {
+		if err := root.RemoveAll(target); err != nil {
 			return err
 		}
-		return os.Symlink(h.Linkname, target)
+		return root.Symlink(h.Linkname, target)
 	case tar.TypeLink:
-		if err := os.RemoveAll(target); err != nil {
+		if err := root.RemoveAll(target); err != nil {
 			return err
 		}
-		return os.Link(filepath.Join(dir, filepath.FromSlash(path.Clean("/" + h.Linkname)[1:])), target)
+		return root.Link(filepath.FromSlash(path.Clean("/" + h.Linkname)[1:]), target)
 	default:
 		return fmt.Errorf("entry type %q is not a file, directory or link", h.Typeflag)
 	}
 }
 
-func emptyDir(dir string) error {
-	entries, err := os.ReadDir(dir)
+func emptyDir(root *os.Root, dir string) error {
+	d, err := root.Open(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return os.MkdirAll(dir, 0o755)
+		return root.MkdirAll(dir, 0o755)
 	}
 	if err != nil {
 		return err
 	}
-	for _, e := range entries {
-		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+	names, err := d.Readdirnames(-1)
+	d.Close()
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if err := root.RemoveAll(filepath.Join(dir, n)); err != nil {
 			return err
 		}
 	}
