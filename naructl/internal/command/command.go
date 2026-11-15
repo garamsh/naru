@@ -11,15 +11,15 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/garamsh/naru/naructl/internal/layout"
-	"github.com/garamsh/naru/naructl/internal/pki"
+	"github.com/garamsh/naru/lib/layout"
+	"github.com/garamsh/naru/lib/layout/pki"
 )
 
 const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-ca|host-client> [flags]
        naructl <version|services|logs|get config|apply|reboot|upgrade> --config <client file> [--node <ip[:port]>] [flags]
-       naructl operator <add|revoke> --admin <person file> --passphrase-file <file> --socket <path> [flags]
+       naructl operator <add|revoke> --admin <person file> --passphrase-file <file> (--socket <path> | --config <file> [--node <ip[:port]>]) [flags]
                                                      issue or revoke an operator through naru-signer (naructl operator -h)
-       naructl operator request|person, naructl orch csr|issue, naructl signer authorise-replica|bundle|restore
+       naructl operator request|person, naructl orch csr|issue, naructl signer ca|authorise-replica|bundle|restore
                                                      make an identity's key, request and person file, and use root's (naructl operator -h, naructl signer -h)
        naructl topology [kubernetes]                 print the services a Node runs, and which signs, as JSON
        naructl console --orch <url> --identity <person file> --passphrase-file <file> [--listen 127.0.0.1:8484] [--ca <file>]
@@ -41,14 +41,23 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
               as a boot set with no reboot, or remove one
               all of these take the same flags; create, stop, start, delete and boot-set need the provisioner role
   orch init --out-dir <dir> --passphrase-file <file>    write the recovery key, encrypted, and its public half
+  orch ca (--socket <path> | --config <file> [--node <ip[:port]>])
+              print the orch authority's certificate, which orch's certificate chains to, and its SHA-256, from the signer
   orch backup [--out <file>]                            take a sealed snapshot now; with --out, also fetch it
   orch restore --snapshot <file> --recovery-key <file> --passphrase-file <file> [--out <file>]
               [--push <orch URL> --orch-ca <file> --admin <root person file> [--admin-passphrase-file <file>]]
               open the sealed snapshot; --out writes the plain etcd snapshot, --push sends it to a naru-orchd
               started with --restore (the plain snapshot is not written to disk without --out)
-  enroll-key create [--ttl d] | enroll-key revoke <id>  | host pending | host admit <id> --code <code> --region <r> [--label k=v]
+  enroll-key create [--ttl d] | enroll-key revoke <id>  | host list | host pending | host admit <id> --code <code> --region <r> [--label k=v]
   host label <id> --region <r> [--label k=v] | host drain <id> | host undrain <id> | group apply -f <spec> | group get <name> | group list | group delete <name>
+  host remove <id> | host profile set -f <profile> | host profile get
+              remove forgets a host and frees its Machine prefix (its certificate stays valid: operator revoke ends it)
               these take --orch-url, --orch-ca, --identity and --passphrase-file
+  host install-seed --orch-url <url> --orch-ca-sha256 <hex> --enroll-key <file> --out <iso> [--name <label>]
+              write the NoCloud drive a new host boots the installer with (offline: it takes no --identity)
+  gen host-profile --guest <guest.json> --firecracker-sha256 <hex> --machine-pool <cidr> --orch-url <url>
+              --orch-ca-sha256 <hex> --out <file> [more flags: naructl gen host-profile -h]
+              write the fleet-wide inputs orch builds each joined host's configuration from
   version | services | get config               read a Node
   logs <service> [-f]                           print a service's kept log, and with -f each new line
   apply -f <patch> [--mode no-reboot|staged|reboot] [--dry-run]
@@ -133,6 +142,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return genHostCA(args[2:], stdout, stderr)
 	case "host-client":
 		return genHostClient(args[2:], stdout, stderr)
+	case "host-profile":
+		return genHostProfile(args[2:], stdout, stderr)
 	case "ca":
 		return genCA(args[2:], stdout, stderr)
 	case "client":
@@ -502,13 +513,9 @@ func genNode(args []string, stdout, stderr io.Writer) error {
 		n.NoMasquerade = append(n.NoMasquerade, p)
 	}
 	for _, s := range storage {
-		name, value, ok := strings.Cut(s, "=")
-		if !ok {
-			return fmt.Errorf("--storage %q is not <name>=<label or /dev/path>", s)
-		}
-		d := layout.StorageDisk{Name: name, Label: value}
-		if strings.HasPrefix(value, "/dev/") {
-			d = layout.StorageDisk{Name: name, Device: value}
+		d, err := parseStorage(s)
+		if err != nil {
+			return err
 		}
 		n.Storage = append(n.Storage, d)
 	}

@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -22,8 +23,8 @@ import (
 	"github.com/garamsh/naru/lib/orchapi"
 )
 
-// orchCommands runs the commands that talk to orch: orch, enroll-key, group, network, and host pending, admit,
-// label, drain and undrain. It reports false when args are not one of them, so the other host command is left alone.
+// orchCommands runs the commands that talk to orch: orch, enroll-key, group, network, and host list, pending, admit,
+// label, drain, undrain, install-seed, profile and remove. It reports false when args are not one of them, so the other host command is left alone.
 func orchCommands(args []string, stdout, stderr io.Writer) (bool, error) {
 	if len(args) == 0 {
 		return false, nil
@@ -40,6 +41,8 @@ func orchCommands(args []string, stdout, stderr io.Writer) (bool, error) {
 	case "host":
 		if len(args) > 1 {
 			switch args[1] {
+			case "list":
+				return true, hostList(args[2:], stdout, stderr)
 			case "pending":
 				return true, hostPending(args[2:], stdout, stderr)
 			case "admit":
@@ -50,6 +53,12 @@ func orchCommands(args []string, stdout, stderr io.Writer) (bool, error) {
 				return true, hostDrain("drain", args[2:], stdout, stderr)
 			case "undrain":
 				return true, hostDrain("undrain", args[2:], stdout, stderr)
+			case "install-seed":
+				return true, hostInstallSeed(args[2:], stdout, stderr)
+			case "profile":
+				return true, hostProfileCmd(args[2:], stdout, stderr)
+			case "remove":
+				return true, hostRemove(args[2:], stdout, stderr)
 			}
 		}
 	}
@@ -64,9 +73,11 @@ const (
 
 func orchCmd(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("orch needs init, backup, restore, csr or issue")
+		return errors.New("orch needs init, backup, restore, csr, issue or ca")
 	}
 	switch args[0] {
+	case "ca":
+		return signerCA("orch ca", args[1:], stdout, stderr, "orch")
 	case "init":
 		return orchInit(args[1:], stdout, stderr)
 	case "backup":
@@ -360,6 +371,44 @@ func enrollKeyCmd(args []string, stdout, stderr io.Writer) error {
 	return fmt.Errorf("unknown command %q", "enroll-key "+args[0])
 }
 
+// hostList lists the admitted hosts with the prefix orch allocated for each host's Machines.
+func hostList(args []string, stdout, stderr io.Writer) error {
+	o := newOrchFlags("host list", stderr)
+	if _, err := o.parse(args, 0); err != nil {
+		return err
+	}
+	_, cl, err := o.connect()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := withTimeout()
+	defer cancel()
+	hs, err := cl.Hosts(ctx)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 8, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "HOST\tREGION\tADDRESS\tMACHINE PREFIX\tLAST SEEN\tLABELS")
+	for _, h := range hs {
+		seen := "never"
+		if !h.LastSeen.IsZero() {
+			seen = h.LastSeen.Format(time.RFC3339)
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", h.ID, h.Region, h.Address, cmp.Or(h.MachinePrefix, "-"), seen, labelsText(h.Labels))
+	}
+	return tw.Flush()
+}
+
+// labelsText is the labels as key=value pairs in key order, or a dash.
+func labelsText(labels map[string]string) string {
+	pairs := make([]string, 0, len(labels))
+	for k, v := range labels {
+		pairs = append(pairs, k+"="+v)
+	}
+	slices.Sort(pairs)
+	return cmp.Or(strings.Join(pairs, ","), "-")
+}
+
 func hostPending(args []string, stdout, stderr io.Writer) error {
 	o := newOrchFlags("host pending", stderr)
 	if _, err := o.parse(args, 0); err != nil {
@@ -376,9 +425,9 @@ func hostPending(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 8, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "HOST\tCODE\tADDRESS\tFIRST SEEN")
+	_, _ = fmt.Fprintln(tw, "HOST\tCODE\tADDRESS\tFIRST SEEN\tHARDWARE")
 	for _, p := range ps {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.HostID, p.Code, p.Address, p.FirstSeen.Format(time.RFC3339))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.HostID, p.Code, p.Address, p.FirstSeen.Format(time.RFC3339), hardwareSummary(p.Hardware))
 	}
 	return tw.Flush()
 }
@@ -493,4 +542,13 @@ func hostLabel(args []string, stdout, stderr io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: host %s is in region %s with %d label(s)\n", h.ID, h.Region, len(h.Labels))
 	return nil
+}
+
+// hardwareSummary is what a host reported of itself in one line, or a dash for a host that reported
+// nothing (one enrolled with its own configuration).
+func hardwareSummary(h *orchapi.Hardware) string {
+	if h == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d CPU, %d MiB, %d disk(s), %d link(s)", h.CPUs, h.MemoryBytes>>20, len(h.Disks), len(h.Links))
 }

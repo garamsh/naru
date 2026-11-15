@@ -10,7 +10,7 @@ import (
 
 // handler returns the routes behind the middleware: a panic is answered with 500, each request
 // is logged once, and the client's role is checked before any route runs. A request that is not
-// a GET needs Admin, and every other needs Reader.
+// a GET needs Admin, and every other needs Reader. Everything under /v1/signer needs Admin, a GET too.
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/version", s.version)
@@ -24,6 +24,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/extensions", s.getExtensions)
 	mux.HandleFunc("PUT /v1/extensions/{sha256}", s.putExtension)
 	mux.HandleFunc("DELETE /v1/extensions/{sha256}", s.deleteExtension)
+	mux.HandleFunc(signerPrefix+"/{path...}", s.signer)
 	return s.recovering(s.logged(s.authorised(mux)))
 }
 
@@ -32,14 +33,15 @@ func (s *Server) handler() http.Handler {
 func (s *Server) authorised(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		need := Reader
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		changes := r.Method != http.MethodGet && r.Method != http.MethodHead
+		if changes || forSigner(r) {
 			need = Admin
 		}
 		if roleOf(clientCertificate(r)) < need {
 			writeJSON(w, http.StatusForbidden, errorBody{Error: "the client certificate's role does not allow this request"})
 			return
 		}
-		if need == Admin && s.rebooting.Load() {
+		if changes && s.rebooting.Load() {
 			writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "the Node is rebooting"})
 			return
 		}

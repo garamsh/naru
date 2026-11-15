@@ -65,6 +65,8 @@ type hostJSON struct {
 	Region   string            `json:"region"`
 	Labels   map[string]string `json:"labels"`
 	LastSeen time.Time         `json:"lastSeen"`
+	// MachinePrefix is the prefix orch allocated to a host that joined from a seed.
+	MachinePrefix string `json:"machinePrefix"`
 }
 
 func (f *fleet) hostList(i int) []hostJSON {
@@ -121,6 +123,10 @@ func (g groupJSON) count(phase string) int {
 // groupFile is the group's spec as the operator's file, with the knobs the scenarios change.
 func (f *fleet) groupFile(name string, count, memoryMiB int, extra string) string {
 	// A stateful group may not surge: two instances would run at once.
+	repository := inputs.Image.Repository
+	if f.opts.imageRepository != "" {
+		repository = f.opts.imageRepository
+	}
 	surge := 1
 	if strings.Contains(extra, "stateful: true") {
 		surge = 0
@@ -136,7 +142,7 @@ template:
   rootDiskBytes: 1073741824
 rollout: {maxUnavailable: 1, maxSurge: %d}
 minAvailable: %d
-%s`, name, count, memoryMiB, inputs.Image.Repository, inputs.Image.Digest, surge, max(count-1, 0), extra))
+%s`, name, count, memoryMiB, repository, inputs.Image.Digest, surge, max(count-1, 0), extra))
 }
 
 func TestFleet_OrchLeaderLossElectsAnotherAndEnrollmentKeepsTheRegionLabelsAndTheCodeIsTheConsoles(t *testing.T) {
@@ -199,7 +205,7 @@ func TestFleet_RolesAndOneRevocationListAcrossTheReplicas(t *testing.T) {
 
 	// Root revokes both at the first signer; the list reaches the other signers through orch's sync.
 	for _, p := range []person{op, rd} {
-		f.must(nrun("operator", "revoke", "--admin", f.root.file, "--passphrase-file", f.pass, "--serial", p.serial, "--socket", f.socks[1]), "revoke "+p.serial)
+		f.must(nrun("operator", "revoke", "--admin", f.root.file, "--passphrase-file", f.pass, "--serial", p.serial, "--config", f.c.API.Admin), "revoke "+p.serial)
 	}
 	for _, i := range f.controls() {
 		eventually(t, fmt.Sprintf("member %d refuses the revoked operator", i), func() bool { return f.orchAs(op, i, "enroll-key", "create").Err != nil })
@@ -306,7 +312,7 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 
 	// Taken before the loss: the signer's bundle, and the sealed snapshot of orch.
 	bundle := filepath.Join(f.dir, "signer.bundle")
-	f.must(nrun("signer", "bundle", "--admin", f.root.file, "--passphrase-file", f.pass, "--socket", f.socks[1], "--out", bundle), "signer bundle")
+	f.must(nrun("signer", "bundle", "--admin", f.root.file, "--passphrase-file", f.pass, "--config", f.c.API.Admin, "--out", bundle), "signer bundle")
 	f.must(f.orch("orch", "backup"), "orch backup")
 	snap := f.snapshot(1) // GET /v1/snapshots/latest, root only, the sealed bytes
 
@@ -329,7 +335,7 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 	}
 	eventually(t, "the signer restores from the bundle with the recovery key", func() bool {
 		return nrun("signer", "restore", "--admin", f.root.file, "--passphrase-file", f.pass, "--bundle", bundle,
-			"--recovery-key", "/run/harness/recovery.key", "--recovery-passphrase-file", "/run/harness/recovery.pass", "--socket", f.socks[1]).Err == nil
+			"--recovery-key", "/run/harness/recovery.key", "--recovery-passphrase-file", "/run/harness/recovery.pass", "--config", f.c.API.Admin).Err == nil
 	})
 
 	// The first host's orch starts empty with spec.orch.restore, alone in its cluster, and takes the

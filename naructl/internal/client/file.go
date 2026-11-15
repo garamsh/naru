@@ -12,7 +12,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/garamsh/naru/naructl/internal/pki"
+	"github.com/garamsh/naru/lib/layout/pki"
 )
 
 // DefaultPort is the port init's Node API listens on unless spec.api.listen says another.

@@ -203,6 +203,23 @@ func (c *Client) Undrain(ctx context.Context, hostID string) (Host, error) {
 	return out, c.do(ctx, http.MethodPost, "/v1/hosts/"+url.PathEscape(hostID)+"/undrain", nil, nil, &out)
 }
 
+// Remove deletes an admitted host's record and frees the Machine prefix orch gave it. It does not
+// revoke the host's certificate, which only a person's signature does.
+func (c *Client) Remove(ctx context.Context, hostID string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/hosts/"+url.PathEscape(hostID), nil, nil, nil)
+}
+
+// Profile returns the host profile.
+func (c *Client) Profile(ctx context.Context) (HostProfile, error) {
+	var out HostProfile
+	return out, c.do(ctx, http.MethodGet, "/v1/profile", nil, nil, &out)
+}
+
+// SetProfile replaces the host profile with yaml, which orch checks before it keeps it.
+func (c *Client) SetProfile(ctx context.Context, yaml []byte) error {
+	return c.do(ctx, http.MethodPut, "/v1/profile", nil, HostProfile{Profile: yaml}, nil)
+}
+
 // Events lists the event log, oldest first.
 func (c *Client) Events(ctx context.Context) ([]Event, error) {
 	var out []Event

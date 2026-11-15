@@ -107,6 +107,9 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("PUT /v1/hosts/{id}/labels", h.guard(auth.Operate, h.labels))
 	mux.HandleFunc("POST /v1/hosts/{id}/drain", h.guard(auth.Operate, h.drain))
 	mux.HandleFunc("POST /v1/hosts/{id}/undrain", h.guard(auth.Operate, h.undrain))
+	mux.HandleFunc("DELETE /v1/hosts/{id}", h.guard(auth.Operate, h.removeHost))
+	mux.HandleFunc("GET /v1/profile", h.guard(auth.Read, h.profile))
+	mux.HandleFunc("PUT /v1/profile", h.guard(auth.Operate, h.setProfile))
 	mux.HandleFunc("POST /v1/snapshot", h.guard(auth.Administer, h.snapshot))
 	mux.HandleFunc("GET /v1/snapshots/latest", h.guard(auth.Administer, h.latestSnapshot))
 	mux.HandleFunc("PUT /v1/restore", h.guard(auth.Administer, h.alreadyRestored))
@@ -230,8 +233,11 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusNotFound, err.Error()
 	case errors.Is(err, ErrRestored):
 		status, msg = http.StatusConflict, err.Error()
-	case errors.Is(err, inventory.ErrConflict), errors.Is(err, inventory.ErrTooManyPending):
+	case errors.Is(err, inventory.ErrConflict), errors.Is(err, inventory.ErrTooManyPending),
+		errors.Is(err, inventory.ErrPoolFull), errors.Is(err, inventory.ErrNoProfile):
 		status, msg = http.StatusConflict, err.Error()
+	case errors.Is(err, inventory.ErrRedacted):
+		status, msg = http.StatusUnprocessableEntity, err.Error()
 	case errors.Is(err, inventory.ErrInvalid), errors.Is(err, orchapi.ErrBadProof):
 		status, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, inventory.ErrSignerFailed):
@@ -306,6 +312,35 @@ func (h *handler) drain(w http.ResponseWriter, r *http.Request, who identity.Ide
 func (h *handler) undrain(w http.ResponseWriter, r *http.Request, who identity.Identity) {
 	out, err := h.Inventory.Undrain(r.Context(), who.Subject, r.PathValue("id"))
 	reply(w, r, out, err)
+}
+
+func (h *handler) removeHost(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	if err := h.Inventory.Remove(r.Context(), who.Subject, r.PathValue("id")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *handler) profile(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	b, err := h.Inventory.Profile(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, orchapi.HostProfile{Profile: b})
+}
+
+func (h *handler) setProfile(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	var req orchapi.HostProfile
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := h.Inventory.SetProfile(r.Context(), who.Subject, req.Profile); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) microVMs(w http.ResponseWriter, r *http.Request, _ identity.Identity) {

@@ -24,6 +24,9 @@ type Host struct {
 	// Draining is whether an operator drained the host: its members move off it and nothing is
 	// placed on it until it is undrained.
 	Draining bool `json:"draining"`
+	// MachinePrefix is the prefix orch allocated for the Machines of a host that joined from the
+	// install seed. It is empty for a host enrolled with its own configuration.
+	MachinePrefix string `json:"machinePrefix,omitempty"`
 }
 
 // Pending is an enrollment waiting for a person's admission. Code is orch's own computation from
@@ -37,6 +40,36 @@ type Pending struct {
 	Address   string    `json:"address"`
 	KeyID     string    `json:"keyId"`
 	FirstSeen time.Time `json:"firstSeen"`
+	// Hardware is what a host that enrolled from the install seed reported, which an operator reads
+	// beside the pairing code to know which machine it is. It is nil for a host enrolled with its own
+	// configuration.
+	Hardware *Hardware `json:"hardware,omitempty"`
+}
+
+// Hardware is what a host that joined reports of itself: its processors, memory, disks and network
+// links. Orch keeps it as reported; it is not a claim an admission rests on.
+type Hardware struct {
+	CPUs        int    `json:"cpus"`
+	MemoryBytes uint64 `json:"memoryBytes"`
+	Disks       []Disk `json:"disks"`
+	Links       []Link `json:"links"`
+}
+
+// Disk is a block device of a joining host. Partitions is how many partitions the kernel lists on
+// it: a fact the host read, not a judgement of whether the disk is free, which only init's check of
+// the join form makes.
+type Disk struct {
+	Name       string `json:"name"`
+	Size       uint64 `json:"size"`
+	Model      string `json:"model"`
+	Partitions int    `json:"partitions"`
+}
+
+// Link is a network interface of a joining host.
+type Link struct {
+	Name    string `json:"name"`
+	MAC     string `json:"mac"`
+	Carrier bool   `json:"carrier"`
 }
 
 // EnrollRequest is what a host sends with the enrollment key. PublicKey is the PKIX DER of the
@@ -47,6 +80,9 @@ type EnrollRequest struct {
 	PublicKey []byte `json:"publicKey"`
 	CSR       []byte `json:"csr"`
 	Address   string `json:"address"`
+	// Hardware is set by a host that enrolled from the install seed: it is what tells orch to build
+	// the host's configuration at admission instead of expecting the host to have one.
+	Hardware *Hardware `json:"hardware,omitempty"`
 }
 
 // EnrollStatus answers an enrollment and each poll of it. Certificate, the PEM of the host's
@@ -55,6 +91,14 @@ type EnrollStatus struct {
 	State       string `json:"state"`
 	Code        string `json:"code,omitempty"`
 	Certificate []byte `json:"certificate,omitempty"`
+	// Config is the host's naru.yaml, which orch built from the host profile at admission. It is set
+	// with Certificate for a host that enrolled from the install seed and carries no cluster sections.
+	Config []byte `json:"config,omitempty"`
+}
+
+// HostProfile is the YAML of the host profile orch keeps: what every joined host shares.
+type HostProfile struct {
+	Profile []byte `json:"profile"`
 }
 
 // AdmitRequest is an operator's admission of one pending host. Code is what the operator read on

@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/garamsh/naru/naructl/internal/layout"
+	"github.com/garamsh/naru/lib/layout"
 )
 
 // daemonFlags are the values of gen node's flags for spec.host.network, spec.signer, spec.orch
@@ -32,11 +32,11 @@ type daemonFlags struct {
 // name. The orch key is read into the Node and never printed.
 func genNodeDaemons(n *layout.Node, f daemonFlags) error {
 	for _, e := range f.extensions {
-		name, digest, ok := strings.Cut(e, "=")
-		if !ok || name == "" || digest == "" {
-			return fmt.Errorf("--extension %q is not <name>=<SHA-256 of the image>", e)
+		x, err := parseExtension(e)
+		if err != nil {
+			return err
 		}
-		n.Extensions = append(n.Extensions, layout.Extension{Name: name, SHA256: digest})
+		n.Extensions = append(n.Extensions, x)
 	}
 	if f.hostMgmt != "" {
 		p, err := netip.ParsePrefix(f.hostMgmt)

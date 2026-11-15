@@ -1,6 +1,7 @@
 package console
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"sort"
@@ -18,6 +19,10 @@ type hostMicroVMs struct {
 type pendingRow struct {
 	orchapi.Pending
 	Code string
+	// Hardware is what the host reported of itself, one line, or empty for a host that reported none.
+	Hardware string
+	Disks    []string
+	Links    []string
 }
 
 // page is the data every page renders from; a page reads the fields it needs.
@@ -38,6 +43,12 @@ type page struct {
 	// Region and Labels refill the admit form after a refusal.
 	Region string
 	Labels string
+
+	// The install-seed form: the lifetime and name it was submitted with, and where the seed points.
+	NoSeed   bool
+	SeedOrch string
+	TTL      string
+	SeedName string
 }
 
 // fail renders what went wrong reaching orch.
@@ -150,7 +161,27 @@ func (s *Server) renderPending(w http.ResponseWriter, r *http.Request, status in
 	sort.Slice(list, func(i, j int) bool { return list[i].HostID < list[j].HostID })
 	p.CSRF = s.csrf
 	for _, h := range list {
-		p.Pending = append(p.Pending, pendingRow{Pending: h, Code: identity.PairingCode(h.PublicKey)})
+		p.Pending = append(p.Pending, newPendingRow(h))
 	}
 	s.render(w, status, "pending", p)
+}
+
+func newPendingRow(h orchapi.Pending) pendingRow {
+	row := pendingRow{Pending: h, Code: identity.PairingCode(h.PublicKey)}
+	hw := h.Hardware
+	if hw == nil {
+		return row
+	}
+	row.Hardware = fmt.Sprintf("%d CPU, %d MiB memory", hw.CPUs, hw.MemoryBytes>>20)
+	for _, d := range hw.Disks {
+		row.Disks = append(row.Disks, fmt.Sprintf("%s %d GiB %s (%d partition(s))", d.Name, d.Size>>30, d.Model, d.Partitions))
+	}
+	for _, l := range hw.Links {
+		carrier := "no carrier"
+		if l.Carrier {
+			carrier = "carrier"
+		}
+		row.Links = append(row.Links, fmt.Sprintf("%s %s (%s)", l.Name, l.MAC, carrier))
+	}
+	return row
 }

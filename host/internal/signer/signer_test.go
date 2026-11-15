@@ -275,6 +275,8 @@ func TestHost_IssuedForAnOperatorsStatementAndTheKeyItNames(t *testing.T) {
 	cert := parseCert(t, issued.Certificate)
 
 	assert.Equal(t, "host-1", cert.Subject.CommonName)
+	assert.Equal(t, []string{"host-1"}, cert.DNSNames, "the host ID the statement names is the certificate's one name")
+	assert.Empty(t, cert.IPAddresses, "no address: a lease can change within the certificate's year")
 	assert.Equal(t, identity.RoleHost, roleOf(t, cert))
 	assert.True(t, cert.PublicKey.(*ecdsa.PublicKey).Equal(&hostKey.PublicKey))
 	assert.ElementsMatch(t, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}, cert.ExtKeyUsage)
@@ -283,6 +285,29 @@ func TestHost_IssuedForAnOperatorsStatementAndTheKeyItNames(t *testing.T) {
 		_, err := cert.Verify(x509.VerifyOptions{Roots: poolOf(t, e.authorities().Host), KeyUsages: usage})
 		assert.NoError(t, err)
 	}
+}
+
+func TestHost_TheNamesAreTheStatementsHostIDNotTheRequests(t *testing.T) {
+	e := newEnv(t)
+	op := e.issue(identity.RoleOperator, "alice")
+	key := newKey(t)
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "host-1"}, DNSNames: []string{"naru-orch"}, IPAddresses: []net.IP{net.IPv4(10, 0, 0, 1)},
+	}, key)
+	require.NoError(t, err)
+	stmt, err := identity.SignAdmission(identity.Admission{HostID: "host-1", HostKeySHA256: keyHash(t, csr), ExpiresAt: time.Now().Add(time.Hour)}, op.key, op.cert)
+	require.NoError(t, err)
+	body, err := json.Marshal(identity.HostRequest{Statement: stmt, CSR: csr})
+	require.NoError(t, err)
+
+	status, answer := e.do(http.MethodPost, "/v1/host", body)
+	require.Equal(t, http.StatusOK, status, string(answer))
+	var issued identity.Issued
+	require.NoError(t, json.Unmarshal(answer, &issued))
+	cert := parseCert(t, issued.Certificate)
+
+	assert.Equal(t, []string{"host-1"}, cert.DNSNames)
+	assert.Empty(t, cert.IPAddresses)
 }
 
 func TestHost_RefusedForAnythingButAnOperatorsStatementOverTheRequestsOwnKey(t *testing.T) {

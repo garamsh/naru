@@ -42,6 +42,13 @@ type Spec struct {
 	// Mcast is the multicast address and port, "230.78.0.1:5000", of the network the
 	// Nodes of a cluster share. QEMU's socket backend carries it over the loopback, with no privilege.
 	Mcast string
+	// Seed, when not empty, is the installation seed (naructl host install-seed) that the Node boots
+	// with as its NoCloud drive, attached as it is: a Node that joins an orch has no user-data of its
+	// own and no network-config (ADR 0058, 0059). NaruYAML and NetworkConfig are then not used.
+	Seed string
+	// BlankData gives the Node a blank data disk, with no file system and no inputs, that init
+	// makes the Node's own when it joins (ADR 0058). The Config's Inputs are then not used.
+	BlankData bool
 	// NaruYAML replaces the user-data the Config renders, when not empty.
 	NaruYAML []byte
 	// NetworkConfig replaces the network-config the Config renders, when not empty.
@@ -83,25 +90,14 @@ type Node struct {
 // Start builds the Node's disks and boots it with its serial console written
 // to Dir/console.log. The caller must Stop it.
 func Start(spec Spec) (*Node, error) {
-	naruYAML := spec.NaruYAML
-	if len(naruYAML) == 0 {
-		var err error
-		if naruYAML, err = spec.Config.NaruYAML(); err != nil {
-			return nil, err
-		}
-	}
-	networkConfig := spec.NetworkConfig
-	if len(networkConfig) == 0 {
-		networkConfig = spec.Config.NetworkConfig()
-	}
 	if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
 		return nil, err
 	}
-	cidata := filepath.Join(spec.Dir, "cidata.img")
-	if err := BuildCidata(cidata, "naru15-"+spec.Config.Name, naruYAML, networkConfig); err != nil {
+	cidata, err := nocloudDrive(spec)
+	if err != nil {
 		return nil, err
 	}
-	dataDisk, err := BuildDataDiskWith(spec.Dir, spec.Config.Inputs.Dir, spec.Config.AgentPair, spec.Config.Inputs.Extension.StoreDir)
+	dataDisk, err := dataDiskOf(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +126,46 @@ func Start(spec Spec) (*Node, error) {
 		return nil, err
 	}
 	return n, nil
+}
+
+// nocloudDrive is the file the Node's NoCloud drive is: the seed as it is, or the 4 MiB volume of the
+// user-data and network-config the Spec names or the Config renders.
+func nocloudDrive(spec Spec) (string, error) {
+	if spec.Seed != "" {
+		if _, err := os.Stat(spec.Seed); err != nil {
+			return "", fmt.Errorf("the installation seed: %w", err)
+		}
+		return spec.Seed, nil
+	}
+	naruYAML := spec.NaruYAML
+	if len(naruYAML) == 0 {
+		var err error
+		if naruYAML, err = spec.Config.NaruYAML(); err != nil {
+			return "", err
+		}
+	}
+	networkConfig := spec.NetworkConfig
+	if len(networkConfig) == 0 {
+		networkConfig = spec.Config.NetworkConfig()
+	}
+	cidata := filepath.Join(spec.Dir, "cidata.img")
+	if err := BuildCidata(cidata, "naru15-"+spec.Config.Name, naruYAML, networkConfig); err != nil {
+		return "", err
+	}
+	return cidata, nil
+}
+
+// dataDiskOf is the Node's data disk: a blank sparse disk of the data disk's size, or the file system
+// with the Config's inputs.
+func dataDiskOf(spec Spec) (string, error) {
+	if !spec.BlankData {
+		return BuildDataDiskWith(spec.Dir, spec.Config.Inputs.Dir, spec.Config.AgentPair, spec.Config.Inputs.Extension.StoreDir)
+	}
+	data := filepath.Join(spec.Dir, "data.img")
+	if err := os.WriteFile(data, nil, 0o644); err != nil { //nolint:gosec // a test disk
+		return "", err
+	}
+	return data, os.Truncate(data, dataDiskBytes)
 }
 
 // launch starts the QEMU process of the Node's next boot, with the serial console written to a file

@@ -2,7 +2,9 @@
 // version 1 format Proxmox writes (docs/architecture/config.md). It accepts
 // what init can apply, static IPv4 addresses and resolvers, and refuses every
 // other thing the format can say, so a Node never boots with a network it was
-// not given.
+// not given. An interface may instead be configured by DHCPv4, and a drive with no
+// network-config at all is the same as one that asks for DHCPv4 on the first link with a carrier
+// (docs/architecture/adr/0058-a-host-boots-from-a-join-form-that-names-an-orch-and-an-enrollment-key-and-init-applies-the-configuration-hostd-brings-back.md).
 package netcfg
 
 import (
@@ -10,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v4"
@@ -26,10 +29,14 @@ type Config struct {
 }
 
 // Interface is one network interface and the IPv4 configuration it is given.
-// It is found by MAC when MAC is set, by Name otherwise.
+// It is found by MAC when MAC is set, by Name otherwise. An interface with neither
+// is the first Ethernet link with a carrier, and is always a DHCP one.
 type Interface struct {
-	Name      string
-	MAC       net.HardwareAddr
+	Name string
+	MAC  net.HardwareAddr
+	// DHCP means a DHCPv4 lease gives the address, the gateway and the resolvers; Addresses
+	// and Gateway are empty.
+	DHCP      bool
 	Addresses []netip.Prefix
 	// Gateway is the default gateway, or the zero Addr when there is none.
 	Gateway netip.Addr
@@ -56,9 +63,29 @@ type subnet struct {
 	Gateway string `yaml:"gateway"`
 }
 
+// Applied is what the network gave this boot: the one place any reader of the Node's addresses,
+// resolvers and time servers looks, whether they were configured or leased.
+type Applied struct {
+	// Addresses are the IPv4 addresses of the Node, in the order of the interfaces.
+	Addresses []netip.Addr
+	// Nameservers are the resolvers in effect.
+	Nameservers []netip.Addr
+	// NTP are the time servers a DHCP lease named, which are used when spec.time is absent.
+	NTP []netip.Addr
+}
+
+// Automatic is the configuration of a Node whose drive has no network-config: DHCPv4 on the
+// first Ethernet link with a carrier.
+func Automatic() Config {
+	return Config{Interfaces: []Interface{{DHCP: true}}}
+}
+
 // Parse returns the configuration data holds, or an error joining each thing
-// in it that is unknown, unsupported or invalid.
+// in it that is unknown, unsupported or invalid. Empty data is Automatic.
 func Parse(data []byte) (Config, error) {
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return Automatic(), nil
+	}
 	var doc document
 	if err := yaml.Load(data, &doc, yaml.WithKnownFields()); err != nil {
 		return Config{}, fmt.Errorf("parse %s: %w", FileName, err)
@@ -100,6 +127,15 @@ func Parse(data []byte) (Config, error) {
 	if len(errs) == 0 && len(cfg.Interfaces) == 0 {
 		errs = append(errs, fmt.Errorf("%s: configures no interface", FileName))
 	}
+	dhcp := 0
+	for _, i := range cfg.Interfaces {
+		if i.DHCP {
+			dhcp++
+		}
+	}
+	if dhcp > 1 {
+		errs = append(errs, fmt.Errorf("%s: %d interfaces use dhcp4, at most one may", FileName, dhcp))
+	}
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, err
 	}
@@ -124,9 +160,19 @@ func physical(e entry) (Interface, error) {
 	if len(e.Subnets) == 0 {
 		return iface, errors.New("has no subnets")
 	}
+	if slices.ContainsFunc(e.Subnets, func(s subnet) bool { return s.Type == "dhcp4" }) {
+		if len(e.Subnets) != 1 {
+			return iface, errors.New("dhcp4 is the only subnet an interface may have")
+		}
+		if s := e.Subnets[0]; s.Address != "" || s.Netmask != "" || s.Gateway != "" {
+			return iface, errors.New("subnets[0]: a dhcp4 subnet takes no address, netmask or gateway")
+		}
+		iface.DHCP = true
+		return iface, nil
+	}
 	for i, s := range e.Subnets {
 		if s.Type != "static" {
-			return iface, fmt.Errorf("subnets[%d]: type %q is not supported, only static IPv4", i, s.Type)
+			return iface, fmt.Errorf("subnets[%d]: type %q is not supported, only static and dhcp4", i, s.Type)
 		}
 		prefix, err := staticPrefix(s)
 		if err != nil {

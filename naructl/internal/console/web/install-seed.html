@@ -1,0 +1,12 @@
+{{define "content"}}
+{{if .NoSeed}}<p>This console was started without orch's URL and the SHA-256 of its authority, so it cannot make a seed.</p>{{else}}
+<p>An install seed is the drive a new host boots the naru installer with. It tells the host where orch is ({{.SeedOrch}}), which authority to trust there, and an enrollment key made now. The host then shows up under Pending hosts with its hardware and its pairing code.</p>
+<p>The key is in the file and nowhere on this page: orch keeps only its hash, so the download is the only copy. Making a seed is logged in orch's events as an enrollment key created by you.</p>
+<form method="post" action="/install-seed" autocomplete="off">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>How long the key stays valid <input name="ttl" required value="{{.TTL}}" placeholder="24h"></label>
+<label>Name the host is listed under until it is admitted, optional <input name="name" value="{{.SeedName}}" maxlength="63"></label>
+<button type="submit">Download the seed</button>
+</form>
+{{end}}
+{{end}}

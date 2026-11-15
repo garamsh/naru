@@ -59,11 +59,15 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 	if next.Kind != running.Kind {
 		never = append(never, "kind")
 	}
-	if next.Metadata != running.Metadata {
-		never = append(never, "metadata.name")
-	}
-	if next.Spec.DataDisk != running.Spec.DataDisk {
-		never = append(never, "spec.dataDisk")
+	// A host that runs its join form has no name and the data disk init chose; the configuration
+	// that replaces it names both (ADR 0058).
+	if running.Spec.Join == nil {
+		if next.Metadata != running.Metadata {
+			never = append(never, "metadata.name")
+		}
+		if next.Spec.DataDisk != running.Spec.DataDisk {
+			never = append(never, "spec.dataDisk")
+		}
 	}
 	if len(never) > 0 {
 		return &InvalidError{Fields: never, Message: "no call may change these fields"}

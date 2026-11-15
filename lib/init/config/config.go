@@ -76,6 +76,9 @@ type Spec struct {
 	Extensions []Extension `yaml:"extensions,omitempty"`
 	// Metrics makes init serve /metrics and gives each daemon its --metrics-addr. It is nil when none serves metrics.
 	Metrics *Metrics `yaml:"metrics,omitempty"`
+	// Join makes the configuration the join form: the only field of spec, from which init derives
+	// what a host that has not joined an orch runs. It is nil in every other configuration.
+	Join *Join `yaml:"join,omitempty"`
 }
 
 // StorageRoot is the directory a storage disk is mounted under, as StorageRoot/<name>, unless it names a mount point.
@@ -117,8 +120,11 @@ type API struct {
 	ClientCA string `yaml:"clientCA"`
 	// Certificate is the PEM of the serving certificate.
 	Certificate string `yaml:"certificate"`
-	// Key is the PEM of the serving certificate's private key.
-	Key string `yaml:"key"`
+	// Key is the PEM of the serving certificate's private key. Exactly one of Key and KeyFile is set.
+	Key string `yaml:"key,omitempty"`
+	// KeyFile is the absolute path of a PEM private key that the Node API reads when it starts, in
+	// place of Key. The file is not read when the configuration is parsed.
+	KeyFile string `yaml:"keyFile,omitempty"`
 }
 
 // ListenAddr returns the address the API listens on.
@@ -184,6 +190,8 @@ type Service struct {
 	// of the service, each unless a path it names exists. A setup that fails keeps the service
 	// from starting.
 	Setup []Setup `yaml:"setup,omitempty"`
+	// RestartPolicy is RestartAlways, which is also what it is when empty, or RestartOnFailure.
+	RestartPolicy string `yaml:"restartPolicy,omitempty"`
 }
 
 // User is the identity a service runs with: a user, a group and the supplementary groups.
@@ -232,7 +240,7 @@ type KeptPair struct {
 
 // Equal reports whether o is the same service. A nil list or map equals an empty one.
 func (s Service) Equal(o Service) bool {
-	return s.Name == o.Name && s.Binary == o.Binary && s.ControlPlane == o.ControlPlane &&
+	return s.Name == o.Name && s.Binary == o.Binary && s.ControlPlane == o.ControlPlane && s.RestartPolicy == o.RestartPolicy &&
 		slices.Equal(s.Args, o.Args) && maps.Equal(s.Env, o.Env) &&
 		slices.Equal(s.RestartOnChange, o.RestartOnChange) && slices.Equal(s.LogFiles, o.LogFiles) &&
 		(s.KeptPair == nil) == (o.KeptPair == nil) && (s.KeptPair == nil || *s.KeptPair == *o.KeptPair) &&
@@ -259,6 +267,9 @@ type DataDisk struct {
 	Label       string `yaml:"label"`
 	MountPoint  string `yaml:"mountPoint"`
 	FormatBlank bool   `yaml:"formatBlank,omitempty"`
+	// FirstBlank is set by init for the join form, and no file carries it: with FormatBlank, the
+	// first blank disk that is not the boot disk is formatted, not only the one blank disk.
+	FirstBlank bool `yaml:"-"`
 }
 
 // Network holds the families for which forwarding is turned on and the routes init adds.

@@ -8,18 +8,14 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -27,7 +23,6 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 	"github.com/garamsh/naru/tooling/qemu/internal/seed"
-	"github.com/garamsh/naru/tooling/qemu/internal/unixfwd"
 )
 
 // The fleet is the control hosts and the hosts of the multi-host scenarios (docs/architecture/harness.md,
@@ -44,7 +39,6 @@ const (
 	orchPeerPort   = "7501"
 	orchClientPort = "7502"
 	signerPeerPort = "7600"
-	sockProxyPort  = "7700"
 )
 
 // metricsPorts are the fixed ports of init, naru-hostd, naru-orchd and naru-signer.
@@ -54,9 +48,8 @@ var metricsPorts = []string{"9100", "9101", "9102", "9103"}
 const managementPrefix = "10.78.0.0/24"
 
 var (
-	sockProxy = path.Join(fixture.GuestRoot, "bin/naru-sockproxy")
-	nftProbe  = path.Join(fixture.GuestRoot, "bin/naru-nftprobe")
-	keyProbe  = path.Join(fixture.GuestRoot, "bin/naru-keyprobe")
+	nftProbe = path.Join(fixture.GuestRoot, "bin/naru-nftprobe")
+	keyProbe = path.Join(fixture.GuestRoot, "bin/naru-keyprobe")
 )
 
 // defaultNodeMiB is the memory a Node needs to unpack the image's initramfs (Config.MemoryMiB).
@@ -74,31 +67,39 @@ type fleetOpts struct {
 	capture bool
 	// services are added to every Node.
 	services []node.ExtraService
+	// userData, when set, changes every Node's user-data before it first boots (ClusterSpec.EditUserData):
+	// the files the services need from the start.
+	userData func(c node.Config, file string) error
+	// imageRepository, when set, is the repository the groups' template image is pulled from in place
+	// of the registry every Node serves at 127.0.0.1: a host that joined has no registry of its own.
+	imageRepository string
 	// orchExtra, when set, gives control Node i's spec.orch fields besides the ones this file sets: the
 	// seam for what orch's restore adds.
 	orchExtra func(i int) map[string]any
 }
 
 type fleet struct {
-	t     *testing.T
-	c     *node.Cluster
-	dir   string
-	opts  fleetOpts
-	pass  string
-	root  person
-	rec   recovery
-	csrs  map[int]string // orch's request of each control Node
-	keys  map[int]string // and its key
-	socks map[int]string // the signer's socket of each control Node, forwarded on the test host
+	t    *testing.T
+	c    *node.Cluster
+	dir  string
+	opts fleetOpts
+	pass string
+	root person
+	rec  recovery
+	csrs map[int]string // orch's request of each control Node
+	keys map[int]string // and its key
 	// rootCert is the first root certificate, PEM, as the signer logged it; revPub the revocation key.
 	rootCert, revPub string
 	rootCertFile     string
 	// orchCA is the orch authority's certificate, PEM, which signs orch's certificate and which the
-	// operator reads from the signer's GET /v1/ca; orchCAFile holds it and caSHA is its SHA-256.
+	// operator reads with `naructl signer ca`; orchCAFile holds it and caSHA is its SHA-256.
 	orchCA, orchCAFile, caSHA string
 	// orchTrust is the authorities spec.orch.ca holds: the orch authority, which signs the members'
 	// certificates, the operator authority, which signs the callers', and the host authority, which signs the hosts'.
-	orchTrust        string
+	orchTrust string
+	// hostAuthority is the signer's host authority, PEM, which signs the certificate of a host that joined;
+	// spec.orch.hostCA holds it beside the authority of the control hosts' own API certificates.
+	hostAuthority    string
 	rootKey, rootCSR string
 }
 
@@ -155,7 +156,7 @@ func userDataOf(nd *node.Node) string {
 // from the console of the first signer, so that root can act.
 func newFleet(t *testing.T, o fleetOpts) *fleet {
 	t.Helper()
-	f := &fleet{t: t, dir: t.TempDir(), opts: o, csrs: map[int]string{}, keys: map[int]string{}, socks: map[int]string{}}
+	f := &fleet{t: t, dir: t.TempDir(), opts: o, csrs: map[int]string{}, keys: map[int]string{}}
 	secret := make([]byte, 16)
 	_, err := rand.Read(secret)
 	require.NoError(t, err)
@@ -172,12 +173,11 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 			"--key-out", f.keys[i], "--csr-out", f.csrs[i]), "orch's request")
 	}
 
-	services := append([]node.ExtraService{{Name: "naru95-sockproxy", Binary: sockProxy, Args: []string{"0.0.0.0:" + sockProxyPort, "/run/naru-signer/signer.sock"}}}, o.services...)
-	forward := append([]string{orchPort, sockProxyPort}, metricsPorts...)
+	forward := append([]string{orchPort}, metricsPorts...)
 	c := start(t, node.ClusterSpec{
 		N: o.controls + o.hosts, Gaon: true, NodeAPI: true, Host: true, Hosts: f.hosts(), Capture: o.capture,
 		Disable: []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"},
-		Forward: forward, HostMemoryMiB: defaultNodeMiB + o.vmMiB, HostCPUs: o.vmCPUs, GenFlags: f.genFlags, ExtraServices: services,
+		Forward: forward, HostMemoryMiB: defaultNodeMiB + o.vmMiB, HostCPUs: o.vmCPUs, GenFlags: f.genFlags, ExtraServices: o.services, EditUserData: o.userData,
 	})
 	f.c = c
 
@@ -196,49 +196,43 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 	require.NoError(t, err)
 	f.root = f.personOf("root", f.rootKey, f.rootCertFile, cert)
 
-	for _, i := range f.controls() {
-		sock := shortSocketPath(t, fmt.Sprintf("signer-%d.sock", i))
-		stop, err := unixfwd.Listen(sock, f.forward(i, sockProxyPort))
-		require.NoError(t, err)
-		t.Cleanup(stop)
-		f.socks[i] = sock
-	}
 	f.readOrchCA()
 	return f
 }
 
-// readOrchCA reads the orch authority's certificate from the first signer, as GET /v1/ca answers it.
+// readOrchCA reads the authorities' certificates from the first signer with `naructl signer ca`,
+// through the Node API's /v1/signer route as the admin, as an operator reads them.
 func (f *fleet) readOrchCA() {
-	cl := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", f.socks[1])
-		},
-	}}
-	var auth struct {
-		Orch     []byte `json:"orch"`
-		Operator []byte `json:"operator"`
-		Host     []byte `json:"host"`
-	}
-	eventually(f.t, "the first signer answers GET /v1/ca", func() bool {
-		resp, err := cl.Get("http://signer/v1/ca")
-		if err != nil {
-			return false
-		}
-		defer func() { _ = resp.Body.Close() }()
-		return resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&auth) == nil && len(auth.Orch) > 0 && len(auth.Operator) > 0 && len(auth.Host) > 0
+	var out string
+	eventually(f.t, "the first signer answers `naructl signer ca` through the Node API", func() bool {
+		r := nrun("signer", "ca", "--config", f.c.API.Admin)
+		out = r.Stdout
+		return r.Err == nil
 	})
-	cert, err := x509.ParseCertificate(auth.Orch)
-	require.NoError(f.t, err, "the orch authority's certificate is DER")
-	operator, err := x509.ParseCertificate(auth.Operator)
-	require.NoError(f.t, err, "the operator authority's certificate is DER")
-	host, err := x509.ParseCertificate(auth.Host)
-	require.NoError(f.t, err, "the host authority's certificate is DER")
-	f.orchCA = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
+	// The authorities come in the order orch, operator, host, each after its comment line.
+	var certs []*x509.Certificate
+	for rest := []byte(out); ; {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		require.NoError(f.t, err, "an authority's certificate is PEM")
+		certs = append(certs, cert)
+	}
+	require.Len(f.t, certs, 3, "the orch, operator and host authorities")
+	orch, operator, host := certs[0], certs[1], certs[2]
+	f.orchCA = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: orch.Raw}))
+	f.hostAuthority = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: host.Raw}))
 	f.orchTrust = f.orchCA + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operator.Raw})) +
 		string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: host.Raw}))
 	f.orchCAFile = f.file("orch-ca.pem", f.orchCA)
-	sum := sha256.Sum256(cert.Raw)
+	sum := sha256.Sum256(orch.Raw)
 	f.caSHA = hex.EncodeToString(sum[:])
+	// `naructl orch ca` prints the same certificate and the hash a seed carries.
+	only := f.must(nrun("orch", "ca", "--config", f.c.API.Admin), "orch ca")
+	require.Equal(f.t, "# orch authority, SHA-256 "+f.caSHA+"\n"+f.orchCA, only)
 }
 
 func orchName(i int) string { return fmt.Sprintf("orch-%d", i) }
@@ -330,7 +324,7 @@ func (f *fleet) orchSpec(i int, members []int, state string, crt string) map[str
 		"name": orchName(i), "peerURL": "https://" + nodeIP(i) + ":" + orchPeerPort, "clientURL": "https://" + nodeIP(i) + ":" + orchClientPort,
 		"initialCluster": cluster, "initialClusterState": state, "listen": "0.0.0.0:" + orchPort,
 		"sans": []string{"127.0.0.1", nodeIP(i), node.HostNICAddress}, "certificate": crt + f.orchCA, "ca": f.orchTrust,
-		"revocationPublicKey": f.revPub, "recoveryPublicKey": string(recPub), "hostCA": string(hostCA),
+		"revocationPublicKey": f.revPub, "recoveryPublicKey": string(recPub), "hostCA": strings.TrimSuffix(string(hostCA), "\n") + "\n" + f.hostAuthority,
 	}
 	if f.opts.orchExtra != nil {
 		for k, v := range f.opts.orchExtra(i) {
@@ -351,7 +345,7 @@ func (f *fleet) orchKeyFile(i int) map[string]any {
 func (f *fleet) issueOrch(i int) string {
 	out := filepath.Join(f.dir, orchName(i)+".crt")
 	eventually(f.t, "root has the signer issue "+orchName(i)+"'s certificate", func() bool {
-		return nrun("orch", "issue", "--admin", f.root.file, "--passphrase-file", f.pass, "--csr", f.csrs[i], "--name", orchName(i), "--socket", f.socks[1], "--out", out).Err == nil
+		return nrun("orch", "issue", "--admin", f.root.file, "--passphrase-file", f.pass, "--csr", f.csrs[i], "--name", orchName(i), "--config", f.c.API.Admin, "--out", out).Err == nil
 	})
 	b, err := os.ReadFile(out)
 	require.NoError(f.t, err)
@@ -440,7 +434,7 @@ func (f *fleet) leader(alive []int) int {
 func (f *fleet) operator(name, role string) person {
 	key, csr, crt := filepath.Join(f.dir, name+".key"), filepath.Join(f.dir, name+".csr"), filepath.Join(f.dir, name+".crt")
 	f.must(nrun("operator", "request", "--name", name, "--key-out", key, "--csr-out", csr), name+"'s request")
-	f.must(nrun("operator", "add", "--admin", f.root.file, "--passphrase-file", f.pass, "--csr", csr, "--name", name, "--role", role, "--socket", f.socks[1], "--out", crt), "add "+name)
+	f.must(nrun("operator", "add", "--admin", f.root.file, "--passphrase-file", f.pass, "--csr", csr, "--name", name, "--role", role, "--config", f.c.API.Admin, "--out", crt), "add "+name)
 	b, err := os.ReadFile(crt)
 	require.NoError(f.t, err)
 	block, _ := pem.Decode(b)
@@ -536,13 +530,3 @@ func (f *fleet) orchAs(p person, i int, args ...string) result {
 }
 
 func (f *fleet) orch(args ...string) result { return f.orchAs(f.root, 1, args...) }
-
-// shortSocketPath is a socket path in a directory removed with the test. t.TempDir carries the test's
-// name, which with a long TMPDIR passes the 107 bytes a unix socket path may have.
-func shortSocketPath(t *testing.T, name string) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "s")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return filepath.Join(dir, name)
-}

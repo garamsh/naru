@@ -8,6 +8,7 @@ use (
 	./lib/identity
 	./lib/init
 	./lib/iso9660
+	./lib/layout
 	./lib/metrics
 	./lib/orchapi
 	./lib/vip

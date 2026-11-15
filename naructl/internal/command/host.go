@@ -13,9 +13,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/garamsh/naru/lib/layout"
+	"github.com/garamsh/naru/lib/layout/pki"
 	"github.com/garamsh/naru/naructl/internal/client"
-	"github.com/garamsh/naru/naructl/internal/layout"
-	"github.com/garamsh/naru/naructl/internal/pki"
 )
 
 // hostCallTimeout bounds a microVM create, which pulls an image and boots the Machine.
