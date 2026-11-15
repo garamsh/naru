@@ -10,9 +10,12 @@
 
 variable "SOURCE_DATE_EPOCH" {}
 variable "OUT" {}
+# The version naru-init reports and the naru-orch extension is built for (VERSION of the Makefile).
+variable "NARU_VERSION" {}
 
 group "default" {
-  targets = ["builder", "toolchain", "util-linux", "e2fsprogs", "liburcu", "libinih", "xfsprogs", "libmnl", "libnftnl", "jansson", "nftables", "cacert"]
+  targets = ["builder", "toolchain", "util-linux", "e2fsprogs", "liburcu", "libinih", "xfsprogs", "libmnl", "libnftnl", "jansson", "nftables", "cacert",
+    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes"]
 }
 
 target "_package" {
@@ -35,7 +38,7 @@ target "builder" {
 target "toolchain" {
   inherits = ["_package"]
   context  = "toolchain"
-  contexts = { kernel = "../common/kernel" }
+  contexts = { kernel = "kernel" }
   output   = ["type=oci,dest=${OUT}/toolchain.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
@@ -114,4 +117,51 @@ target "cacert" {
   inherits = ["_package"]
   context  = "cacert"
   output   = ["type=oci,dest=${OUT}/cacert.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+# The Go programs. A Go package is built by the builder's Go, which downloads the release a
+# program's own go.mod names; nothing else of the toolchain is in it.
+target "naru" {
+  inherits = ["_package"]
+  context  = "naru"
+  contexts = { src = "../.." }
+  output   = ["type=oci,dest=${OUT}/naru.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "extension" {
+  inherits = ["_package"]
+  context  = "extension"
+  contexts = { naru = "target:naru" }
+  args     = { NARU_VERSION = NARU_VERSION }
+  output   = ["type=oci,dest=${OUT}/extension.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "etcd" {
+  inherits = ["_package"]
+  context  = "etcd"
+  output   = ["type=oci,dest=${OUT}/etcd.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "cni" {
+  inherits = ["_package"]
+  context  = "cni"
+  output   = ["type=oci,dest=${OUT}/cni.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "ecr-login" {
+  inherits = ["_package"]
+  context  = "ecr-login"
+  output   = ["type=oci,dest=${OUT}/ecr-login.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "gaon" {
+  inherits = ["_package"]
+  context  = "gaon"
+  output   = ["type=oci,dest=${OUT}/gaon.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "kubernetes" {
+  inherits = ["_package"]
+  context  = "kubernetes"
+  output   = ["type=oci,dest=${OUT}/kubernetes.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
