@@ -18,7 +18,7 @@ import (
 
 func sum(c string) string { return strings.Repeat(c, 64) }
 
-// guestFiles is a manifest as image/host/guest/build.sh writes it, for the one kernel naru builds.
+// guestFiles is a manifest as the initramfs-host package (image/pkgs) writes it, for the one kernel naru builds.
 var guestFiles = guest.Manifest{
 	Kernels:         map[string]guest.File{"naru": {Path: "/usr/lib/naru/guest/kernels/naru/vmlinux", SHA256: sum("k")}},
 	DefaultKernel:   "naru",

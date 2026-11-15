@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the UEFI disk image from the kernel that image/host/kernel/embed.sh wrote, initramfs inside:
+# Builds the UEFI disk image from the kernel that the bzImage package holds, initramfs inside:
 # naru.img, a raw GPT disk whose one EFI system partition holds the kernel as \EFI\BOOT\BOOTX64.EFI
 # and has room for a second, the trial slot \EFI\BOOT\TRIAL.EFI (ADR 0020), and naru.qcow2, the same
 # disk as an uncompressed qcow2 for Proxmox's import_from. The disk is written by tooling/disk
