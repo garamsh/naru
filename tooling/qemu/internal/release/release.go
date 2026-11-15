@@ -55,6 +55,10 @@ func Deployment(index int) Proxmox {
 // APIServer is the address every Node dials: node-1's.
 const APIServer = "192.168.0.40"
 
+// NaruClusterName is the name of the naru-cluster asset: the static binary an external harness
+// downloads and checks against SHA256SUMS (ADR 0074).
+func NaruClusterName(version string) string { return "naru-cluster-" + version + "-linux-amd64" }
+
 // UserDataName is the name of Node index's user-data asset. ".test" marks it as one that carries
 // key material, which is for a test deployment only.
 func UserDataName(index int) string { return fmt.Sprintf("naru-node-%d.test.yaml", index) }
@@ -167,6 +171,8 @@ type Options struct {
 	// Naructl is the naructl binary, built static for linux/amd64: it is an asset, and it writes the
 	// user-data.
 	Naructl string
+	// NaruCluster is the naru-cluster binary, built static for linux/amd64: it is an asset.
+	NaruCluster string
 	// PrevManifest is the path of the manifest.json of the previous release's upgrade bundle, or
 	// empty when there is none to check against. Build refuses a kernel that would not fit the
 	// trial slot of a Node installed from that release, unless RequiresRecreation is set, which
@@ -309,15 +315,17 @@ func Build(o Options) ([]Asset, error) {
 	}
 
 	// naructl is the operator's tool and the one owner of the Node layout: the release ships the
-	// binary and writes the test user-data with it.
+	// binary and writes the test user-data with it. naru-cluster is what a harness runs.
 	tool := "naructl-" + o.Version + "-linux-amd64"
-	if err := copyFile(o.Naructl, filepath.Join(o.Out, tool)); err != nil {
-		return nil, fmt.Errorf("the naructl binary: %w", err)
+	for _, b := range []struct{ from, name string }{{o.Naructl, tool}, {o.NaruCluster, NaruClusterName(o.Version)}} {
+		if err := copyFile(b.from, filepath.Join(o.Out, b.name)); err != nil {
+			return nil, fmt.Errorf("the %s binary: %w", b.name, err)
+		}
+		if err := os.Chmod(filepath.Join(o.Out, b.name), 0o755); err != nil {
+			return nil, err
+		}
+		names = append(names, b.name)
 	}
-	if err := os.Chmod(filepath.Join(o.Out, tool), 0o755); err != nil {
-		return nil, err
-	}
-	names = append(names, tool)
 
 	files, err := UserData(naructl.Tool{Bin: o.Naructl}, filepath.Join(o.GuestDir, "guest.json"), inputs.FirecrackerSHA256, filepath.Join(inputs.Dir, "registry", "ca.pem"))
 	if err != nil {

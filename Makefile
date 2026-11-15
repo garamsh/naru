@@ -240,7 +240,7 @@ judge-serial:
 # disk both Nodes attach), naru-guest-<version>.json,
 # naru-inputs-<version>.json (what naru-cluster reads besides the disks), naructl-<version>-linux-amd64
 # (the operator's tool, which also writes the test user-data below from a CA that lives only for the
-# run), naru-node-1.test.yaml and naru-node-2.test.yaml (test-only user-data for Proxmox: they carry
+# run), naru-cluster-<version>-linux-amd64 (the harness's command, a static binary, ADR 0074), naru-node-1.test.yaml and naru-node-2.test.yaml (test-only user-data for Proxmox: they carry
 # gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. $(BUILD)/release-figures.env,
 # outside $(RELEASE) because every file there is an asset, holds the ESP size and the largest in-place
 # upgrade kernel, which the release workflow puts in the notes. VERSION is defined above image.
@@ -254,8 +254,8 @@ RECREATE ?=
 in-builder-release: in-builder-disk
 	rm -rf $(RELEASE)
 	mkdir -p $(BUILD)/naructl
-	bash -c '. image/lib.sh && gobuild naructl $(BUILD)/naructl/naructl ./cmd/naructl'
-	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
+	bash -c '. image/lib.sh && gobuild naructl $(BUILD)/naructl/naructl ./cmd/naructl && gobuild tooling/qemu $(BUILD)/naructl/naru-cluster ./cmd/naru-cluster'
+	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -naru-cluster $(BUILD)/naructl/naru-cluster -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
 
 # test-qemu boots Nodes of the image under QEMU, as the user, and reads their consoles. It needs
 # /dev/kvm with nested virtualization and the host's mkfs.ext4 (for the data disk), and fails,
@@ -320,12 +320,16 @@ test-release-upgrade:
 
 # test-harness drives naru-cluster as an external harness does (docs/architecture/harness.md): from
 # a directory outside the checkout, against the output of `make release`, with the gaon binaries
-# of the pin as -gaon-bin. It is a target of its own so that test-qemu stays the length it is. It
-# needs what test-qemu needs, and fails, never skips, when no test ran.
-test-harness: release
+# of the pin as -gaon-bin. With RELEASE=<dir> on the command line it builds nothing and runs the
+# release directory's naru-cluster-<version>-linux-amd64, after checking it against SHA256SUMS, and
+# fails when the directory has none; without it, `make release` runs first and the test builds
+# naru-cluster from the workspace. It is a target of its own so that test-qemu stays the length it
+# is. It needs what test-qemu needs, and fails, never skips, when no test ran.
+HARNESS_FROM := $(filter command line,$(origin RELEASE))
+test-harness: $(if $(HARNESS_FROM),,release)
 	@set -e; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
-	if ! (cd tooling/qemu && NARU_RELEASE_DIR=$(RELEASE) NARU_GAON_DIR=$(GAON) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestCluster_' ./tests/harness) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	if ! (cd tooling/qemu && NARU_RELEASE_DIR=$(abspath $(RELEASE)) NARU_GAON_DIR=$(GAON) NARU_HARNESS_RELEASE_BINARY=$(if $(HARNESS_FROM),1) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestCluster_' ./tests/harness) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
 	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='TestCluster_'
 
