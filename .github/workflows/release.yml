@@ -120,6 +120,11 @@ jobs:
           echo "release: the previous release is $prev"
           echo "PREV_MANIFEST=$PWD/prev/manifest.json" >>"$GITHUB_ENV"
 
+      # lib/init/linux's packet-socket test runs in a user and network namespace of its own. Ubuntu
+      # 24.04 denies an unprivileged user the capabilities inside one unless this is off.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       # The checks of a contributor's tree, before any asset is built from it.
       - name: Check the tree
         run: make ci
