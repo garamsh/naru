@@ -137,7 +137,7 @@ func TestPollWithoutProofOfTheKeyAnswersNothing(t *testing.T) {
 
 	other := newHost(t, "host-a")
 	_, err = o.anon.PollEnrollment(t.Context(), h.id, other.key, o.c.Clock.Now())
-	require.Equal(t, http.StatusBadRequest, status(err), "a poll signed by another key")
+	require.Equal(t, http.StatusNotFound, status(err), "a poll signed by another key")
 }
 
 func TestAMismatchedPairingCodeIsRefusedAndNothingIsSigned(t *testing.T) {

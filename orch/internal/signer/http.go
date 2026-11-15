@@ -70,9 +70,12 @@ func (c *Client) do(ctx context.Context, method, path string, in []byte) ([]byte
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) > maxBody {
+		return nil, fmt.Errorf("the signer's answer is longer than %d bytes", maxBody)
 	}
 	switch {
 	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized:

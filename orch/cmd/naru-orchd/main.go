@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -46,7 +45,6 @@ func main() {
 		certFile    = flag.String("cert", "/var/lib/naru/orch/tls/orch.crt", "orch's certificate, followed by the authority's")
 		keyFile     = flag.String("key", "/var/lib/naru/orch/tls/orch.key", "orch's key")
 		caFile      = flag.String("ca", "/var/lib/naru/orch/tls/ca.crt", "the authority that issues every identity")
-		sans        = flag.String("san", "127.0.0.1", "comma-separated names and addresses of this member, for its certificate")
 		sock        = flag.String("signer-socket", "/run/naru-signer/signer.sock", "naru-signer's unix socket")
 		snapDir     = flag.String("snapshot-dir", "/var/lib/naru/orch/snapshots", "where sealed snapshots are kept")
 		revoke      = flag.String("revocation-public-key", "/var/lib/naru/orch/tls/revocation.pub", "the Ed25519 public key (PKIX, PEM) that verifies the revocation list")
@@ -66,7 +64,7 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if err := run(log, runFlags{
 		name: *name, dataDir: *dataDir, peerURL: *peerURL, clientURL: *clientURL, initial: *initial, state: *state, join: *join, restore: *restore,
-		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sans: *sans, sock: *sock,
+		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
 		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, metricsAddr: *metricsAddr,
 	}); err != nil {
@@ -77,7 +75,7 @@ func main() {
 
 type runFlags struct {
 	name, dataDir, peerURL, clientURL, initial, state, listen string
-	cert, key, ca, sans, sock, snapDir, revoke, recovery      string
+	cert, key, ca, sock, snapDir, revoke, recovery            string
 	snapEvery, maxAge, crlEvery, groupEach, netEach           time.Duration
 	hostCert, hostKey, hostCA                                 string
 	snapKeep                                                  int
@@ -100,9 +98,6 @@ func run(log *slog.Logger, f runFlags) error {
 	defer stop()
 
 	sg := signer.New(f.sock)
-	if err := sg.EnsureIdentity(ctx, signer.Files{Cert: f.cert, Key: f.key, CA: f.ca}, f.name, strings.Split(f.sans, ",")); err != nil {
-		return err
-	}
 	revokeKey, err := readRevocationKey(f.revoke)
 	if err != nil {
 		return err

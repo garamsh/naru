@@ -25,6 +25,15 @@ type Signer struct {
 	mu sync.Mutex
 	// calls counts IssueHost calls, so a test can tell a refusal at orch from one at the signer.
 	calls int
+	// fail, when set, is what IssueHost answers instead of signing.
+	fail error
+}
+
+// Fail makes IssueHost answer err from now on; nil makes it sign again.
+func (s *Signer) Fail(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fail = err
 }
 
 var _ inventory.Signer = (*Signer)(nil)
@@ -53,7 +62,11 @@ func (s *Signer) Calls() int {
 func (s *Signer) IssueHost(_ context.Context, statement, csr []byte) ([]byte, error) {
 	s.mu.Lock()
 	s.calls++
+	fail := s.fail
 	s.mu.Unlock()
+	if fail != nil {
+		return nil, fail
+	}
 	data, err := s.CA.CRL()
 	if err != nil {
 		return nil, err

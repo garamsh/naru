@@ -24,7 +24,9 @@ const (
 // Store holds the networks. Get and Delete return inventory.ErrNotFound for a network that is not
 // there.
 type Store interface {
-	Put(ctx context.Context, n orchapi.Network) error
+	// Put writes n only while the stored network is still prev (absent when prev is nil), and
+	// returns inventory.ErrConflict otherwise, so two writers that read the same state cannot both win.
+	Put(ctx context.Context, n orchapi.Network, prev *orchapi.Network) error
 	Get(ctx context.Context, name string) (orchapi.Network, error)
 	Delete(ctx context.Context, name string) error
 	// List returns every network in name order.
@@ -91,6 +93,10 @@ func (s *Service) Apply(ctx context.Context, by, name string, spec orchapi.Netwo
 		return orchapi.Network{}, err
 	}
 	old, err := s.store.Get(ctx, name)
+	var prev *orchapi.Network
+	if err == nil {
+		prev = &old
+	}
 	switch {
 	case err == nil && old.Prefix != n.Prefix:
 		users, err := s.users(ctx, name)
@@ -103,7 +109,7 @@ func (s *Service) Apply(ctx context.Context, by, name string, spec orchapi.Netwo
 	case err != nil && !errors.Is(err, inventory.ErrNotFound):
 		return orchapi.Network{}, err
 	}
-	if err := s.store.Put(ctx, n); err != nil {
+	if err := s.store.Put(ctx, n, prev); err != nil {
 		return orchapi.Network{}, err
 	}
 	ev := orchapi.Event{Time: s.clock.Now(), Type: EventApplied, Subject: name, Detail: map[string]string{"by": by, "prefix": n.Prefix}}

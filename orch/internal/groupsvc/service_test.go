@@ -45,7 +45,7 @@ func (s *store) PutMember(_ context.Context, m groups.Member) (groups.Member, er
 	return m, nil
 }
 
-func (s *store) PutGroup(_ context.Context, g groups.GroupSpec) error {
+func (s *store) PutGroup(_ context.Context, g groups.GroupSpec, _ *groups.GroupSpec) error {
 	s.groups[g.Name] = g
 	return nil
 }

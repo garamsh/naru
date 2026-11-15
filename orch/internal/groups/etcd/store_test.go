@@ -3,7 +3,9 @@ package etcd_test
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,8 +46,8 @@ func TestGroupsRoundTripThroughTheStore(t *testing.T) {
 	_, err := s.GetGroup(t.Context(), "web")
 	require.ErrorIs(t, err, inventory.ErrNotFound)
 
-	require.NoError(t, s.PutGroup(t.Context(), spec("web")))
-	require.NoError(t, s.PutGroup(t.Context(), spec("api")))
+	require.NoError(t, s.PutGroup(t.Context(), spec("web"), nil))
+	require.NoError(t, s.PutGroup(t.Context(), spec("api"), nil))
 	got, err := s.GetGroup(t.Context(), "web")
 	require.NoError(t, err)
 	require.Equal(t, spec("web"), got)
@@ -211,9 +213,89 @@ func TestListNetworksReadsTheNetworksOrchKeeps(t *testing.T) {
 	require.Empty(t, none)
 
 	nets := netetcd.New(c.Members[0].Etcd())
-	require.NoError(t, nets.Put(t.Context(), orchapi.Network{Name: "lab", Prefix: "10.9.0.0/24"}))
-	require.NoError(t, nets.Put(t.Context(), orchapi.Network{Name: "a", Prefix: "10.8.0.0/24", APIEndpoint: "10.8.0.2"}))
+	require.NoError(t, nets.Put(t.Context(), orchapi.Network{Name: "lab", Prefix: "10.9.0.0/24"}, nil))
+	require.NoError(t, nets.Put(t.Context(), orchapi.Network{Name: "a", Prefix: "10.8.0.0/24", APIEndpoint: "10.8.0.2"}, nil))
 	got, err := s.ListNetworks(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, []groups.Network{{Name: "a", Prefix: "10.8.0.0/24"}, {Name: "lab", Prefix: "10.9.0.0/24"}}, got)
+}
+
+func TestAPodPrefixOverlappingAnotherOfTheNetworkIsRefused(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := t.Context()
+	_, err := s.PutMember(ctx, podMember("web-1", "lab", "10.9.0.0/24"))
+	require.NoError(t, err)
+
+	_, err = s.PutMember(ctx, podMember("web-2", "lab", "10.9.0.64/26"))
+	require.ErrorIs(t, err, groups.ErrConflict, "a /26 inside a claimed /24")
+	_, err = s.PutMember(ctx, podMember("web-3", "lab", "10.9.0.0/16"))
+	require.ErrorIs(t, err, groups.ErrConflict, "a /16 over a claimed /24")
+	_, err = s.PutMember(ctx, podMember("web-4", "lab", "10.9.1.0/26"))
+	require.NoError(t, err, "control: a prefix that overlaps no claim")
+}
+
+func TestOnlyOneOfTwoOverlappingPrefixesRacingGetsIt(t *testing.T) {
+	s, _ := newStore(t)
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	for i, p := range []string{"10.9.0.0/24", "10.9.0.0/26", "10.9.0.128/25", "10.9.0.64/27"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := s.PutMember(t.Context(), podMember(fmt.Sprintf("web-%d", i), "lab", p)); err == nil {
+				wins.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	got, err := s.ListMembers(t.Context())
+	require.NoError(t, err)
+	var held []netip.Prefix
+	for _, m := range got {
+		held = append(held, netip.MustParsePrefix(m.PodPrefix))
+	}
+	require.Len(t, held, int(wins.Load()))
+	for i, a := range held {
+		for _, b := range held[i+1:] {
+			require.False(t, a.Overlaps(b), "%s and %s are both held", a, b)
+		}
+	}
+}
+
+func TestOnlyOneOfManyCreatesOfAGroupWins(t *testing.T) {
+	s, _ := newStore(t)
+	var wins, conflicts atomic.Int32
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			g := spec("web")
+			g.Count = i + 1
+			err := s.PutGroup(t.Context(), g, nil)
+			switch {
+			case err == nil:
+				wins.Add(1)
+			case errors.Is(err, inventory.ErrConflict):
+				conflicts.Add(1)
+			default:
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, int32(1), wins.Load())
+	require.Equal(t, int32(7), conflicts.Load())
+}
+
+func TestAReplaceOfAGroupThatChangedMeanwhileIsRefused(t *testing.T) {
+	s, _ := newStore(t)
+	a := spec("web")
+	require.NoError(t, s.PutGroup(t.Context(), a, nil))
+	b := a
+	b.Count = 5
+	require.NoError(t, s.PutGroup(t.Context(), b, &a))
+	c := a
+	c.Count = 7
+	require.ErrorIs(t, s.PutGroup(t.Context(), c, &a), inventory.ErrConflict)
 }

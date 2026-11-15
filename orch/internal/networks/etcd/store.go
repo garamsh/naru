@@ -26,14 +26,42 @@ var _ networks.Store = (*Store)(nil)
 // New returns a store over kv.
 func New(kv clientv3.KV) *Store { return &Store{kv: kv} }
 
-// Put creates the network or replaces it.
-func (s *Store) Put(ctx context.Context, n orchapi.Network) error {
+// Put writes n as one transaction that holds only while the stored network is still prev, or is
+// still absent when prev is nil. It returns inventory.ErrConflict when another writer got there first.
+func (s *Store) Put(ctx context.Context, n orchapi.Network, prev *orchapi.Network) error {
 	b, err := json.Marshal(n)
 	if err != nil {
 		panic(fmt.Sprintf("a network does not marshal: %v", err))
 	}
-	_, err = s.kv.Put(ctx, Prefix+n.Name, string(b))
-	return err
+	key := Prefix + n.Name
+	resp, err := s.kv.Get(ctx, key)
+	if err != nil {
+		return err
+	}
+	var cond clientv3.Cmp
+	switch {
+	case len(resp.Kvs) == 0 && prev == nil:
+		cond = clientv3.Compare(clientv3.CreateRevision(key), "=", 0)
+	case len(resp.Kvs) == 0 || prev == nil:
+		return inventory.ErrConflict
+	default:
+		cur, err := decode(resp.Kvs[0].Key, resp.Kvs[0].Value)
+		if err != nil {
+			return err
+		}
+		if cur != *prev {
+			return inventory.ErrConflict
+		}
+		cond = clientv3.Compare(clientv3.ModRevision(key), "=", resp.Kvs[0].ModRevision)
+	}
+	t, err := s.kv.Txn(ctx).If(cond).Then(clientv3.OpPut(key, string(b))).Commit()
+	if err != nil {
+		return err
+	}
+	if !t.Succeeded {
+		return inventory.ErrConflict
+	}
+	return nil
 }
 
 // Get returns the network, or inventory.ErrNotFound.

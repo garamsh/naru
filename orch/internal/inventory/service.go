@@ -13,8 +13,10 @@ type Service interface {
 	// Enroll takes a host's request, which carries an enrollment key and nothing else that
 	// authenticates it, and leaves the host pending. source names where it came from.
 	Enroll(ctx context.Context, source string, req orchapi.EnrollRequest) (orchapi.EnrollStatus, error)
-	// Poll answers an enrolling host that proves it holds the key it enrolled with.
-	Poll(ctx context.Context, hostID, timeValue, signature string) (orchapi.EnrollStatus, error)
+	// Poll answers an enrolling host that proves it holds the key it enrolled with. source names
+	// where it came from. An unknown host and a bad proof both answer ErrNotFound, and a source over
+	// its limit ErrRateLimited.
+	Poll(ctx context.Context, source, hostID, timeValue, signature string) (orchapi.EnrollStatus, error)
 	Admit(ctx context.Context, by string, req orchapi.AdmitRequest) (orchapi.Host, error)
 	CreateKey(ctx context.Context, by string, expiresAt time.Time) (orchapi.EnrollmentKey, error)
 	RevokeKey(ctx context.Context, by, id string) error
@@ -45,6 +47,10 @@ type Config struct {
 	SourceBurst int
 	KeyRate     float64
 	KeyBurst    int
+	// PollRate and PollBurst bound polls per second per source address; a fleet behind one address
+	// polls together, every PollEvery of hostd.
+	PollRate  float64
+	PollBurst int
 	// MaxPending bounds the pending list.
 	MaxPending int
 	// OrchCA is the PEM of the authority orch's certificate chains to, which a joined host's naru-hostd
@@ -59,6 +65,7 @@ type service struct {
 	conf    Config
 	sources *limiter
 	keys    *limiter
+	polls   *limiter
 }
 
 // NewService returns the service over store and signer.
@@ -75,6 +82,12 @@ func NewService(store Store, signer Signer, clock Clock, conf Config) Service {
 	if conf.KeyBurst == 0 {
 		conf.KeyBurst = 50
 	}
+	if conf.PollRate == 0 {
+		conf.PollRate = 10
+	}
+	if conf.PollBurst == 0 {
+		conf.PollBurst = 100
+	}
 	if conf.MaxPending == 0 {
 		conf.MaxPending = 1000
 	}
@@ -82,5 +95,6 @@ func NewService(store Store, signer Signer, clock Clock, conf Config) Service {
 		store: store, signer: signer, clock: clock, conf: conf,
 		sources: newLimiter(clock, conf.SourceRate, conf.SourceBurst),
 		keys:    newLimiter(clock, conf.KeyRate, conf.KeyBurst),
+		polls:   newLimiter(clock, conf.PollRate, conf.PollBurst),
 	}
 }

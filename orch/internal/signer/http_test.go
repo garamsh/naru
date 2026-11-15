@@ -95,3 +95,11 @@ func TestPushCRLSendsTheListAsTheBodyAndReturnsTheListTheSignerHolds(t *testing.
 	_, err = c.PushCRL(t.Context(), []byte("forged"))
 	require.ErrorIs(t, err, inventory.ErrSignerRefused)
 }
+
+func TestAnAnswerLongerThanTheBoundIsRefusedNotCut(t *testing.T) {
+	c := serve(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, 8<<20+1))
+	}))
+	_, err := c.IssueHost(t.Context(), []byte("stmt"), []byte("csr"))
+	require.ErrorContains(t, err, "longer than")
+}

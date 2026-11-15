@@ -10,7 +10,9 @@ import (
 // group that is not there.
 type Store interface {
 	groups.Store
-	PutGroup(ctx context.Context, g groups.GroupSpec) error
+	// PutGroup writes g only while the stored group is still prev (absent when prev is nil), and
+	// returns inventory.ErrConflict otherwise.
+	PutGroup(ctx context.Context, g groups.GroupSpec, prev *groups.GroupSpec) error
 	GetGroup(ctx context.Context, name string) (groups.GroupSpec, error)
 	DeleteGroup(ctx context.Context, name string) error
 }

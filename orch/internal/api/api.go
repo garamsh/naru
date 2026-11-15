@@ -189,14 +189,28 @@ func (h *handler) guard(a auth.Action, fn authed) http.HandlerFunc {
 	}
 }
 
+// tooLarge reports whether err is the body limit being hit, which is not a malformed body.
+func tooLarge(err error) bool {
+	var big *http.MaxBytesError
+	return errors.As(err, &big)
+}
+
 func decode(w http.ResponseWriter, r *http.Request, out any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(out); err != nil {
+		if tooLarge(err) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, orchapi.Error{Message: "the request body is too large"})
+			return false
+		}
 		writeJSON(w, http.StatusBadRequest, orchapi.Error{Message: "the request body is not valid"})
 		return false
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		if tooLarge(err) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, orchapi.Error{Message: "the request body is too large"})
+			return false
+		}
 		writeJSON(w, http.StatusBadRequest, orchapi.Error{Message: "the request body holds more than one value"})
 		return false
 	}
@@ -238,6 +252,8 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusConflict, err.Error()
 	case errors.Is(err, inventory.ErrRedacted):
 		status, msg = http.StatusUnprocessableEntity, err.Error()
+	case tooLarge(err):
+		status, msg = http.StatusRequestEntityTooLarge, "the request body is too large"
 	case errors.Is(err, inventory.ErrInvalid), errors.Is(err, orchapi.ErrBadProof):
 		status, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, inventory.ErrSignerFailed):
@@ -466,7 +482,11 @@ func (h *handler) enroll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) poll(w http.ResponseWriter, r *http.Request) {
-	out, err := h.Inventory.Poll(r.Context(), r.PathValue("hostID"), r.Header.Get(orchapi.HeaderTime), r.Header.Get(orchapi.HeaderSignature))
+	src, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		src = r.RemoteAddr
+	}
+	out, err := h.Inventory.Poll(r.Context(), src, r.PathValue("hostID"), r.Header.Get(orchapi.HeaderTime), r.Header.Get(orchapi.HeaderSignature))
 	reply(w, r, out, err)
 }
 
