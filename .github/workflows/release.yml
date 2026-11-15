@@ -113,7 +113,11 @@ jobs:
             (cd "build/initramfs/mvmd/$dir" && rustup toolchain install --no-self-update --profile minimal && rustc --version)
           done
 
-      # The manifest of the newest release published before this tag's commit, so that make release
+      # The manifest of the release with the highest version below this tag, among the
+      # published ones. Versions are compared by sort -V with the first "-" of a tag read as "~",
+      # which GNU sort places before the end of a string, so that v0.1.0-dev.10 is below v0.1.0.
+      # Neither publish time nor commit date plays a part, so a release published
+      # after this commit was made, as v0.1.0-dev.9 was, is still found. It is fetched so that make release
       # refuses a kernel its Nodes cannot take (ADR 0037). An earlier release's bundle is a tar of
       # the kernel and the manifest. No earlier release: nothing is checked, and the step says so.
       - name: Fetch the previous release's manifest
@@ -121,9 +125,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          date=$(TZ=UTC git log -1 --date=format-local:'%Y-%m-%dT%H:%M:%SZ' --format=%cd)
-          prev=$(gh release list --exclude-drafts --limit 100 --json tagName,publishedAt \
-            | jq -r --arg tag "$TAG" --arg date "$date" '[.[] | select(.tagName != $tag and .publishedAt < $date)] | sort_by(.publishedAt) | reverse | .[0].tagName // empty')
+          prev=$(gh release list --exclude-drafts --limit 100 --json tagName \
+            | jq -r --arg tag "$TAG" '.[] | select(.tagName != $tag) | .tagName, $tag | sub("-"; "~")' \
+            | sort -V -u | grep -x -B1 -F "$(printf '%s' "$TAG" | sed 's/-/~/')" | head -n 1 \
+            | sed 's/~/-/' | grep -vxF "$TAG" || true)
           if [ -z "$prev" ]; then
             echo "release: no release before $TAG; the upgrade from an earlier image is not checked"
             exit 0
