@@ -30,6 +30,8 @@ type fakeSigner struct {
 	got    map[string]json.RawMessage
 	who    map[string]identity.Identity
 	status int
+	// authorities is what GET /v1/ca answers, which needs no signature.
+	authorities identity.Authorities
 }
 
 func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
@@ -39,6 +41,10 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 	require.NoError(t, err)
 	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/revoke": identity.ActionRevoke}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/ca" {
+			_ = json.NewEncoder(w).Encode(f.authorities)
+			return
+		}
 		raw, _ := io.ReadAll(r.Body)
 		who, body, err := identity.VerifyRequest(raw, actions[r.URL.Path], f.roots, &identity.CRL{}, time.Now())
 		if err != nil {

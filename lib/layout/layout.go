@@ -165,7 +165,7 @@ type Node struct {
 
 	// Registries are the registries mvmd pulls from besides what the image trusts: spec.registries.
 	// Each one's CA is the PEM, not a path. The registry service of the Node is one of them, by
-	// the host RegistryAddr, when the Node is given its CA.
+	// the host RegistryAddr, when the Node is given its CA; a HostOnly Node runs none.
 	Registries []Registry
 	// AWS is the IAM Roles Anywhere profile the credential helpers use, spec.aws. The Node's
 	// certificate and key are the Node Agent's pair, AgentCertDir/AgentPair.
@@ -483,7 +483,7 @@ func (n Node) apiRoot() string {
 // UserData is the Node's naru.yaml, its NoCloud user-data. It carries mvmd's configuration as a
 // file for init to write under /run; its services, in the order init starts them, are mvmd, the
 // registry (the scheduler may bind a Machine to any Node, and mvmd pulls from the registry on its
-// own Node), then gaon's.
+// own Node), then gaon's. A HostOnly Node runs mvmd alone of these: its registries are its profile's.
 func (n Node) UserData() ([]byte, error) {
 	if n.Kube != nil {
 		return n.kubeUserData()
@@ -677,12 +677,14 @@ func (n Node) services() []service {
 			Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", MvmdConfig},
 			Env: n.mvmdEnv(), LogFiles: []string{EcrLoginLog},
 		},
-		{
-			Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")),
-			Args: []string{"-listen", RegistryAddr, "-dir", path.Join(InputsDir, "registry")},
-		},
 	}
 	if n.Mode != HostOnly {
+		// A host that joined has no inputs tree, so no registry binary: it pulls from the registries
+		// of its profile.
+		list = append(list, service{
+			Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")),
+			Args: []string{"-listen", RegistryAddr, "-dir", path.Join(InputsDir, "registry")},
+		})
 		list = append(list, n.gaonServices(creds)...)
 	}
 	if a := n.AWS; a != nil {

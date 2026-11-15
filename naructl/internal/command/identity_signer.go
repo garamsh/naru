@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,11 +22,15 @@ import (
 // signerRequestHeader carries a signed request on the GET that has no body.
 const signerRequestHeader = "X-Naru-Request"
 
-const signerUsage = `usage: naructl signer authorise-replica --admin <person file> --passphrase-file <file> --host-id <id> --join-key <file> --out <file>
+const signerUsage = `usage: naructl signer ca [--authority orch|operator|host] (--socket <path> | --config <file> [--node <ip[:port]>])
+       naructl signer authorise-replica --admin <person file> --passphrase-file <file> --host-id <id> --join-key <file> --out <file>
        naructl signer bundle --admin <person file> --passphrase-file <file> (--socket <path> | --config <file> [--node <ip[:port]>]) --out <file>
        naructl signer reissue-root --recovery-key <file> --passphrase-file <file> --csr <file> (--socket <path> | --config <file> [--node <ip[:port]>]) --out <file>
        naructl signer restore --admin <person file> --passphrase-file <file> --bundle <file> --recovery-key <path> --recovery-passphrase-file <path> (--socket <path> | --config <file> [--node <ip[:port]>])
 
+  ca prints the certificates of the signer's authorities as PEM, each after a comment line with the
+  SHA-256 of its DER, which is what a seed's --orch-ca-sha256 takes for the orch authority. It needs
+  no person file: the certificates are public.
   authorise-replica signs root's authorisation for the signer of a host to receive the authorities: pass the
   file to naru-signer join. bundle writes the authorities sealed to the recovery key. restore fills a blank
   signer from that bundle; the recovery key and its passphrase file are paths on the signer's host.
@@ -40,9 +45,11 @@ const signerUsage = `usage: naructl signer authorise-replica --admin <person fil
 func signerCmd(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		_, _ = fmt.Fprint(stderr, signerUsage)
-		return errors.New("signer authorise-replica, bundle, reissue-root or restore is required")
+		return errors.New("signer ca, authorise-replica, bundle, reissue-root or restore is required")
 	}
 	switch args[0] {
+	case "ca":
+		return signerCA("signer ca", args[1:], stdout, stderr, "orch", "operator", "host")
 	case "authorise-replica":
 		return signerAuthoriseReplica(args[1:], stdout, stderr)
 	case "bundle":
@@ -53,7 +60,47 @@ func signerCmd(args []string, stdout, stderr io.Writer) error {
 		return signerRestore(args[1:], stdout, stderr)
 	}
 	_, _ = fmt.Fprint(stderr, signerUsage)
-	return fmt.Errorf("signer %q: authorise-replica, bundle, reissue-root or restore", args[0])
+	return fmt.Errorf("signer %q: ca, authorise-replica, bundle, reissue-root or restore", args[0])
+}
+
+// signerCA is signer ca and orch ca: it reads GET /v1/ca from the signer, which answers without a
+// signature, and prints the certificates of the authorities named in offered, in that order, as
+// PEM each after a comment line that names it and gives the SHA-256 of its DER. --authority narrows
+// the output to one of offered.
+func signerCA(name string, args []string, stdout, stderr io.Writer, offered ...string) error {
+	fs := newFlags(name, stderr)
+	authority := fs.String("authority", "", "print only this authority: "+strings.Join(offered, ", "))
+	sg := addSignerFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := sg.check(fs); err != nil {
+		return err
+	}
+	if *authority != "" && !slices.Contains(offered, *authority) {
+		return fmt.Errorf("--authority %q is not one of %s", *authority, strings.Join(offered, ", "))
+	}
+	body, err := signerCall(sg, http.MethodGet, "/v1/ca", nil)
+	if err != nil {
+		return err
+	}
+	var a identity.Authorities
+	if err := json.Unmarshal(body, &a); err != nil {
+		return fmt.Errorf("the signer's authorities: %w", err)
+	}
+	der := map[string][]byte{"orch": a.Orch, "operator": a.Operator, "host": a.Host}
+	for _, n := range offered {
+		if *authority != "" && *authority != n {
+			continue
+		}
+		cert, err := x509.ParseCertificate(der[n])
+		if err != nil {
+			return fmt.Errorf("the signer's %s authority: %w", n, err)
+		}
+		sum := sha256.Sum256(cert.Raw)
+		_, _ = fmt.Fprintf(stdout, "# %s authority, SHA-256 %s\n%s", n, hex.EncodeToString(sum[:]), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
+	}
+	return nil
 }
 
 func signerAuthoriseReplica(args []string, stdout, stderr io.Writer) error {

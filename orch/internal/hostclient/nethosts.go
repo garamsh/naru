@@ -25,13 +25,13 @@ type NetAPI interface {
 // each at the address the inventory recorded, through the NetAPI that dial returns for it.
 type NetHosts struct {
 	inv  Inventory
-	dial func(addr string) NetAPI
+	dial func(id, addr string) NetAPI
 }
 
 var _ netrec.Hosts = (*NetHosts)(nil)
 
 // NewNetHosts returns the reconciler's view of the hosts of inv.
-func NewNetHosts(inv Inventory, dial func(addr string) NetAPI) *NetHosts {
+func NewNetHosts(inv Inventory, dial func(id, addr string) NetAPI) *NetHosts {
 	return &NetHosts{inv: inv, dial: dial}
 }
 
@@ -56,7 +56,7 @@ func (h *NetHosts) api(ctx context.Context, id string) (NetAPI, error) {
 	}
 	for _, a := range admitted {
 		if a.ID == id {
-			return h.dial(a.Address), nil
+			return h.dial(a.ID, a.Address), nil
 		}
 	}
 	return nil, fmt.Errorf("host %s is not admitted", id)
@@ -120,10 +120,12 @@ func (h *NetHosts) PutPeers(ctx context.Context, id string, peers []netrec.Peer)
 type hostNet struct{ api *hostapi.Client }
 
 // DialNetAPI returns the dial func for NewNetHosts that reaches a host at its recorded address
-// through hc, which carries orch's client identity for the host API.
-func DialNetAPI(hc *http.Client) func(addr string) NetAPI {
-	return func(addr string) NetAPI {
-		return hostNet{api: hostapi.NewClient((&url.URL{Scheme: "https", Host: addr}).String(), hc)}
+// through hc, which carries orch's client identity for the host API. The host's certificate is
+// accepted when it chains to hc's authority and names the address or the host's ID.
+func DialNetAPI(hc *http.Client) func(id, addr string) NetAPI {
+	n := newNamed(hc)
+	return func(id, addr string) NetAPI {
+		return hostNet{api: hostapi.NewClient((&url.URL{Scheme: "https", Host: addr}).String(), n.client(id, addr))}
 	}
 }
 

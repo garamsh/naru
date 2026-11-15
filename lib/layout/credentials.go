@@ -22,7 +22,7 @@ const (
 	// ControlPlaneFiles is a control-plane Node whose every pair is an operator's file, with no token,
 	// no spec.pki and no signing key.
 	ControlPlaneFiles
-	// HostOnly is a Node that runs mvmd, the registry and naru-hostd and no gaon: it has no cluster
+	// HostOnly is a Node that runs mvmd and naru-hostd, no registry of its own and no gaon: it has no cluster
 	// authority, no token and no pair of gaon's, and serves the host API from the certificate orch's
 	// signer issued to the key the host made (a host that joined orch, ADR 0059).
 	HostOnly

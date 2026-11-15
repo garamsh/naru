@@ -51,7 +51,7 @@ func (a *api) PutPeers(_ context.Context, p []netrec.Peer) error {
 func TestNetHostsReachEachHostAtItsRecordedAddress(t *testing.T) {
 	inv := &invFake{hosts: []orchapi.Host{{ID: "h1", Address: "192.0.2.1:7443"}, {ID: "h2", Address: "192.0.2.2:7443"}}}
 	peers, nets := map[string][]netrec.Peer{}, map[string]netrec.NetworkState{}
-	h := hostclient.NewNetHosts(inv, func(addr string) hostclient.NetAPI { return &api{addr: addr, peers: peers, nets: nets} })
+	h := hostclient.NewNetHosts(inv, func(_, addr string) hostclient.NetAPI { return &api{addr: addr, peers: peers, nets: nets} })
 
 	list, err := h.List(t.Context())
 	require.NoError(t, err)

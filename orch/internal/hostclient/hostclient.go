@@ -27,8 +27,8 @@ const (
 
 // Client implements groups.Hosts.
 type Client struct {
-	inv  Inventory
-	http *http.Client
+	inv   Inventory
+	hosts *named
 	// Now is the clock the fence lengths are measured on; it defaults to time.Now.
 	Now func() time.Time
 }
@@ -37,11 +37,15 @@ var _ groups.Hosts = (*Client)(nil)
 
 // New returns a client that dials the hosts of inv through hc, which carries orch's client
 // identity for the host API.
-func New(inv Inventory, hc *http.Client) *Client { return &Client{inv: inv, http: hc, Now: time.Now} }
+// A host's certificate is accepted when it chains to hc's authority and names the host's address or
+// its ID.
+func New(inv Inventory, hc *http.Client) *Client {
+	return &Client{inv: inv, hosts: newNamed(hc), Now: time.Now}
+}
 
-// api is the host API at addr.
-func (c *Client) api(addr string) *hostapi.Client {
-	return hostapi.NewClient((&url.URL{Scheme: "https", Host: addr}).String(), c.http)
+// api is the host API of h.
+func (c *Client) api(h orchapi.Host) *hostapi.Client {
+	return hostapi.NewClient((&url.URL{Scheme: "https", Host: h.Address}).String(), c.hosts.client(h.ID, h.Address))
 }
 
 // List returns every admitted host. A host that does not answer is listed as not ready.
@@ -69,7 +73,7 @@ func (c *Client) List(ctx context.Context) ([]groups.Host, error) {
 func (c *Client) probe(ctx context.Context, h orchapi.Host, out *groups.Host) {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	api := c.api(h.Address)
+	api := c.api(h)
 	info, err := api.Host(ctx)
 	if err != nil {
 		return
@@ -154,7 +158,7 @@ func (c *Client) host(ctx context.Context, hostID string) (*hostapi.Client, cont
 	for _, h := range hs {
 		if h.ID == hostID {
 			ctx, cancel := context.WithTimeout(ctx, callTimeout)
-			return c.api(h.Address), ctx, cancel, nil
+			return c.api(h), ctx, cancel, nil
 		}
 	}
 	return nil, nil, nil, fmt.Errorf("host %s is not admitted", hostID)

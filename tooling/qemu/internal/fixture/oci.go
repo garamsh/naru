@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -183,9 +184,30 @@ func WriteRegistry(dir string, entry []byte, arch string) (image, sandbox Image,
 
 // writeCerts writes ca.pem, cert.pem and key.pem: an authority and a leaf for 127.0.0.1.
 func writeCerts(dir string) error {
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	certs, err := ServerCerts(net.IPv4(127, 0, 0, 1))
 	if err != nil {
 		return err
+	}
+	for name, content := range map[string][]byte{"ca.pem": certs.CA, "cert.pem": certs.Cert, "key.pem": certs.Key} {
+		if err := os.WriteFile(filepath.Join(dir, name), content, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// Certs is a throwaway authority's certificate and a TLS server's certificate and key, each PEM.
+type Certs struct{ CA, Cert, Key []byte }
+
+// ServerCerts makes a throwaway authority and a leaf of it that is valid for the IP addresses: the
+// certificate of a registry a test serves on one of them.
+func ServerCerts(ips ...net.IP) (Certs, error) {
+	if len(ips) == 0 {
+		return Certs{}, errors.New("a server certificate needs an IP address")
+	}
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return Certs{}, err
 	}
 	caTemplate := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
@@ -198,40 +220,32 @@ func writeCerts(dir string) error {
 	}
 	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
 	if err != nil {
-		return err
+		return Certs{}, err
 	}
 	ca, err := x509.ParseCertificate(caDER)
 	if err != nil {
-		return err
+		return Certs{}, err
 	}
 	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return err
+		return Certs{}, err
 	}
 	leafDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
 		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		Subject:      pkix.Name{CommonName: ips[0].String()},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		IPAddresses:  ips,
 	}, ca, &leafKey.PublicKey, caKey)
 	if err != nil {
-		return err
+		return Certs{}, err
 	}
 	keyDER, err := x509.MarshalECPrivateKey(leafKey)
 	if err != nil {
-		return err
+		return Certs{}, err
 	}
-	for name, block := range map[string]*pem.Block{
-		"ca.pem":   {Type: "CERTIFICATE", Bytes: caDER},
-		"cert.pem": {Type: "CERTIFICATE", Bytes: leafDER},
-		"key.pem":  {Type: "EC PRIVATE KEY", Bytes: keyDER},
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), pem.EncodeToMemory(block), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", name, err)
-		}
-	}
-	return nil
+	encode := func(typ string, der []byte) []byte { return pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}) }
+	return Certs{CA: encode("CERTIFICATE", caDER), Cert: encode("CERTIFICATE", leafDER), Key: encode("EC PRIVATE KEY", keyDER)}, nil
 }

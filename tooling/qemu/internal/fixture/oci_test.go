@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -147,4 +148,27 @@ func TestWriteRegistry_SandboxImageSharesTheLayerAndRunsIdle(t *testing.T) {
 	assert.Equal(t, imgLayer, sandboxLayer)
 	assert.Empty(t, imgCmd, "a microVM runs the entrypoint with no arguments")
 	assert.Equal(t, []string{"idle"}, sandboxCmd, "a sandbox container serves nothing")
+}
+
+func TestServerCerts_TheLeafIsValidForTheAddressesUnderTheAuthorityOnly(t *testing.T) {
+	certs, err := ServerCerts(net.IPv4(10, 78, 0, 1))
+	require.NoError(t, err)
+
+	pair, err := tls.X509KeyPair(certs.Cert, certs.Key)
+	require.NoError(t, err)
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM(certs.CA))
+	_, err = leaf.Verify(x509.VerifyOptions{Roots: pool, DNSName: "10.78.0.1"})
+	assert.NoError(t, err, "the leaf verifies for the address under the authority")
+	assert.Error(t, leaf.VerifyHostname("10.78.0.2"), "and for no other address")
+	_, err = leaf.Verify(x509.VerifyOptions{Roots: x509.NewCertPool(), DNSName: "10.78.0.1"})
+	assert.Error(t, err, "and under no other authority")
+}
+
+func TestServerCerts_NoAddressIsRefused(t *testing.T) {
+	_, err := ServerCerts()
+
+	assert.Error(t, err)
 }

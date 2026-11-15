@@ -84,7 +84,9 @@ func TestHostProfileNode_BuildsAHostConfigWithNoGaonAndNoClusterSections(t *test
 		}
 	}
 	slices.Sort(names)
-	assert.Equal(t, []string{"mvmd", "naru-hostd", "registry"}, names)
+	// A joined host has no inputs tree and so no naru-registry binary to run: a service for it would
+	// fail to start and be restarted by init for ever.
+	assert.Equal(t, []string{"mvmd", "naru-hostd"}, names)
 	files := map[string]string{}
 	for _, f := range parsed.Spec.Files {
 		files[f.Path] = f.Content

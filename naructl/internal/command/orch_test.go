@@ -33,6 +33,7 @@ type fakeOrch struct {
 	srv     *httptest.Server
 	mu      sync.Mutex
 	pending []orchapi.Pending
+	hosts   []orchapi.Host
 	admits  []orchapi.AdmitRequest
 	revoked []string
 	groups  []orchapi.GroupSpec
@@ -71,6 +72,7 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 	t.Helper()
 	f := &fakeOrch{pending: pending}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/hosts", func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(f.hosts) })
 	mux.HandleFunc("GET /v1/pending", func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(f.pending) })
 	mux.HandleFunc("POST /v1/admit", func(w http.ResponseWriter, r *http.Request) {
 		var req orchapi.AdmitRequest

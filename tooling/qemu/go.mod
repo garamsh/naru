@@ -14,9 +14,10 @@ require golang.org/x/crypto v0.57.0 // indirect
 require (
 	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/identity v0.0.0-00010101000000-000000000000
+	github.com/garamsh/naru/lib/init v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/iso9660 v0.0.0-00010101000000-000000000000
-	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/net v0.60.0
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 	google.golang.org/grpc v1.85.0 // indirect
@@ -28,3 +29,5 @@ replace github.com/garamsh/naru/lib/iso9660 => ../../lib/iso9660
 replace github.com/garamsh/naru/lib/hostapi => ../../lib/hostapi
 
 replace github.com/garamsh/naru/lib/identity => ../../lib/identity
+
+replace github.com/garamsh/naru/lib/init => ../../lib/init
