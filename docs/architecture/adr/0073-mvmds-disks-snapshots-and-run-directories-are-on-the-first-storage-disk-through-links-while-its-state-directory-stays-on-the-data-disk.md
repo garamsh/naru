@@ -44,3 +44,7 @@ Drafted for garamsh/naru#219, part of goal garamsh/naru#197. It amends [ADR 0027
 - **Two mounts of the XFS, over `disks/` and `snapshots/`.** The rename probe fails with EXDEV across mounts of one file system.
 - **An ext4 storage disk with verity.** It loses ADR 0027's constant-time reflink copy.
 - **Waiting for mvmd to take the roots as settings.** It blocks the release, and the links are retired when it does.
+
+## Errata
+
+- 2026-11-16: Item 3 links `disk-snapshots/` too: init makes `disk-snapshots/` on the XFS (mode `0700`) and a link `<state_dir>/disk-snapshots` to it, as for `disks/` and `snapshots/`. mvmd at `b1a60cd` keeps `disk-snapshots` under `state_dir` and refuses to start unless its `staging` is on the file system of `disks` (`daemon/internal/app/storage.go`, `checkDisksSameFileSystem`): "the disk snapshot directory %s is not on the file system of the disk directory %s, so a disk could not be cloned into a snapshot". With `disk-snapshots/` left on the data disk, mvmd never started on a Node with a storage disk. The body above is not edited.
