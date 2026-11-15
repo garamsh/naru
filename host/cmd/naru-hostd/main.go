@@ -48,6 +48,7 @@ func main() {
 		revKey      = flag.String("revocation-public-key", "", "PEM public key that verifies the signer's revocation list; empty checks no revocation")
 		revMaxAge   = flag.Duration("revocation-max-age", identity.DefaultMaxAge, "how long a revocation list that cannot be refreshed is used before every client is refused")
 		revSocket   = flag.String("revocation-signer-socket", "", "the local signer's socket to read the list from; empty fetches it from --orch-url")
+		tokenFile   = flag.String("leader-token-file", "/var/lib/naru/hostd/leader-token", "where the highest leader token orch has sent is kept, so a restart does not forget it")
 		revFile     = flag.String("revocation-file", "/var/lib/naru/hostd/crl.json", "where the last verified list is kept, so a restart within the max age needs no fetch first")
 		revSeed     = flag.String("revocation-seed", "", "a signed list delivered with the host's configuration, taken when it is newer than the kept one")
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
@@ -138,7 +139,7 @@ func main() {
 	}
 
 	reg := metrics.New()
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations})
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile})
 	if *metricsAddr != "" {
 		go func() {
 			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {

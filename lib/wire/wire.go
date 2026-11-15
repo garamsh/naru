@@ -1,6 +1,6 @@
 // Package wire holds the values two parts of naru agree on without calling each other: where the
-// data disk is and what it is called, the EFI system partition's GUID, the ports, and the form of
-// an enrollment key. Each is defined here once and imported by every Go user.
+// data disk is and what it is called, the EFI system partition's GUID, the ports, the form of
+// an enrollment key and the header of orch's fencing token. Each is defined here once and imported by every Go user.
 package wire
 
 import (
@@ -33,6 +33,11 @@ const (
 	EtcdClientPort = "2379"
 	EtcdPeerPort   = "2380"
 )
+
+// LeaderTokenHeader names the header in which orch's leader sends its fencing token with every
+// mutating call to a host (ADR 0071). The value is the decimal token; a call without it is an
+// operator's.
+const LeaderTokenHeader = "X-Naru-Leader-Token"
 
 // EnrollKeyPrefix starts every enrollment key orch issues; the rest is the hex of EnrollKeyBytes
 // random bytes, in lowercase.
