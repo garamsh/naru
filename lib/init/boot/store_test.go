@@ -2,6 +2,8 @@ package boot_test
 
 import (
 	"errors"
+	"fmt"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -66,6 +68,18 @@ func TestRun_DiscardsAStoredConfigurationThatDoesNotValidate(t *testing.T) {
 	assert.Equal(t, 0, got.Revision)
 	require.Len(t, r.saved, 1)
 	assert.Equal(t, 0, r.saved[0].Revision)
+}
+
+func TestRun_KeepsAStoreThatCannotBeReadAndRunsTheBaseForThisBootOnly(t *testing.T) {
+	r := &recorder{raw: validConfig, loadErr: fmt.Errorf("%w: %w", store.ErrUnreadable, syscall.EIO)}
+	r.stored = storedWith(t, validConfig, "")
+
+	got, err := runStored(r)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mvmd"}, r.started, "the base's services start")
+	assert.Equal(t, 0, got.Revision)
+	assert.Empty(t, r.saved, "the operator's revisions are not written over")
 }
 
 func TestRun_RunsTheBaseWhenThereIsNoStore(t *testing.T) {

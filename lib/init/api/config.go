@@ -4,16 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"slices"
 
 	"go.yaml.in/yaml/v4"
 
 	"github.com/garamsh/naru/lib/init/apply"
 	"github.com/garamsh/naru/lib/init/config"
+	"github.com/garamsh/naru/lib/init/store"
 )
-
-// redacted stands in GET /v1/config for private material.
-const redacted = "REDACTED"
 
 // maxApplyBody bounds a request body: a configuration carries files and certificates.
 const maxApplyBody = 8 << 20
@@ -40,7 +37,7 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "the boot ID cannot be read"})
 		return
 	}
-	doc, err := configDocument(redact(cfg), s.status(revision, info))
+	doc, err := configDocument(apply.Redact(cfg), s.status(revision, info))
 	if err != nil {
 		s.deps.Log.Error("encode the configuration", "err", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "the configuration cannot be encoded"})
@@ -78,46 +75,6 @@ func configDocument(cfg config.NodeConfig, st config.Status) (any, error) {
 	}
 	doc.(map[string]any)[config.StatusKey] = stDoc
 	return doc, nil
-}
-
-// redact returns cfg with private material replaced by REDACTED: spec.api.key, each
-// spec.pki.authorities[].key, each spec.registries[].credential.password, spec.host.orch.enrollKey, and the content of each spec.files entry that gives group and
-// other no read. A field that is empty holds no material and is left empty.
-func redact(cfg config.NodeConfig) config.NodeConfig {
-	if a := cfg.Spec.API; a != nil {
-		c := *a
-		if c.Key != "" {
-			c.Key = redacted
-		}
-		cfg.Spec.API = &c
-	}
-	cfg.Spec.PKI.Authorities = slices.Clone(cfg.Spec.PKI.Authorities)
-	for i := range cfg.Spec.PKI.Authorities {
-		if a := &cfg.Spec.PKI.Authorities[i]; a.Key != "" {
-			a.Key = redacted
-		}
-	}
-	cfg.Spec.Registries = slices.Clone(cfg.Spec.Registries)
-	for i := range cfg.Spec.Registries {
-		if c := cfg.Spec.Registries[i].Credential; c != nil && c.Password != "" {
-			c := *c
-			c.Password = redacted
-			cfg.Spec.Registries[i].Credential = &c
-		}
-	}
-	if h := cfg.Spec.Host; h != nil && h.Orch != nil && h.Orch.EnrollKey != "" {
-		h, o := *h, *h.Orch
-		o.EnrollKey = redacted
-		h.Orch = &o
-		cfg.Spec.Host = &h
-	}
-	cfg.Spec.Files = slices.Clone(cfg.Spec.Files)
-	for i := range cfg.Spec.Files {
-		if f := &cfg.Spec.Files[i]; f.Perm()&0o044 == 0 && f.Content != "" {
-			f.Content = redacted
-		}
-	}
-	return cfg
 }
 
 // document returns v as the generic document its YAML form decodes to, which JSON encodes
@@ -203,7 +160,7 @@ func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeApplyError is the one place an apply's error becomes a status: 409 for a stale
-// revision, 422 for an invalid request, and 500 for a failure.
+// revision, 422 for an invalid request, 503 for a store that cannot be read, and 500 for a failure.
 func (s *Server) writeApplyError(w http.ResponseWriter, err error) {
 	var stale *apply.StaleError
 	var invalid *apply.InvalidError
@@ -216,6 +173,9 @@ func (s *Server) writeApplyError(w http.ResponseWriter, err error) {
 		}{errorBody{Error: stale.Error()}, stale.Stored})
 	case errors.As(err, &invalid):
 		writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: invalid.Error(), Fields: invalid.Fields})
+	case errors.Is(err, store.ErrUnreadable):
+		s.deps.Log.Error("apply refused: the store cannot be read", "err", err)
+		writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: err.Error()})
 	case errors.As(err, &failed):
 		s.deps.Log.Error("apply failed after the revision was stored", "revision", failed.Revision, "action", failed.Failed.Action, "target", failed.Failed.Target, "err", failed.Err)
 		writeJSON(w, http.StatusInternalServerError, struct {
