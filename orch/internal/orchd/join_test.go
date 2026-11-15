@@ -173,9 +173,16 @@ func TestThePoolGivesTheLowestFreePrefixAnswers409WhenFullAndTakesRemovedHostsBa
 		}
 	}
 	assert.Equal(t, map[string]string{"h-a": "10.200.1.0/24", "h-b": "10.200.2.0/24", "h-c": "10.200.3.0/24"}, prefixes)
+	listed, err := o.op.Hosts(t.Context())
+	require.NoError(t, err)
+	listedPrefixes := map[string]string{}
+	for _, h := range listed {
+		listedPrefixes[h.ID] = h.MachinePrefix
+	}
+	assert.Equal(t, prefixes, listedPrefixes, "GET /v1/hosts carries the prefix each host was given")
 
 	full := newHost(t, "h-d")
-	_, err := o.anon.Enroll(t.Context(), full.seeded(o.secret))
+	_, err = o.anon.Enroll(t.Context(), full.seeded(o.secret))
 	require.NoError(t, err)
 	_, err = o.op.Admit(t.Context(), orchapi.AdmitRequest{HostID: full.id, Code: identity.PairingCode(full.pub), Statement: orchtest.Statement(t, o.operator, full.id, full.pub)})
 	assert.Equal(t, http.StatusConflict, status(err), "a full pool")

@@ -89,7 +89,9 @@ func (s *Signer) IssueHost(req identity.HostRequest) (identity.Issued, error) {
 	if !namePattern.MatchString(adm.HostID) {
 		return identity.Issued{}, fmt.Errorf("%w: host ID %q", ErrBadRequest, adm.HostID)
 	}
-	issued, err := issueLeaf(a.host, now, adm.HostID, identity.RoleHost, csr.PublicKey, serverAndClient, nil)
+	// The DNS name is the host ID the operator signed, never a name the request asks for: it adds no
+	// authority beyond the CN, and no IP address, which a DHCP lease can change within the year.
+	issued, err := issueLeaf(a.host, now, adm.HostID, identity.RoleHost, csr.PublicKey, serverAndClient, &x509.CertificateRequest{DNSNames: []string{adm.HostID}})
 	if err != nil {
 		return identity.Issued{}, err
 	}

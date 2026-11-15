@@ -19,7 +19,7 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
        naructl <version|services|logs|get config|apply|reboot|upgrade> --config <client file> [--node <ip[:port]>] [flags]
        naructl operator <add|revoke> --admin <person file> --passphrase-file <file> (--socket <path> | --config <file> [--node <ip[:port]>]) [flags]
                                                      issue or revoke an operator through naru-signer (naructl operator -h)
-       naructl operator request|person, naructl orch csr|issue, naructl signer authorise-replica|bundle|restore
+       naructl operator request|person, naructl orch csr|issue, naructl signer ca|authorise-replica|bundle|restore
                                                      make an identity's key, request and person file, and use root's (naructl operator -h, naructl signer -h)
        naructl topology [kubernetes]                 print the services a Node runs, and which signs, as JSON
        naructl console --orch <url> --identity <person file> --passphrase-file <file> [--listen 127.0.0.1:8484] [--ca <file>]
@@ -41,12 +41,14 @@ const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-c
               as a boot set with no reboot, or remove one
               all of these take the same flags; create, stop, start, delete and boot-set need the provisioner role
   orch init --out-dir <dir> --passphrase-file <file>    write the recovery key, encrypted, and its public half
+  orch ca (--socket <path> | --config <file> [--node <ip[:port]>])
+              print the orch authority's certificate, which orch's certificate chains to, and its SHA-256, from the signer
   orch backup [--out <file>]                            take a sealed snapshot now; with --out, also fetch it
   orch restore --snapshot <file> --recovery-key <file> --passphrase-file <file> [--out <file>]
               [--push <orch URL> --orch-ca <file> --admin <root person file> [--admin-passphrase-file <file>]]
               open the sealed snapshot; --out writes the plain etcd snapshot, --push sends it to a naru-orchd
               started with --restore (the plain snapshot is not written to disk without --out)
-  enroll-key create [--ttl d] | enroll-key revoke <id>  | host pending | host admit <id> --code <code> --region <r> [--label k=v]
+  enroll-key create [--ttl d] | enroll-key revoke <id>  | host list | host pending | host admit <id> --code <code> --region <r> [--label k=v]
   host label <id> --region <r> [--label k=v] | host drain <id> | host undrain <id> | group apply -f <spec> | group get <name> | group list | group delete <name>
   host remove <id> | host profile set -f <profile> | host profile get
               remove forgets a host and frees its Machine prefix (its certificate stays valid: operator revoke ends it)

@@ -96,5 +96,5 @@ func (h Host) api() orchapi.Host {
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	return orchapi.Host{ID: h.ID, Region: h.Region, Labels: labels, Address: h.Address, AdmittedAt: h.AdmittedAt, LastSeen: h.LastSeen, Draining: h.Draining}
+	return orchapi.Host{ID: h.ID, Region: h.Region, Labels: labels, Address: h.Address, AdmittedAt: h.AdmittedAt, LastSeen: h.LastSeen, Draining: h.Draining, MachinePrefix: h.MachinePrefix}
 }

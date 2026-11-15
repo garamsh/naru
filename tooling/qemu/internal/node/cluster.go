@@ -130,6 +130,9 @@ type Cluster struct {
 	// HostCA is the certificate file of the authority the hosts' API certificates chain to, which orch
 	// trusts for them (spec.orch.hostCA). It is set when the cluster has hosts.
 	HostCA string
+	// Mcast is the multicast group, "230.78.0.1:port", the Nodes' NICs are on: what a Node or a server
+	// started beside the cluster joins to be on its network.
+	Mcast string
 	// Forwards is, by Node name and guest port, the "127.0.0.1:port" of each ClusterSpec.Forward.
 	Forwards map[string]map[string]string
 }
@@ -186,7 +189,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 	// The Nodes of one cluster meet on a multicast group and port of their own, so that
 	// clusters running side by side on one host do not share a network.
 	mcast := fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000)) //nolint:gosec // a port, not a secret
-	c := &Cluster{}
+	c := &Cluster{Mcast: mcast}
 	var gen *gaonFiles
 	if spec.Gaon {
 		var err error
