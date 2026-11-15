@@ -41,3 +41,7 @@ Drafted for garamsh/naru#165, part of plan garamsh/naru#113; it carries decision
 - Hosts need different profiles (per rack, per role), which would say one key is too coarse and the profile belongs per group.
 - Re-enrollment after certificate expiry is common enough that a new seed per host is a burden, which would say the sentinel should give way to a key init does not require.
 - The first /24 skipped is wanted by someone, which would say the rule belongs in the profile.
+
+## Errata
+
+- 2026-11-15: [ADR 0066](./0066-orch-reserves-a-machine-prefix-before-it-asks-the-signer-and-commits-it-at-admission-keeps-no-credential-in-a-host-record-and-allocates-every-prefix-through-one-function.md) changes how the prefix is claimed (reserved before the signer is asked, committed at admission) and says a host record does not hold the built configuration: orch builds it at each poll from the record and the current profile. "hosts already admitted keep the configuration they were given" is as before, since a host fetches its configuration once.

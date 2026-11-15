@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
+	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
@@ -126,13 +128,29 @@ func (s *Store) RevokeKey(ctx context.Context, id string, ev orchapi.Event) erro
 	return err
 }
 
-func (s *Store) PutPending(ctx context.Context, p inventory.Pending, ev *orchapi.Event) error {
-	ops := []clientv3.Op{clientv3.OpPut(pendingPrefix+p.HostID, encode(p))}
+func (s *Store) PutPending(ctx context.Context, p inventory.Pending, ev *orchapi.Event, create bool) error {
+	key := pendingPrefix + p.HostID
+	pend := clientv3.Compare(clientv3.CreateRevision(key), ">", 0)
+	if create {
+		pend = clientv3.Compare(clientv3.CreateRevision(key), "=", 0)
+	}
+	ops := []clientv3.Op{clientv3.OpPut(key, encode(p))}
 	if ev != nil {
 		ops = append(ops, eventOp(*ev))
 	}
-	_, err := s.kv.Txn(ctx).Then(ops...).Commit()
-	return err
+	resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(hostPrefix+p.HostID), "=", 0), pend).Then(ops...).Commit()
+	if err != nil {
+		return err
+	}
+	if resp.Succeeded {
+		return nil
+	}
+	if _, err := s.GetHost(ctx, p.HostID); err == nil {
+		return inventory.ErrAlreadyAdmitted
+	} else if !errors.Is(err, inventory.ErrNotFound) {
+		return err
+	}
+	return inventory.ErrConflict
 }
 
 func (s *Store) GetPending(ctx context.Context, hostID string) (inventory.Pending, error) {
@@ -145,13 +163,84 @@ func (s *Store) ListPending(ctx context.Context) ([]inventory.Pending, error) {
 	return list[inventory.Pending](ctx, s, pendingPrefix)
 }
 
+// Reserve is inventory.Store's Reserve. The allocations are read at one revision and the write
+// compares that none of them changed since, so two reservations cannot take the same or overlapping
+// prefixes.
+func (s *Store) Reserve(ctx context.Context, hostID string, pick func([]netip.Prefix) (netip.Prefix, error), until, now time.Time) (inventory.Allocation, error) {
+	for range casRetries {
+		resp, err := s.kv.Get(ctx, allocPrefix, clientv3.WithPrefix())
+		if err != nil {
+			return inventory.Allocation{}, err
+		}
+		var claimed []netip.Prefix
+		var expired []string
+		var own *inventory.Allocation
+		for _, kv := range resp.Kvs {
+			var a inventory.Allocation
+			if err := json.Unmarshal(kv.Value, &a); err != nil {
+				return inventory.Allocation{}, fmt.Errorf("record %s: %w", kv.Key, err)
+			}
+			switch {
+			case a.HostID == hostID && !a.ReservedUntil.IsZero():
+				own = &a
+			case !a.ReservedUntil.IsZero() && !a.ReservedUntil.After(now):
+				expired = append(expired, string(kv.Key))
+			default:
+				pf, err := netip.ParsePrefix(a.Prefix)
+				if err != nil {
+					return inventory.Allocation{}, fmt.Errorf("record %s: %w", kv.Key, err)
+				}
+				claimed = append(claimed, pf)
+			}
+		}
+		var a inventory.Allocation
+		if own != nil {
+			a = *own
+			a.ReservedUntil = until
+		} else {
+			pf, err := pick(claimed)
+			if err != nil {
+				return inventory.Allocation{}, err
+			}
+			a = inventory.Allocation{Prefix: pf.String(), HostID: hostID, ReservedUntil: until}
+		}
+		ops := []clientv3.Op{clientv3.OpPut(allocPrefix+a.Prefix, encode(a))}
+		for _, k := range expired {
+			// A key the new reservation overwrites is not deleted as well: a transaction may not
+			// touch one key twice.
+			if k != allocPrefix+a.Prefix {
+				ops = append(ops, clientv3.OpDelete(k))
+			}
+		}
+		t, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(allocPrefix), "<", resp.Header.Revision+1).WithPrefix()).Then(ops...).Commit()
+		if err != nil {
+			return inventory.Allocation{}, err
+		}
+		if t.Succeeded {
+			return a, nil
+		}
+	}
+	return inventory.Allocation{}, inventory.ErrConflict
+}
+
+func (s *Store) Release(ctx context.Context, a inventory.Allocation) error {
+	key := allocPrefix + a.Prefix
+	_, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.Value(key), "=", encode(a))).Then(clientv3.OpDelete(key)).Commit()
+	return err
+}
+
 func (s *Store) Admit(ctx context.Context, p inventory.Pending, h inventory.Host, ev orchapi.Event, alloc *inventory.Allocation) error {
 	key := pendingPrefix + p.HostID
-	cmps := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(key), ">", 0)}
+	cmps := []clientv3.Cmp{
+		clientv3.Compare(clientv3.CreateRevision(key), ">", 0),
+		clientv3.Compare(clientv3.CreateRevision(hostPrefix+h.ID), "=", 0),
+	}
 	ops := []clientv3.Op{clientv3.OpDelete(key), clientv3.OpPut(hostPrefix+h.ID, encode(h)), eventOp(ev)}
 	if alloc != nil {
-		cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(allocPrefix+alloc.Prefix), "=", 0))
-		ops = append(ops, clientv3.OpPut(allocPrefix+alloc.Prefix, encode(*alloc)))
+		confirmed := *alloc
+		confirmed.ReservedUntil = time.Time{}
+		cmps = append(cmps, clientv3.Compare(clientv3.Value(allocPrefix+alloc.Prefix), "=", encode(*alloc)))
+		ops = append(ops, clientv3.OpPut(allocPrefix+alloc.Prefix, encode(confirmed)))
 	}
 	resp, err := s.kv.Txn(ctx).If(cmps...).Then(ops...).Commit()
 	if err != nil {
@@ -163,7 +252,44 @@ func (s *Store) Admit(ctx context.Context, p inventory.Pending, h inventory.Host
 	if _, err := s.GetPending(ctx, p.HostID); err != nil {
 		return err
 	}
+	if _, err := s.GetHost(ctx, h.ID); err == nil {
+		return inventory.ErrAlreadyAdmitted
+	}
 	return inventory.ErrAllocationTaken
+}
+
+// DropStoredConfigs is inventory.Store's DropStoredConfigs, one compare-guarded write per record.
+func (s *Store) DropStoredConfigs(ctx context.Context) (int, error) {
+	resp, err := s.kv.Get(ctx, hostPrefix, clientv3.WithPrefix())
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, kv := range resp.Kvs {
+		var probe struct {
+			Config []byte `json:"config"`
+		}
+		if err := json.Unmarshal(kv.Value, &probe); err != nil {
+			return n, fmt.Errorf("record %s: %w", kv.Key, err)
+		}
+		if len(probe.Config) == 0 {
+			continue
+		}
+		key := string(kv.Key)
+		wrote := false
+		_, err := update(ctx, s, key, func(h *inventory.Host) error {
+			wrote = len(h.Config) > 0
+			h.Config = nil
+			return nil
+		})
+		if err != nil {
+			return n, err
+		}
+		if wrote {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (s *Store) RemoveHost(ctx context.Context, id string, ev orchapi.Event) (inventory.Host, error) {
@@ -225,7 +351,12 @@ func (s *Store) UpdateHost(ctx context.Context, id string, change func(*inventor
 	if ev != nil {
 		ops = append(ops, eventOp(*ev))
 	}
-	return update(ctx, s, hostPrefix+id, func(h *inventory.Host) error { change(h); return nil }, ops...)
+	return update(ctx, s, hostPrefix+id, func(h *inventory.Host) error {
+		change(h)
+		// A write never carries the config older records held, so a heartbeat cannot bring it back.
+		h.Config = nil
+		return nil
+	}, ops...)
 }
 
 func (s *Store) AppendEvent(ctx context.Context, ev orchapi.Event) error {

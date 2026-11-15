@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net/netip"
 
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
@@ -44,11 +45,34 @@ func (s *service) Enroll(ctx context.Context, source string, req orchapi.EnrollR
 		}
 	}
 
+	// The writes below hold only while the host is not admitted, so a repeat of this request that
+	// meets an admission in between starts over and answers the admitted status.
+	for range enrollRetries {
+		st, err := s.enrollOnce(ctx, key, req)
+		if errors.Is(err, ErrAlreadyAdmitted) || (errors.Is(err, ErrConflict) && errors.Is(err, errRaced)) {
+			continue
+		}
+		return st, err
+	}
+	return orchapi.EnrollStatus{}, ErrConflict
+}
+
+// enrollRetries bounds the starts over of an enrollment that lost a race with another write.
+const enrollRetries = 4
+
+// errRaced marks a conflict that is a lost race, not a key mismatch.
+var errRaced = errors.New("the enrollment changed meanwhile")
+
+func (s *service) enrollOnce(ctx context.Context, key Key, req orchapi.EnrollRequest) (orchapi.EnrollStatus, error) {
 	if h, err := s.store.GetHost(ctx, req.HostID); err == nil {
 		if !bytes.Equal(h.PublicKey, req.PublicKey) {
 			return orchapi.EnrollStatus{}, ErrConflict
 		}
-		return orchapi.EnrollStatus{State: orchapi.StateAdmitted, Certificate: h.Certificate, Config: h.Config}, nil
+		cfg, err := s.configFor(ctx, h)
+		if err != nil {
+			return orchapi.EnrollStatus{}, err
+		}
+		return orchapi.EnrollStatus{State: orchapi.StateAdmitted, Certificate: h.Certificate, Config: cfg}, nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return orchapi.EnrollStatus{}, err
 	}
@@ -61,7 +85,7 @@ func (s *service) Enroll(ctx context.Context, source string, req orchapi.EnrollR
 			return orchapi.EnrollStatus{}, ErrConflict
 		}
 		p.Address, p.Hardware = req.Address, req.Hardware
-		return orchapi.EnrollStatus{State: orchapi.StatePending, Code: code}, s.store.PutPending(ctx, p, nil)
+		return orchapi.EnrollStatus{State: orchapi.StatePending, Code: code}, raced(s.store.PutPending(ctx, p, nil, false))
 	case !errors.Is(err, ErrNotFound):
 		return orchapi.EnrollStatus{}, err
 	}
@@ -75,7 +99,15 @@ func (s *service) Enroll(ctx context.Context, source string, req orchapi.EnrollR
 	now := s.clock.Now()
 	p = Pending{HostID: req.HostID, PublicKey: req.PublicKey, CSR: req.CSR, Address: req.Address, KeyID: key.ID, FirstSeen: now, Hardware: req.Hardware}
 	ev := orchapi.Event{Time: now, Type: EventEnrolling, Subject: req.HostID, Detail: map[string]string{"keyId": key.ID, "code": code, "address": req.Address}}
-	return orchapi.EnrollStatus{State: orchapi.StatePending, Code: code}, s.store.PutPending(ctx, p, &ev)
+	return orchapi.EnrollStatus{State: orchapi.StatePending, Code: code}, raced(s.store.PutPending(ctx, p, &ev, true))
+}
+
+// raced marks the store's conflict as a lost race.
+func raced(err error) error {
+	if errors.Is(err, ErrConflict) {
+		return fmt.Errorf("%w: %w", ErrConflict, errRaced)
+	}
+	return err
 }
 
 // usableKey finds the key a secret names and refuses it when it is unknown, expired or revoked.
@@ -121,12 +153,21 @@ func checkHostKey(publicKeyDER, csrDER []byte) error {
 	return nil
 }
 
-func (s *service) Poll(ctx context.Context, hostID, timeValue, signature string) (orchapi.EnrollStatus, error) {
+// Poll answers an enrolling host. An unknown host and a known one with a proof that does not hold
+// get the same ErrNotFound, so the answer does not tell which host IDs exist.
+func (s *service) Poll(ctx context.Context, source, hostID, timeValue, signature string) (orchapi.EnrollStatus, error) {
+	if !s.polls.allow(source) {
+		return orchapi.EnrollStatus{}, ErrRateLimited
+	}
 	if h, err := s.store.GetHost(ctx, hostID); err == nil {
 		if err := orchapi.VerifyProof(h.PublicKey, hostID, timeValue, signature, s.clock.Now()); err != nil {
+			return orchapi.EnrollStatus{}, ErrNotFound
+		}
+		cfg, err := s.configFor(ctx, h)
+		if err != nil {
 			return orchapi.EnrollStatus{}, err
 		}
-		return orchapi.EnrollStatus{State: orchapi.StateAdmitted, Certificate: h.Certificate, Config: h.Config}, nil
+		return orchapi.EnrollStatus{State: orchapi.StateAdmitted, Certificate: h.Certificate, Config: cfg}, nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return orchapi.EnrollStatus{}, err
 	}
@@ -135,7 +176,25 @@ func (s *service) Poll(ctx context.Context, hostID, timeValue, signature string)
 		return orchapi.EnrollStatus{}, err
 	}
 	if err := orchapi.VerifyProof(p.PublicKey, hostID, timeValue, signature, s.clock.Now()); err != nil {
-		return orchapi.EnrollStatus{}, err
+		return orchapi.EnrollStatus{}, ErrNotFound
 	}
 	return orchapi.EnrollStatus{State: orchapi.StatePending, Code: identity.PairingCode(p.PublicKey)}, nil
+}
+
+// configFor builds the naru.yaml of an admitted host that joined from the install seed from its
+// record and the current profile, and returns nil for a host enrolled with its own configuration.
+// A profile change shows in the next answer, and the profile's credential is never copied.
+func (s *service) configFor(ctx context.Context, h Host) ([]byte, error) {
+	if h.MachinePrefix == "" {
+		return nil, nil
+	}
+	prefix, err := netip.ParsePrefix(h.MachinePrefix)
+	if err != nil {
+		return nil, fmt.Errorf("%w: the host's machine prefix %q: %v", ErrConflict, h.MachinePrefix, err)
+	}
+	j, err := s.planJoined(ctx, Pending{Address: h.Address})
+	if err != nil {
+		return nil, err
+	}
+	return j.buildConfig(h, prefix, s.conf.OrchCA)
 }

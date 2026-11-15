@@ -547,10 +547,6 @@ func orchService(o Orch, node string, m *Metrics) (Service, []File) {
 		members = append(members, name+"="+u)
 	}
 	slices.Sort(members)
-	sans := o.SANs
-	if len(sans) == 0 {
-		sans = []string{"127.0.0.1"}
-	}
 	cluster := "--initial-cluster=" + strings.Join(members, ",")
 	if o.Join != "" {
 		cluster = "--join=" + o.Join
@@ -558,7 +554,7 @@ func orchService(o Orch, node string, m *Metrics) (Service, []File) {
 	args := []string{
 		"--name=" + o.name(node), "--data-dir=" + OrchDataDir + "/etcd", "--peer-url=" + o.PeerURL, "--client-url=" + o.ClientURL,
 		cluster, "--initial-cluster-state=" + o.state(), "--listen=" + o.listen(),
-		"--san=" + strings.Join(sans, ","), "--cert=" + OrchRunDir + "/orch.crt", "--key=" + OrchKeyFile, "--ca=" + OrchRunDir + "/ca.crt",
+		"--cert=" + OrchRunDir + "/orch.crt", "--key=" + OrchKeyFile, "--ca=" + OrchRunDir + "/ca.crt",
 		"--signer-socket=" + SignerSocket, "--snapshot-dir=" + OrchDataDir + "/snapshots",
 		"--revocation-public-key=" + OrchRunDir + "/revocation.pub",
 		"--host-client-cert=" + OrchRunDir + "/orch.crt", "--host-client-key=" + OrchKeyFile,

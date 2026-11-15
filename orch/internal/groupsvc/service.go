@@ -4,6 +4,7 @@ package groupsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"sort"
@@ -52,7 +53,14 @@ func (s *service) Apply(ctx context.Context, by string, a orchapi.GroupSpec) (or
 	if err := s.checkNetwork(ctx, spec.Template); err != nil {
 		return orchapi.Group{}, err
 	}
-	if err := s.store.PutGroup(ctx, spec); err != nil {
+	var prev *groups.GroupSpec
+	switch old, err := s.store.GetGroup(ctx, spec.Name); {
+	case err == nil:
+		prev = &old
+	case !errors.Is(err, inventory.ErrNotFound):
+		return orchapi.Group{}, err
+	}
+	if err := s.store.PutGroup(ctx, spec, prev); err != nil {
 		return orchapi.Group{}, err
 	}
 	ev := orchapi.Event{Time: s.clock.Now(), Type: EventApplied, Subject: spec.Name, Detail: map[string]string{"by": by, "template": spec.Template.Hash()}}
