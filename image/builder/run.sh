@@ -34,9 +34,16 @@ if ! "$docker" image inspect "$tag" >/dev/null 2>&1; then
   rm -rf "$out"
   mkdir -p "$out"
   echo "builder: building $tag from $here/Dockerfile" >&2
-  # --builder default is the Docker daemon's own BuildKit. rewrite-timestamp, the fixed epoch and no
-  # attestations give the same layers on every machine.
-  "$docker" buildx build --builder default --provenance=false --sbom=false \
+  # The build runs in a BuildKit container of a pinned image, not in the Docker daemon's own
+  # BuildKit: a daemon without the containerd image store has no OCI exporter, and two daemons ship
+  # two BuildKit versions. rewrite-timestamp, the fixed epoch and no attestations give the same
+  # layers on every machine.
+  bk=naru-buildkit-${BUILDKIT_IMAGE##*:}
+  bk=${bk:0:30}
+  if ! "$docker" buildx inspect "$bk" >/dev/null 2>&1; then
+    "$docker" buildx create --name "$bk" --driver docker-container --driver-opt "image=$BUILDKIT_IMAGE" >&2
+  fi
+  "$docker" buildx build --builder "$bk" --provenance=false --sbom=false \
     --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
     --output "type=oci,dest=$out/builder.tar,rewrite-timestamp=true" \
     --metadata-file "$out/metadata.json" "$here" >&2
