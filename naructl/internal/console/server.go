@@ -37,8 +37,9 @@ type Config struct {
 	Sign func(identity.Admission) ([]byte, error)
 	// AdmissionTTL is how long a signed admission stays valid.
 	AdmissionTTL time.Duration
-	// AllowedHosts are the Host headers a request may carry; empty allows any. A loopback server lists
-	// its own addresses so that a page on another origin that resolves its name to loopback is refused.
+	// AllowedHosts are the Host headers a request may carry, and at least one is required: a server
+	// that listed none would allow any, and a page on another origin that resolves its name to
+	// loopback would reach it. A loopback server lists its own addresses.
 	AllowedHosts []string
 	// OrchURL and OrchCASHA256 are what an install seed tells a host about orch: the address it
 	// enrolls at and the SHA-256 of the authority orch's certificate chains to. Without them the
@@ -63,6 +64,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.AdmissionTTL <= 0 {
 		return nil, errors.New("console: AdmissionTTL must be positive")
+	}
+	if len(cfg.AllowedHosts) == 0 {
+		return nil, errors.New("console: AllowedHosts is required")
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -115,7 +119,7 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 // carries.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.cfg.AllowedHosts) > 0 && !slices.Contains(s.cfg.AllowedHosts, r.Host) {
+		if !slices.Contains(s.cfg.AllowedHosts, r.Host) {
 			http.Error(w, "unexpected Host", http.StatusForbidden)
 			return
 		}

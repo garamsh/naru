@@ -33,7 +33,7 @@ func TestSignerCommands_ThroughANodesAPIReachTheSignerAtItsOwnPath(t *testing.T)
 	out := filepath.Join(t.TempDir(), "alice.crt")
 
 	text, err := run(t, "operator", "add", "--admin", admin, "--passphrase-file", pass, "--csr", csr,
-		"--name", "alice", "--role", "reader", "--config", config, "--node", node.addr(), "--out", out)
+		"--name", "alice", "--role", "reader", "--config", config, "--endpoint", node.addr(), "--out", out)
 	require.NoError(t, err, text)
 
 	assert.Contains(t, node.requests, "POST /v1/signer/operator", "the request went to the Node API")
@@ -66,7 +66,7 @@ func TestSignerCommands_AReaderClientFileIsRefusedByTheNodeAndTheSignerHearsNoth
 	assert.Empty(t, signer.got, "nothing reached the signer")
 }
 
-func TestSignerCommands_TakeExactlyOneOfSocketAndConfigAndNodeOnlyWithConfig(t *testing.T) {
+func TestSignerCommands_TakeExactlyOneOfSocketAndConfigAndEndpointOnlyWithConfig(t *testing.T) {
 	signer, _, config := signerThroughNode(t)
 	admin, pass := adminFile(t, identity.RoleRoot, "pw")
 	base := []string{"operator", "revoke", "--admin", admin, "--passphrase-file", pass, "--serial", "AB"}
@@ -80,9 +80,9 @@ func TestSignerCommands_TakeExactlyOneOfSocketAndConfigAndNodeOnlyWithConfig(t *
 	require.Error(t, err)
 	assert.Contains(t, text, "--socket or --config is required")
 
-	text, err = run(t, with("--socket", signer.socket, "--node", "10.0.0.1")...)
+	text, err = run(t, with("--socket", signer.socket, "--endpoint", "10.0.0.1")...)
 	require.Error(t, err)
-	assert.Contains(t, text, "--node")
+	assert.Contains(t, text, "--endpoint")
 	assert.Empty(t, signer.got, "every refusal came before a request")
 
 	text, err = run(t, with("--socket", signer.socket)...)

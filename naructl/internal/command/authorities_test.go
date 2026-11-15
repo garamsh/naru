@@ -51,7 +51,7 @@ func TestSignerCA_PrintsEachAuthorityAsPEMWithTheHashOfItsDER(t *testing.T) {
 	orch, operator, host := authorityCert(t, "orch authority"), authorityCert(t, "operator authority"), authorityCert(t, "host authority")
 	signer.authorities = identity.Authorities{Orch: orch.Raw, Operator: operator.Raw, Host: host.Raw}
 
-	text, err := run(t, "signer", "ca", "--config", config, "--node", node.addr())
+	text, err := run(t, "signer", "ca", "--config", config, "--endpoint", node.addr())
 	require.NoError(t, err, text)
 	assert.Contains(t, node.requests, "GET /v1/signer/ca", "through the Node API's route to the signer")
 	assert.Equal(t,

@@ -118,10 +118,11 @@ func TestInstallSeed_SaysSoWhenTheConsoleDoesNotKnowOrch(t *testing.T) {
 		Orch:         &fakeOrch{},
 		Sign:         func(identity.Admission) ([]byte, error) { return nil, nil },
 		AdmissionTTL: time.Hour,
+		AllowedHosts: []string{"example.com"},
 	})
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/install-seed", nil))
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://example.com/install-seed", nil))
 	assert.Contains(t, rec.Body.String(), "cannot make a seed")
 }
 

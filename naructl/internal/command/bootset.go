@@ -11,25 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/pflag"
+
 	"github.com/garamsh/naru/lib/hostapi"
 )
 
 // bootSetCallTimeout bounds adding a boot set: the upload of a kernel and an initramfs.
 const bootSetCallTimeout = 15 * time.Minute
-
-// bootSet runs the subcommands of naructl host boot-set.
-func bootSet(args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return errors.New("host boot-set needs add or remove")
-	}
-	switch args[0] {
-	case "add":
-		return bootSetAdd(args[1:], stdout, stderr)
-	case "remove":
-		return bootSetRemove(args[1:], stdout, stderr)
-	}
-	return fmt.Errorf("unknown command %q", "host boot-set "+args[0])
-}
 
 // bootSetManifest is naru-node-<version>.json, the boot set a release carries: the name mvmd
 // offers it under, the release's version, and the kernel and the initramfs, each as a file in the
@@ -71,55 +59,57 @@ func readBootSetManifest(path string) (bootSetManifest, error) {
 	return m, nil
 }
 
-func bootSetAdd(args []string, stdout, stderr io.Writer) error {
-	c := newHostCall("host boot-set add", stderr)
-	rest, err := c.parse(args, 1)
-	if err != nil {
-		return err
+func bootSetAdd(fs *pflag.FlagSet) runner {
+	c := newHostCall(fs)
+	return func(args []string, stdout, stderr io.Writer) error {
+		if err := c.check(args, 1); err != nil {
+			return err
+		}
+		m, err := readBootSetManifest(args[0])
+		if err != nil {
+			return err
+		}
+		dir := filepath.Dir(args[0])
+		kernel, err := os.Open(filepath.Join(dir, m.Kernel.File)) //nolint:gosec // a name beside the manifest
+		if err != nil {
+			return err
+		}
+		defer func() { _ = kernel.Close() }()
+		initramfs, err := os.Open(filepath.Join(dir, m.Initramfs.File)) //nolint:gosec // a name beside the manifest
+		if err != nil {
+			return err
+		}
+		defer func() { _ = initramfs.Close() }()
+		cl, err := c.dial()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), bootSetCallTimeout)
+		defer cancel()
+		if err := cl.AddBootSet(ctx, hostapi.BootSetRequest{Name: m.Name, KernelSHA256: m.Kernel.SHA256, InitramfsSHA256: m.Initramfs.SHA256}, kernel, initramfs); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "added boot set %s (%s)\n", m.Name, m.Version)
+		return nil
 	}
-	m, err := readBootSetManifest(rest[0])
-	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(rest[0])
-	kernel, err := os.Open(filepath.Join(dir, m.Kernel.File)) //nolint:gosec // a name beside the manifest
-	if err != nil {
-		return err
-	}
-	defer func() { _ = kernel.Close() }()
-	initramfs, err := os.Open(filepath.Join(dir, m.Initramfs.File)) //nolint:gosec // a name beside the manifest
-	if err != nil {
-		return err
-	}
-	defer func() { _ = initramfs.Close() }()
-	cl, err := c.dial()
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), bootSetCallTimeout)
-	defer cancel()
-	if err := cl.AddBootSet(ctx, hostapi.BootSetRequest{Name: m.Name, KernelSHA256: m.Kernel.SHA256, InitramfsSHA256: m.Initramfs.SHA256}, kernel, initramfs); err != nil {
-		return err
-	}
-	_, _ = fmt.Fprintf(stdout, "added boot set %s (%s)\n", m.Name, m.Version)
-	return nil
 }
 
-func bootSetRemove(args []string, stdout, stderr io.Writer) error {
-	c := newHostCall("host boot-set remove", stderr)
-	rest, err := c.parse(args, 1)
-	if err != nil {
-		return err
+func bootSetRemove(fs *pflag.FlagSet) runner {
+	c := newHostCall(fs)
+	return func(args []string, stdout, stderr io.Writer) error {
+		if err := c.check(args, 1); err != nil {
+			return err
+		}
+		cl, err := c.dial()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := withTimeout()
+		defer cancel()
+		if err := cl.RemoveBootSet(ctx, args[0]); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "removed boot set %s\n", args[0])
+		return nil
 	}
-	cl, err := c.dial()
-	if err != nil {
-		return err
-	}
-	ctx, cancel := withTimeout()
-	defer cancel()
-	if err := cl.RemoveBootSet(ctx, rest[0]); err != nil {
-		return err
-	}
-	_, _ = fmt.Fprintf(stdout, "removed boot set %s\n", rest[0])
-	return nil
 }

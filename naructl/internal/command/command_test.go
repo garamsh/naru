@@ -105,7 +105,7 @@ type deployment struct {
 func newDeployment(t *testing.T) deployment {
 	t.Helper()
 	dep := deployment{ca: filepath.Join(t.TempDir(), "ca"), guest: guestJSON(t)}
-	mustRun(t, "gen", "ca", "--out", dep.ca)
+	mustRun(t, "gen", "ca", "--ca-dir", dep.ca)
 	return dep
 }
 
@@ -115,7 +115,7 @@ func (dep deployment) node(t *testing.T, name string, extra ...string) string {
 	index := strings.TrimPrefix(name, "node-")
 	out := filepath.Join(t.TempDir(), name+".yaml")
 	args := []string{
-		"gen", "node", "--ca", dep.ca, "--name", name, "--address", "192.168.0." + index + "0/24",
+		"gen", "node", "--ca-dir", dep.ca, "--name", name, "--address", "192.168.0." + index + "0/24",
 		"--api-server", "192.168.0.10", "--machine-prefix", "10.200." + index + ".0/24",
 		"--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out,
 	}
@@ -211,7 +211,7 @@ func roots(t *testing.T, caPath string) *x509.CertPool {
 func TestGenCA_WritesTheCertificateReadableAndTheKeyPrivateAndRefusesToReplaceThem(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ca")
 
-	mustRun(t, "gen", "ca", "--out", dir)
+	mustRun(t, "gen", "ca", "--ca-dir", dir)
 
 	cert, err := os.Stat(filepath.Join(dir, "ca.pem"))
 	require.NoError(t, err)
@@ -223,7 +223,7 @@ func TestGenCA_WritesTheCertificateReadableAndTheKeyPrivateAndRefusesToReplaceTh
 	require.NoError(t, err)
 	assert.True(t, certOf(t, string(b)).IsCA)
 
-	out, err := run(t, "gen", "ca", "--out", dir)
+	out, err := run(t, "gen", "ca", "--ca-dir", dir)
 	require.Error(t, err, "a second gen ca would lose the first's key")
 	assert.Contains(t, out, "already holds an authority")
 }
@@ -232,7 +232,7 @@ func TestGenClient_IssuesAClientPairTheCAVerifiesWithTheNamedCN(t *testing.T) {
 	dep := newDeployment(t)
 	out := filepath.Join(t.TempDir(), "me")
 
-	mustRun(t, "gen", "client", "--ca", dep.ca, "--cn", "alice", "--out", out)
+	mustRun(t, "gen", "client", "--ca-dir", dep.ca, "--cn", "alice", "--out", out)
 
 	b, err := os.ReadFile(filepath.Join(out, "client.pem"))
 	require.NoError(t, err)
@@ -243,7 +243,7 @@ func TestGenClient_IssuesAClientPairTheCAVerifiesWithTheNamedCN(t *testing.T) {
 	key, err := os.Stat(filepath.Join(out, "client.key"))
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), key.Mode().Perm())
-	_, err = run(t, "gen", "client", "--ca", dep.ca, "--out", out)
+	_, err = run(t, "gen", "client", "--ca-dir", dep.ca, "--out", out)
 	assert.Error(t, err, "a client needs a CN")
 }
 
@@ -251,7 +251,7 @@ func TestGenEtcdClient_WritesTheKeysOfGaonsSecretWithAPairTheClusterCASignsForCl
 	dep := newDeployment(t)
 	out := filepath.Join(t.TempDir(), "etcd")
 
-	mustRun(t, "gen", "etcd-client", "--ca", dep.ca, "--out", out)
+	mustRun(t, "gen", "etcd-client", "--ca-dir", dep.ca, "--out", out)
 
 	b, err := os.ReadFile(filepath.Join(out, "tls.crt"))
 	require.NoError(t, err)
@@ -267,7 +267,7 @@ func TestGenEtcdClient_WritesTheKeysOfGaonsSecretWithAPairTheClusterCASignsForCl
 	key, err := os.Stat(filepath.Join(out, "tls.key"))
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), key.Mode().Perm())
-	_, err = run(t, "gen", "etcd-client", "--ca", dep.ca)
+	_, err = run(t, "gen", "etcd-client", "--ca-dir", dep.ca)
 	assert.Error(t, err, "--out is required")
 }
 
@@ -308,7 +308,7 @@ func TestGenNode_ControlPlaneIssuesFromSpecPKIAndCarriesTheCAKeyOnlyThere(t *tes
 
 func TestGenNode_TheControlPlaneListsTheTokenOfEveryNodeThatHasOneAndEachNodeHoldsItsOwn(t *testing.T) {
 	dep := newDeployment(t)
-	mustRun(t, "gen", "token", "--ca", dep.ca, "--name", "node-2")
+	mustRun(t, "gen", "token", "--ca-dir", dep.ca, "--name", "node-2")
 	first := parse(t, dep.node(t, "node-1", "--control-plane"))
 	second := parse(t, dep.node(t, "node-2"))
 
@@ -356,17 +356,17 @@ func TestGenNode_TheServicesTakeTheTokensAndTheSigner(t *testing.T) {
 
 func TestGenToken_NeedsTheAuthorityAndANameAndKeepsTheTokenItWrote(t *testing.T) {
 	dep := newDeployment(t)
-	_, err := run(t, "gen", "token", "--ca", dep.ca)
+	_, err := run(t, "gen", "token", "--ca-dir", dep.ca)
 	assert.Error(t, err, "a name is required")
-	_, err = run(t, "gen", "token", "--ca", t.TempDir(), "--name", "node-2")
+	_, err = run(t, "gen", "token", "--ca-dir", t.TempDir(), "--name", "node-2")
 	assert.Error(t, err, "a directory with no authority is refused")
-	_, err = run(t, "gen", "token", "--ca", dep.ca, "--name", "Node_2")
+	_, err = run(t, "gen", "token", "--ca-dir", dep.ca, "--name", "Node_2")
 	assert.Error(t, err, "the name is a DNS label")
 
-	mustRun(t, "gen", "token", "--ca", dep.ca, "--name", "node-2")
+	mustRun(t, "gen", "token", "--ca-dir", dep.ca, "--name", "node-2")
 	before, err := os.ReadFile(filepath.Join(dep.ca, "tokens", "node-2"))
 	require.NoError(t, err)
-	mustRun(t, "gen", "token", "--ca", dep.ca, "--name", "node-2")
+	mustRun(t, "gen", "token", "--ca-dir", dep.ca, "--name", "node-2")
 	after, err := os.ReadFile(filepath.Join(dep.ca, "tokens", "node-2"))
 	require.NoError(t, err)
 	assert.Equal(t, before, after, "a second run does not replace the token")
@@ -458,7 +458,7 @@ func TestGenNode_APIServerIsNamedByTheCertificateInitIssuesEvenWhenItIsNoAddress
 	dep := newDeployment(t)
 	// The Node's own address is 192.168.0.20 and agents dial 192.168.0.10, a forward or a VIP.
 	out := filepath.Join(t.TempDir(), "n.yaml")
-	mustRun(t, "gen", "node", "--ca", dep.ca, "--name", "node-1", "--control-plane", "--address", "192.168.0.20/24", "--api-server", "192.168.0.10",
+	mustRun(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--control-plane", "--address", "192.168.0.20/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out, "--serving-address", "192.168.0.10")
 
 	u := parse(t, out)
@@ -496,7 +496,7 @@ func TestGenNode_DisableLeavesAServiceOutOfTheListAndOfTheRestartListsAndNaruIni
 	for _, c := range u.Spec.PKI.Certificates {
 		assert.NotContains(t, c.Restart, "gaon-scheduler", c.Name)
 	}
-	out, err := run(t, "gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"), "--disable", "mvmd")
 	require.Error(t, err, "mvmd cannot be left out")
 	assert.Contains(t, out, `cannot disable "mvmd"`)
@@ -571,7 +571,7 @@ func TestGenNode_NetworkConfigNamesTheCardTheRouteTheResolversAndASecondCard(t *
 
 func TestGenNode_NetworkConfigNeedsTheCardAndTheRoute(t *testing.T) {
 	dep := newDeployment(t)
-	out, err := run(t, "gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 		"--network-config", filepath.Join(t.TempDir(), "n"))
 
@@ -599,7 +599,7 @@ func TestGenNode_ABrokenDescriptionIsRefusedAndAFileInitRejectsIsNotMistakenForV
 		{"--binary", "unknown=/x"},
 	} {
 		args := []string{
-			"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+			"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 		}
 		_, err := run(t, append(args, bad...)...)
@@ -630,7 +630,7 @@ func TestGenNode_OverAnExistingWorldReadableFileTheUserDataIsStillPrivate(t *tes
 	out := filepath.Join(t.TempDir(), "node-1.yaml")
 	require.NoError(t, os.WriteFile(out, []byte("stale"), 0o644)) //nolint:gosec // the case under test
 
-	mustRun(t, "gen", "node", "--ca", dep.ca, "--name", "node-1", "--control-plane", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+	mustRun(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--control-plane", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out)
 
 	info, err := os.Stat(out)
@@ -644,7 +644,7 @@ func TestGenClient_OverAnExistingWorldReadableKeyTheKeyIsStillPrivate(t *testing
 	out := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(out, "client.key"), []byte("stale"), 0o644)) //nolint:gosec // the case under test
 
-	mustRun(t, "gen", "client", "--ca", dep.ca, "--cn", "alice", "--out", out)
+	mustRun(t, "gen", "client", "--ca-dir", dep.ca, "--cn", "alice", "--out", out)
 
 	info, err := os.Stat(filepath.Join(out, "client.key"))
 	require.NoError(t, err)
@@ -654,7 +654,7 @@ func TestGenClient_OverAnExistingWorldReadableKeyTheKeyIsStillPrivate(t *testing
 func TestGenNode_ANameThatIsNoDNSLabelIsRefused(t *testing.T) {
 	dep := newDeployment(t)
 	for _, name := range []string{"Node_1", "node 1", "-node", "node-", "a.b", strings.Repeat("a", 64)} {
-		out, err := run(t, "gen", "node", "--ca", dep.ca, "--name", name, "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+		out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", name, "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"))
 		require.Error(t, err, name)
 		assert.Contains(t, out, "not a DNS label", name)
@@ -672,7 +672,7 @@ func TestGenNode_AFlagGivenWithoutWhatMakesItApplyIsRefused(t *testing.T) {
 		{"--serving-address", "127.0.0.1", "--control-plane"},
 	} {
 		args := []string{
-			"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+			"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 			c.flag,
 		}
@@ -814,7 +814,7 @@ func TestGenNode_TheNodeAgentsKeptPairMustCarryTheOrganizationItsSignerRequires(
 
 func TestGenNode_RefusesARegistryOrAWSFlagThatIsWrong(t *testing.T) {
 	dep := newDeployment(t)
-	base := []string{"gen", "node", "--ca", dep.ca, "--name", "node-2", "--address", "192.168.0.20/24",
+	base := []string{"gen", "node", "--ca-dir", dep.ca, "--name", "node-2", "--address", "192.168.0.20/24",
 		"--api-server", "192.168.0.10", "--machine-prefix", "10.200.2.0/24", "--guest", dep.guest,
 		"--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "o.yaml")}
 	for name, extra := range map[string][]string{
@@ -836,7 +836,7 @@ func TestRun_AnUnknownCommandIsRefused(t *testing.T) {
 	assert.Error(t, err)
 	_, err = run(t)
 	assert.Error(t, err)
-	_, err = run(t, "gen", "node", "--ca", "/nonexistent")
+	_, err = run(t, "gen", "node", "--ca-dir", "/nonexistent")
 	assert.Error(t, err, "the required flags are checked first")
 }
 
@@ -873,7 +873,7 @@ func (u userData) args(name string) string {
 func TestGenNode_ControlPlaneOfThreeRunsEtcdOnTheMembersWithTLSAndHoldsTheVirtualAddress(t *testing.T) {
 	dep := newDeployment(t)
 	for _, name := range []string{"node-1", "node-2", "node-3"} {
-		mustRun(t, "gen", "token", "--ca", dep.ca, "--name", name)
+		mustRun(t, "gen", "token", "--ca-dir", dep.ca, "--name", name)
 	}
 	u := parse(t, dep.node(t, "node-2", haMembers...))
 
@@ -949,7 +949,7 @@ func TestGenNode_RefusesMembersTheNodeCannotBeOneOf(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "x.yaml")
 	gen := func(extra ...string) error {
 		_, err := run(t, append([]string{
-			"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--machine-prefix", "10.200.1.0/24",
+			"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--machine-prefix", "10.200.1.0/24",
 			"--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out,
 		}, extra...)...)
 		return err
