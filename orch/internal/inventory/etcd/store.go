@@ -37,6 +37,11 @@ const (
 // are dropped, oldest first.
 const maxEvents = 20000
 
+// trimBatch is how many events one trim transaction deletes. etcd refuses a transaction of more
+// than --max-txn-ops operations (128 by default), so a log far past its bound is trimmed in
+// batches below that.
+const trimBatch = 100
+
 // casRetries bounds the retries of a read-modify-write that lost a race.
 const casRetries = 8
 
@@ -379,21 +384,24 @@ func (s *Store) AppendEvent(ctx context.Context, ev orchapi.Event) error {
 // that make it grow fastest; a failed trim is tried again by the next append, so it is not an
 // error of the append that was already kept.
 func (s *Store) trimEvents(ctx context.Context) error {
-	n, err := s.kv.Get(ctx, eventPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
-	if err != nil || n.Count <= int64(s.keepEvents) {
-		return nil
+	for {
+		n, err := s.kv.Get(ctx, eventPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+		if err != nil || n.Count <= int64(s.keepEvents) {
+			return nil
+		}
+		old, err := s.kv.Get(ctx, eventPrefix, clientv3.WithPrefix(), clientv3.WithKeysOnly(),
+			clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend), clientv3.WithLimit(min(n.Count-int64(s.keepEvents), trimBatch)))
+		if err != nil || len(old.Kvs) == 0 {
+			return nil
+		}
+		ops := make([]clientv3.Op, 0, len(old.Kvs))
+		for _, kv := range old.Kvs {
+			ops = append(ops, clientv3.OpDelete(string(kv.Key)))
+		}
+		if _, err := s.kv.Txn(ctx).Then(ops...).Commit(); err != nil {
+			return nil
+		}
 	}
-	old, err := s.kv.Get(ctx, eventPrefix, clientv3.WithPrefix(), clientv3.WithKeysOnly(),
-		clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend), clientv3.WithLimit(n.Count-int64(s.keepEvents)))
-	if err != nil || len(old.Kvs) == 0 {
-		return nil
-	}
-	ops := make([]clientv3.Op, 0, len(old.Kvs))
-	for _, kv := range old.Kvs {
-		ops = append(ops, clientv3.OpDelete(string(kv.Key)))
-	}
-	_, _ = s.kv.Txn(ctx).Then(ops...).Commit()
-	return nil
 }
 
 // ListEvents lists the events in the order etcd committed them. An event's Cursor is the

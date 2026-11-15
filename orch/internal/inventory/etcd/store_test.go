@@ -3,6 +3,7 @@ package etcd_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"testing"
 	"time"
@@ -188,4 +189,22 @@ func TestTheEventLogKeepsTheNewestEventsAndDropsTheOldest(t *testing.T) {
 	since, err := s.ListEvents(t.Context(), evs[len(evs)-3].Cursor)
 	require.NoError(t, err)
 	require.Len(t, since, 2)
+}
+
+func TestALogFarPastItsBoundIsTrimmedToItInOneAppend(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	kv := c.Members[0].Etcd()
+	s := invetcd.New(kv)
+	const keep = 10
+	invetcd.KeepEvents(s, keep)
+	for i := range keep + 300 { // more than keep plus etcd's 128 operations to a transaction
+		_, err := kv.Put(t.Context(), fmt.Sprintf("/naru/orch/events/%020d-seed", i), `{"type":"t"}`)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, s.AppendEvent(t.Context(), orchapi.Event{Time: time.Unix(1, 0), Type: "t"}))
+
+	evs, err := s.ListEvents(t.Context(), "")
+	require.NoError(t, err)
+	require.Len(t, evs, keep)
 }
