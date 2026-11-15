@@ -20,7 +20,7 @@ Drafted for garamsh/naru#162 under plan #113; it serves the criterion of garamsh
 3. **The socket is the one `spec.signer` names.** init derives it from one constant that also gives the signer's `--socket` and orch's `--signer-socket`. A Node whose configuration has no `spec.signer` answers 404, a socket that cannot be dialled 503, and any other failure of the exchange 502, each with a reason that names no path of the host.
 4. **The body is streamed and bounded by what the signer reads, 1 MiB.** A larger body is 413 and is not sent on. A path that is not clean (`..`, `.`, an empty segment) is 400.
 5. **The proxy gives no authority.** It signs nothing, adds no header the signer trusts and logs no body. A request without a valid signature is refused by the signer exactly as on its socket; a test runs a handler that verifies signatures behind the proxy to show it.
-6. **`naructl` takes `--config <client file>` and `--node <ip[:port]>` wherever it takes `--socket`.** A command needs exactly one of `--socket` and `--config`, and `--node` only with `--config`. One chooser builds the HTTP client, over the unix socket or over the Node API under `/v1/signer`, and no command's body changes.
+6. **`naructl` takes `--config <client file>` and `--endpoint <ip[:port]>` wherever it takes `--socket`.** A command needs exactly one of `--socket` and `--config`, and `--endpoint` only with `--config`. One chooser builds the HTTP client, over the unix socket or over the Node API under `/v1/signer`, and no command's body changes.
 
 ## Rejected alternatives
 

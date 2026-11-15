@@ -4,42 +4,44 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
 
+	"github.com/spf13/pflag"
+
 	"github.com/garamsh/naru/naructl/internal/client"
 )
 
 // signerFlags are the flags of a command that calls the signer: --socket reaches it on this
-// host, and --config with --node reaches it through a Node's API, whose admin role forwards
+// host, and --config with --endpoint reaches it through a Node's API, whose admin role forwards
 // /v1/signer to it.
 type signerFlags struct {
-	socket, config, node *string
+	socket, config, endpoint *string
 }
 
-func addSignerFlags(fs *flag.FlagSet) signerFlags {
-	return signerFlags{
-		socket: fs.String("socket", "", "naru-signer's unix socket, for a command run on its host"),
-		config: fs.String("config", "", "the Node API client file gen api-client wrote, an admin's, to reach the signer through a Node's API"),
-		node:   fs.String("node", "", "with --config, the Node that runs the signer: an IP address with or without a port (default the client file's first endpoint)"),
+func addSignerFlags(fs *pflag.FlagSet) signerFlags {
+	s := signerFlags{
+		socket:   fs.String("socket", "", "naru-signer's unix socket, for a command run on its host"),
+		config:   fs.String("config", "", "the Node API client file gen api-client wrote, an admin's, to reach the signer through a Node's API"),
+		endpoint: fs.String("endpoint", "", "with --config, the Node that runs the signer: an IP address with or without a port (default the client file's first endpoint)"),
 	}
+	aliasString(fs, s.endpoint, "node", "endpoint")
+	return s
 }
 
-// check refuses a command given both --socket and --config or neither, and --node without --config.
-func (s signerFlags) check(fs *flag.FlagSet) error {
-	set := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+// check refuses a command given both --socket and --config or neither, and --endpoint without --config.
+func (s signerFlags) check(fs *pflag.FlagSet) error {
+	set := setFlags(fs)
 	switch {
 	case set["socket"] && set["config"]:
 		return errors.New("--socket and --config are alternatives: give one")
 	case !set["socket"] && !set["config"]:
 		return errors.New("--socket or --config is required")
 	}
-	return needs(fs, "config", "node")
+	return needs(fs, "config", "endpoint")
 }
 
 // signerCall sends body to the signer and returns the answer's body, or the signer's refusal.
@@ -88,7 +90,7 @@ func signerThroughNode(to signerFlags, method, path string, body []byte, header 
 	if err != nil {
 		return nil, err
 	}
-	c, err := client.Dial(f, *to.node)
+	c, err := client.Dial(f, *to.endpoint)
 	if err != nil {
 		return nil, err
 	}

@@ -44,7 +44,7 @@ naructl operator request --name root --der --key-out <dir>/root.key --csr-out <d
 It prints `naructl: wrote the key <dir>/root.key (0600) and the certificate request <dir>/root.csr for root`. Then the user-data:
 
 ```
-naructl gen node --ca <dir> --name <name> --address <cidr> --mac <mac> --gateway <ip> --nameserver <ip> \
+naructl gen node --ca-dir <dir> --name <name> --address <cidr> --mac <mac> --gateway <ip> --nameserver <ip> \
   --api-server <ip> --machine-prefix <cidr> --guest <naru-guest-version.json> --firecracker-sha256 <hex> \
   --control-plane --extension naru-orch=<sha256 of naru-orch-ext-TAG.json> \
   --signer --signer-recovery-public <dir>/recovery.pub --signer-root-csr <dir>/root.csr \
@@ -67,7 +67,7 @@ naructl orch issue --admin <dir>/root.person --passphrase-file <passphrase file>
 
 The lines to look for: `naructl: wrote <dir>/root.person for root (root, serial <serial>) and removed the plain key`, then `naructl: issued an orch certificate for orch-1, serial <serial>, valid until <time>; wrote <dir>/orch-1.crt`.
 
-Orch's `spec.orch` needs the authority orch's certificate chains to, and the seed in step 7 needs its SHA-256. `naructl signer ca` and `naructl orch ca` print them, taken from the signer through the Node API's admin role (`--config` is the admin client file, and `--node` is the first control host's Node API address when the file names more than one):
+Orch's `spec.orch` needs the authority orch's certificate chains to, and the seed in step 7 needs its SHA-256. `naructl signer ca` and `naructl orch ca` print them, taken from the signer through the Node API's admin role (`--config` is the admin client file, and `--endpoint` is the first control host's Node API address when the file names more than one):
 
 ```
 naructl signer ca --config <dir>/api/admin.yaml

@@ -78,7 +78,7 @@ func TestGenNode_RefusesAPeerItCannotRouteTo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			args := []string{
-				"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+				"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 				"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 			}
 			for _, p := range tt.peers {
@@ -105,7 +105,7 @@ func TestGenNode_RefusesANoMasqueradeThatIsNotACanonicalIPv4Prefix(t *testing.T)
 	dep := newDeployment(t)
 	for _, bad := range []string{"10.200.3.5/24", "fd00::/64", "10.200.3.0"} {
 		args := []string{
-			"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+			"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 			"--no-masquerade", bad,
 		}

@@ -158,6 +158,7 @@ func start(t *testing.T, orch *fakeOrch, allowedHosts func(srvHost string) []str
 	if orch.fleet != nil { // a nil *fakeFleet in the interface would not be nil
 		cfg.Fleet = orch.fleet
 	}
+	cfg.AllowedHosts = []string{strings.TrimPrefix(e.srv.URL, "http://")}
 	if allowedHosts != nil {
 		cfg.AllowedHosts = allowedHosts(strings.TrimPrefix(e.srv.URL, "http://"))
 	}
@@ -165,6 +166,19 @@ func start(t *testing.T, orch *fakeOrch, allowedHosts func(srvHost string) []str
 	s, err = console.New(cfg)
 	require.NoError(t, err)
 	return e
+}
+
+// serve starts a console on a test server that lists its own address as the Host it allows.
+func serve(t *testing.T, cfg console.Config) *httptest.Server {
+	t.Helper()
+	var s *console.Server
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.Handler().ServeHTTP(w, r) }))
+	t.Cleanup(srv.Close)
+	cfg.AllowedHosts = []string{strings.TrimPrefix(srv.URL, "http://")}
+	var err error
+	s, err = console.New(cfg)
+	require.NoError(t, err)
+	return srv
 }
 
 func (e env) get(t *testing.T, path string) (int, string) {
@@ -266,13 +280,10 @@ func TestPages_OrchDown(t *testing.T) {
 	orch := &failingOrch{}
 	ca := newAuthority(t)
 	person := ca.person(t, "operator")
-	s, err := console.New(console.Config{
+	srv := serve(t, console.Config{
 		Orch: orch, Fleet: orch, AdmissionTTL: time.Hour,
 		Sign: func(a identity.Admission) ([]byte, error) { return identity.SignAdmission(a, person.Key, person.Cert) },
 	})
-	require.NoError(t, err)
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
 	for _, p := range []string{"/hosts", "/microvms", "/groups", "/events", "/pending"} {
 		resp, err := http.Get(srv.URL + p)
 		require.NoError(t, err)
@@ -389,13 +400,10 @@ func TestAdmit_OrchRefusalIsShown(t *testing.T) {
 
 func TestAdmit_SigningFailureIsRefused(t *testing.T) {
 	o, der := pendingOrch(t)
-	s, err := console.New(console.Config{
+	srv := serve(t, console.Config{
 		Orch: o, AdmissionTTL: time.Hour,
 		Sign: func(identity.Admission) ([]byte, error) { return nil, errors.New("key locked") },
 	})
-	require.NoError(t, err)
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
 	e := env{orch: o, srv: srv}
 	status, body := e.post(t, "/pending/admit", url.Values{
 		"csrf": {e.csrf(t)}, "host": {"host-new"}, "code": {identity.PairingCode(der)}, "region": {"kr-1"},
@@ -448,13 +456,10 @@ func TestPages_NeverCarryTheKey(t *testing.T) {
 	person := ca.person(t, "operator")
 	keyDER, err := x509.MarshalPKCS8PrivateKey(person.Key)
 	require.NoError(t, err)
-	s, err := console.New(console.Config{
+	srv := serve(t, console.Config{
 		Orch: o, AdmissionTTL: time.Hour, Now: func() time.Time { return now },
 		Sign: func(a identity.Admission) ([]byte, error) { return identity.SignAdmission(a, person.Key, person.Cert) },
 	})
-	require.NoError(t, err)
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
 	e := env{orch: o, srv: srv}
 
 	d := person.Key.(*ecdsa.PrivateKey).D.Bytes()
@@ -538,4 +543,12 @@ func TestAdmit_PostsWhatOrchNeedsToCheck(t *testing.T) {
 	assert.Equal(t, identity.PairingCode(der), o.admitted[0].Code, "orch compares the code against its own key")
 	assert.Equal(t, "kr-1", o.admitted[0].Region)
 	assert.Equal(t, map[string]string{"rack": "r1"}, o.admitted[0].Labels)
+}
+
+func TestNew_RequiresAllowedHosts(t *testing.T) {
+	_, err := console.New(console.Config{
+		Orch: &fakeOrch{}, AdmissionTTL: time.Hour,
+		Sign: func(identity.Admission) ([]byte, error) { return nil, nil },
+	})
+	require.ErrorContains(t, err, "AllowedHosts is required")
 }

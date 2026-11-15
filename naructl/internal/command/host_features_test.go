@@ -14,6 +14,7 @@ import (
 // hostFake is a host API that records the requests it is sent.
 type hostFake struct {
 	cfg      string
+	addr     string
 	requests []string
 	bodies   map[string]map[string]any
 }
@@ -37,6 +38,7 @@ func newHostFake(t *testing.T, handlers map[string]http.HandlerFunc) *hostFake {
 		})
 	}
 	addr := hostServer(t, dep, mux)
+	f.addr = addr
 	f.cfg = filepath.Join(t.TempDir(), "c.yaml")
 	mustRun(t, "gen", "host-client", "--ca-dir", dep.ca, "--role", "provisioner", "--endpoint", addr, "--out", f.cfg)
 	return f

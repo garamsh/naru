@@ -21,7 +21,7 @@ func TestExtensionAdd_StreamsTheImageUnderItsOwnDigest(t *testing.T) {
 	sum := sha256.Sum256([]byte("squashfs bytes"))
 	digest := hex.EncodeToString(sum[:])
 
-	out, err := run(t, "extension", "add", image, "--config", node.clientFile(t, dep, "admin"), "--node", node.addr())
+	out, err := run(t, "extension", "add", image, "--config", node.clientFile(t, dep, "admin"), "--endpoint", node.addr())
 
 	require.NoError(t, err, out)
 	assert.Equal(t, "/v1/extensions/"+digest, node.extensionPath)
@@ -36,7 +36,7 @@ func TestExtensionAdd_ARoleThatCannotChangeTheNodeIsRefused(t *testing.T) {
 	image := filepath.Join(t.TempDir(), "x.sqfs")
 	require.NoError(t, os.WriteFile(image, []byte("x"), 0o600))
 
-	_, err := run(t, "extension", "add", image, "--config", node.clientFile(t, dep, "reader"), "--node", node.addr())
+	_, err := run(t, "extension", "add", image, "--config", node.clientFile(t, dep, "reader"), "--endpoint", node.addr())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
@@ -47,7 +47,7 @@ func TestExtensionList_PrintsEachImageAndWhereItIsMounted(t *testing.T) {
 	apiAuthority(t, dep)
 	node := newFakeNode(t, dep)
 
-	out, err := run(t, "extension", "list", "--config", node.clientFile(t, dep, "reader"), "--node", node.addr())
+	out, err := run(t, "extension", "list", "--config", node.clientFile(t, dep, "reader"), "--endpoint", node.addr())
 
 	require.NoError(t, err, out)
 	lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -63,16 +63,16 @@ func TestExtensionRemove_RemovesByDigestAndReportsTheNodesRefusal(t *testing.T) 
 	node := newFakeNode(t, dep)
 	cfg := node.clientFile(t, dep, "admin")
 
-	out, err := run(t, "extension", "remove", strings.Repeat("b", 64), "--config", cfg, "--node", node.addr())
+	out, err := run(t, "extension", "remove", strings.Repeat("b", 64), "--config", cfg, "--endpoint", node.addr())
 	require.NoError(t, err, out)
 	assert.Equal(t, "/v1/extensions/"+strings.Repeat("b", 64), node.extensionRemoved)
 
-	_, err = run(t, "extension", "remove", strings.Repeat("a", 64), "--config", cfg, "--node", node.addr())
+	_, err = run(t, "extension", "remove", strings.Repeat("a", 64), "--config", cfg, "--endpoint", node.addr())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "409")
 	assert.Contains(t, err.Error(), "mounted")
 
-	_, err = run(t, "extension", "remove", "nothex", "--config", cfg, "--node", node.addr())
+	_, err = run(t, "extension", "remove", "nothex", "--config", cfg, "--endpoint", node.addr())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a lowercase hex SHA-256")
 }

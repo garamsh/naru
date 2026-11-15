@@ -42,7 +42,7 @@ Drafted for garamsh/naru#46, part of goal garamsh/naru#44. The direction is deci
    - `GET /v1/config`: `{"revision": number, "config": <NodeConfig as JSON>}`.
    - Every refusal and failure: `{"error": string, "fields": [string]}` with `fields` naming the offending fields where there are any, and 409 also carries `"revision"`, the current one.
    - Status codes: 200, 400 (a body that is not JSON or not the request's shape), 403, 404, 409, 422, 500.
-9. **`naructl` is the client** (the Talos client-configuration analogue). `naructl gen api-client --role admin|reader` writes a client file (mode `0600`): endpoints, the authority's certificate, a client certificate whose Organization is `naru:admin` or `naru:reader`, and its key. The commands `version`, `services`, `logs <svc> [-f]`, `get config` and `apply -f FILE [--mode no-reboot|staged] [--dry-run]` take `--config <client file>` and `--node <address>`. The exact names and flags are the worker's, subject to review; a 403, 409 or 422 is one line and exit code 1.
+9. **`naructl` is the client** (the Talos client-configuration analogue). `naructl gen api-client --role admin|reader` writes a client file (mode `0600`): endpoints, the authority's certificate, a client certificate whose Organization is `naru:admin` or `naru:reader`, and its key. The commands `version`, `services`, `logs <svc> [-f]`, `get config` and `apply -f FILE [--mode no-reboot|staged] [--dry-run]` take `--config <client file>` and `--endpoint <address>`. The exact names and flags are the worker's, subject to review; a 403, 409 or 422 is one line and exit code 1.
 10. **No SSH, no shell on the Node.** The Node API is the only way in, which is already so: `image/initramfs` names no SSH daemon.
 
 ## Consequences

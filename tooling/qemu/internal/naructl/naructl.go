@@ -128,13 +128,13 @@ func (t Topology) CheckNames(names []string) error {
 }
 
 // GenCA has naructl write the cluster's CA, ca.pem and ca.key, into dir.
-func (t Tool) GenCA(dir string) error { return t.run("gen", "ca", "--out", dir) }
+func (t Tool) GenCA(dir string) error { return t.run("gen", "ca", "--ca-dir", dir) }
 
 // GenToken has naructl write the bootstrap token of the Node of that name next to the CA in caDir,
 // if there is none. The control-plane Node's user-data lists the tokens there are when it is written,
 // so every Node's token is made before the first gen node.
 func (t Tool) GenToken(caDir, name string) error {
-	return t.run("gen", "token", "--ca", caDir, "--name", name)
+	return t.run("gen", "token", "--ca-dir", caDir, "--name", name)
 }
 
 // Client is the files of a client pair and the CA that signed it.
@@ -144,7 +144,7 @@ type Client struct {
 
 // GenClient has naructl issue a client pair with the CN cn from the CA in caDir, into out.
 func (t Tool) GenClient(caDir, cn, out string) (Client, error) {
-	if err := t.run("gen", "client", "--ca", caDir, "--cn", cn, "--out", out); err != nil {
+	if err := t.run("gen", "client", "--ca-dir", caDir, "--cn", cn, "--out", out); err != nil {
 		return Client{}, err
 	}
 	return Client{CA: filepath.Join(caDir, "ca.pem"), Cert: filepath.Join(out, "client.pem"), Key: filepath.Join(out, "client.key")}, nil
@@ -153,7 +153,7 @@ func (t Tool) GenClient(caDir, cn, out string) (Client, error) {
 // GenEtcdClient has naructl write the etcd client pair of gaon's snapshot writer from the CA in
 // caDir: ca.crt, tls.crt and tls.key in out.
 func (t Tool) GenEtcdClient(caDir, out string) error {
-	return t.run("gen", "etcd-client", "--ca", caDir, "--out", out)
+	return t.run("gen", "etcd-client", "--ca-dir", caDir, "--out", out)
 }
 
 // GenAPICA has naructl write the Node API's authority, api/ca.pem and api/ca.key, under dir. A Node's
@@ -233,7 +233,7 @@ type Node struct {
 // GenNode has naructl write the Node's user-data to n.Out, and its network-config to
 // n.NetworkConfig when that is set.
 func (t Tool) GenNode(n Node) error {
-	args := []string{"gen", "node", "--ca", n.CA, "--name", n.Name, "--address", n.Address,
+	args := []string{"gen", "node", "--ca-dir", n.CA, "--name", n.Name, "--address", n.Address,
 		"--api-server", n.APIServer, "--machine-prefix", n.MachinePrefix, "--guest", n.Guest,
 		"--firecracker-sha256", n.Firecracker, "--out", n.Out}
 	flag := func(name string, values ...string) {

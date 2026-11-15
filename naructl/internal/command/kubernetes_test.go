@@ -19,7 +19,7 @@ func (dep deployment) kubeNode(t *testing.T, role string, extra ...string) strin
 	}
 	out := filepath.Join(t.TempDir(), "node-"+index+".yaml")
 	mustRun(t, append([]string{
-		"gen", "kubernetes-node", "--ca", dep.ca, "--name", "node-" + index, "--role", role, "--address", "192.168.0." + index + "0/24",
+		"gen", "kubernetes-node", "--ca-dir", dep.ca, "--name", "node-" + index, "--role", role, "--address", "192.168.0." + index + "0/24",
 		"--endpoint", "192.168.0.10", "--pod-network", "10.64.0.0/12", "--pod-prefix", "10.64." + index + ".0/24",
 		"--peer", peer, "--out", out,
 	}, extra...)...)
@@ -28,7 +28,7 @@ func (dep deployment) kubeNode(t *testing.T, role string, extra ...string) strin
 
 func (dep deployment) kubernetes(t *testing.T) {
 	t.Helper()
-	mustRun(t, "gen", "kubernetes", "--ca", dep.ca, "--endpoint", "192.168.0.10")
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10")
 }
 
 func TestGenKubernetesNode_BothRolesAreAcceptedByInit(t *testing.T) {
@@ -52,7 +52,7 @@ func TestGenKubernetesNode_WorkerRoutesToTheControlPlanesPods(t *testing.T) {
 func TestGenKubernetesNode_ControlPlaneNeedsWhatGenKubernetesWrites(t *testing.T) {
 	dep := newDeployment(t)
 
-	out, err := run(t, "gen", "kubernetes-node", "--ca", dep.ca, "--name", "node-1", "--role", "control-plane", "--address", "192.168.0.10/24",
+	out, err := run(t, "gen", "kubernetes-node", "--ca-dir", dep.ca, "--name", "node-1", "--role", "control-plane", "--address", "192.168.0.10/24",
 		"--endpoint", "192.168.0.10", "--pod-network", "10.64.0.0/12", "--pod-prefix", "10.64.1.0/24", "--out", filepath.Join(t.TempDir(), "x.yaml"))
 
 	require.Error(t, err)
