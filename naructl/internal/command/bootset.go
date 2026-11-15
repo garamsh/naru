@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/garamsh/naru/naructl/internal/client"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 // bootSetCallTimeout bounds adding a boot set: the upload of a kernel and an initramfs.
@@ -31,9 +31,26 @@ func bootSet(args []string, stdout, stderr io.Writer) error {
 	return fmt.Errorf("unknown command %q", "host boot-set "+args[0])
 }
 
+// bootSetManifest is naru-node-<version>.json, the boot set a release carries: the name mvmd
+// offers it under, the release's version, and the kernel and the initramfs, each as a file in the
+// same directory with its SHA-256 (hex).
+type bootSetManifest struct {
+	Name      string      `json:"name"`
+	Version   string      `json:"version"`
+	Kernel    bootSetFile `json:"kernel"`
+	Initramfs bootSetFile `json:"initramfs"`
+}
+
+// bootSetFile is a file of a boot set.
+type bootSetFile struct {
+	File   string `json:"file"`
+	SHA256 string `json:"sha256"`
+	Bytes  int64  `json:"bytes"`
+}
+
 // readBootSetManifest reads the release's naru-node-<version>.json at path.
-func readBootSetManifest(path string) (client.BootSetManifest, error) {
-	var m client.BootSetManifest
+func readBootSetManifest(path string) (bootSetManifest, error) {
+	var m bootSetManifest
 	b, err := os.ReadFile(path) //nolint:gosec // an argument of the command
 	if err != nil {
 		return m, err
@@ -43,7 +60,7 @@ func readBootSetManifest(path string) (client.BootSetManifest, error) {
 	if err := dec.Decode(&m); err != nil {
 		return m, fmt.Errorf("%s is not a boot set of a release: %w", path, err)
 	}
-	for _, f := range []client.BootSetFile{m.Kernel, m.Initramfs} {
+	for _, f := range []bootSetFile{m.Kernel, m.Initramfs} {
 		if f.File == "" || f.File != filepath.Base(f.File) || f.SHA256 == "" {
 			return m, fmt.Errorf("%s names a file that is not a file name beside it, or no SHA-256 for it", path)
 		}
@@ -81,7 +98,7 @@ func bootSetAdd(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), bootSetCallTimeout)
 	defer cancel()
-	if err := cl.AddBootSet(ctx, m, kernel, initramfs); err != nil {
+	if err := cl.AddBootSet(ctx, hostapi.BootSetRequest{Name: m.Name, KernelSHA256: m.Kernel.SHA256, InitramfsSHA256: m.Initramfs.SHA256}, kernel, initramfs); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "added boot set %s (%s)\n", m.Name, m.Version)

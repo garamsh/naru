@@ -3,6 +3,7 @@ module github.com/garamsh/naru/naructl
 go 1.26.0
 
 require (
+	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/identity v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/iso9660 v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/layout v0.0.0-00010101000000-000000000000
@@ -12,6 +13,8 @@ require (
 )
 
 require golang.org/x/crypto v0.45.0 // indirect
+
+replace github.com/garamsh/naru/lib/hostapi => ../lib/hostapi
 
 replace github.com/garamsh/naru/lib/identity => ../lib/identity
 

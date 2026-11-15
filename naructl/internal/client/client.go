@@ -27,23 +27,34 @@ func Dial(f File, node string) (*Client, error) { return DialPort(f, node, Defau
 
 // DialPort is Dial for a server whose port is port when node names none: the host API's.
 func DialPort(f File, node, port string) (*Client, error) {
+	hc, addr, err := mtls(f, node, port)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{base: "https://" + addr, http: hc}, nil
+}
+
+// mtls returns the HTTP client that speaks TLS 1.3 only, trusts the file's authority and presents
+// its pair, and the address it dials: node, or the file's first endpoint when node is empty, with
+// port when it names none.
+func mtls(f File, node, port string) (*http.Client, string, error) {
 	if node == "" {
 		node = f.Endpoints[0]
 	}
 	addr, err := AddressPort(node, port)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM([]byte(f.CA)) {
-		return nil, errors.New("the client file's ca is not a PEM certificate")
+		return nil, "", errors.New("the client file's ca is not a PEM certificate")
 	}
 	pair, err := tls.X509KeyPair([]byte(f.Certificate), []byte(f.Key))
 	if err != nil {
-		return nil, fmt.Errorf("the client file's certificate and key: %w", err)
+		return nil, "", fmt.Errorf("the client file's certificate and key: %w", err)
 	}
 	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{pair}}}
-	return &Client{base: "https://" + addr, http: &http.Client{Transport: tr}}, nil
+	return &http.Client{Transport: tr}, addr, nil
 }
 
 // StatusError is a refusal or a failure the Node answered with, which is any status but 2xx.
@@ -66,31 +77,54 @@ func (e *StatusError) Error() string {
 // maxBody bounds what is read of a response that is parsed whole.
 const maxBody = 16 << 20
 
-func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
-	var r io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		r = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, r)
+// request is one call to the Node API. Body is sent as it is, ContentLength bytes long when that is
+// above zero, with ContentType; Header adds to those.
+type request struct {
+	method, path  string
+	body          io.Reader
+	contentLength int64
+	contentType   string
+	header        map[string]string
+}
+
+// raw sends r and returns the answer when its status is 2xx, and a *StatusError when it is not. Every
+// call, the streamed uploads among them, goes through it.
+func (c *Client) raw(ctx context.Context, r request) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, r.method, c.base+r.path, r.body)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if r.contentLength > 0 {
+		req.ContentLength = r.contentLength
+	}
+	if r.contentType != "" {
+		req.Header.Set("Content-Type", r.contentType)
+	}
+	for k, v := range r.header {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", method, path, err)
+		route, _, _ := strings.Cut(r.path, "?")
+		return nil, fmt.Errorf("%s %s: %w", r.method, route, err)
 	}
 	if resp.StatusCode/100 == 2 {
 		return resp, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return nil, statusError(resp)
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	r := request{method: method, path: path}
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		r.body, r.contentType = bytes.NewReader(b), "application/json"
+	}
+	return c.raw(ctx, r)
 }
 
 // statusError reads the body of a response that is not 200. A body that is not the Node API's
@@ -128,9 +162,22 @@ type Version struct {
 	Version       string  `json:"version"`
 	BootID        string  `json:"bootId"`
 	UptimeSeconds float64 `json:"uptimeSeconds"`
+	// Slot is the boot slot this boot came from.
+	Slot string `json:"slot"`
+	// LastUpgrade is how the Node's last upgrade ended, and nil while none has.
+	LastUpgrade *Outcome `json:"lastUpgrade"`
 }
 
-// Version returns the Node's naru version, boot ID and uptime.
+// Outcome is how the Node's last upgrade ended.
+type Outcome struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Result string `json:"result"`
+	Reason string `json:"reason"`
+	Time   string `json:"time"`
+}
+
+// Version returns the Node's naru version, boot ID, uptime, boot slot and last upgrade.
 func (c *Client) Version(ctx context.Context) (Version, error) {
 	var v Version
 	err := c.getJSON(ctx, "/v1/version", &v)
@@ -245,7 +292,43 @@ func (c *Client) Reboot(ctx context.Context) ([]Action, error) {
 	return body.Actions, nil
 }
 
-// Signer returns the HTTP client of this Node's API and the base URL under which it forwards the
-// signer's /v1 paths: base+"/operator" reaches the signer's /v1/operator. The Node API adds
-// reach and no authority; the signer still checks each request's own signature.
-func (c *Client) Signer() (*http.Client, string) { return c.http, c.base + "/v1/signer" }
+// Upgrade streams the bundle read from bundle, size bytes long, to the Node, which is told its
+// SHA-256, sum, and returns the actions the Node accepted. The Node answers before it reboots.
+func (c *Client) Upgrade(ctx context.Context, sum string, bundle io.Reader, size int64) ([]Action, error) {
+	path := "/v1/upgrade?" + url.Values{"sha256": {sum}}.Encode()
+	resp, err := c.raw(ctx, request{method: http.MethodPost, path: path, body: bundle, contentLength: size, contentType: "application/x-tar"})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body struct {
+		Actions []Action `json:"actions"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("POST /v1/upgrade: the answer is not what the Node API sends: %w", err)
+	}
+	return body.Actions, nil
+}
+
+// URL is the address of the Node's API, such as https://192.168.0.10:50000.
+func (c *Client) URL() string { return c.base }
+
+// SignerPath is where the Node API forwards the signer's /v1 paths: SignerPath+"/operator" reaches
+// the signer's /v1/operator.
+const SignerPath = "/v1/signer"
+
+// Signer sends a request to the signer through the Node's API, whose admin role forwards
+// SignerPath to the signer's unix socket, and returns the answer's body. path is the signer's own,
+// /v1/<name>. The Node API adds reach and no authority; the signer still checks each request's own
+// signature.
+func (c *Client) Signer(ctx context.Context, method, path string, header map[string]string, body []byte) ([]byte, error) {
+	resp, err := c.raw(ctx, request{method: method, path: SignerPath + strings.TrimPrefix(path, "/v1"), body: bytes.NewReader(body), header: header})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return io.ReadAll(io.LimitReader(resp.Body, signerAnswerMax))
+}
+
+// signerAnswerMax bounds what is read of the signer's answer.
+const signerAnswerMax = 1 << 20

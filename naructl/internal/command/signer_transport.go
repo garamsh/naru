@@ -42,31 +42,6 @@ func (s signerFlags) check(fs *flag.FlagSet) error {
 	return needs(fs, "config", "node")
 }
 
-// transport returns the HTTP client that reaches the signer, the URL its /v1 paths are served
-// under, and where that is for an error message.
-func (s signerFlags) transport() (hc *http.Client, base, where string, err error) {
-	if *s.config == "" {
-		return &http.Client{
-			Timeout: callTimeout,
-			Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", *s.socket)
-			}},
-		}, "http://naru-signer/v1", "the signer at " + *s.socket, nil
-	}
-	f, err := client.LoadFile(*s.config)
-	if err != nil {
-		return nil, "", "", err
-	}
-	c, err := client.Dial(f, *s.node)
-	if err != nil {
-		return nil, "", "", err
-	}
-	shared, base := c.Signer()
-	own := *shared
-	own.Timeout = callTimeout
-	return &own, base, "the signer through " + base, nil
-}
-
 // signerCall sends body to the signer and returns the answer's body, or the signer's refusal.
 func signerCall(to signerFlags, method, path string, body []byte) ([]byte, error) {
 	return signerDo(to, method, path, body, nil)
@@ -75,11 +50,17 @@ func signerCall(to signerFlags, method, path string, body []byte) ([]byte, error
 // signerDo is signerCall with request headers, for the endpoint that takes its request on a GET.
 // path is the signer's own, /v1/<name>.
 func signerDo(to signerFlags, method, path string, body []byte, header map[string]string) ([]byte, error) {
-	hc, base, where, err := to.transport()
-	if err != nil {
-		return nil, err
+	if *to.config != "" {
+		return signerThroughNode(to, method, path, body, header)
 	}
-	req, err := http.NewRequest(method, base+strings.TrimPrefix(path, "/v1"), bytes.NewReader(body))
+	where := "the signer at " + *to.socket
+	hc := &http.Client{
+		Timeout: callTimeout,
+		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", *to.socket)
+		}},
+	}
+	req, err := http.NewRequest(method, "http://naru-signer"+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +78,30 @@ func signerDo(to signerFlags, method, path string, body []byte, header map[strin
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s refused (%s): %s", where, resp.Status, strings.TrimSpace(string(answer)))
+	}
+	return answer, nil
+}
+
+// signerThroughNode sends the request through a Node's API, the one client for it.
+func signerThroughNode(to signerFlags, method, path string, body []byte, header map[string]string) ([]byte, error) {
+	f, err := client.LoadFile(*to.config)
+	if err != nil {
+		return nil, err
+	}
+	c, err := client.Dial(f, *to.node)
+	if err != nil {
+		return nil, err
+	}
+	where := "the signer through " + c.URL() + client.SignerPath
+	ctx, cancel := withTimeout()
+	defer cancel()
+	answer, err := c.Signer(ctx, method, path, header, body)
+	var refused *client.StatusError
+	if errors.As(err, &refused) {
+		return nil, fmt.Errorf("%s refused (%d %s): %s", where, refused.Status, http.StatusText(refused.Status), refused.Message)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", where, err)
 	}
 	return answer, nil
 }
