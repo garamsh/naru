@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/garamsh/naru/naructl/internal/layout"
+	"github.com/garamsh/naru/lib/layout"
 )
 
 // daemonFlags are the values of gen node's flags for spec.host.network, spec.signer, spec.orch

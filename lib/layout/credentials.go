@@ -4,7 +4,7 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/garamsh/naru/naructl/internal/pki"
+	"github.com/garamsh/naru/lib/layout/pki"
 )
 
 // Mode is how a Node comes by its certificates. It is the one place the Node's role and the way it

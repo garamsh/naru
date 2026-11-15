@@ -17,8 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/naructl/internal/command"
-	"github.com/garamsh/naru/naructl/internal/layout"
 )
 
 var (

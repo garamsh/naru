@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/garamsh/naru/naructl/internal/layout"
+	"github.com/garamsh/naru/lib/layout"
 )
 
 // emitted are the services of a Node's user-data after mvmd, with whether each is marked control-plane.

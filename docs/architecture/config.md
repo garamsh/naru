@@ -45,7 +45,7 @@ Claims about garamsh/gaon hold at commit `c2b42f91724cae39a4f6824517c278150cf469
 
 ## Operator tooling: naructl
 
-`naructl` is the operator's tool for a gaon cluster on naru Nodes. It writes the CA, each Node's user-data and `network-config`, and the operator's client certificate pair; it owns the gaon Node layout (services, `spec.pki`, the worker's files, mvmd's configuration, the data disk's paths), which `tooling/qemu` runs as a binary and does not copy ([ADR 0015](./adr/0015-naructl-is-the-single-owner-of-the-gaon-node-layout-and-tooling-qemu-runs-it-as-a-binary.md)). It is a static linux/amd64 binary, the release asset `naructl-<version>-linux-amd64`, and every file it writes is one `naru-init -validate` accepts. The example below is the release's example deployment, with `guest.json` the release's `naru-guest-<version>.json` and `$FIRECRACKER` the `firecrackerSha256` of its `naru-inputs-<version>.json`:
+`naructl` is the operator's tool for a gaon cluster on naru Nodes. It writes the CA, each Node's user-data and `network-config`, and the operator's client certificate pair; it calls the gaon Node layout (services, `spec.pki`, the worker's files, mvmd's configuration, the data disk's paths), which is the module `lib/layout` that orch also calls, and which `tooling/qemu` runs through the binary and does not copy ([ADR 0015](./adr/0015-naructl-is-the-single-owner-of-the-gaon-node-layout-and-tooling-qemu-runs-it-as-a-binary.md), [ADR 0060](./adr/0060-the-gaon-node-layout-is-the-library-lib-layout-called-by-naructl-and-by-orch-when-it-builds-a-joining-hosts-configuration.md)). It is a static linux/amd64 binary, the release asset `naructl-<version>-linux-amd64`, and every file it writes is one `naru-init -validate` accepts. The example below is the release's example deployment, with `guest.json` the release's `naru-guest-<version>.json` and `$FIRECRACKER` the `firecrackerSha256` of its `naru-inputs-<version>.json`:
 
 ```sh
 naructl gen ca --out ca                        # ca/ca.pem, ca/ca.key
@@ -91,7 +91,7 @@ naructl gen etcd-client --ca ca --out etcd-client    # etcd-client/ca.crt, tls.c
 
 ### Kubernetes ([ADR 0031](./adr/0031-a-node-runs-kubernetes-as-init-services-containerd-and-runc-are-static-and-pods-get-routed-prefixes-from-one-pod-network.md))
 
-`naructl` owns a second layout, the Kubernetes Node's, beside gaon's: `Node.Kube` selects it, and a Node with no `Kube` is written as before.
+`lib/layout` holds a second layout, the Kubernetes Node's, beside gaon's: `Node.Kube` selects it, and a Node with no `Kube` is written as before.
 
 ```sh
 naructl gen ca --out ca
@@ -124,7 +124,8 @@ Nothing is decided here and not yet implemented.
 - [ADR 0018](./adr/0018-a-nodes-configuration-is-a-base-and-numbered-revisions-stored-on-the-data-disk-and-changed-by-merge-patch.md): why the configuration is a base and revisions, and the boot choice.
 - [ADR 0017](./adr/0017-the-node-api-is-served-by-init-over-mutual-tls-from-its-own-authority-and-naructl-is-its-client.md): why init serves the Node API from an authority of its own, and `naructl` is the client.
 - [ADR 0016](./adr/0016-a-nodes-agent-gets-its-pair-from-a-signing-request-with-a-bootstrap-token-and-the-release-publishes-a-test-ca-key.md): why a Node Agent gets its pair by a signing request with a token, how `naructl` hands the tokens over, and why the release publishes a test CA key.
-- [ADR 0015](./adr/0015-naructl-is-the-single-owner-of-the-gaon-node-layout-and-tooling-qemu-runs-it-as-a-binary.md): why one tool owns the gaon Node layout, and why `tooling/qemu` runs it as a binary.
+- [ADR 0015](./adr/0015-naructl-is-the-single-owner-of-the-gaon-node-layout-and-tooling-qemu-runs-it-as-a-binary.md): why one place owns the gaon Node layout, and why `tooling/qemu` runs `naructl` as a binary.
+- [ADR 0060](./adr/0060-the-gaon-node-layout-is-the-library-lib-layout-called-by-naructl-and-by-orch-when-it-builds-a-joining-hosts-configuration.md): the layout is the library `lib/layout`, which `naructl` and orch call.
 - [ADR 0013](./adr/0013-init-issues-certificates-at-boot-from-a-ca-carried-in-spec-pki-and-renews-them.md): why `spec.pki` carries authorities and certificates, the validation, and the signs it was wrong.
 - [ADR 0008](./adr/0008-a-node-reads-its-configuration-and-network-from-a-cloud-init-nocloud-drive.md): why a NoCloud drive, why `network-config` is read strictly, why the files field, and the signs it was wrong. It supersedes ADR 0005's delivery.
 - [ADR 0005](./adr/0005-configuration-is-a-yaml-file-on-a-labelled-ext4-disk-in-the-shape-of-gaons-resources.md): why gaon's shape and the forwarding duty; its delivery by an ext4 disk is superseded.
