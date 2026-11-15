@@ -133,10 +133,17 @@ func (n Node) mvmdJSON() ([]byte, error) {
 	if len(helpers) > 0 {
 		registry["credential_helpers"] = helpers
 	}
+	// Without storage supervision.dir is left out, so it is "machines" under state_dir on the data
+	// disk. With it, the run directories sit on the storage mount that init links disks/ and
+	// snapshots/ into, so mvmd's rename of a snapshot stays on one file system (ADR 0073).
+	supervision := map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": SupervisorCgroup}
+	if len(n.Storage) > 0 {
+		supervision["dir"] = wire.MvmdStorageMount + "/machines"
+	}
 	return json.MarshalIndent(map[string]any{
 		"registry":  registry,
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
-		"state_dir": wire.DataMount + "/mvmd",
+		"state_dir": wire.MvmdStateDir,
 		"driver":    "firecracker",
 		"disk":      map[string]any{"mkfs": wire.MkfsPath},
 		"firecracker": map[string]any{
@@ -152,9 +159,7 @@ func (n Node) mvmdJSON() ([]byte, error) {
 			"output_bytes": 256 << 20, "name_set_bytes": 1 << 20,
 			"limit": "5m",
 		},
-		// supervision.dir is left out, so it is "machines" under state_dir on the data disk:
-		// the state directory and the run directories stay on one file system (mvmd ADR 0015).
-		"supervision":   map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": SupervisorCgroup},
+		"supervision":   supervision,
 		"vmm_uid_range": map[string]any{"first": 100000, "count": 1000},
 		"network":       network,
 		"pull_timeout":  "4m",

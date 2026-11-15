@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -103,11 +104,17 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	h.mu.Lock()
 	h.storageMounts = append(h.storageMounts, mnt)
 	h.mu.Unlock()
-	// Only the daemon lists the directory mvmd keeps its disks in.
+	// Only the daemon lists the storage mount that mvmd keeps its disks in.
 	if err := os.Chmod(mnt, 0o700); err != nil {
 		return fmt.Errorf("storage %q: %w", s.Name, err)
 	}
 	log.Info("storage disk mounted", "name", s.Name, "device", dev, "mount", mnt, "blocks", sb.DataBlocks, "blockSize", sb.BlockSize)
+	if mnt == h.mvmdStorage {
+		if err := h.linkMvmdStorage(mnt); err != nil {
+			return fmt.Errorf("storage %q: %w", s.Name, err)
+		}
+		log.Info("mvmd's disks and snapshots linked into storage", "mount", mnt)
+	}
 
 	size, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
@@ -120,6 +127,61 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 		log.Info("storage file system grown", "name", s.Name, "from", sb.DataBlocks, "to", blocks, "blockSize", sb.BlockSize)
 	}
 	return nil
+}
+
+// mvmdLinked are the directories of mvmd's state directory that live on the storage mount.
+var mvmdLinked = []string{"disks", "snapshots"}
+
+// linkMvmdStorage makes each of mvmdLinked a directory of the storage mount at mnt, which only the
+// daemon may list, and a link to it in mvmd's state directory. An empty directory there, as the
+// mount point of an earlier release left, is replaced; a link that is right stays; a directory
+// that holds files is an error, since a link would hide them.
+func (h *Host) linkMvmdStorage(mnt string) error {
+	if err := os.MkdirAll(h.mvmdState, 0o700); err != nil {
+		return err
+	}
+	for _, name := range mvmdLinked {
+		target, link := filepath.Join(mnt, name), filepath.Join(h.mvmdState, name)
+		if err := os.MkdirAll(target, 0o700); err != nil {
+			return err
+		}
+		if err := os.Chmod(target, 0o700); err != nil {
+			return err
+		}
+		if err := linkTo(link, target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// linkTo makes link a symbolic link to target.
+func linkTo(link, target string) error {
+	info, err := os.Lstat(link)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return err
+	case info.Mode()&fs.ModeSymlink != 0:
+		if got, err := os.Readlink(link); err != nil || got != target {
+			return fmt.Errorf("%s links to %q, not to %s; mvmd will refuse to start with its disks and snapshots on two file systems", link, got, target)
+		}
+		return nil
+	case info.IsDir():
+		entries, err := os.ReadDir(link)
+		if err != nil {
+			return err
+		}
+		if len(entries) > 0 {
+			return fmt.Errorf("%s already holds %d entries, which a link would hide; mvmd will refuse to start with its disks and snapshots on two file systems", link, len(entries))
+		}
+		if err := os.Remove(link); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("%s is not a directory; mvmd will refuse to start", link)
+	}
+	return os.Symlink(target, link)
 }
 
 // isBlankDisk is the one rule for a blank disk, for the data disk and for a storage disk: f holds at

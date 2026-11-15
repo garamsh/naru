@@ -74,7 +74,7 @@ func genHostProfile(fs *pflag.FlagSet) runner {
 	fs.StringVar(&hostMgmt, "host-management-prefix", "", "spec.host.network: the prefix of the management plane, which no virtual network may reach, such as 192.168.0.0/24")
 	fs.StringVar(&hostEgress, "host-egress-interface", "", "spec.host.network: the interface the virtual networks' egress leaves by (with --host-management-prefix)")
 	fs.IntVar(&hostTunnelPort, "host-tunnel-port", 0, "spec.host.network: the UDP port of the WireGuard tunnel (with --host-management-prefix; default 51820)")
-	fs.Var(&storage, "storage", "<name>=<label or /dev/path>, an extra disk the host offers as XFS, repeatable: the first is mounted where mvmd keeps its disks")
+	fs.Var(&storage, "storage", "<name>=<label or /dev/path>, an extra disk the host offers as XFS, repeatable: the first holds mvmd's disks, snapshots and Machine run directories, on XFS with reflinks, and the others are mounted under /var/lib/naru/storage")
 	fs.Var(&extensions, "extension", "<name>=<SHA-256 of the image>, a system extension init mounts before any service starts, repeatable")
 	fs.StringVar(&apiClientCA, "api-client-ca", "", "the file holding the PEM of the authority naru-hostd's clients chain to, beside orch's (a key in it is refused)")
 	fs.StringVar(&pool, "machine-pool", "", "the IPv4 prefix orch gives each host a /24 of for its Machines, such as 10.200.0.0/16")

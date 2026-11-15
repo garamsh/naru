@@ -49,3 +49,23 @@ func TestRun_FailsOnADirectoryThatIsNotThere(t *testing.T) {
 
 	require.Error(t, err)
 }
+
+func TestTree_CountsWhatMvmdKeepsUnderDisksSnapshotsAndMachinesAndNotTheStaging(t *testing.T) {
+	dir := t.TempDir()
+	for _, p := range []string{"disks/d1", "disks/d2", "snapshots/s1", "snapshots/staging", "machines/m1"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, p), 0o755))
+	}
+	var out bytes.Buffer
+
+	storageprobe.Tree(dir, slog.New(slog.NewTextHandler(&out, nil)))
+
+	assert.Contains(t, out.String(), "disks=2 snapshots=1 machines=1")
+}
+
+func TestTree_ReportsZeroForADirectoryNotThereYet(t *testing.T) {
+	var out bytes.Buffer
+
+	storageprobe.Tree(t.TempDir(), slog.New(slog.NewTextHandler(&out, nil)))
+
+	assert.Contains(t, out.String(), "disks=0 snapshots=0 machines=0")
+}

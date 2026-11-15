@@ -13,6 +13,12 @@ const (
 	// DataLabel and DataMount are the data disk's file system label and its mount point.
 	DataLabel = "NARUDATA"
 	DataMount = "/var/lib/naru"
+	// MvmdStateDir is mvmd's state directory, on the data disk, whose file system has fs-verity for
+	// the Image Store (ADR 0003).
+	MvmdStateDir = DataMount + "/mvmd"
+	// MvmdStorageMount is where the first storage disk is mounted. It holds what mvmd keeps on one
+	// XFS with reflinks: the disks, the snapshots and the Machines' run directories (ADR 0073).
+	MvmdStorageMount = DataMount + "/mvmd-storage"
 	// MkfsPath is the mkfs.ext4 the image carries (ADR 0011), which init runs and mvmd's disk.mkfs names.
 	MkfsPath = "/bin/mkfs.ext4"
 	// ESPGUID is the fixed partition GUID of the EFI system partition of the image's disk, which

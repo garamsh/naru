@@ -298,3 +298,80 @@ func diskWithByteAt(t *testing.T, off int64) string {
 	require.NoError(t, f.Close())
 	return p
 }
+
+// mvmdRig is a storageRig whose mount point is the one mvmd's disks and snapshots are linked into,
+// with a state directory of its own.
+func mvmdRig(t *testing.T) (*storageRig, string) {
+	t.Helper()
+	dev := disk(t, 64<<20, nil)
+	r := newStorageRig(t, map[string]string{"sdb": dev})
+	state := filepath.Join(t.TempDir(), "mvmd")
+	r.host.mvmdStorage, r.host.mvmdState = r.mnt, state
+	return r, state
+}
+
+func prepareMvmd(r *storageRig) error {
+	return r.prepare(config.Storage{Name: "vmdisks", Device: filepath.Join(r.host.devDir, "sdb")})
+}
+
+func TestHost_PrepareStorageLinksMvmdsDisksAndSnapshotsIntoTheMountOfTheStorageDisk(t *testing.T) {
+	r, state := mvmdRig(t)
+
+	require.NoError(t, prepareMvmd(r))
+
+	for _, name := range []string{"disks", "snapshots"} {
+		got, err := os.Readlink(filepath.Join(state, name))
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(r.mnt, name), got)
+		info, err := os.Stat(filepath.Join(state, name))
+		require.NoError(t, err, "the link resolves, as MkdirAll of mvmd needs")
+		assert.Equal(t, os.FileMode(0o700), info.Mode().Perm(), "only the daemon lists it")
+	}
+	assert.Contains(t, r.logs.String(), "linked")
+}
+
+func TestHost_PrepareStorageLinksNothingForADiskMountedElsewhere(t *testing.T) {
+	r, state := mvmdRig(t)
+	r.host.mvmdStorage = filepath.Join(t.TempDir(), "other")
+
+	require.NoError(t, prepareMvmd(r))
+
+	assert.NoDirExists(t, state)
+}
+
+func TestHost_PrepareStorageReplacesAnEmptyDirectoryOfMvmdsStateWithTheLink(t *testing.T) {
+	r, state := mvmdRig(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(state, "disks"), 0o700))
+
+	require.NoError(t, prepareMvmd(r))
+
+	got, err := os.Readlink(filepath.Join(state, "disks"))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(r.mnt, "disks"), got)
+}
+
+func TestHost_PrepareStorageRefusesToHideFilesOfMvmdsStateAndSaysMvmdWillNotStart(t *testing.T) {
+	r, state := mvmdRig(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(state, "disks"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(state, "disks", "d1"), []byte("x"), 0o600))
+
+	err := prepareMvmd(r)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, filepath.Join(state, "disks"))
+	assert.ErrorContains(t, err, "mvmd will refuse to start")
+	assert.FileExists(t, filepath.Join(state, "disks", "d1"), "the files stay where they are")
+}
+
+func TestHost_PrepareStorageLeavesALinkThatIsRightAndRefusesOneThatIsNot(t *testing.T) {
+	r, state := mvmdRig(t)
+	require.NoError(t, prepareMvmd(r))
+	require.NoError(t, os.WriteFile(filepath.Join(r.mnt, "snapshots", "s1"), []byte("x"), 0o600))
+
+	require.NoError(t, linkTo(filepath.Join(state, "disks"), filepath.Join(r.mnt, "disks")), "the same link again")
+	assert.FileExists(t, filepath.Join(state, "snapshots", "s1"), "what is behind the link is untouched")
+
+	err := linkTo(filepath.Join(state, "disks"), filepath.Join(r.mnt, "elsewhere"))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "mvmd will refuse to start")
+}

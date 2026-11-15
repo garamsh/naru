@@ -12,15 +12,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
 // The tests of the storage disk (ADR 0027, ADR 0032) give one Node a blank sparse disk besides its
 // boot and data disks, the data and extra disks both virtio-blk so that the kernel names them
 // /dev/vda and /dev/vdb in the order attached, and spec.storage naming the extra one. The disk is
-// mounted where mvmd keeps its disks, and naru-storageprobe reports on it from the Node.
+// mounted at wire.MvmdStorageMount, and naru-storageprobe reports on it from the Node.
 const (
-	storageDir  = "/var/lib/naru/mvmd/disks"
+	storageDir  = wire.MvmdStorageMount
 	extraSize   = 512 << 20
 	grownSize   = 1 << 30
 	formatted   = "storage disk formatted as XFS"
@@ -61,7 +62,7 @@ func TestNode_ABlankExtraDiskIsFormattedAsXFSMountedAndReflinksAFile(t *testing.
 	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "storageprobe", "fs=xfs", "reflink=ok", "marker=written"))
 
 	assert.True(t, nd.Has(formatted, "device=/dev/vdb"), "init formatted the blank disk")
-	assert.True(t, nd.Has(storageMark, "mount="+storageDir), "init mounted it where mvmd keeps its disks")
+	assert.True(t, nd.Has(storageMark, "mount="+storageDir), "init mounted it where mvmd keeps its disks, snapshots and run directories")
 	assert.False(t, nd.Has("storage file system grown"), "a file system made to fit the disk needs no growth")
 	assert.Greater(t, probedSize(t, nd), uint64(extraSize*8/10), "the file system fills the disk, less its log")
 }
