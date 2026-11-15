@@ -24,7 +24,15 @@ const (
 	RetryInterval = 60 * time.Second
 	// StepThreshold is the offset from which the clock is stepped and below which it is slewed.
 	StepThreshold = 128 * time.Millisecond
+	// StepBound is the offset from which a step is refused, once a synchronisation has succeeded
+	// since boot. The first successful synchronisation steps by any offset: a Node's clock may be
+	// years behind at boot.
+	StepBound = time.Hour
 )
+
+// ErrStepTooLarge is why a synchronisation did not move the clock: the offset is StepBound or
+// more, and the clock has been set since boot.
+var ErrStepTooLarge = errors.New("the offset is too large to step the clock")
 
 // Correction is how a synchronisation moved the clock.
 type Correction string
@@ -94,6 +102,8 @@ type Syncer struct {
 	due     time.Time     // the next synchronisation; the zero time is at once
 	status  Status        // Servers is left out; Status adds it
 	wake    chan struct{} // Configure signals Run
+	synced  bool          // a synchronisation has succeeded since New
+	onStep  []func(Result)
 }
 
 // New returns a Syncer that asks through query and corrects clock. It asks no server until
@@ -114,6 +124,14 @@ func (s *Syncer) Configure(servers []string) {
 	case s.wake <- struct{}{}:
 	default:
 	}
+}
+
+// OnStep has fn called after each synchronisation that stepped the clock, with its result, on
+// the goroutine that synchronised.
+func (s *Syncer) OnStep(fn func(Result)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onStep = append(s.onStep, fn)
 }
 
 // Status returns the state now.
@@ -143,11 +161,15 @@ func (s *Syncer) SyncNow(ctx context.Context) (Result, error) {
 
 	res, err := s.sync(ctx, servers)
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var notify []func(Result)
 	if err != nil {
 		s.status.Failed, s.status.Err = s.clock.Now(), err.Error()
 	} else {
 		s.status.Last, s.status.Failed, s.status.Err = &res, time.Time{}, ""
+		s.synced = true
+		if res.Correction == Step {
+			notify = append(notify, s.onStep...)
+		}
 	}
 	// A Configure during the attempt asked for another at once, which this one must not defer.
 	if gen == s.gen {
@@ -156,6 +178,10 @@ func (s *Syncer) SyncNow(ctx context.Context) (Result, error) {
 			interval = RetryInterval
 		}
 		s.due = s.clock.Now().Add(interval)
+	}
+	s.mu.Unlock()
+	for _, fn := range notify {
+		fn(res)
 	}
 	return res, err
 }
@@ -179,6 +205,10 @@ func (s *Syncer) sync(ctx context.Context, servers []string) (Result, error) {
 		}
 		res := Result{Server: addr, Offset: smp.Offset, Delay: smp.Delay, At: s.clock.Now()}
 		if smp.Offset >= StepThreshold || smp.Offset <= -StepThreshold {
+			if s.refuses(smp.Offset) {
+				errs = append(errs, fmt.Errorf("%s: %w: %s ahead, the bound is %s", addr, ErrStepTooLarge, smp.Offset, StepBound))
+				continue
+			}
 			res.Correction, err = Step, s.clock.Step(smp.Offset)
 		} else {
 			res.Correction, err = Slew, s.clock.Slew(smp.Offset)
@@ -189,6 +219,14 @@ func (s *Syncer) sync(ctx context.Context, servers []string) (Result, error) {
 		return res, nil
 	}
 	return Result{}, errors.Join(errs...)
+}
+
+// refuses reports whether a step of offset is refused: the clock has been set since boot, and the
+// offset is StepBound or more either way.
+func (s *Syncer) refuses(offset time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.synced && (offset >= StepBound || offset <= -StepBound)
 }
 
 // Run synchronises when Configure asks and every PollInterval after a success, or RetryInterval
