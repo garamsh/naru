@@ -1,7 +1,7 @@
 // Package naructl runs the naructl binary, which owns the layout of a gaon Node (ADR 0015): the
 // tests and naru-cluster have it write the cluster's CA, each Node's user-data and the test host's
 // client pair. It runs a binary and imports nothing of naructl, so that this module builds
-// with GOWORK=off and no replace (ADR 0014).
+// with GOWORK=off (ADR 0014).
 package naructl
 
 import (
