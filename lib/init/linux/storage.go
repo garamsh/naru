@@ -113,7 +113,7 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 		if err := h.linkMvmdStorage(mnt); err != nil {
 			return fmt.Errorf("storage %q: %w", s.Name, err)
 		}
-		log.Info("mvmd's disks and snapshots linked into storage", "mount", mnt)
+		log.Info("mvmd's disks, snapshots and disk snapshots linked into storage", "mount", mnt)
 	}
 
 	size, err := f.Seek(0, io.SeekEnd)
@@ -130,7 +130,7 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 }
 
 // mvmdLinked are the directories of mvmd's state directory that live on the storage mount.
-var mvmdLinked = []string{"disks", "snapshots"}
+var mvmdLinked = []string{"disks", "snapshots", "disk-snapshots"}
 
 // linkMvmdStorage makes each of mvmdLinked a directory of the storage mount at mnt, which only the
 // daemon may list, and a link to it in mvmd's state directory. An empty directory there, as the
@@ -164,7 +164,7 @@ func linkTo(link, target string) error {
 		return err
 	case info.Mode()&fs.ModeSymlink != 0:
 		if got, err := os.Readlink(link); err != nil || got != target {
-			return fmt.Errorf("%s links to %q, not to %s; mvmd will refuse to start with its disks and snapshots on two file systems", link, got, target)
+			return fmt.Errorf("%s links to %q, not to %s; mvmd will refuse to start with its disks, snapshots and disk snapshots on two file systems", link, got, target)
 		}
 		return nil
 	case info.IsDir():
@@ -173,7 +173,7 @@ func linkTo(link, target string) error {
 			return err
 		}
 		if len(entries) > 0 {
-			return fmt.Errorf("%s already holds %d entries, which a link would hide; mvmd will refuse to start with its disks and snapshots on two file systems", link, len(entries))
+			return fmt.Errorf("%s already holds %d entries, which a link would hide; mvmd will refuse to start with its disks, snapshots and disk snapshots on two file systems", link, len(entries))
 		}
 		if err := os.Remove(link); err != nil {
 			return err

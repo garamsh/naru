@@ -61,7 +61,7 @@ type Host struct {
 	links          links
 
 	dataMountPoint string
-	// mvmdStorage is the storage mount point that mvmdState's disks and snapshots are linked into.
+	// mvmdStorage is the storage mount point that mvmdState's disks, snapshots and disk snapshots are linked into.
 	mvmdStorage string
 	mvmdState   string
 	// storageMounts are the mount points of the storage disks, in the order they were mounted,

@@ -299,7 +299,7 @@ func diskWithByteAt(t *testing.T, off int64) string {
 	return p
 }
 
-// mvmdRig is a storageRig whose mount point is the one mvmd's disks and snapshots are linked into,
+// mvmdRig is a storageRig whose mount point is the one mvmd's disks, snapshots and disk snapshots are linked into,
 // with a state directory of its own.
 func mvmdRig(t *testing.T) (*storageRig, string) {
 	t.Helper()
@@ -314,12 +314,12 @@ func prepareMvmd(r *storageRig) error {
 	return r.prepare(config.Storage{Name: "vmdisks", Device: filepath.Join(r.host.devDir, "sdb")})
 }
 
-func TestHost_PrepareStorageLinksMvmdsDisksAndSnapshotsIntoTheMountOfTheStorageDisk(t *testing.T) {
+func TestHost_PrepareStorageLinksMvmdsDisksSnapshotsAndDiskSnapshotsIntoTheMountOfTheStorageDisk(t *testing.T) {
 	r, state := mvmdRig(t)
 
 	require.NoError(t, prepareMvmd(r))
 
-	for _, name := range []string{"disks", "snapshots"} {
+	for _, name := range []string{"disks", "snapshots", "disk-snapshots"} {
 		got, err := os.Readlink(filepath.Join(state, name))
 		require.NoError(t, err)
 		assert.Equal(t, filepath.Join(r.mnt, name), got)
