@@ -46,4 +46,5 @@ if [ "$got" != "$BUILDER_CONFIG_DIGEST" ]; then
   exit 1
 fi
 rm -f "$out/builder.tar" "$out/metadata.json"
-echo "pkgs: built $(ls "$out"/*.tar | wc -l) package(s) into $out" >&2
+set -- "$out"/*.tar
+echo "pkgs: built $# package(s) into $out" >&2
