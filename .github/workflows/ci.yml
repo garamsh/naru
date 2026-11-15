@@ -32,6 +32,13 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # Unit tests under tooling/qemu build disks with qemu-img and copy OVMF's variable store; the
+      # runner image carries neither. They are the distribution's packages, not pinned.
+      - name: Install qemu-utils and ovmf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-utils ovmf
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
