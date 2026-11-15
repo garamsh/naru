@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/garamsh/naru/naructl/internal/pki"
+	"github.com/garamsh/naru/lib/layout/pki"
 )
 
 // HostPort is the port naru-hostd serves the host API on unless a client file's endpoint says another.

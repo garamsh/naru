@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/garamsh/naru/naructl/internal/pki"
+	"github.com/garamsh/naru/lib/layout/pki"
 )
 
 func TestUserData_HostTrustsOrchsAuthorityBesideTheHostAuthority(t *testing.T) {

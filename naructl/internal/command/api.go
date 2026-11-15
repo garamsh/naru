@@ -15,8 +15,8 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/layout/pki"
 	"github.com/garamsh/naru/naructl/internal/client"
-	"github.com/garamsh/naru/naructl/internal/pki"
 )
 
 // callTimeout bounds every call but a followed log, which runs until it is interrupted.

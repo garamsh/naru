@@ -15,7 +15,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/garamsh/naru/naructl/internal/pki"
+	"github.com/garamsh/naru/lib/layout/pki"
 )
 
 var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)

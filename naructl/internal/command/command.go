@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/garamsh/naru/naructl/internal/layout"
-	"github.com/garamsh/naru/naructl/internal/pki"
+	"github.com/garamsh/naru/lib/layout"
+	"github.com/garamsh/naru/lib/layout/pki"
 )
 
 const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-ca|host-client> [flags]

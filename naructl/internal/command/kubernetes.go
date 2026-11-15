@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/garamsh/naru/naructl/internal/layout"
-	"github.com/garamsh/naru/naructl/internal/pki"
+	"github.com/garamsh/naru/lib/layout"
+	"github.com/garamsh/naru/lib/layout/pki"
 )
 
 const kubernetesUsage = `  gen kubernetes --ca <dir> --endpoint <ip> [--admin-address <host:port>]

@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/layout/pki"
 	"github.com/garamsh/naru/naructl/internal/client"
-	"github.com/garamsh/naru/naructl/internal/pki"
 )
 
 func organizations(t *testing.T, f client.File) []string {

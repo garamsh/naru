@@ -39,3 +39,7 @@ Drafted for garamsh/naru#36, part of goal garamsh/naru#34, with the PM's amendme
 - Each change of the layout still needs a matching change under `tooling/qemu`, which would say the constants QEMU names belong in a flag or in `naructl`'s output.
 - An operator needs a form of Node that the flags cannot express and files a request for post-processing, which would say the flag set is the wrong surface.
 - `naru-cluster` boots a layout from a release's `naructl` that its own harness-supplied binaries do not match, which would say the layout needs a version.
+
+## Errata
+
+- 2026-11-15: the layout is no longer `naructl/internal/layout` and `naructl` is no longer its single owner: it is the module `lib/layout`, called by `naructl` and by orch ([ADR 0060](./0060-the-gaon-node-layout-is-the-library-lib-layout-called-by-naructl-and-by-orch-when-it-builds-a-joining-hosts-configuration.md), which supersedes this ADR in part). `naructl/internal/pki` moved to `lib/layout/pki`.

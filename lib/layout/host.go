@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/garamsh/naru/naructl/internal/pki"
+	"github.com/garamsh/naru/lib/layout/pki"
 )
 
 // Where naru-hostd's files are and the port it serves (docs/architecture/host.md).

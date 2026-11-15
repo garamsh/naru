@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/garamsh/naru/naructl/internal/layout"
-	"github.com/garamsh/naru/naructl/internal/pki"
+	"github.com/garamsh/naru/lib/layout"
+	"github.com/garamsh/naru/lib/layout/pki"
 )
 
 // kubeSpec is the part of a Kubernetes Node's user-data the tests read.
