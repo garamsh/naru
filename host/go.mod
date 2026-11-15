@@ -11,7 +11,7 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
-require golang.org/x/crypto v0.57.0 // indirect
+require golang.org/x/crypto v0.58.0 // indirect
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -29,9 +29,9 @@ require (
 	github.com/garamsh/naru/lib/metrics v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/orchapi v0.0.0-00010101000000-000000000000
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 )
 
@@ -56,14 +56,13 @@ require (
 require (
 	github.com/garamsh/naru/lib/wire v0.0.0-00010101000000-000000000000
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/josharian/native v1.1.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mdlayher/genetlink v1.3.2 // indirect
-	github.com/mdlayher/netlink v1.7.2 // indirect
-	github.com/mdlayher/socket v0.5.1 // indirect
+	github.com/mdlayher/netlink v1.11.2 // indirect
+	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173 // indirect
 )
 

@@ -5,12 +5,12 @@ go 1.26.0
 require github.com/stretchr/testify v1.12.1
 
 require (
-	github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261112183926-d189133bba8d
+	github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261114055347-b1a60cd64967
 	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
-require golang.org/x/crypto v0.57.0 // indirect
+require golang.org/x/crypto v0.58.0 // indirect
 
 require (
 	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000
@@ -18,9 +18,9 @@ require (
 	github.com/garamsh/naru/lib/init v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/iso9660 v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/wire v0.0.0-00010101000000-000000000000
-	golang.org/x/net v0.60.0
+	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 	google.golang.org/grpc v1.85.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
