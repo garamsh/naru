@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"time"
 
+	"github.com/garamsh/naru/host/internal/mvmd"
 	"github.com/garamsh/naru/host/internal/network"
 )
 
@@ -40,4 +42,39 @@ func networkManager(ctx context.Context, c networkConfig) (*network.Manager, err
 		return nil, err
 	}
 	return m, nil
+}
+
+// reconcileInterval is how often the networks' members are made to match mvmd's machines.
+const reconcileInterval = 30 * time.Second
+
+// reconcilePassTimeout bounds a pass, which holds the networks' lock while it asks mvmd.
+const reconcilePassTimeout = 10 * time.Second
+
+// startReconciler drops the members whose machine mvmd no longer holds, once before the API serves
+// and then every reconcileInterval. A pass that cannot reach mvmd is logged, and the next one tries.
+func startReconciler(ctx context.Context, m *network.Manager, rt mvmd.Runtime, log *slog.Logger) {
+	r := &network.Reconciler{Manager: m, Addresses: machineAddresses(rt), Interval: reconcileInterval, Timeout: reconcilePassTimeout, Log: log}
+	if err := r.Once(ctx); err != nil {
+		log.Error("cannot reconcile the networks' members with the machines", "err", err.Error())
+	}
+	go r.Run(ctx)
+}
+
+// machineAddresses lists the addresses of the machines mvmd holds.
+func machineAddresses(rt mvmd.Runtime) func(context.Context) ([]netip.Addr, error) {
+	return func(ctx context.Context) ([]netip.Addr, error) {
+		ms, err := rt.ListMachines(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var out []netip.Addr
+		for _, m := range ms {
+			for _, s := range m.Addresses {
+				if a, err := netip.ParseAddr(s); err == nil {
+					out = append(out, a)
+				}
+			}
+		}
+		return out, nil
+	}
 }
