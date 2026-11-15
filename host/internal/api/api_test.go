@@ -99,16 +99,26 @@ type env struct {
 	nft      *recorder
 	tunnel   *fakeTunnel
 	state    string
+	// stop ends the server's context, which starts its drain; served receives what Serve returned.
+	stop   context.CancelFunc
+	served chan error
 }
 
 // recorder is the network.Runner of the tests: it records what the host would have run.
 type recorder struct {
+	// hook, when set, runs first in Run with the caller's context: a test blocks it, or fails it.
+	hook  func(context.Context) error
 	mu    sync.Mutex
 	calls [][]string
 	stdin []string
 }
 
-func (r *recorder) Run(_ context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+func (r *recorder) Run(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+	if r.hook != nil {
+		if err := r.hook(ctx); err != nil {
+			return nil, err
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, append([]string{name}, args...))
@@ -167,8 +177,10 @@ func startEnvRevoking(t *testing.T, gateway netip.Addr, networks bool, revocatio
 		deps.Networks = e.nets
 	}
 	srv := New(deps)
-	go func() { _ = srv.Serve(ln, conf) }()
-	t.Cleanup(func() { _ = ln.Close() })
+	ctx, stop := context.WithCancel(context.Background())
+	e.stop, e.served = stop, make(chan error, 1)
+	go func() { e.served <- srv.Serve(ctx, ln, conf) }()
+	t.Cleanup(stop)
 	return e
 }
 
@@ -389,4 +401,49 @@ func TestDelete_RetryRemovesDisksAHalfDoneDeleteLeft(t *testing.T) {
 	assert.Equal(t, 404, code)
 	assert.NotContains(t, e.rt.disks, "web.data")
 	assert.Contains(t, e.rt.disks, "webb.data", "another microVM's disk is left")
+}
+
+func TestServe_DrainsTheRequestInFlightAndRefusesANewOne(t *testing.T) {
+	e := start(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	e.rt.infoHook = func(context.Context) error {
+		close(entered)
+		<-release
+		return nil
+	}
+	reader := e.as(t, "naru:host-reader")
+	type answer struct {
+		status int
+		body   []byte
+	}
+	inFlight := make(chan answer, 1)
+	go func() {
+		status, body := e.do(t, reader, "GET", "/v1/host", nil)
+		inFlight <- answer{status, body}
+	}()
+	<-entered
+
+	e.stop()
+	require.Eventually(t, func() bool {
+		conn, err := net.DialTimeout("tcp", e.addr, 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+		}
+		return err != nil
+	}, 5*time.Second, 10*time.Millisecond, "a new connection is refused once the drain began")
+	select {
+	case err := <-e.served:
+		t.Fatalf("Serve returned (%v) while a request was in flight", err)
+	default:
+	}
+
+	close(release)
+	got := <-inFlight
+	assert.Equal(t, http.StatusOK, got.status, string(got.body))
+	select {
+	case err := <-e.served:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after the last request finished")
+	}
 }

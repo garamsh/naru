@@ -6,3 +6,6 @@ func SetStageHook(hook func(step string) error) (restore func()) {
 	stageHook = hook
 	return func() { stageHook = nil }
 }
+
+// StatusOf is statusOf, for the tests of the package's answers.
+func StatusOf(err error) int { return statusOf(err) }

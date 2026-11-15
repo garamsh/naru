@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -107,15 +108,17 @@ func (s *Signer) wrap(next http.Handler) http.Handler {
 	})
 }
 
-// statusOf maps a refusal to its HTTP status. A caller the authorities do not vouch for or whose
-// role does not allow the action is 403; a malformed request 400; a state the signer is not in 409.
+// statusOf maps an error to its HTTP status. A caller the authorities do not vouch for or whose
+// role does not allow the action is 403, each cause named below; a malformed request 400; a state
+// the signer is not in 409; an error that is none of these 500. A path the signer does not serve
+// never reaches it: the mux answers 404.
 func statusOf(err error) int {
 	switch {
 	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced):
 		return http.StatusConflict
 	case errors.Is(err, ErrBadRequest), errors.Is(err, identity.ErrFormat):
 		return http.StatusBadRequest
-	case errors.Is(err, ErrForbidden),
+	case errors.Is(err, ErrForbidden), isCertificateRefusal(err),
 		errors.Is(err, identity.ErrRole),
 		errors.Is(err, identity.ErrRevoked),
 		errors.Is(err, identity.ErrNoChain),
@@ -132,7 +135,16 @@ func statusOf(err error) int {
 		errors.Is(err, identity.ErrPassphrase):
 		return http.StatusForbidden
 	}
-	return http.StatusForbidden
+	// An error the signer does not name is its own failure, not a refusal of the caller.
+	return http.StatusInternalServerError
+}
+
+// isCertificateRefusal reports whether err is the chain verification of a caller's certificate
+// failing: an authority the signer does not hold, an expired certificate, or one not made for the use.
+func isCertificateRefusal(err error) bool {
+	var unknown x509.UnknownAuthorityError
+	var invalid x509.CertificateInvalidError
+	return errors.As(err, &unknown) || errors.As(err, &invalid)
 }
 
 func readBody(r *http.Request) ([]byte, error) {

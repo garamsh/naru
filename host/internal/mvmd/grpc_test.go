@@ -1,6 +1,7 @@
 package mvmd
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ func TestFail_MapsMvmdsOutcomes(t *testing.T) {
 		err := g.fail(status.Error(code, "reason"))
 		assert.ErrorIs(t, err, want, code.String())
 	}
+	assert.ErrorIs(t, g.fail(status.Error(codes.DeadlineExceeded, "reason")), context.DeadlineExceeded)
 	assert.NoError(t, g.fail(nil))
 	other := g.fail(status.Error(codes.Internal, "boom"))
 	for _, e := range cases {

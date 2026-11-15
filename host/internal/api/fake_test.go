@@ -29,6 +29,10 @@ type fakeRuntime struct {
 	contents map[string][]byte
 	// stops counts the StopMachine calls that reached mvmd.
 	stops int
+	// undoErrs are the context errors the StopMachine and DeleteMachine calls found.
+	undoErrs []error
+	// infoHook, when set, runs first in Info: a test blocks it, or fails it with the error mvmd gave.
+	infoHook func(context.Context) error
 	// fences is the state of each fenced Machine's own fence; snapshots are the snapshots held.
 	fences    map[string]mvmd.Deadline
 	snapshots map[string]mvmd.Snapshot
@@ -55,7 +59,14 @@ func newFake() *fakeRuntime {
 	}
 }
 
-func (f *fakeRuntime) Info(context.Context) (mvmd.Info, error) { return f.info, f.err }
+func (f *fakeRuntime) Info(ctx context.Context) (mvmd.Info, error) {
+	if f.infoHook != nil {
+		if err := f.infoHook(ctx); err != nil {
+			return mvmd.Info{}, err
+		}
+	}
+	return f.info, f.err
+}
 
 func (f *fakeRuntime) Pull(_ context.Context, repo, digest string) error {
 	f.mu.Lock()
@@ -169,10 +180,11 @@ func (f *fakeRuntime) StartMachine(_ context.Context, id string) (mvmd.Machine, 
 	return m, nil
 }
 
-func (f *fakeRuntime) StopMachine(_ context.Context, id string) error {
+func (f *fakeRuntime) StopMachine(ctx context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops++
+	f.undoErrs = append(f.undoErrs, ctx.Err())
 	m, ok := f.machines[id]
 	if !ok {
 		return mvmd.ErrNotFound
@@ -182,9 +194,10 @@ func (f *fakeRuntime) StopMachine(_ context.Context, id string) error {
 	return nil
 }
 
-func (f *fakeRuntime) DeleteMachine(_ context.Context, id string) error {
+func (f *fakeRuntime) DeleteMachine(ctx context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.undoErrs = append(f.undoErrs, ctx.Err())
 	_ = f.step("deleteMachine " + id)
 	if m, ok := f.machines[id]; ok && m.State == mvmd.StateRunning {
 		return mvmd.ErrPrecondition

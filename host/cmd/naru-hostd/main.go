@@ -53,7 +53,6 @@ func main() {
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 
 		management = flag.String("management-prefix", "", "prefix of the management plane; set, it turns the virtual networks on")
-		_          = flag.String("host-addrs", "", "ignored: the input chain drops a new connection from any microVM to any address of this host")
 		tapPrefix  = flag.String("tap-prefix", "tap", "name prefix of the microVMs' tap devices, for the forged-source rule")
 		egress     = flag.String("egress-interface", "", "interface the networks' egress leaves by; empty gives them none")
 		tunnel     = flag.String("tunnel", "wg-naru", "name of the WireGuard interface, which hostd creates; empty turns the tunnel off")
@@ -114,7 +113,6 @@ func main() {
 
 	r := &fence.Renewer{Runtime: rt, Length: *length, Interval: *interval, Retry: 5 * time.Second, Log: log}
 	go r.Run(ctx)
-	go func() { <-ctx.Done(); _ = ln.Close() }()
 	if netMgr != nil {
 		startReconciler(ctx, netMgr, rt, log)
 	}
@@ -150,7 +148,7 @@ func main() {
 	}
 
 	log.Info("naru-hostd serving", "addr", *listen)
-	if err := srv.Serve(ln, conf); err != nil && ctx.Err() == nil {
+	if err := srv.Serve(ctx, ln, conf); err != nil {
 		log.Error("the host API stopped", "err", err.Error())
 		os.Exit(1)
 	}
