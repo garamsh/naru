@@ -3,6 +3,7 @@ package dhcpserver_test
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"net"
@@ -71,6 +72,8 @@ func (g *segment) Send(from, to netip.Addr, msg []byte) error {
 	return nil
 }
 
+func (g *segment) Close() error { return nil }
+
 func (g *segment) Recv(ctx context.Context) ([]byte, error) {
 	select {
 	case b := <-g.replys:
@@ -97,7 +100,7 @@ func (nopHandler) Expired(dhcp4.Lease) {}
 func TestServer_ARealClientIsGivenItsReservationWithTheFleetsOptions(t *testing.T) {
 	s := newServer(t)
 	c := &dhcp4.Client{
-		HWAddr: hostMAC, Transport: newSegment(t, s, hostMAC), Clock: clock{}, Handler: nopHandler{},
+		HWAddr: hostMAC, Open: func() (dhcp4.Transport, error) { return newSegment(t, s, hostMAC), nil }, Clock: clock{}, Handler: nopHandler{},
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -116,12 +119,95 @@ func TestServer_ARealClientIsGivenItsReservationWithTheFleetsOptions(t *testing.
 	assert.Equal(t, 52*time.Minute+30*time.Second, l.T2)
 }
 
+// The client messages below were written by insomniacslk/dhcp
+// v0.0.0-20261014062924-c6bb46ad3f3a (github.com/insomniacslk/dhcp/dhcpv4), not by the codec the
+// server shares with the host's client: vectorDiscover by NewDiscovery (broadcast, transaction ID
+// cafebabe, MAC 02:00:00:00:04:01) and vectorRequest by NewRequestFromOffer on an OFFER of 10.78.0.4
+// from 10.78.0.254, then ToBytes. Running those calls again writes the same bytes.
+const (
+	vectorDiscover = "" +
+		"01010600cafebabe000080000000000000000000000000000000000002000000" +
+		"0401000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"00000000000000000000000063825363350101370401030f06ff000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"000000000000000000000000"
+
+	vectorRequest = "" +
+		"01010600cafebabe000080000000000000000000000000000000000002000000" +
+		"0401000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000006382536332040a4e000435010336040a4e00fe37" +
+		"0401030f06ff0000000000000000000000000000000000000000000000000000" +
+		"000000000000000000000000"
+)
+
+// rawOptions reads the options of a DHCP packet from their bytes, as RFC 2131 lays them out, and not
+// through lib/init/dhcp4.
+func rawOptions(t *testing.T, packet []byte) map[byte][]byte {
+	t.Helper()
+	require.Greater(t, len(packet), 240)
+	require.Equal(t, []byte{0x63, 0x82, 0x53, 0x63}, packet[236:240], "the magic cookie")
+	out := map[byte][]byte{}
+	for o := packet[240:]; len(o) > 0 && o[0] != 255; {
+		if o[0] == 0 {
+			o = o[1:]
+			continue
+		}
+		out[o[0]] = o[2 : 2+int(o[1])]
+		o = o[2+int(o[1]):]
+	}
+	return out
+}
+
+func TestServer_AnswersMessagesAnotherImplementationWroteInTheLayoutOfRFC2131(t *testing.T) {
+	s := newServer(t)
+	unhex := func(h string) []byte {
+		b, err := hex.DecodeString(h)
+		require.NoError(t, err)
+		return b
+	}
+
+	for _, tc := range []struct {
+		name   string
+		vector string
+		want   byte
+	}{{"a DISCOVER", vectorDiscover, 2}, {"a REQUEST", vectorRequest, 5}} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := s.Respond(clientFrame(hostMAC, broadcast, netip.IPv4Unspecified(), bcastIP, unhex(tc.vector)))
+
+			require.NotNil(t, out)
+			payload := out[14+20+8:]
+			assert.Equal(t, byte(2), payload[0], "op: a reply")
+			assert.Equal(t, []byte{0xca, 0xfe, 0xba, 0xbe}, payload[4:8], "the transaction ID")
+			assert.Equal(t, hostIP.AsSlice(), payload[16:20], "yiaddr")
+			assert.Equal(t, []byte(hostMAC), payload[28:34], "chaddr")
+			opts := rawOptions(t, payload)
+			assert.Equal(t, []byte{tc.want}, opts[53])
+			assert.Equal(t, serverIP.AsSlice(), opts[54])
+			assert.Equal(t, []byte{255, 255, 255, 0}, opts[1])
+			assert.Equal(t, []byte{0, 0, 0x0e, 0x10}, opts[51])
+			assert.Equal(t, serverIP.AsSlice(), opts[3])
+			assert.Equal(t, dnsIP.AsSlice(), opts[6])
+			assert.Equal(t, ntpIP.AsSlice(), opts[42])
+		})
+	}
+}
+
 func TestServer_EachMACIsGivenItsOwnAddress(t *testing.T) {
 	s := newServer(t)
 	for mac, want := range map[string]netip.Addr{hostMAC.String(): hostIP, otherMAC.String(): otherIP} {
 		hw, err := net.ParseMAC(mac)
 		require.NoError(t, err)
-		c := &dhcp4.Client{HWAddr: hw, Transport: newSegment(t, s, hw), Clock: clock{}, Handler: nopHandler{}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		c := &dhcp4.Client{HWAddr: hw, Open: func() (dhcp4.Transport, error) { return newSegment(t, s, hw), nil }, Clock: clock{}, Handler: nopHandler{}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 
 		l, err := c.Acquire(t.Context())
 

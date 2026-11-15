@@ -212,7 +212,7 @@ func TestHost_ApplyNetwork(t *testing.T) {
 		}
 		return i
 	}
-	kernel := []link{{1, "lo", nil}, {2, "ens18", net.HardwareAddr{0x02, 0, 0, 0, 0, 0x08}}, {3, "ens19", mac}}
+	kernel := []link{loopback(), {Index: 2, Name: "ens18", MAC: net.HardwareAddr{0x02, 0, 0, 0, 0, 0x08}}, {Index: 3, Name: "ens19", MAC: mac}}
 
 	t.Run("finds the interface by MAC whatever the kernel named it, and applies address, link and route", func(t *testing.T) {
 		h, _ := testHost(t, nil)

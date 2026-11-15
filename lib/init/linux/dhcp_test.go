@@ -58,6 +58,8 @@ func (s *dhcpServer) Send(_, _ netip.Addr, b []byte) error {
 	return nil
 }
 
+func (s *dhcpServer) Close() error { return nil }
+
 func (s *dhcpServer) Recv(ctx context.Context) ([]byte, error) {
 	select {
 	case b := <-s.replies:
@@ -80,8 +82,13 @@ func dhcpHost(t *testing.T, s *dhcpServer, l *fakeLinks) *Host {
 	return h
 }
 
+// loopback is lo as the kernel reports it: a 6-byte zero MAC and the loopback flag.
+func loopback() link {
+	return link{Index: 1, Name: "lo", MAC: make(net.HardwareAddr, 6), Loopback: true}
+}
+
 func ethernet() []link {
-	return []link{{1, "lo", nil}, {2, "ens18", net.HardwareAddr{0x02, 0, 0, 0, 0, 0x08}}, {3, "ens19", dhcpMAC}}
+	return []link{loopback(), {Index: 2, Name: "ens18", MAC: net.HardwareAddr{0x02, 0, 0, 0, 0, 0x08}}, {Index: 3, Name: "ens19", MAC: dhcpMAC}}
 }
 
 func TestHost_ApplyNetworkLeasesAnAddressOnTheFirstLinkWithACarrier(t *testing.T) {
@@ -96,6 +103,18 @@ func TestHost_ApplyNetworkLeasesAnAddressOnTheFirstLinkWithACarrier(t *testing.T
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.2.4")}, applied.NTP)
 	assert.Equal(t, []string{"up lo", "up ens18", "up ens19", "up ens19", "addr 10.0.2.15/24 ens19", "route 10.0.2.2 ens19"}, l.calls)
 	assert.Equal(t, "nameserver 10.0.2.3\n", read(t, h.resolvConf))
+}
+
+func TestHost_ApplyNetworkSkipsLoopbackByItsFlagWhenItHasACarrier(t *testing.T) {
+	// lo has a MAC of six bytes and a carrier, as in the kernel; only its flag tells it from ens19.
+	l := &fakeLinks{all: ethernet(), carrier: map[string]bool{"lo": true, "ens19": true}}
+	h := dhcpHost(t, newDHCPServer(), l)
+
+	applied, err := h.ApplyNetwork(netcfg.Automatic(), discard)
+
+	require.NoError(t, err)
+	assert.Equal(t, []netip.Addr{leaseIP}, applied.Addresses)
+	assert.Equal(t, []string{"up lo", "up ens18", "up ens19", "up ens19", "addr 10.0.2.15/24 ens19", "route 10.0.2.2 ens19"}, l.calls, "lo is brought up once, for the services, and is not leased on")
 }
 
 func TestHost_ApplyNetworkLeasesOnANamedLink(t *testing.T) {
