@@ -225,7 +225,7 @@ func TestNode_UpgradeToAKernelThatRefusesIsRolledBackByTheNodeToTheVersionBefore
 	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
 
 	require.NoError(t, r.Err, r.refusal())
-	// Nothing is done to the Node from here: the trial kernel cannot read its configuration, init
+	// Nothing is done to the Node from here: the trial kernel cannot find its data disk, init
 	// gives up on it and reboots, and the default slot boots again.
 	awaitRestarting(t, nd, "the Node is back on its old version and says the upgrade rolled back", func() bool {
 		s, err := statusOf(tool, admin)

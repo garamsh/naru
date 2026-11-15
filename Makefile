@@ -168,11 +168,11 @@ in-builder-image:
 
 # in-builder-image-upgrade builds the two kernels the upgrade tests (ADR 0025) put on a running Node, from the
 # programs and the kernel image built: next/bzImage is the same tree with the version $(VERSION)-next
-# stamped in, and refuse/bzImage a naru-init that cannot find its configuration drive, so a trial
-# boot of it refuses and rolls back by itself. The second kernel's version carries an extra linker
+# stamped in, and refuse/bzImage a naru-init that cannot find its data disk, so a trial
+# boot of it refuses, with a seed or without, and rolls back by itself. The second kernel's version carries an extra linker
 # flag, which build.sh passes to the linker as part of -X github.com/garamsh/naru/lib/init/run.buildVersion=.
 UPGRADE := $(BUILD)/upgrade
-REFUSE_FLAG := -X github.com/garamsh/naru/lib/init/linux.seedLabel=naru67-absent
+REFUSE_FLAG := -X github.com/garamsh/naru/lib/init/linux.dataDiskLabel=naru67-absent
 in-builder-image-upgrade: in-builder-image
 	@set -e; \
 	for v in next refuse; do \
