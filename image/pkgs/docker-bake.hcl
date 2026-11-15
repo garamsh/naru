@@ -9,6 +9,8 @@
 # SOURCE_DATE_EPOCH and layers are not compressed, so two builds of one commit give one digest.
 
 variable "SOURCE_DATE_EPOCH" {}
+# The kernel's build timestamp, from image/build.env with SOURCE_DATE_EPOCH.
+variable "KBUILD_BUILD_TIMESTAMP" {}
 variable "OUT" {}
 # The version naru-init reports and the naru-orch extension is built for (VERSION of the Makefile).
 variable "NARU_VERSION" {}
@@ -224,6 +226,7 @@ target "_kernel" {
   inherits   = ["_package"]
   context    = "kernel"
   dockerfile = "Dockerfile"
+  args       = { SOURCE_DATE_EPOCH = SOURCE_DATE_EPOCH, KBUILD_BUILD_TIMESTAMP = KBUILD_BUILD_TIMESTAMP }
 }
 
 target "kernel-host" {

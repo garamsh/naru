@@ -28,8 +28,13 @@ tars=()
 for p in "${want[@]}"; do
   tars+=("$pkgs/$p.tar")
 done
-rm -rf "$root" "$image"
+# Only what this script places is replaced: the disk step writes naru.img and naru.qcow2 into the same
+# directory, and make image-upgrade lays out again after it.
+rm -rf "$root"
 mkdir -p "$root" "$image"
+for f in bzImage bzImage.bare initramfs.cpio.gz node-initrd.cpio.gz boot-sets.json inputs.env guest extensions gaon etcd k8s regtools; do
+  rm -rf "${image:?}/$f"
+done
 "$naru_pkg" unpack "$root" "${tars[@]}"
 
 cp "$root/bzImage/bzImage" "$root/kernel-host/bzImage.bare" "$root/initramfs-host/initramfs.cpio.gz" \

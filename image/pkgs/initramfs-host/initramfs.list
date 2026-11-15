@@ -1,5 +1,5 @@
 # The initramfs, in the list format of the kernel's usr/gen_init_cpio: one entry per line, in the
-# order they are archived. build.sh replaces @OUT@ with the directory holding the built programs.
+# order they are archived. assemble.sh replaces @OUT@ with the directory holding the built programs.
 # Every entry is owned by 0:0; the archive's mtimes are fixed by gen_init_cpio's -t.
 # It also carries the Node runtime (Kubernetes, containerd, runc, the CNI plugins, etcd) for the boot
 # disk's Node form (ADR 0007, 0031, 0054); the Node image's own list is image/pkgs/initramfs-node/initramfs.list.

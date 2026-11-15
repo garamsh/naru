@@ -157,7 +157,7 @@ func TestMvmdJSON_NamesTheMkfsExt4TheInitramfsInstallsAndNotOneOnTheDataDisk(t *
 	mkfs := m["disk"].(map[string]any)["mkfs"].(string)
 	assert.Equal(t, "/bin/mkfs.ext4", mkfs)
 	assert.False(t, strings.HasPrefix(mkfs, wire.DataMount), "the data disk carries no mkfs")
-	list, err := os.ReadFile("../../../../image/host/initramfs/initramfs.list")
+	list, err := os.ReadFile("../../../../image/pkgs/initramfs-host/initramfs.list")
 	require.NoError(t, err)
 	assert.Regexp(t, `(?m)^file `+regexp.QuoteMeta(mkfs)+` @OUT@/mkfs\.ext4 0755 `, string(list))
 }

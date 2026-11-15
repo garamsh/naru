@@ -1,6 +1,6 @@
 # The Node's initramfs (ADR 0034, 0054), in the list format of the kernel's usr/gen_init_cpio: one
 # entry per line, in the order they are archived. It is this file's own definition and not the host's
-# list less some entries; /init is node/cmd/naru-init. build.sh replaces @OUT@ with the directory
+# list less some entries; /init is node/cmd/naru-init. the Dockerfile replaces @OUT@ with the directory
 # holding the built programs. Every entry is owned by 0:0; the archive's mtimes are fixed by
 # gen_init_cpio's -t.
 dir /bin 0755 0 0
