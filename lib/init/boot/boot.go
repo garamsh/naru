@@ -237,7 +237,9 @@ func syncTime(host Host, spec *config.Time, leased []netip.Addr, log *slog.Logge
 // choose returns the effective configuration: the stored one when its base is
 // the user-data the Node holds now and it validates, and base, at revision 0,
 // otherwise. A stored configuration that is not used is discarded and
-// replaced by the base, with the reason logged. A Node with no store runs its base.
+// replaced by the base, with the reason logged. A store that cannot be read is
+// kept: the base runs for this boot and nothing is stored. A Node with no store
+// runs its base.
 func choose(configs Configs, digest string, base config.NodeConfig, log *slog.Logger) store.Stored {
 	fresh := store.Stored{Revision: 0, BaseSha256: digest, Config: base}
 	stored, err := configs.Load()
@@ -245,6 +247,9 @@ func choose(configs Configs, digest string, base config.NodeConfig, log *slog.Lo
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		log.Info("no stored configuration; running the base", "revision", 0)
+		return fresh
+	case errors.Is(err, store.ErrUnreadable):
+		log.Error("stored configuration kept; running the base as revision 0 for this boot and storing nothing", "err", err)
 		return fresh
 	case err != nil:
 		reason = "the stored configuration is not valid: " + err.Error()

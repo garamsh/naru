@@ -117,8 +117,19 @@ func TestStore_LoadRefusesWhatDoesNotValidate(t *testing.T) {
 
 			require.Error(t, err)
 			assert.NotErrorIs(t, err, store.ErrNotFound)
+			assert.NotErrorIs(t, err, store.ErrUnreadable, "a store that was read and does not validate is not an unreadable one")
 		})
 	}
+}
+
+func TestStore_LoadOfAStoreThatCannotBeReadIsUnreadableAndNotAbsent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, store.FileName), 0o700), "a directory where the file belongs makes the read fail with an error other than not-exist")
+
+	_, err := store.New(dir).Load()
+
+	require.ErrorIs(t, err, store.ErrUnreadable)
+	assert.NotErrorIs(t, err, store.ErrNotFound)
 }
 
 func TestDigest_IsTheSHA256OfTheBytes(t *testing.T) {

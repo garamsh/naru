@@ -1,10 +1,12 @@
 package apply_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/garamsh/naru/lib/init/apply"
 	"github.com/garamsh/naru/lib/init/config"
@@ -39,4 +41,47 @@ func TestApply_AnUnchangedSpecHostWritesNothing(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"store"}, r.calls())
+}
+
+func TestApply_AConfigurationTakenFromGETAndAppliedBackChangesNoSecret(t *testing.T) {
+	r := &rig{}
+	cfg, err := config.Parse([]byte(`apiVersion: naru.garam.sh/v1alpha1
+kind: NodeConfig
+metadata:
+  name: node-1
+spec:
+  services:
+    - name: naru-hostd
+      binary: /bin/naru-hostd
+  dataDisk:
+    label: NARUDATA
+    mountPoint: /var/lib/naru
+  files:
+    - path: /run/private
+      mode: "0600"
+      content: private-content
+  host:
+    region: eu-1
+    orch:
+      url: https://192.168.0.10:7500
+      caSHA256: ` + strings.Repeat("ab", 32) + `
+      enrollKey: ` + config.JoinKeyPrefix + strings.Repeat("cd", 32) + `
+`))
+	require.NoError(t, err)
+	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Certificates: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
+	_, held := r.engine.Config()
+	data, err := yaml.Dump(apply.Redact(held))
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, yaml.Load(data, &doc))
+	require.Equal(t, apply.Redacted, doc["spec"].(map[string]any)["host"].(map[string]any)["orch"].(map[string]any)["enrollKey"], "the GET form hides the enrollment key")
+
+	_, err = r.engine.Apply(apply.Request{Revision: 0, Config: doc, Mode: apply.NoReboot})
+
+	var invalid *apply.InvalidError
+	require.ErrorAs(t, err, &invalid)
+	assert.Contains(t, invalid.Fields, "spec.host.orch.enrollKey", invalid.Error())
+	assert.Empty(t, r.calls(), "nothing stored and no file written")
+	_, after := r.engine.Config()
+	assert.Equal(t, held, after, "no secret changed")
 }

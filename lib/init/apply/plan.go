@@ -8,9 +8,6 @@ import (
 	"github.com/garamsh/naru/lib/init/config"
 )
 
-// redacted is what GET /v1/config shows in place of private material.
-const redacted = "REDACTED"
-
 // step is an action and what carries it out.
 type step struct {
 	action Action
@@ -22,35 +19,11 @@ type step struct {
 // change, or, in no-reboot mode, changes a field that needs a reboot. Fields
 // are compared with the configuration that runs.
 func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
-	var placeholders, never, reboot []string
+	var never, reboot []string
 	stored, running := e.stored.Config, e.running
 
-	if a := next.Spec.API; a != nil && a.Key == redacted && (stored.Spec.API == nil || stored.Spec.API.Key != redacted) {
-		placeholders = append(placeholders, "spec.api.key")
-	}
-	for i, a := range next.Spec.PKI.Authorities {
-		if old, ok := stored.Spec.PKI.Authority(a.Name); a.Key == redacted && (!ok || old.Key != redacted) {
-			placeholders = append(placeholders, fmt.Sprintf("spec.pki.authorities[%d].key", i))
-		}
-	}
-	for i, f := range next.Spec.Files {
-		if f.Perm()&0o044 != 0 || f.Content != redacted {
-			continue
-		}
-		if old, ok := fileAt(stored.Spec.Files, f.Path); !ok || old.Content != redacted {
-			placeholders = append(placeholders, fmt.Sprintf("spec.files[%d].content", i))
-		}
-	}
-	for i, r := range next.Spec.Registries {
-		if r.Credential == nil || r.Credential.Password != redacted {
-			continue
-		}
-		if old, ok := stored.Spec.Registry(r.Host); !ok || old.Credential == nil || old.Credential.Password != redacted {
-			placeholders = append(placeholders, fmt.Sprintf("spec.registries[%d].credential.password", i))
-		}
-	}
-	if len(placeholders) > 0 {
-		return &InvalidError{Fields: placeholders, Message: fmt.Sprintf("carries %s, which stands for private material the API never returns; give the material or leave the field out of the patch", redacted)}
+	if held := placeholders(next, stored); len(held) > 0 {
+		return &InvalidError{Fields: held, Message: fmt.Sprintf("carries %s, which stands for private material the API never returns; give the material or leave the field out of the patch", Redacted)}
 	}
 
 	if next.APIVersion != running.APIVersion {
