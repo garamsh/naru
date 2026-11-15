@@ -20,7 +20,8 @@ Drafted for garamsh/naru#182, part of goal garamsh/naru#197. It adds to [ADR 004
 3. **Writes of an operator's request are not guarded.** Any member serves the API, and a write there is a request of an operator under the compare-and-swap it already has, not a write of the leader. The API handlers keep the plain client.
 4. **Every mutating call from orch to a host carries the token** in the header `X-Naru-Leader-Token` (`wire.LeaderTokenHeader`, in `lib/wire`), the fence renewal included. The header is added by a transport in `orch/internal/hostclient` from the term in the request's context, for any method but GET and HEAD. A call with no term in its context, which is an operator's, carries none.
 5. **A host refuses a token lower than the highest it has seen**, with 409 and the code `stale-leader-token` in the error body (`hostapi.ErrorBody.Code`). It writes a higher token to a file, `--leader-token-file` (default `/var/lib/naru/hostd/leader-token`), with `lib/atomicfile` before it acts on the call, so a restart does not forget it. A call without the header is not checked, and a read is never checked. The check follows the role check, so a client that may not call cannot raise the token.
-6. **A 409 with that code ends the leader's term**, as a failed guard does.
+6. **A restore bumps the revision.** `restore.Apply` sets etcdutl's `RevisionBump` to 1,000,000,000 with `MarkCompacted`, the constant `revisionBump`, so a restored store continues above every revision the lost one reached after the snapshot and its leaders' tokens are not below one a host has seen.
+7. **A 409 with that code ends the leader's term**, as a failed guard does.
 
 ## Consequences
 
@@ -28,7 +29,7 @@ Drafted for garamsh/naru#182, part of goal garamsh/naru#197. It adds to [ADR 004
 - **Writes cost one nested transaction.** The guard adds a comparison to a transaction etcd already runs.
 - **A host is fenced only after it has seen the new leader.** A stale leader's call to a host the new leader has not yet called goes through. The etcd guard bounds the damage to the host calls made before the stale leader's first write.
 - **hostd keeps one more small file**, in its state directory.
-- **A snapshot restore can lower the revision.** A cluster restored from a snapshot continues from the snapshot's revision, which can be below a token a host has already seen. Until the revision passes it, a new leader's mutating calls to that host are refused. The restore does not bump the revision today (`orch/internal/restore`); this ADR leaves that open (orch.md §Open questions).
+- **A restored store skips a billion revisions.** Revisions are 64-bit and a cluster writes far fewer than a billion between snapshots; the cost is that a restored store's revisions are no longer dense, and etcd treats those before the bump as compacted.
 - `lib/hostapi` gains a field in its error body and a client field, and `lib/wire` a constant; neither changes a call that carries no token.
 
 ## Signs the decision was wrong
@@ -36,4 +37,5 @@ Drafted for garamsh/naru#182, part of goal garamsh/naru#197. It adds to [ADR 004
 - A host refuses a healthy leader after a restore, and the only way out is to delete the host's token file.
 - A guarded write is found that has no term in its context, so it fails on every leader.
 - A second writer to etcd is found among the leader's components that the guard does not cover.
+- A cluster writes more than a billion revisions between two snapshots.
 - The token has to be compared with something other than a revision, for instance across two etcd clusters.
