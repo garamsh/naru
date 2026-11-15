@@ -27,6 +27,11 @@ jobs:
           echo "image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
           shellcheck --version | sed -n 2p
 
+      # lib/init/linux's packet-socket test runs in a user and network namespace of its own. Ubuntu
+      # 24.04 denies an unprivileged user the capabilities inside one unless this is off.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
