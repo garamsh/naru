@@ -46,6 +46,9 @@ type fakeOrch struct {
 	csr     []byte
 	cert    []byte
 	hostID  string
+	// req is the last enrollment request, and config what an admitted host's poll answers with.
+	req    orchapi.EnrollRequest
+	config []byte
 	// heartCN is the subject of the last heartbeat's client certificate.
 	heartCN string
 }
@@ -100,7 +103,7 @@ func (f *fakeOrch) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.enrolls++
-	f.pub, f.csr, f.hostID = req.PublicKey, req.CSR, req.HostID
+	f.pub, f.csr, f.hostID, f.req = req.PublicKey, req.CSR, req.HostID, req
 	f.json(w, http.StatusOK, orchapi.EnrollStatus{State: orchapi.StatePending, Code: "ABCD-EFGH"})
 }
 
@@ -115,7 +118,7 @@ func (f *fakeOrch) poll(w http.ResponseWriter, r *http.Request) {
 		f.json(w, http.StatusOK, orchapi.EnrollStatus{State: orchapi.StatePending, Code: "ABCD-EFGH"})
 		return
 	}
-	f.json(w, http.StatusOK, orchapi.EnrollStatus{State: orchapi.StateAdmitted, Certificate: f.cert})
+	f.json(w, http.StatusOK, orchapi.EnrollStatus{State: orchapi.StateAdmitted, Certificate: f.cert, Config: f.config})
 }
 
 func (f *fakeOrch) heartbeat(w http.ResponseWriter, r *http.Request) {
@@ -251,4 +254,85 @@ func TestARefusedEnrollmentKeyEndsTheEnrollment(t *testing.T) {
 	defer cancel()
 	err := a.Run(ctx)
 	require.ErrorContains(t, err, "refused")
+}
+
+func joinAgent(t *testing.T, f *fakeOrch, dir string, out *lockedBuffer) *enroll.Agent {
+	t.Helper()
+	secretFile := filepath.Join(dir, "enroll.key")
+	require.NoError(t, os.WriteFile(secretFile, []byte(f.secret+"\n"), 0o600))
+	return enroll.New(enroll.Config{
+		OrchURL: f.srv.URL, CASHA256: f.fingerprint(), EnrollKeyFile: secretFile, KeyFile: filepath.Join(dir, "host.key"),
+		Join: true, JoinConfigFile: filepath.Join(dir, "join", "config.yaml"),
+		Hardware: func() (*orchapi.Hardware, error) {
+			return &orchapi.Hardware{CPUs: 2, MemoryBytes: 1 << 30, Disks: []orchapi.Disk{{Name: "vda", Size: 1 << 30, Partitions: 1}}}, nil
+		},
+		Out: out, CodeEvery: 150 * time.Millisecond, PollEvery: 30 * time.Millisecond, HeartbeatEvery: 30 * time.Millisecond,
+		Log: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+}
+
+func TestJoinEnrollsUnderAKeyDerivedIDWithItsHardwareThenHandsTheConfigOverAndStops(t *testing.T) {
+	f := newFakeOrch(t, "naru-ek-secret")
+	dir := t.TempDir()
+	out := &lockedBuffer{}
+	a := joinAgent(t, f, dir, out)
+	done := make(chan error, 1)
+	go func() { done <- a.Run(t.Context()) }()
+
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "ABCD-EFGH") }, 5*time.Second, 20*time.Millisecond, "the pairing code is printed")
+	f.mu.Lock()
+	req := f.req
+	f.mu.Unlock()
+	require.Equal(t, enroll.JoinHostID(req.PublicKey), req.HostID)
+	require.Regexp(t, `^h-[0-9a-f]{16}$`, req.HostID)
+	require.Equal(t, "127.0.0.1:7443", req.Address, "the address the route to orch leaves by, with the host API's port")
+	require.NotNil(t, req.Hardware)
+	require.Equal(t, 2, req.Hardware.CPUs)
+	_, err := os.Stat(filepath.Join(dir, "join", "config.yaml"))
+	require.ErrorIs(t, err, os.ErrNotExist, "no configuration before admission")
+
+	f.mu.Lock()
+	f.config = []byte("apiVersion: naru.garam.sh/v1alpha1\n")
+	f.mu.Unlock()
+	f.admit()
+	select {
+	case err := <-done:
+		require.NoError(t, err, "the agent stops once the configuration is handed over")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the agent kept running after the handoff")
+	}
+
+	st, err := os.Stat(filepath.Join(dir, "join", "config.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), st.Mode().Perm())
+	got, err := os.ReadFile(filepath.Join(dir, "join", "config.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, "apiVersion: naru.garam.sh/v1alpha1\n", string(got))
+	_, err = os.Stat(filepath.Join(dir, "host.crt"))
+	require.NoError(t, err, "the certificate is written beside the key")
+	_, hearts, _ := f.counts()
+	require.Zero(t, hearts, "a joining host does not report to orch")
+
+	// A second start finds the handoff done and enrolls no more.
+	require.NoError(t, joinAgent(t, f, dir, out).Run(t.Context()))
+	enrolls, _, _ := f.counts()
+	require.Equal(t, 1, enrolls)
+}
+
+func TestJoinFailsWhenOrchAdmitsTheHostWithoutAConfiguration(t *testing.T) {
+	f := newFakeOrch(t, "naru-ek-secret")
+	dir := t.TempDir()
+	a := joinAgent(t, f, dir, &lockedBuffer{})
+	done := make(chan error, 1)
+	go func() { done <- a.Run(t.Context()) }()
+	require.Eventually(t, func() bool { e, _, _ := f.counts(); return e == 1 }, 5*time.Second, 20*time.Millisecond)
+	f.admit()
+	select {
+	case err := <-done:
+		require.ErrorContains(t, err, "without a configuration")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the agent did not stop")
+	}
+	_, err := os.Stat(filepath.Join(dir, "join", "config.yaml"))
+	require.ErrorIs(t, err, os.ErrNotExist)
 }

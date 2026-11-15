@@ -1,6 +1,9 @@
 // Package enroll is naru-hostd's enrollment with orch: it presents an enrollment key, shows the
 // pairing code a person checks, polls for the certificate orch's signer issues once an operator
-// admits the host, and then reports to orch with that certificate.
+// admits the host, and then reports to orch with that certificate. A host that booted from the
+// install seed (Join) enrolls the same way, under an ID derived from its key and with a report of
+// its hardware, receives the configuration orch built for it beside the certificate, writes it for
+// the installer and stops.
 package enroll
 
 import (
@@ -9,14 +12,17 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -41,6 +47,13 @@ type Config struct {
 	HostID   string
 	// Address is where orch and the console can reach this host.
 	Address string
+	// Join makes the agent the installer's: it reports Hardware, takes the host's ID from its key (the
+	// HostID given is ignored) and its address from the route to orch, writes the configuration orch
+	// answers with to JoinConfigFile, and returns instead of reporting to orch.
+	Join           bool
+	JoinConfigFile string
+	// Hardware reports what the host is made of; it is read once, when the host first enrolls.
+	Hardware func() (*orchapi.Hardware, error)
 	// Out receives the pairing code; stdout in the daemon.
 	Out io.Writer
 	// CodeEvery, PollEvery and HeartbeatEvery default to 60 s, 5 s and 30 s.
@@ -92,13 +105,80 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if a.c.Join {
+		return a.join(ctx, key, cert)
+	}
 	if cert == nil {
-		if cert, err = a.enroll(ctx, key); err != nil {
+		if cert, _, err = a.enroll(ctx, key); err != nil {
 			return err
 		}
 	}
 	return a.heartbeat(ctx, cert)
 }
+
+// JoinHostID is the ID a host that booted from the install seed enrolls under: h- and the first 16
+// hex digits of the SHA-256 of its public key, PKIX DER. Nothing about the host has to be typed.
+func JoinHostID(publicKeyDER []byte) string {
+	sum := sha256.Sum256(publicKeyDER)
+	return "h-" + hex.EncodeToString(sum[:])[:16]
+}
+
+// join enrolls the host and hands the configuration over, unless an earlier run did.
+func (a *Agent) join(ctx context.Context, key *ecdsa.PrivateKey, cert *tls.Certificate) error {
+	if cert != nil {
+		if _, err := os.Stat(a.c.JoinConfigFile); err == nil {
+			return nil
+		}
+	}
+	pub, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		return err
+	}
+	a.c.HostID = JoinHostID(pub)
+	for {
+		if a.c.Address, err = AddressToward(a.c.OrchURL); err == nil {
+			break
+		}
+		a.c.Log.Warn("the host has no route to orch yet, retrying", "err", err.Error())
+		if !sleep(ctx, a.c.PollEvery) {
+			return ctx.Err()
+		}
+	}
+	_, config, err := a.enroll(ctx, key)
+	if err != nil {
+		return err
+	}
+	if len(config) == 0 {
+		return errors.New("orch admitted the host without a configuration for it")
+	}
+	return writeFileAtomic(a.c.JoinConfigFile, config, 0o600, "")
+}
+
+// AddressToward is the address this host reaches orchURL from, as host:port of the host API: what
+// orch lists for a host that has no address of its own to give. It sends nothing.
+func AddressToward(orchURL string) (string, error) {
+	u, err := url.Parse(orchURL)
+	if err != nil || u.Hostname() == "" {
+		return "", fmt.Errorf("orch URL %q is not a URL", orchURL)
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	c, err := net.Dial("udp4", net.JoinHostPort(u.Hostname(), port))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = c.Close() }()
+	ua, ok := c.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return "", errors.New("the route to orch has no local address")
+	}
+	return net.JoinHostPort(ua.IP.String(), HostPort), nil
+}
+
+// HostPort is the port naru-hostd serves its API on.
+const HostPort = "7443"
 
 func (a *Agent) client(cert *tls.Certificate) (*orchapi.Client, error) {
 	u, err := url.Parse(a.c.OrchURL)
@@ -179,24 +259,31 @@ func (a *Agent) loadCertificate(key *ecdsa.PrivateKey) (*tls.Certificate, error)
 	return &tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: key, Leaf: leaf}, nil
 }
 
-func (a *Agent) enroll(ctx context.Context, key *ecdsa.PrivateKey) (*tls.Certificate, error) {
+// enroll returns the host's certificate once it is admitted, and the configuration orch answered
+// with, which only a host that enrolled from the install seed has.
+func (a *Agent) enroll(ctx context.Context, key *ecdsa.PrivateKey) (*tls.Certificate, []byte, error) {
 	secret, err := os.ReadFile(a.c.EnrollKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("read the enrollment key: %w", err)
+		return nil, nil, fmt.Errorf("read the enrollment key: %w", err)
 	}
 	pub, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: a.c.HostID}}, key)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cl, err := a.client(nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req := orchapi.EnrollRequest{Key: strings.TrimSpace(string(secret)), HostID: a.c.HostID, PublicKey: pub, CSR: csr, Address: a.c.Address}
+	if a.c.Hardware != nil {
+		if req.Hardware, err = a.c.Hardware(); err != nil {
+			return nil, nil, fmt.Errorf("read the hardware: %w", err)
+		}
+	}
 
 	var st orchapi.EnrollStatus
 	for {
@@ -204,11 +291,11 @@ func (a *Agent) enroll(ctx context.Context, key *ecdsa.PrivateKey) (*tls.Certifi
 			break
 		}
 		if refused(err) {
-			return nil, fmt.Errorf("orch refused the enrollment: %w", err)
+			return nil, nil, fmt.Errorf("orch refused the enrollment: %w", err)
 		}
 		a.c.Log.Warn("enrollment failed, retrying", "err", err.Error())
 		if !sleep(ctx, a.c.PollEvery) {
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 	}
 
@@ -219,12 +306,12 @@ func (a *Agent) enroll(ctx context.Context, key *ecdsa.PrivateKey) (*tls.Certifi
 			lastPrint = now
 		}
 		if !sleep(ctx, a.c.PollEvery) {
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 		next, err := cl.PollEnrollment(ctx, a.c.HostID, key, a.c.Now())
 		if err != nil {
 			if refused(err) {
-				return nil, fmt.Errorf("orch refused the poll: %w", err)
+				return nil, nil, fmt.Errorf("orch refused the poll: %w", err)
 			}
 			a.c.Log.Warn("poll failed, retrying", "err", err.Error())
 			continue
@@ -232,17 +319,17 @@ func (a *Agent) enroll(ctx context.Context, key *ecdsa.PrivateKey) (*tls.Certifi
 		if next.Code != "" {
 			st.Code = next.Code
 		}
-		st.State, st.Certificate = next.State, next.Certificate
+		st.State, st.Certificate, st.Config = next.State, next.Certificate, next.Config
 	}
-	if err := writeFileAtomic(a.c.CertFile, st.Certificate, 0o644); err != nil {
-		return nil, err
+	if err := writeFileAtomic(a.c.CertFile, st.Certificate, 0o644, certificatePrefix); err != nil {
+		return nil, nil, err
 	}
 	a.c.Log.Info("admitted", "host", a.c.HostID)
 	cert, err := a.loadCertificate(key)
 	if err != nil || cert == nil {
-		return nil, errors.New("the certificate orch issued is not usable for this host's key")
+		return nil, nil, errors.New("the certificate orch issued is not usable for this host's key")
 	}
-	return cert, nil
+	return cert, st.Config, nil
 }
 
 // refused reports an answer that retrying does not change: a 4xx other than a rate limit.
@@ -277,9 +364,16 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
-	if !bytes.HasPrefix(bytes.TrimSpace(b), []byte("-----BEGIN CERTIFICATE-----")) {
+const certificatePrefix = "-----BEGIN CERTIFICATE-----"
+
+// writeFileAtomic writes b to path through a temporary file beside it and a rename, so a reader
+// sees all of it or none. A non-empty prefix is what b must start with.
+func writeFileAtomic(path string, b []byte, mode os.FileMode, prefix string) error {
+	if prefix != "" && !bytes.HasPrefix(bytes.TrimSpace(b), []byte(prefix)) {
 		return errors.New("orch's answer holds no certificate")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".cert-*")
 	if err != nil {

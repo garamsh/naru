@@ -111,6 +111,13 @@ naructl topology kubernetes
 - **Only the control-plane Node's user-data carries the cluster CA's key**: init issues its pairs from `spec.pki` (ADR 0013), and the controller manager signs with the key. A worker has no `spec.pki`: `gen kubernetes-node` issues its kubelet client and serving pairs and kube-proxy's from the CA and writes them with the CA's certificate as files under `/run/kubernetes/pki` (keys `0600`), the form of `--pairs-as-files`. They are not renewed at the Node; delivering new user-data renews them. The kubelet's client pair is `system:node:<name>` in `system:nodes`, which the API server's node authorizer names.
 - **`topology kubernetes`** prints the Kubernetes topology as `topology` prints gaon's, with no signer.
 
+### Joined hosts ([ADR 0059](./adr/0059-orch-admits-a-host-that-boots-from-an-install-seed-allocates-its-machine-prefix-and-builds-its-configuration-from-one-fleet-profile.md))
+
+- **`naructl host install-seed --orch-url --orch-ca-sha256 --enroll-key <file> [--name] --out`** writes the install seed, an ISO 9660 `cidata` volume (0600) whose `user-data` is the join form only and which has no `network-config`.
+- **`naructl gen host-profile`** writes the fleet's host profile, from gen node's flags for what every host shares, with `--machine-pool`, `--orch-url`, `--orch-ca-sha256`, `--storage <name>=<label or /dev/path>` and `--extension <name>=<sha256>`; the file is 0600 when it carries a registry password. `naructl host profile set -f` keeps it in orch; `host profile get` prints orch's answer, in which every secret is `<set>`, and a file with `<set>` where a password belongs is refused by `set` before it is sent.
+- **`naructl host remove <id>`** removes a host and frees its Machine prefix. It does not revoke the host's certificate; `naructl operator revoke` does, and the command says so. `host pending` shows each host's hardware.
+- **`lib/layout`'s `HostOnly` mode** is the host Node of a joined host: no gaon, so no CA, bootstrap token or Node Agent pair; `metadata.name` is the host ID; the serving key is `spec.api.keyFile`; the AWS pair is `/run/naru-hostd/tls.crt` and that key file.
+
 ## Decided, not yet implemented
 
 Nothing is decided here and not yet implemented.

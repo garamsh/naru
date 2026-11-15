@@ -18,8 +18,17 @@ type Store interface {
 	ListPending(ctx context.Context) ([]Pending, error)
 
 	// Admit replaces the pending record p by the host h and appends ev, in one step that fails
-	// with ErrNotFound when p is no longer pending.
-	Admit(ctx context.Context, p Pending, h Host, ev orchapi.Event) error
+	// with ErrNotFound when p is no longer pending. With alloc it also records the allocation in that
+	// step, which fails with ErrAllocationTaken when the prefix is already allocated.
+	Admit(ctx context.Context, p Pending, h Host, ev orchapi.Event, alloc *Allocation) error
+	// RemoveHost deletes the host, frees its allocation and appends ev in one step, and returns the
+	// host as it was.
+	RemoveHost(ctx context.Context, id string, ev orchapi.Event) (Host, error)
+	ListAllocations(ctx context.Context) ([]Allocation, error)
+	// GetProfile returns the host profile's YAML, ErrNotFound when none is set. PutProfile replaces
+	// it and appends ev in one step.
+	GetProfile(ctx context.Context) ([]byte, error)
+	PutProfile(ctx context.Context, yaml []byte, ev orchapi.Event) error
 	GetHost(ctx context.Context, id string) (Host, error)
 	ListHosts(ctx context.Context) ([]Host, error)
 	// UpdateHost applies change to the stored host as one step and appends ev when it is not nil.

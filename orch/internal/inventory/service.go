@@ -27,6 +27,14 @@ type Service interface {
 	Hosts(ctx context.Context) ([]orchapi.Host, error)
 	Pending(ctx context.Context) ([]orchapi.Pending, error)
 	Events(ctx context.Context) ([]orchapi.Event, error)
+	// Remove deletes the host's record and frees its Machine prefix. The host's certificate stays
+	// valid: only a person's signature revokes it.
+	Remove(ctx context.Context, by, hostID string) error
+	// Profile returns the host profile's YAML with every secret redacted, ErrNotFound when none is
+	// set. SetProfile checks the profile and replaces it; a profile that carries the redaction is
+	// ErrRedacted.
+	Profile(ctx context.Context) ([]byte, error)
+	SetProfile(ctx context.Context, by string, yaml []byte) error
 }
 
 // Config sets the service's limits. A zero value is replaced by its default.
@@ -39,6 +47,9 @@ type Config struct {
 	KeyBurst    int
 	// MaxPending bounds the pending list.
 	MaxPending int
+	// OrchCA is the PEM of the authority orch's certificate chains to, which a joined host's naru-hostd
+	// trusts for orch's calls. It is the authority of the callers' certificates, which orch holds.
+	OrchCA string
 }
 
 type service struct {

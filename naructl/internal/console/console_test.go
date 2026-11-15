@@ -40,6 +40,21 @@ type fakeOrch struct {
 	admitErr error
 	admitted []orchapi.AdmitRequest
 	fleet    *fakeFleet
+	// keys are the expiries of the enrollment keys made; keyErr is what making one answers instead.
+	keys   []time.Time
+	keyErr error
+}
+
+const seedSecret = "naru-ek-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func (f *fakeOrch) CreateEnrollmentKey(_ context.Context, expiresAt time.Time) (orchapi.EnrollmentKey, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.keyErr != nil {
+		return orchapi.EnrollmentKey{}, f.keyErr
+	}
+	f.keys = append(f.keys, expiresAt)
+	return orchapi.EnrollmentKey{ID: "k-1", Secret: seedSecret, ExpiresAt: expiresAt}, nil
 }
 
 func (f *fakeOrch) Hosts(context.Context) ([]orchapi.Host, error)      { return f.hosts, nil }
@@ -136,6 +151,8 @@ func start(t *testing.T, orch *fakeOrch, allowedHosts func(srvHost string) []str
 		Orch:         orch,
 		Sign:         func(a identity.Admission) ([]byte, error) { return identity.SignAdmission(a, person.Key, person.Cert) },
 		AdmissionTTL: time.Hour,
+		OrchURL:      seedOrchURL,
+		OrchCASHA256: seedCA,
 		Now:          func() time.Time { return now },
 	}
 	if orch.fleet != nil { // a nil *fakeFleet in the interface would not be nil

@@ -63,7 +63,7 @@ func (s *service) Pending(ctx context.Context) ([]orchapi.Pending, error) {
 	}
 	out := make([]orchapi.Pending, 0, len(ps))
 	for _, p := range ps {
-		out = append(out, orchapi.Pending{HostID: p.HostID, Code: identity.PairingCode(p.PublicKey), PublicKey: p.PublicKey, Address: p.Address, KeyID: p.KeyID, FirstSeen: p.FirstSeen})
+		out = append(out, orchapi.Pending{HostID: p.HostID, Code: identity.PairingCode(p.PublicKey), PublicKey: p.PublicKey, Address: p.Address, KeyID: p.KeyID, FirstSeen: p.FirstSeen, Hardware: p.Hardware})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].FirstSeen.Before(out[j].FirstSeen) })
 	return out, nil

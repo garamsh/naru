@@ -1,5 +1,6 @@
 // Command naru-hostd is the host API of a Node (docs/architecture/host.md): it creates, reads and
-// destroys microVMs through mvmd's local runtime API, and keeps mvmd's fencing deadline armed.
+// destroys microVMs through mvmd's local runtime API, and keeps mvmd's fencing deadline armed. With
+// --join it is the installer's enrollment agent instead and serves nothing.
 package main
 
 import (
@@ -35,6 +36,9 @@ func main() {
 		orchURL   = flag.String("orch-url", "", "https URL of naru-orchd; empty turns enrollment off")
 		orchCA    = flag.String("orch-ca-sha256", "", "hex SHA-256 of the authority orch's certificate chains to")
 		enrollKey = flag.String("enroll-key-file", "", "file holding the enrollment key")
+		joinKey   = flag.String("enroll-key", "", "file holding the enrollment key, for --join (the install seed's)")
+		join      = flag.Bool("join", false, "enroll from the install seed, receive the configuration orch built, write it to --join-config and exit; serves no API")
+		joinConf  = flag.String("join-config", "/var/lib/naru/join/config.yaml", "where --join writes the configuration orch answered with, mode 0600")
 		hostKey   = flag.String("host-key", "/var/lib/naru/hostd/host.key", "the host's own key, generated 0600 on first start; its certificate is written beside it")
 		hostID    = flag.String("host-id", "", "the name this host enrolls under (default: the hostname)")
 		advertise = flag.String("advertise", "", "address orch lists for this host (default: --listen)")
@@ -52,6 +56,10 @@ func main() {
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+	if *join {
+		os.Exit(runJoin(log, joinOptions{orchURL: *orchURL, orchCA: *orchCA, enrollKey: *joinKey, hostKey: *hostKey, config: *joinConf}))
+	}
 
 	var nets api.Networks
 	if *management != "" {

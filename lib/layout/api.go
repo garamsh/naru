@@ -5,13 +5,21 @@ package layout
 type apiSpec struct {
 	ClientCA    string `yaml:"clientCA"`
 	Certificate string `yaml:"certificate"`
-	Key         string `yaml:"key"`
+	// Key is the PEM of the serving key; KeyFile is the path of a key on the Node instead, exactly one
+	// of the two.
+	Key     string `yaml:"key,omitempty"`
+	KeyFile string `yaml:"keyFile,omitempty"`
 }
 
 // specAPI is the Node's spec.api: the Node API authority's certificate as the client CA, and a
 // serving pair from that authority naming the Node's address, its serving addresses and the
 // loopback. The authority's key is not carried. It is nil when the Node has no API authority.
 func (n Node) specAPI() (*apiSpec, error) {
+	if h := n.Host; h != nil && h.APIClientCA != "" {
+		// A Node that runs no gaon has no API authority to issue from: it serves the Node API with the
+		// certificate its host API has, whose key is the one the host made, which stays in its file.
+		return &apiSpec{ClientCA: h.APIClientCA, Certificate: h.Certificate, KeyFile: h.KeyFile}, nil
+	}
 	if n.API == nil {
 		return nil, nil
 	}

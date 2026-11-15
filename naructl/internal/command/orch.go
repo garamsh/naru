@@ -23,7 +23,7 @@ import (
 )
 
 // orchCommands runs the commands that talk to orch: orch, enroll-key, group, network, and host pending, admit,
-// label, drain and undrain. It reports false when args are not one of them, so the other host command is left alone.
+// label, drain, undrain, install-seed, profile and remove. It reports false when args are not one of them, so the other host command is left alone.
 func orchCommands(args []string, stdout, stderr io.Writer) (bool, error) {
 	if len(args) == 0 {
 		return false, nil
@@ -50,6 +50,12 @@ func orchCommands(args []string, stdout, stderr io.Writer) (bool, error) {
 				return true, hostDrain("drain", args[2:], stdout, stderr)
 			case "undrain":
 				return true, hostDrain("undrain", args[2:], stdout, stderr)
+			case "install-seed":
+				return true, hostInstallSeed(args[2:], stdout, stderr)
+			case "profile":
+				return true, hostProfileCmd(args[2:], stdout, stderr)
+			case "remove":
+				return true, hostRemove(args[2:], stdout, stderr)
 			}
 		}
 	}
@@ -376,9 +382,9 @@ func hostPending(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 8, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "HOST\tCODE\tADDRESS\tFIRST SEEN")
+	_, _ = fmt.Fprintln(tw, "HOST\tCODE\tADDRESS\tFIRST SEEN\tHARDWARE")
 	for _, p := range ps {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.HostID, p.Code, p.Address, p.FirstSeen.Format(time.RFC3339))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.HostID, p.Code, p.Address, p.FirstSeen.Format(time.RFC3339), hardwareSummary(p.Hardware))
 	}
 	return tw.Flush()
 }
@@ -493,4 +499,13 @@ func hostLabel(args []string, stdout, stderr io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: host %s is in region %s with %d label(s)\n", h.ID, h.Region, len(h.Labels))
 	return nil
+}
+
+// hardwareSummary is what a host reported of itself in one line, or a dash for a host that reported
+// nothing (one enrolled with its own configuration).
+func hardwareSummary(h *orchapi.Hardware) string {
+	if h == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d CPU, %d MiB, %d disk(s), %d link(s)", h.CPUs, h.MemoryBytes>>20, len(h.Disks), len(h.Links))
 }

@@ -2,6 +2,9 @@ package command
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +32,10 @@ func consoleCmd(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	caDigest, err := authorityDigest(*o.ca)
+	if err != nil {
+		return err
+	}
 	ln, err := console.Listen(*listen)
 	if err != nil {
 		return err
@@ -42,6 +49,8 @@ func consoleCmd(args []string, stdout, stderr io.Writer) error {
 		},
 		AdmissionTTL: *ttl,
 		AllowedHosts: loopbackHosts(ln.Addr()),
+		OrchURL:      *o.url,
+		OrchCASHA256: caDigest,
 	})
 	if err != nil {
 		return err
@@ -50,6 +59,21 @@ func consoleCmd(args []string, stdout, stderr io.Writer) error {
 	defer stop()
 	_, _ = fmt.Fprintf(stdout, "naructl: console on http://%s, acting as %s; interrupt to stop\n", ln.Addr(), person.Cert.Subject.CommonName)
 	return srv.Serve(ctx, ln)
+}
+
+// authorityDigest is the hex SHA-256 of the first certificate of the --orch-ca file: what an install
+// seed gives a host to pin orch's authority by.
+func authorityDigest(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read the authority: %w", err)
+	}
+	block, _ := pem.Decode(b)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", errors.New("the authority file holds no certificate")
+	}
+	sum := sha256.Sum256(block.Bytes)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // loopbackHosts are the Host headers a browser sends to the loopback listener.

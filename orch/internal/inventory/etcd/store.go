@@ -22,6 +22,10 @@ const (
 	pendingPrefix = "/naru/orch/pending/"
 	hostPrefix    = "/naru/orch/hosts/"
 	eventPrefix   = "/naru/orch/events/"
+	// allocPrefix holds one key per allocated Machine prefix, named by the prefix, so that creating
+	// it is what makes an allocation unique. profileKey holds the host profile's YAML.
+	allocPrefix = "/naru/orch/allocations/"
+	profileKey  = "/naru/orch/profile"
 )
 
 // casRetries bounds the retries of a read-modify-write that lost a race.
@@ -138,19 +142,69 @@ func (s *Store) ListPending(ctx context.Context) ([]inventory.Pending, error) {
 	return list[inventory.Pending](ctx, s, pendingPrefix)
 }
 
-func (s *Store) Admit(ctx context.Context, p inventory.Pending, h inventory.Host, ev orchapi.Event) error {
+func (s *Store) Admit(ctx context.Context, p inventory.Pending, h inventory.Host, ev orchapi.Event, alloc *inventory.Allocation) error {
 	key := pendingPrefix + p.HostID
-	resp, err := s.kv.Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(key), ">", 0)).
-		Then(clientv3.OpDelete(key), clientv3.OpPut(hostPrefix+h.ID, encode(h)), eventOp(ev)).
-		Commit()
+	cmps := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(key), ">", 0)}
+	ops := []clientv3.Op{clientv3.OpDelete(key), clientv3.OpPut(hostPrefix+h.ID, encode(h)), eventOp(ev)}
+	if alloc != nil {
+		cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(allocPrefix+alloc.Prefix), "=", 0))
+		ops = append(ops, clientv3.OpPut(allocPrefix+alloc.Prefix, encode(*alloc)))
+	}
+	resp, err := s.kv.Txn(ctx).If(cmps...).Then(ops...).Commit()
 	if err != nil {
 		return err
 	}
-	if !resp.Succeeded {
-		return inventory.ErrNotFound
+	if resp.Succeeded {
+		return nil
 	}
-	return nil
+	if _, err := s.GetPending(ctx, p.HostID); err != nil {
+		return err
+	}
+	return inventory.ErrAllocationTaken
+}
+
+func (s *Store) RemoveHost(ctx context.Context, id string, ev orchapi.Event) (inventory.Host, error) {
+	key := hostPrefix + id
+	var h inventory.Host
+	for range casRetries {
+		h = inventory.Host{}
+		rev, err := s.get(ctx, key, &h)
+		if err != nil {
+			return h, err
+		}
+		ops := []clientv3.Op{clientv3.OpDelete(key), eventOp(ev)}
+		if h.MachinePrefix != "" {
+			ops = append(ops, clientv3.OpDelete(allocPrefix+h.MachinePrefix))
+		}
+		resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", rev)).Then(ops...).Commit()
+		if err != nil {
+			return h, err
+		}
+		if resp.Succeeded {
+			return h, nil
+		}
+	}
+	return h, errors.New("the record kept changing under the removal")
+}
+
+func (s *Store) ListAllocations(ctx context.Context) ([]inventory.Allocation, error) {
+	return list[inventory.Allocation](ctx, s, allocPrefix)
+}
+
+func (s *Store) GetProfile(ctx context.Context) ([]byte, error) {
+	resp, err := s.kv.Get(ctx, profileKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Kvs) == 0 {
+		return nil, inventory.ErrNotFound
+	}
+	return resp.Kvs[0].Value, nil
+}
+
+func (s *Store) PutProfile(ctx context.Context, yaml []byte, ev orchapi.Event) error {
+	_, err := s.kv.Txn(ctx).Then(clientv3.OpPut(profileKey, string(yaml)), eventOp(ev)).Commit()
+	return err
 }
 
 func (s *Store) GetHost(ctx context.Context, id string) (inventory.Host, error) {

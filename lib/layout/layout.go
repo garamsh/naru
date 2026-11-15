@@ -182,17 +182,26 @@ type Node struct {
 
 // Registry is one entry of spec.registries. At most one of Helper and Username with Password is set.
 type Registry struct {
-	Host, CA, Username, Password, Helper string
+	Host     string `yaml:"host"`
+	CA       string `yaml:"ca,omitempty"`
+	Username string `yaml:"username,omitempty"`
+	Password string `yaml:"password,omitempty"`
+	Helper   string `yaml:"helper,omitempty"`
 }
 
 // AWS is spec.aws without the paths of the pair.
 type AWS struct {
-	Region, TrustAnchorArn, ProfileArn, RoleArn string
+	Region         string `yaml:"region"`
+	TrustAnchorArn string `yaml:"trustAnchorArn"`
+	ProfileArn     string `yaml:"profileArn"`
+	RoleArn        string `yaml:"roleArn"`
 }
 
 // StorageDisk is an extra disk: its name, and the label or the device path that finds it, exactly one.
 type StorageDisk struct {
-	Name, Label, Device string
+	Name   string `yaml:"name"`
+	Label  string `yaml:"label,omitempty"`
+	Device string `yaml:"device,omitempty"`
 }
 
 type service struct {
@@ -336,12 +345,11 @@ func (n Node) Check() error {
 		return fmt.Errorf("the name %q is not a DNS label (lower-case letters, digits and '-', at most 63, starting and ending with a letter or digit); it is the Node's CN, its etcd name and its metadata name", n.Name)
 	case !n.Address.IsValid() || !n.Address.Addr().Is4():
 		return errors.New("the address is not an IPv4 address with a prefix length")
-	case !n.APIServer.IsValid():
-		return errors.New("the API server's address is not set")
 	case !n.MachinePrefix.IsValid() || !n.MachinePrefix.Addr().Is4():
 		return errors.New("the Machine prefix is not an IPv4 prefix")
-	case n.CA == nil:
-		return errors.New("the cluster's authority is not set")
+	}
+	if err := n.checkGaon(); err != nil {
+		return err
 	}
 	if err := n.checkPeers(); err != nil {
 		return err
@@ -378,6 +386,27 @@ func (n Node) Check() error {
 		if !path.IsAbs(bin) {
 			return fmt.Errorf("the binary of %s, %q, is not an absolute path", name, bin)
 		}
+	}
+	return nil
+}
+
+// checkGaon reports what a Node that runs gaon lacks, or a Node that runs none carries: a HostOnly
+// Node has no API server, authority or token, and serves the host API from a certificate it was issued.
+func (n Node) checkGaon() error {
+	if n.Mode != HostOnly {
+		switch {
+		case !n.APIServer.IsValid():
+			return errors.New("the API server's address is not set")
+		case n.CA == nil:
+			return errors.New("the cluster's authority is not set")
+		}
+		return nil
+	}
+	switch {
+	case n.Host == nil || n.Host.Certificate == "":
+		return errors.New("a Node that runs no gaon serves the host API from the certificate it was issued")
+	case n.CA != nil || n.APIServer.IsValid() || len(n.Members) > 0 || len(n.Peers) > 0 || len(n.Disable) > 0 || n.Kube != nil:
+		return errors.New("a Node that runs no gaon has no cluster authority, API server, members, peers or disabled services")
 	}
 	return nil
 }
@@ -470,6 +499,10 @@ func (n Node) UserData() ([]byte, error) {
 	c.APIVersion = "naru.garam.sh/v1alpha1"
 	c.Kind = "NodeConfig"
 	c.Metadata.Name = "naru-" + n.Name
+	if n.Mode == HostOnly {
+		// A joined host is named by its ID: the join form had no name for it (ADR 0059).
+		c.Metadata.Name = n.Name
+	}
 	c.Spec.ControlPlane = n.Mode.ControlPlane()
 	c.Spec.DataDisk.Label = DataLabel
 	c.Spec.DataDisk.MountPoint = DataMount
@@ -503,8 +536,8 @@ func (n Node) UserData() ([]byte, error) {
 	}
 	c.Spec.Registries = n.registryEntries()
 	if a := n.AWS; a != nil {
-		pair := path.Join(AgentCertDir, AgentPair)
-		c.Spec.AWS = &awsSpec{Region: a.Region, TrustAnchorArn: a.TrustAnchorArn, ProfileArn: a.ProfileArn, RoleArn: a.RoleArn, Certificate: pair, Key: pair}
+		cert, key := n.awsPair()
+		c.Spec.AWS = &awsSpec{Region: a.Region, TrustAnchorArn: a.TrustAnchorArn, ProfileArn: a.ProfileArn, RoleArn: a.RoleArn, Certificate: cert, Key: key}
 	}
 	for i, d := range n.Storage {
 		e := storage{Name: d.Name, Label: d.Label, Device: d.Device}
@@ -648,6 +681,33 @@ func (n Node) services() []service {
 			Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")),
 			Args: []string{"-listen", RegistryAddr, "-dir", path.Join(InputsDir, "registry")},
 		},
+	}
+	if n.Mode != HostOnly {
+		list = append(list, n.gaonServices(creds)...)
+	}
+	if a := n.AWS; a != nil {
+		// After the Node Agent, whose keptPair init checks before the agent starts: the helper reads
+		// the pair at start, and init starts it again when the agent replaces the file.
+		list = append(list, n.awsCredentials(*a))
+	}
+	if n.HA() {
+		fence, vip := n.haServices()
+		// The rules are in place before etcd listens; the holder starts once the API server it watches has.
+		list = slices.Insert(list, slices.IndexFunc(list, func(s service) bool { return s.Name == "etcd" }), fence)
+		list = slices.Insert(list, slices.IndexFunc(list, func(s service) bool { return s.Name == "gaon-scheduler" }), vip)
+	}
+	// Which services only the control-plane Node runs is the topology's.
+	for i := range list {
+		list[i].ControlPlane = Gaon.OnlyControlPlane(list[i].Name)
+	}
+	return list
+}
+
+// gaonServices are the services of gaon: etcd, then the API server that dials it, then the scheduler
+// and the controllers that dial the API server, on the control-plane Node (init leaves them out
+// elsewhere); the Node Agent, which dials mvmd's socket and the API server, last.
+func (n Node) gaonServices(creds plan) []service {
+	return []service{
 		{Name: "etcd", Binary: n.binary("etcd", "/bin/etcd"), Args: n.etcdArgs()},
 		{
 			Name: "gaon-apiserver", Binary: n.binary("gaon-apiserver", "/bin/gaon-apiserver"),
@@ -673,38 +733,32 @@ func (n Node) services() []service {
 			KeptPair: &keptPair{File: path.Join(AgentCertDir, AgentPair), Organization: AgentOrganization},
 		},
 	}
-	if a := n.AWS; a != nil {
-		// After the Node Agent, whose keptPair init checks before the agent starts: the helper reads
-		// the pair at start, and init starts it again when the agent replaces the file.
-		list = append(list, n.awsCredentials(*a))
-	}
-	if n.HA() {
-		fence, vip := n.haServices()
-		// The rules are in place before etcd listens; the holder starts once the API server it watches has.
-		list = slices.Insert(list, slices.IndexFunc(list, func(s service) bool { return s.Name == "etcd" }), fence)
-		list = slices.Insert(list, slices.IndexFunc(list, func(s service) bool { return s.Name == "gaon-scheduler" }), vip)
-	}
-	// Which services only the control-plane Node runs is the topology's.
-	for i := range list {
-		list[i].ControlPlane = Gaon.OnlyControlPlane(list[i].Name)
-	}
-	return list
 }
 
 // awsCredentials is the service that serves the Node's IAM Roles Anywhere session on the
 // loopback, as the instance metadata endpoint the AWS SDK reads (ADR 0029). The Node Agent's pair
 // is its certificate and key; a new pair restarts it.
 func (n Node) awsCredentials(a AWS) service {
-	pair := path.Join(AgentCertDir, AgentPair)
+	cert, key := n.awsPair()
 	return service{
 		Name: "aws-credentials", Binary: "/bin/aws_signing_helper",
 		Args: []string{
-			"serve", "--certificate", pair, "--private-key", pair,
+			"serve", "--certificate", cert, "--private-key", key,
 			"--trust-anchor-arn", a.TrustAnchorArn, "--profile-arn", a.ProfileArn, "--role-arn", a.RoleArn,
 			"--region", a.Region, "--port", AWSCredentialsPort,
 		},
-		RestartOnChange: []string{pair},
+		RestartOnChange: []string{cert},
 	}
+}
+
+// awsPair is the certificate and key of the IAM Roles Anywhere session: the Node Agent's pair, one
+// file, or, on a Node that runs no gaon, the certificate the host was issued and the key it made.
+func (n Node) awsPair() (cert, key string) {
+	if n.Mode == HostOnly {
+		return path.Join(HostDir, "tls.crt"), n.Host.KeyFile
+	}
+	pair := path.Join(AgentCertDir, AgentPair)
+	return pair, pair
 }
 
 // mvmdEnv is mvmd's environment: PATH, for the credential helpers it runs; HOME, where they write
