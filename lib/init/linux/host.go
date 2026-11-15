@@ -31,10 +31,14 @@ const (
 	carrierWait = 30 * time.Second
 )
 
-// seedLabel is the NoCloud drive's label. It is a variable so that the build can stamp it with
-// -ldflags -X: the QEMU test of an upgrade that has to roll back builds a naru-init that cannot
-// find its configuration drive. No other build changes it.
-var seedLabel = "cidata"
+// seedLabel is the NoCloud drive's label.
+const seedLabel = "cidata"
+
+// dataDiskLabel, when not empty, is the label MountDataDisk looks for in place of the label it is
+// given. It is a variable so that the build can stamp it with -ldflags -X: the QEMU test of an
+// upgrade that has to roll back builds a naru-init that cannot find its data disk, so that its boot
+// is refused with a seed and without one. No other build changes it.
+var dataDiskLabel = ""
 
 // errNoDisk is returned when no block device carries the label.
 var errNoDisk = errors.New("no disk with that label")
@@ -133,9 +137,13 @@ func (h *Host) ReadSeed() (userData, networkConfig []byte, err error) {
 func (h *Host) MountDataDisk(d config.DataDisk) error {
 	dev := d.Device
 	if dev == "" {
+		label := d.Label
+		if dataDiskLabel != "" {
+			label = dataDiskLabel
+		}
 		var err error
-		if dev, err = h.find(ext4Label, func(got string) bool { return got == d.Label }); err != nil {
-			return fmt.Errorf("data disk %q: %w", d.Label, err)
+		if dev, err = h.find(ext4Label, func(got string) bool { return got == label }); err != nil {
+			return fmt.Errorf("data disk %q: %w", label, err)
 		}
 	}
 	if err := h.checkVerity(dev); err != nil {

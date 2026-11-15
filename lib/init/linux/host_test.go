@@ -363,6 +363,18 @@ func TestHost_MountDataDisk(t *testing.T) {
 		assert.Empty(t, *calls)
 	})
 
+	t.Run("refuses a disk found by label when the build stamps another label", func(t *testing.T) {
+		h, calls := testHost(t, map[string]string{"vda": verity})
+		prev := dataDiskLabel
+		dataDiskLabel = "naru67-absent"
+		t.Cleanup(func() { dataDiskLabel = prev })
+
+		err := h.MountDataDisk(config.DataDisk{Label: "NARUDATA", MountPoint: mp})
+
+		assert.ErrorIs(t, err, errNoDisk)
+		assert.Empty(t, *calls)
+	})
+
 	t.Run("refuses a disk that is not ext4", func(t *testing.T) {
 		h, calls := testHost(t, map[string]string{"vda": notExt4(t)})
 
