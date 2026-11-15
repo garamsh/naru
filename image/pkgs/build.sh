@@ -42,9 +42,18 @@ fi
 
 rm -f "$out"/*.tar "$out/metadata.json"
 export OUT=$out
+# The throwaway root a test image trusts (NARU_TEST_ROOT, the PEM file make test-qemu makes, ADR 0026),
+# in a directory of its own for the initramfs packages to copy: the context holds nothing else, and
+# nothing at all for a release.
+rm -rf "$out/testroot"
+mkdir -p "$out/testroot"
+if [ -n "${NARU_TEST_ROOT:-}" ]; then
+  cp "$NARU_TEST_ROOT" "$out/testroot/ca.pem"
+fi
+export TESTROOT=$out/testroot
 cd "$here"
 "$docker" buildx bake --builder "$bk" --file docker-bake.hcl --provenance=false --sbom=false \
-  --allow fs.read=../.. --allow "fs.write=$out" \
+  --allow fs.read=../.. --allow "fs.read=$out/testroot" --allow "fs.write=$out" \
   ${NARU_PKGS_NO_CACHE:+--no-cache} --metadata-file "$out/metadata.json" "${groups[@]}" >&2
 
 got=$(awk '/^  "builder": \{/ { in_b = 1 } in_b && /"containerimage.config.digest"/ { gsub(/[",]/, "", $2); print $2; exit }' "$out/metadata.json")

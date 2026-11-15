@@ -114,77 +114,56 @@ BUILDER := image/builder/run.sh
 container_path = $(if $(1),$(if $(filter $(CURDIR)/%,$(abspath $(1))),/naru/$(patsubst $(CURDIR)/%,%,$(abspath $(1))),$(error $(1) is outside the repository, which is all the builder container sees)))
 in_builder = $(BUILDER) make $(1) VERSION='$(VERSION)' TEST_ROOT='$(call container_path,$(TEST_ROOT))' PREV_MANIFEST='$(call container_path,$(PREV_MANIFEST))' RECREATE='$(RECREATE)' $(2)
 
-# in-builder-image builds the host kernel, the guest kernels and initrds, gaon's four
-# services, etcd, and the initramfs that carries them, from pinned sources, into $(IMAGE): bzImage
-# (the kernel with the initramfs inside it, ADR 0020; bzImage.bare is the kernel before that),
-# initramfs.cpio.gz, inputs.env (the Firecracker pin the tests read) and guest/,
-# which holds what the initramfs carries of the guests, with guest.json naming
-# it, and extensions/ (the naru-orch system extension, ADR 0055). The scripts skip what their inputs say is built, and verify every download.
+# The packages of image/pkgs are the build (ADR 0075): every program, kernel and archive of the image
+# is one package, built from pinned sources in BuildKit by image/pkgs/build.sh, which needs the Docker
+# daemon and so runs on the host before the builder container starts. in-builder-image lays them out
+# into $(IMAGE) (image/pkgs/layout.sh): bzImage (the kernel with the initramfs inside it, ADR 0020;
+# bzImage.bare is the kernel before that), initramfs.cpio.gz, node-initrd.cpio.gz, boot-sets.json,
+# inputs.env (the Firecracker pin the tests read), guest/ (guest.json and what it names, which the
+# initramfs carries of the guests), extensions/ (the naru-orch system extension, ADR 0055), and the
+# directories of programs the tests and the release take: gaon/, etcd/, k8s/ (Kubernetes, containerd,
+# runc and the CNI plugins) and regtools/ (the credential helpers, ADR 0026, and the root bundle).
 GUEST := $(IMAGE)/guest
 GAON := $(IMAGE)/gaon
-ETCD := $(IMAGE)/etcd
-# K8S holds Kubernetes, containerd, runc and the CNI plugins, which three build scripts write into
-# the one directory.
-K8S := $(IMAGE)/k8s
-# REGTOOLS holds the credential helpers and the root bundle (ADR 0026). TEST_ROOT, empty for the
-# release, is the PEM file of a throwaway root appended to the bundle: the test image's, which
-# test-qemu builds and no release carries.
-REGTOOLS := $(IMAGE)/regtools
+# TEST_ROOT, empty for the release, is the PEM file of a throwaway root appended to the bundle: the
+# test image's, which test-qemu builds and no release carries.
 TEST_ROOT ?=
-# PKGS holds the packages of image/pkgs as OCI tars, which image/pkgs/build.sh writes (it needs the
-# Docker daemon, so it runs on the host, before the builder container; ADR 0075), and PKGROOT what
-# naru-pkg unpacks from the five the initramfs takes: mke2fs, mkfs.xfs, nft, mount, umount and the
-# root bundle.
+# PKGS holds the packages as OCI tars, which image/pkgs/build.sh writes, and PKGROOT what naru-pkg
+# unpacks from them.
 PKGS := $(BUILD)/pkgs
-PKGROOT := $(IMAGE)/pkgs
-IMAGE_PKGS := util-linux e2fsprogs xfsprogs nftables cacert
+# GOBUILD builds one static program of this repository with the builder's Go: nothing but the flags and
+# the sources enters the bytes.
+GOBUILD := CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -ldflags='-s -w'
+PKGROOT := $(BUILD)/pkgroot
+# PKGS_GROUPS names the groups of image/pkgs/docker-bake.hcl that build.sh builds: default is what
+# make image needs and upgrade adds the kernels of make image-upgrade.
+PKGS_GROUPS := default
+image-upgrade: PKGS_GROUPS := default upgrade
 # VERSION is the version naru-init reports on the Node API and the release assets carry: `git describe
 # --tags --always`, or VERSION=.
 VERSION ?= $(shell git describe --tags --always)
 export NARU_VERSION := $(VERSION)
 image image-upgrade disk release:
-	image/pkgs/build.sh $(PKGS)
+	NARU_TEST_ROOT='$(if $(TEST_ROOT),$(abspath $(TEST_ROOT)))' image/pkgs/build.sh $(PKGS) $(PKGS_GROUPS)
 	$(call in_builder,in-builder-$@)
 
 in-builder-image:
-	image/host/kernel/build.sh $(BUILD)/kernel $(IMAGE)
-	bash -c '. image/lib.sh && gobuild tooling/disk $(BUILD)/naru-pkg ./cmd/naru-pkg'
-	$(BUILD)/naru-pkg unpack $(PKGROOT) $(foreach p,$(IMAGE_PKGS),$(PKGS)/$(p).tar)
-	image/host/gaon/build.sh $(BUILD)/gaon $(GAON)
-	image/node/etcd/build.sh $(BUILD)/etcd $(ETCD)
-	image/node/kubernetes/build.sh $(BUILD)/kubernetes $(K8S)
-	image/node/containerd/build.sh $(BUILD)/containerd $(K8S)
-	image/node/cni/build.sh $(BUILD)/cni $(K8S)
-	image/common/ecr-login/build.sh $(BUILD)/ecr-login $(REGTOOLS)
-	image/common/rolesanywhere/build.sh $(BUILD)/rolesanywhere $(REGTOOLS)
-	cat $(PKGROOT)/cacert/etc/ssl/certs/ca-certificates.crt $(TEST_ROOT) >$(REGTOOLS)/ca-certificates.crt
-	image/host/mvmd/checkout.sh $(BUILD)/initramfs/mvmd
-	image/host/guest/build.sh $(BUILD)/initramfs/mvmd $(BUILD)/kernel $(BUILD)/guest $(GUEST)
-	image/node/kernel/build.sh $(BUILD)/kernel $(BUILD)/guest $(GUEST)
-	image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(IMAGE) $(PKGROOT) $(ETCD) $(REGTOOLS) $(K8S)
-	image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(IMAGE) $(GUEST) $(PKGROOT) $(GAON) $(ETCD) $(REGTOOLS) $(K8S)
-	image/host/kernel/embed.sh $(BUILD)/kernel $(IMAGE) $(IMAGE)/initramfs.cpio.gz
-	image/host/extension/build.sh $(BUILD)/extension $(IMAGE)
+	cd tooling/disk && $(GOBUILD) -o $(abspath $(BUILD))/naru-pkg ./cmd/naru-pkg
+	NARU_TEST_ROOT='$(TEST_ROOT)' image/pkgs/layout.sh $(BUILD)/naru-pkg $(PKGS) $(PKGROOT) $(IMAGE)
 
-# in-builder-image-upgrade builds the two kernels the upgrade tests (ADR 0025) put on a running Node, from the
-# programs and the kernel image built: next/bzImage is the same tree with the version $(VERSION)-next
-# stamped in, and refuse/bzImage a naru-init that cannot find its data disk, so a trial
-# boot of it refuses, with a seed or without, and rolls back by itself. The second kernel's version carries an extra linker
-# flag, which build.sh passes to the linker as part of -X github.com/garamsh/naru/lib/init/run.buildVersion=.
+# in-builder-image-upgrade lays out the two kernels the upgrade tests (ADR 0025) put on a running Node,
+# which the upgrade group of image/pkgs builds from the programs and the kernel of the image:
+# next/bzImage is the same tree with the version $(VERSION)-next stamped in, and refuse/bzImage a
+# naru-init that cannot find its data disk (the linker flag is REFUSE_LDFLAGS of the bake file), so a
+# trial boot of it refuses, with a seed or without, and rolls back by itself.
 UPGRADE := $(BUILD)/upgrade
-REFUSE_FLAG := -X github.com/garamsh/naru/lib/init/linux.dataDiskLabel=naru67-absent
 in-builder-image-upgrade: in-builder-image
 	@set -e; \
 	for v in next refuse; do \
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
-	  cp $(IMAGE)/bzImage.bare $(IMAGE)/kernel.stamp $(UPGRADE)/$$v/; \
-	done; \
-	NARU_VERSION='$(VERSION)-next' image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(UPGRADE)/next $(PKGROOT) $(ETCD) $(REGTOOLS) $(K8S); \
-	NARU_VERSION='$(VERSION)-next' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/next $(GUEST) $(PKGROOT) $(GAON) $(ETCD) $(REGTOOLS) $(K8S); \
-	image/host/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/next $(UPGRADE)/next/initramfs.cpio.gz; \
-	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/node/initramfs/build.sh $(BUILD)/node-initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(PKGROOT) $(ETCD) $(REGTOOLS) $(K8S); \
-	NARU_VERSION='$(VERSION)-refuse $(REFUSE_FLAG)' image/host/initramfs/build.sh $(BUILD)/initramfs $(BUILD)/kernel $(UPGRADE)/refuse $(GUEST) $(PKGROOT) $(GAON) $(ETCD) $(REGTOOLS) $(K8S); \
-	image/host/kernel/embed.sh $(BUILD)/kernel $(UPGRADE)/refuse $(UPGRADE)/refuse/initramfs.cpio.gz
+	  $(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/bzImage-$$v.tar; \
+	  cp $(PKGROOT)/bzImage-$$v/bzImage $(UPGRADE)/$$v/; \
+	done
 
 # in-builder-disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
 # disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and has room for a second one, and
@@ -259,7 +238,8 @@ RECREATE ?=
 in-builder-release: in-builder-disk
 	rm -rf $(RELEASE)
 	mkdir -p $(BUILD)/naructl
-	bash -c '. image/lib.sh && gobuild naructl $(BUILD)/naructl/naructl ./cmd/naructl && gobuild tooling/qemu $(BUILD)/naructl/naru-cluster ./cmd/naru-cluster'
+	cd naructl && $(GOBUILD) -o $(abspath $(BUILD))/naructl/naructl ./cmd/naructl
+	cd tooling/qemu && $(GOBUILD) -o $(abspath $(BUILD))/naructl/naru-cluster ./cmd/naru-cluster
 	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -naru-cluster $(BUILD)/naructl/naru-cluster -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
 
 # test-qemu boots Nodes of the image under QEMU, as the user, and reads their consoles. It needs

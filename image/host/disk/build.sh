@@ -24,15 +24,13 @@ img=$(cd "$2" && pwd)
 . "$here/disk.env"
 # shellcheck source=../../build.env
 . "$here/../../build.env"
-# shellcheck source=../../lib.sh
-. "$here/../../lib.sh"
 
 if [ ! -f "$img/bzImage" ]; then
   echo "disk: $img/bzImage is missing; make image builds it" >&2
   exit 1
 fi
 
-gobuild "$root/tooling/disk" "$build/naru-disk" ./cmd/naru-disk
+(cd "$root/tooling/disk" && CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build/naru-disk" ./cmd/naru-disk)
 
 rm -f "$img/naru.img.part" "$img/naru.qcow2.part"
 "$build/naru-disk" -kernel "$img/bzImage" -out "$img/naru.img.part" \
