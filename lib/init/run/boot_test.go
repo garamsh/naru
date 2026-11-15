@@ -62,6 +62,7 @@ func (c *clock) advance(d time.Duration) {
 type node struct {
 	userData string
 	restarts chan string
+	onStep   func(timesync.Result)
 }
 
 func (n *node) ReadSeed() ([]byte, []byte, error) {
@@ -90,6 +91,7 @@ func (n *node) SyncTime([]string) (timesync.Result, error) {
 	return timesync.Result{}, nil
 }
 func (n *node) RunTime(ctx context.Context, _ *slog.Logger) { <-ctx.Done() }
+func (n *node) OnTimeStep(fn func(timesync.Result))         { n.onStep = fn }
 func (n *node) TimeStatus() timesync.Status                 { return timesync.Status{} }
 func (n *node) Prepare() error                              { return nil }
 func (n *node) Restart(name string)                         { n.restarts <- name }
@@ -150,6 +152,60 @@ spec:
 		assert.Equal(t, "a", name)
 	case <-time.After(5 * time.Second):
 		require.Fail(t, "the renewal restarted nothing")
+	}
+}
+
+func TestBootAndRenew_RenewsACertificateIssuedBeforeTheClockWasStepped(t *testing.T) {
+	ca := pkitest.NewCA(t, epoch.Add(-24*time.Hour), epoch.Add(365*24*time.Hour))
+	n := &node{restarts: make(chan string, 4), userData: `apiVersion: naru.garam.sh/v1alpha1
+kind: NodeConfig
+metadata:
+  name: node-1
+spec:
+  services:
+    - name: a
+      binary: /usr/bin/a
+    - name: b
+      binary: /usr/bin/b
+  dataDisk:
+    label: NARUDATA
+    mountPoint: /var/lib/mvmd
+  pki:
+    authorities:
+      - name: ca
+        certificate: |
+` + pkitest.Indent(ca.Cert, 10) + "        key: |\n" + pkitest.Indent(ca.Key, 10) + `        certificatePath: /run/pki/ca.pem
+    certificates:
+      - name: a
+        authority: ca
+        certificatePath: /run/pki/a.pem
+        keyPath: /run/pki/a.key
+        commonName: a
+        usage: client
+        validity: 3h
+        restart: [a]
+`}
+	clk := &clock{now: epoch, timers: make(chan chan time.Time, 4)}
+	issuer := pki.New(t.TempDir(), clk, n, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	stop, booted := bootAndRenew(n, issuer, n, store.New(t.TempDir()), noAPI{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(stop)
+	assert.Nil(t, booted, "the boot was refused, so there is no effective configuration")
+
+	select {
+	case <-clk.timers:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the boot was refused after b failed to start, and nothing renews a's certificate")
+	}
+	// The clock is stepped years ahead, past the certificate's expiry; the timer never fires.
+	clk.advance(3 * 24 * time.Hour)
+	require.NotNil(t, n.onStep, "the clock's steps were not given to the issuer")
+	n.onStep(timesync.Result{Correction: timesync.Step, Offset: 3 * 24 * time.Hour})
+	select {
+	case name := <-n.restarts:
+		assert.Equal(t, "a", name)
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "the step renewed nothing")
 	}
 }
 
