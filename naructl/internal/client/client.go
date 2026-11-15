@@ -244,3 +244,8 @@ func (c *Client) Reboot(ctx context.Context) ([]Action, error) {
 	}
 	return body.Actions, nil
 }
+
+// Signer returns the HTTP client of this Node's API and the base URL under which it forwards the
+// signer's /v1 paths: base+"/operator" reaches the signer's /v1/operator. The Node API adds
+// reach and no authority; the signer still checks each request's own signature.
+func (c *Client) Signer() (*http.Client, string) { return c.http, c.base + "/v1/signer" }

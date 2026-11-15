@@ -22,9 +22,9 @@ import (
 const signerRequestHeader = "X-Naru-Request"
 
 const signerUsage = `usage: naructl signer authorise-replica --admin <person file> --passphrase-file <file> --host-id <id> --join-key <file> --out <file>
-       naructl signer bundle --admin <person file> --passphrase-file <file> --socket <path> --out <file>
-       naructl signer reissue-root --recovery-key <file> --passphrase-file <file> --csr <file> --socket <path> --out <file>
-       naructl signer restore --admin <person file> --passphrase-file <file> --bundle <file> --recovery-key <path> --recovery-passphrase-file <path> --socket <path>
+       naructl signer bundle --admin <person file> --passphrase-file <file> (--socket <path> | --config <file> [--node <ip[:port]>]) --out <file>
+       naructl signer reissue-root --recovery-key <file> --passphrase-file <file> --csr <file> (--socket <path> | --config <file> [--node <ip[:port]>]) --out <file>
+       naructl signer restore --admin <person file> --passphrase-file <file> --bundle <file> --recovery-key <path> --recovery-passphrase-file <path> (--socket <path> | --config <file> [--node <ip[:port]>])
 
   authorise-replica signs root's authorisation for the signer of a host to receive the authorities: pass the
   file to naru-signer join. bundle writes the authorities sealed to the recovery key. restore fills a blank
@@ -32,6 +32,9 @@ const signerUsage = `usage: naructl signer authorise-replica --admin <person fil
   Those three are root's. reissue-root is the recovery key's, for an operator who lost root's person file:
   it signs on this machine a once-only request for a new root certificate for the request --csr names,
   and the signer revokes the old root. Its --recovery-key and --passphrase-file are local files.
+  Each takes exactly one of --socket, the one naru-signer serves on this host, and --config, an admin's client
+  file for a Node's API, which forwards to the signer of --node. The signer checks every request's signature
+  itself, so the client file alone does not authorise anything.
 `
 
 func signerCmd(args []string, stdout, stderr io.Writer) error {
@@ -105,19 +108,22 @@ func signerBundle(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("signer bundle", stderr)
 	admin := fs.String("admin", "", "root's encrypted person file")
 	pass := fs.String("passphrase-file", "", "file holding the person file's passphrase")
-	socket := fs.String("socket", "", "naru-signer's unix socket")
+	sg := addSignerFlags(fs)
 	out := fs.String("out", "", "the file the sealed bundle is written to (0600)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := require(fs, "admin", "passphrase-file", "socket", "out"); err != nil {
+	if err := sg.check(fs); err != nil {
+		return err
+	}
+	if err := require(fs, "admin", "passphrase-file", "out"); err != nil {
 		return err
 	}
 	signed, err := signAs(*admin, *pass, identity.ActionBundle, struct{}{})
 	if err != nil {
 		return err
 	}
-	bundle, err := signerDo(*socket, http.MethodGet, "/v1/bundle", nil, map[string]string{signerRequestHeader: base64.StdEncoding.EncodeToString(signed)})
+	bundle, err := signerDo(sg, http.MethodGet, "/v1/bundle", nil, map[string]string{signerRequestHeader: base64.StdEncoding.EncodeToString(signed)})
 	if err != nil {
 		return err
 	}
@@ -135,11 +141,14 @@ func signerRestore(args []string, stdout, stderr io.Writer) error {
 	bundleFile := fs.String("bundle", "", "the sealed bundle signer bundle wrote")
 	recKey := fs.String("recovery-key", "", "the recovery key file, as a path on the signer's host")
 	recPass := fs.String("recovery-passphrase-file", "", "the file holding its passphrase, as a path on the signer's host")
-	socket := fs.String("socket", "", "naru-signer's unix socket")
+	sg := addSignerFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := require(fs, "admin", "passphrase-file", "bundle", "recovery-key", "recovery-passphrase-file", "socket"); err != nil {
+	if err := sg.check(fs); err != nil {
+		return err
+	}
+	if err := require(fs, "admin", "passphrase-file", "bundle", "recovery-key", "recovery-passphrase-file"); err != nil {
 		return err
 	}
 	bundle, err := os.ReadFile(*bundleFile)
@@ -155,7 +164,7 @@ func signerRestore(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if _, err := signerCall(*socket, http.MethodPost, "/v1/restore", body); err != nil {
+	if _, err := signerCall(sg, http.MethodPost, "/v1/restore", body); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: the signer restored the authorities from %s\n", *bundleFile)
@@ -169,12 +178,15 @@ func signerReissueRoot(args []string, stdout, stderr io.Writer) error {
 	recKey := fs.String("recovery-key", "", "the encrypted recovery key file")
 	pass := fs.String("passphrase-file", "", "file holding the recovery key's passphrase")
 	csrFile := fs.String("csr", "", "the certificate request for the new root key, DER or PEM")
-	socket := fs.String("socket", "", "naru-signer's unix socket")
+	sg := addSignerFlags(fs)
 	out := fs.String("out", "", "the file the new root certificate is written to, PEM")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := require(fs, "recovery-key", "passphrase-file", "csr", "socket", "out"); err != nil {
+	if err := sg.check(fs); err != nil {
+		return err
+	}
+	if err := require(fs, "recovery-key", "passphrase-file", "csr", "out"); err != nil {
 		return err
 	}
 	pw, err := passphrase(*pass)
@@ -202,7 +214,7 @@ func signerReissueRoot(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	body, err := signerCall(*socket, http.MethodPost, "/v1/reissue-root", signed)
+	body, err := signerCall(sg, http.MethodPost, "/v1/reissue-root", signed)
 	if err != nil {
 		return err
 	}

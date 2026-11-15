@@ -17,7 +17,7 @@ import (
 
 const usage = `usage: naructl gen <ca|client|token|node|api-ca|api-client|host-ca|host-client> [flags]
        naructl <version|services|logs|get config|apply|reboot|upgrade> --config <client file> [--node <ip[:port]>] [flags]
-       naructl operator <add|revoke> --admin <person file> --passphrase-file <file> --socket <path> [flags]
+       naructl operator <add|revoke> --admin <person file> --passphrase-file <file> (--socket <path> | --config <file> [--node <ip[:port]>]) [flags]
                                                      issue or revoke an operator through naru-signer (naructl operator -h)
        naructl operator request|person, naructl orch csr|issue, naructl signer authorise-replica|bundle|restore
                                                      make an identity's key, request and person file, and use root's (naructl operator -h, naructl signer -h)

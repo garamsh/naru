@@ -1,6 +1,7 @@
 package command_test
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"slices"
@@ -244,6 +246,8 @@ type fakeNode struct {
 	extensionBody []byte
 	// extensionRemoved is the path of the last DELETE /v1/extensions/.
 	extensionRemoved string
+	// signerSocket is the unix socket /v1/signer/ is forwarded to, as init forwards it, when it is not empty.
+	signerSocket string
 }
 
 func newFakeNode(t *testing.T, dep deployment) *fakeNode { return newFakeNodeTLS(t, dep, 0) }
@@ -367,6 +371,17 @@ func newFakeNodeTLS(t *testing.T, dep deployment, maxTLS uint16) *fakeNode {
 		f.upgradeBody, f.upgradeQuery = body, r.URL.RawQuery
 		f.mu.Unlock()
 		writeJSON(w, 202, map[string]any{"actions": []map[string]any{{"action": "upgrade", "target": "v2"}, {"action": "reboot", "target": "node"}}})
+	})
+	mux.HandleFunc("/v1/signer/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		f.note(r)
+		(&httputil.ReverseProxy{
+			Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", f.signerSocket)
+			}},
+			Rewrite: func(pr *httputil.ProxyRequest) {
+				pr.Out.URL.Scheme, pr.Out.URL.Host, pr.Out.URL.Path = "http", "naru-signer", "/v1/"+pr.In.PathValue("path")
+			},
+		}).ServeHTTP(w, r)
 	})
 	// The handshake and the role come first, as they do in init: 403 for a certificate with no role
 	// that allows the method.

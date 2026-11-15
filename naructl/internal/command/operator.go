@@ -1,15 +1,12 @@
 package command
 
 import (
-	"bytes"
-	"context"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -21,13 +18,14 @@ import (
 // operatorRequestTTL is how long a request naructl signs stays valid; a replay after it is refused.
 const operatorRequestTTL = 2 * time.Minute
 
-const operatorUsage = `usage: naructl operator add --admin <person file> --passphrase-file <file> --csr <file> --name <name> --role operator|reader|automation --socket <path> --out <cert file>
-       naructl operator revoke --admin <person file> --passphrase-file <file> --serial <hex> --socket <path>
+const operatorUsage = `usage: naructl operator add --admin <person file> --passphrase-file <file> --csr <file> --name <name> --role operator|reader|automation (--socket <path> | --config <file> [--node <ip[:port]>]) --out <cert file>
+       naructl operator revoke --admin <person file> --passphrase-file <file> --serial <hex> (--socket <path> | --config <file> [--node <ip[:port]>])
        naructl operator request --name <name> --key-out <file> --csr-out <file> [--der]
        naructl operator person --key <file> --cert <file> --passphrase-file <file> --out <file>
 
-  The admin file is root's (to add) or an operator's (to revoke) encrypted person file; the signer's
-  socket is the one naru-signer serves. The CSR is a DER or PEM PKCS #10 request the person made.
+  The admin file is root's (to add) or an operator's (to revoke) encrypted person file. A command that calls the
+  signer takes exactly one of --socket, the one naru-signer serves on this host, and --config, an admin's client
+  file for a Node's API, which forwards to the signer of --node. The CSR is a DER or PEM PKCS #10 request the person made.
 `
 
 func operatorCmd(args []string, stdout, stderr io.Writer) error {
@@ -56,12 +54,15 @@ func operatorAdd(args []string, stdout, stderr io.Writer) error {
 	csrFile := fs.String("csr", "", "the new identity's certificate request, DER or PEM")
 	name := fs.String("name", "", "the certificate's CN")
 	role := fs.String("role", "operator", "operator, reader or automation")
-	socket := fs.String("socket", "", "naru-signer's unix socket")
+	sg := addSignerFlags(fs)
 	out := fs.String("out", "", "the file the issued certificate is written to, PEM")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := require(fs, "admin", "passphrase-file", "csr", "name", "socket", "out"); err != nil {
+	if err := sg.check(fs); err != nil {
+		return err
+	}
+	if err := require(fs, "admin", "passphrase-file", "csr", "name", "out"); err != nil {
 		return err
 	}
 	csr, err := readCSR(*csrFile)
@@ -72,7 +73,7 @@ func operatorAdd(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	body, err := signerCall(*socket, http.MethodPost, "/v1/operator", signed)
+	body, err := signerCall(sg, http.MethodPost, "/v1/operator", signed)
 	if err != nil {
 		return err
 	}
@@ -97,18 +98,21 @@ func operatorRevoke(args []string, stdout, stderr io.Writer) error {
 	admin := fs.String("admin", "", "root's or an operator's encrypted person file")
 	pass := fs.String("passphrase-file", "", "file holding the person file's passphrase")
 	serial := fs.String("serial", "", "the certificate's serial, hexadecimal")
-	socket := fs.String("socket", "", "naru-signer's unix socket")
+	sg := addSignerFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := require(fs, "admin", "passphrase-file", "serial", "socket"); err != nil {
+	if err := sg.check(fs); err != nil {
+		return err
+	}
+	if err := require(fs, "admin", "passphrase-file", "serial"); err != nil {
 		return err
 	}
 	signed, err := signAs(*admin, *pass, identity.ActionRevoke, identity.RevokeRequest{Serial: strings.ToLower(*serial)})
 	if err != nil {
 		return err
 	}
-	if _, err := signerCall(*socket, http.MethodPost, "/v1/revoke", signed); err != nil {
+	if _, err := signerCall(sg, http.MethodPost, "/v1/revoke", signed); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: revoked serial %s\n", strings.ToLower(*serial))
@@ -141,40 +145,4 @@ func readCSR(path string) ([]byte, error) {
 		return block.Bytes, nil
 	}
 	return data, nil
-}
-
-// signerCall sends body to the signer on its unix socket and returns the answer's body, or the
-// signer's refusal.
-func signerCall(socket, method, path string, body []byte) ([]byte, error) {
-	return signerDo(socket, method, path, body, nil)
-}
-
-// signerDo is signerCall with request headers, for the endpoint that takes its request on a GET.
-func signerDo(socket, method, path string, body []byte, header map[string]string) ([]byte, error) {
-	client := &http.Client{
-		Timeout: callTimeout,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-		}},
-	}
-	req, err := http.NewRequest(method, "http://naru-signer"+path, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	for k, v := range header {
-		req.Header.Set(k, v)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("the signer at %s: %w", socket, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("the signer refused (%s): %s", resp.Status, strings.TrimSpace(string(answer)))
-	}
-	return answer, nil
 }
