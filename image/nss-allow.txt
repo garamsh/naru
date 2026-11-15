@@ -1,7 +1,0 @@
-# The programs whose static link may print glibc's warning that a function (getpwnam, getaddrinfo,
-# dlopen and the like) needs the shared libraries of the glibc it was linked with. The image has no
-# libc, so such a call fails at run time; image/lib.sh nss_gate fails a build whose log has the
-# warning unless the program is named here. One program per line: its name, then why its call cannot
-# happen. Anyone adding a line shows the call is not reached on a Node.
-#
-aws_signing_helper the PKCS#11 provider is dlopen'ed only for a private key held in a token, which a Node does not use; the key comes from a file.

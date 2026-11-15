@@ -27,7 +27,7 @@ type Inputs struct {
 	// FirecrackerSHA256 is the digest of the Firecracker binary the image carries.
 	FirecrackerSHA256 string
 	// Guest names the guest kernels and initrds the image carries, by their paths inside it and
-	// their digests, as image/host/guest/build.sh wrote them (ADR 0010).
+	// their digests, as the initramfs-host package (image/pkgs) wrote them (ADR 0010).
 	Guest guest.Manifest
 	// Extension is the system extension that carries naru-orchd and naru-signer, stored the way a
 	// Node stores it (ADR 0055). Its StoreDir is not in Dir: the data disk takes it as
@@ -41,7 +41,7 @@ type Sources struct {
 	Root string
 	// ImageDir holds inputs.env and extensions/, which make image writes.
 	ImageDir string
-	// GuestDir holds guest.json, which image/host/guest/build.sh writes.
+	// GuestDir holds guest.json, which the initramfs-host package (image/pkgs) writes.
 	GuestDir string
 }
 
