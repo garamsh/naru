@@ -40,3 +40,16 @@ Drafted for garamsh/naru#189, part of goal garamsh/naru#197. It carries out item
 - Two builds of one commit differ in a package digest: the layer rewrite or a build input is not fixed.
 - The graph grows past what a Dockerfile per package and named contexts express, and a second tool would cost less than the workarounds.
 - A security advisory for musl or gcc reaches a program of the image faster than the pin moves.
+
+## Erratum, 2026-11-16 (phase B, garamsh/naru#189)
+
+Item 9 is carried out as decided. The cases it left open, settled here:
+
+- **The version and the test root are bake variables, not files.** `NARU_VERSION`, `TESTROOT` (a named context holding `ca.pem`, empty for a release) and `REFUSE_LDFLAGS` are variables of `image/pkgs/docker-bake.hcl`; `build.sh` takes the first from the environment and refuses to run without it. The `upgrade` group adds the `-next` and `-refuse` initramfs and `bzImage` packages that `make image-upgrade` reads.
+- **The kernel tree's `gen_init_cpio` is a target.** `gen-init-cpio` of `image/pkgs/kernel/Dockerfile` compiles it from the pinned tarball, and both initramfs packages take it by named context; the kernel build itself is one Dockerfile with a stage per kernel, so the tarball, its pin and the configuration merge are written once.
+- **The root `.dockerignore` narrows the `src` context to the Go workspace** (`go.work`, `lib`, `host`, `node`, `orch`, `naructl`, `tooling`, no test files); every bake context names its own directory and so is not narrowed by it.
+- **`libseccomp` is a package of its own** (`image/pkgs/libseccomp`), as the other libraries are, and `containerd`'s Dockerfile takes it by named context.
+- **mvmd's `converter-initrd` downloads its build tools** (m4, autoconf, automake and libtool) from `ftp.gnu.org` with a fallback to `ftpmirror.gnu.org`, each checked against the SHA-256 in mvmd's script. The package build reaches the network for them as the old build did; the digests, not the host, decide what enters the initrd.
+- **The `build/kernel/dl` and `build/containerd/dl` directories are gone.** They were local copies of pinned tarballs kept between builds; BuildKit's cache holds the downloads now.
+- **The NSS gate and its allow list are removed with `image/lib.sh`.** Their one entry, `aws_signing_helper`, is built in its package against musl.
+- **The build stamp is removed.** BuildKit's cache is the stamp of every package.
