@@ -96,3 +96,43 @@ func TestParse_FileRestart(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, []string{"spec.files[1].restart[0]"}, fields(t, err))
 }
+
+// apiKeyFileDoc is apiDoc with key replaced by what is given, a line of spec.api.
+func apiKeyFileDoc(t *testing.T, ca, server pkitest.CA, lines string) string {
+	t.Helper()
+	return valid + "  api:\n    clientCA: |\n" + pkitest.Indent(ca.Cert+"\n", 6) +
+		"    certificate: |\n" + pkitest.Indent(server.Cert+"\n", 6) + lines
+}
+
+func TestParse_SpecAPIKeyFileStandsInForTheKey(t *testing.T) {
+	ca, server := newCA(t), newCA(t)
+
+	cfg, err := config.Parse([]byte(apiKeyFileDoc(t, ca, server, "    keyFile: /var/lib/naru/hostd/host.key\n")))
+
+	require.NoError(t, err)
+	assert.Equal(t, "/var/lib/naru/hostd/host.key", cfg.Spec.API.KeyFile)
+	assert.Empty(t, cfg.Spec.API.Key)
+}
+
+func TestParse_SpecAPIRefusesTheKeyAndTheKeyFileTogetherAndNeither(t *testing.T) {
+	ca, server := newCA(t), newCA(t)
+	key := "    key: |\n" + pkitest.Indent(server.Key+"\n", 6)
+	tests := []struct {
+		name, lines, field string
+	}{
+		{"both", key + "    keyFile: /var/lib/naru/hostd/host.key\n", "spec.api.keyFile"},
+		{"neither", "", "spec.api.key"},
+		{"a relative path", "    keyFile: host.key\n", "spec.api.keyFile"},
+		{"an unclean path", "    keyFile: /var/lib/../host.key\n", "spec.api.keyFile"},
+	}
+	_, err := config.Parse([]byte(apiKeyFileDoc(t, ca, server, key)))
+	require.NoError(t, err, "control: the key alone is accepted")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := config.Parse([]byte(apiKeyFileDoc(t, ca, server, tt.lines)))
+
+			require.Error(t, err)
+			assert.Equal(t, []string{tt.field}, fields(t, err))
+		})
+	}
+}

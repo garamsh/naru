@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/lib/init/config"
+	"github.com/garamsh/naru/lib/init/dhcp4"
 	"github.com/garamsh/naru/lib/init/ext4"
 	"github.com/garamsh/naru/lib/init/iso9660"
 	"github.com/garamsh/naru/lib/init/keptpair"
@@ -22,6 +23,9 @@ import (
 const (
 	seedMountPoint   = "/run/naru/cidata"
 	diskPollInterval = 100 * time.Millisecond
+	// carrierWait is how long a Node with no network-config waits for an Ethernet link to see a
+	// carrier.
+	carrierWait = 30 * time.Second
 )
 
 // seedLabel is the NoCloud drive's label. It is a variable so that the build can stamp it with
@@ -51,6 +55,15 @@ type Host struct {
 
 	dataMountPoint string
 
+	// carrierWait bounds the wait for a link with a carrier; leaseWait, the first DHCPv4 exchange
+	// (leaseWait when 0). dhcpOpen opens the DHCP transport of a link (the packet sockets when nil)
+	// and dhcpClock is the clock of the exchange (the system clock when nil).
+	carrierWait time.Duration
+	leaseWait   time.Duration
+	dhcpOpen    func(link) (dhcp4.Transport, error)
+	dhcpClock   dhcp4.Clock
+	leases      *leaseState
+
 	time *timesync.Syncer
 }
 
@@ -70,6 +83,7 @@ func NewHost(diskWait time.Duration) *Host {
 		seedMountPoint: seedMountPoint,
 		resolvConf:     resolvConf,
 		links:          netlinkLinks{},
+		carrierWait:    carrierWait,
 		time:           timesync.New(SystemClock{}, timesync.UDP{Now: time.Now}),
 	}
 }
@@ -90,7 +104,8 @@ func (h *Host) ReadSeed() (userData, networkConfig []byte, err error) {
 	if userData, err = os.ReadFile(filepath.Join(h.seedMountPoint, "user-data")); err != nil {
 		return nil, nil, err
 	}
-	if networkConfig, err = os.ReadFile(filepath.Join(h.seedMountPoint, netcfg.FileName)); err != nil {
+	// A drive without a network-config leaves the network to DHCPv4 (netcfg.Parse of nothing).
+	if networkConfig, err = os.ReadFile(filepath.Join(h.seedMountPoint, netcfg.FileName)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, nil, err
 	}
 	return userData, networkConfig, nil

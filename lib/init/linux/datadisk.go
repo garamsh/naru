@@ -19,9 +19,11 @@ const mkfsExt4 = "/bin/mkfs.ext4"
 // no disk is ext4 and labelled d.Label, it formats the one disk whose first MiB is all zeros as
 // ext4 with the verity feature and that label (ADR 0003's data disk), and logs it. A disk that
 // holds anything is never formatted, and a disk labelled d.Label is left as it is. More than one
-// blank disk is an error: init does not guess which is the data disk.
+// blank disk is an error: init does not guess which is the data disk. With d.FirstBlank (the join
+// form) it takes the first blank whole disk instead, never the one the ESP init booted from, and
+// refuses the boot when there is none.
 func (h *Host) FormatBlankDataDisk(d config.DataDisk, log *slog.Logger) error {
-	dev, err := h.wait(func() (string, error) { return h.blankOrLabelled(d.Label) })
+	dev, err := h.wait(func() (string, error) { return h.blankOrLabelled(d.Label, d.FirstBlank) })
 	if err != nil {
 		return fmt.Errorf("data disk %q: %w", d.Label, err)
 	}
@@ -43,8 +45,9 @@ func (h *Host) FormatBlankDataDisk(d config.DataDisk, log *slog.Logger) error {
 }
 
 // blankOrLabelled returns the device that holds an ext4 file system labelled label or, when there
-// is none, the only whole disk that is blank. It returns errNoDisk when there is neither.
-func (h *Host) blankOrLabelled(label string) (string, error) {
+// is none, the only whole disk that is blank, or the first one when first is set and the disk is
+// not the boot disk. It returns errNoDisk when there is neither.
+func (h *Host) blankOrLabelled(label string, first bool) (string, error) {
 	if dev, err := h.scan(ext4Label, func(got string) bool { return got == label }); err == nil {
 		return dev, nil
 	}
@@ -52,9 +55,13 @@ func (h *Host) blankOrLabelled(label string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	boot := ""
+	if first {
+		boot = h.bootDisk()
+	}
 	var blank []string
 	for _, e := range entries {
-		if _, err := os.Stat(filepath.Join(h.sysClassBlock, e.Name(), "partition")); err == nil {
+		if _, err := os.Stat(filepath.Join(h.sysClassBlock, e.Name(), "partition")); err == nil || e.Name() == boot {
 			continue
 		}
 		dev := filepath.Join(h.devDir, e.Name())
@@ -68,6 +75,9 @@ func (h *Host) blankOrLabelled(label string) (string, error) {
 			blank = append(blank, dev)
 		}
 	}
+	if first && len(blank) > 0 {
+		return blank[0], nil
+	}
 	switch len(blank) {
 	case 0:
 		return "", fmt.Errorf("no ext4 disk labelled %q and no blank disk: %w", label, errNoDisk)
@@ -77,11 +87,54 @@ func (h *Host) blankOrLabelled(label string) (string, error) {
 	return "", fmt.Errorf("%d blank disks (%s) and none labelled %q: not choosing one", len(blank), strings.Join(blank, ", "), label)
 }
 
-// isBlankDisk reports whether f holds at least one byte and its first blankProbe bytes are zeros.
+// bootESPGUID is the partition GUID of the EFI system partition of the image's disk, which is
+// upgrade.ESPGUID (lib/init/linux cannot import upgrade, which imports it).
+const bootESPGUID = "cb4162e7-9d1e-48df-b937-f5792071b950"
+
+// bootDisk returns the name in /sys/class/block of the disk that holds the partition whose
+// PARTUUID is bootESPGUID, and "" when no partition has it.
+func (h *Host) bootDisk() string {
+	entries, err := os.ReadDir(h.sysClassBlock)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		dir := filepath.Join(h.sysClassBlock, e.Name())
+		uevent, err := os.ReadFile(filepath.Join(dir, "uevent"))
+		if err != nil || !hasPartUUID(string(uevent), bootESPGUID) {
+			continue
+		}
+		// A partition's sysfs entry lies under its disk's.
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			continue
+		}
+		return filepath.Base(filepath.Dir(real))
+	}
+	return ""
+}
+
+func hasPartUUID(uevent, guid string) bool {
+	for _, line := range strings.Split(uevent, "\n") {
+		if v, ok := strings.CutPrefix(line, "PARTUUID="); ok && strings.EqualFold(strings.TrimSpace(v), guid) {
+			return true
+		}
+	}
+	return false
+}
+
+// isBlankDisk reports whether f holds at least one byte and its first and its last blankProbe
+// bytes are zeros: no partition table, no file system signature, and no backup GPT.
 func isBlankDisk(f *os.File) (bool, error) {
 	size, err := f.Seek(0, io.SeekEnd)
 	if err != nil || size == 0 {
 		return false, err
 	}
-	return isBlank(f)
+	if ok, err := isBlank(f); err != nil || !ok {
+		return false, err
+	}
+	if size <= blankProbe {
+		return true, nil
+	}
+	return isBlank(io.NewSectionReader(f, size-blankProbe, blankProbe))
 }

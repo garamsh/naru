@@ -2,6 +2,8 @@ package linux
 
 import (
 	"errors"
+	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -17,6 +19,8 @@ import (
 	"github.com/garamsh/naru/lib/init/ext4/ext4test"
 	"github.com/garamsh/naru/lib/init/netcfg"
 )
+
+var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 type mountCall struct{ source, target, fstype string }
 
@@ -141,6 +145,17 @@ func TestHost_ReadSeedRefuses(t *testing.T) {
 		require.NoError(t, os.MkdirAll(h.seedMountPoint, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(h.seedMountPoint, "user-data"), []byte("x"), 0o644))
 
+		_, network, err := h.ReadSeed()
+
+		require.NoError(t, err, "a drive without a network-config leaves the network to DHCPv4")
+		assert.Empty(t, network)
+	})
+
+	t.Run("a volume without a user-data", func(t *testing.T) {
+		// The control: only the network-config may be absent.
+		h, _ := testHost(t, map[string]string{"sr0": isoImage(t, "cidata")})
+		require.NoError(t, os.MkdirAll(h.seedMountPoint, 0o755))
+
 		_, _, err := h.ReadSeed()
 
 		assert.ErrorIs(t, err, os.ErrNotExist)
@@ -149,9 +164,18 @@ func TestHost_ReadSeedRefuses(t *testing.T) {
 
 // fakeLinks is a set of interfaces whose changes are recorded.
 type fakeLinks struct {
-	all   []link
-	calls []string
-	fail  string
+	all     []link
+	calls   []string
+	fail    string
+	carrier map[string]bool
+}
+
+func (f *fakeLinks) Carrier(l link) bool { return f.carrier[l.Name] }
+func (f *fakeLinks) DelAddr(l link, p netip.Prefix) error {
+	return f.do("del-addr " + p.String() + " " + l.Name)
+}
+func (f *fakeLinks) DeleteDefaultRoute(l link, gw netip.Addr) error {
+	return f.do("del-route " + gw.String() + " " + l.Name)
 }
 
 func (f *fakeLinks) List() ([]link, error) { return f.all, nil }
@@ -194,9 +218,10 @@ func TestHost_ApplyNetwork(t *testing.T) {
 		h, _ := testHost(t, nil)
 		h.links = &fakeLinks{all: kernel}
 
-		err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{nic("10.78.0.254")}})
+		applied, err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{nic("10.78.0.254")}}, discard)
 
 		require.NoError(t, err)
+		assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.78.0.7")}, applied.Addresses)
 		assert.Equal(t, []string{"up lo", "up ens19", "addr 10.78.0.7/24 ens19", "route 10.78.0.254 ens19"}, h.links.(*fakeLinks).calls)
 	})
 
@@ -206,7 +231,8 @@ func TestHost_ApplyNetwork(t *testing.T) {
 		byName := nic("")
 		byName.MAC, byName.Name = nil, "ens18"
 
-		require.NoError(t, h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{byName}}))
+		_, err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{byName}}, discard)
+		require.NoError(t, err)
 
 		assert.Equal(t, []string{"up lo", "up ens18", "addr 10.78.0.7/24 ens18"}, h.links.(*fakeLinks).calls, "no gateway, no route")
 	})
@@ -215,7 +241,7 @@ func TestHost_ApplyNetwork(t *testing.T) {
 		h, _ := testHost(t, nil)
 		h.links = &fakeLinks{all: kernel[:2]}
 
-		err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{nic("")}})
+		_, err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{nic("")}}, discard)
 
 		assert.ErrorContains(t, err, "02:00:00:00:00:07")
 		assert.Equal(t, []string{"up lo"}, h.links.(*fakeLinks).calls)
@@ -226,7 +252,7 @@ func TestHost_ApplyNetwork(t *testing.T) {
 		h, _ := testHost(t, nil)
 		h.links = &fakeLinks{all: kernel, fail: "addr 10.78.0.7/24 ens19"}
 
-		err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{nic("10.78.0.254")}})
+		_, err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{nic("10.78.0.254")}}, discard)
 
 		assert.ErrorContains(t, err, "10.78.0.7/24")
 		assert.Equal(t, []string{"up lo", "up ens19", "addr 10.78.0.7/24 ens19"}, h.links.(*fakeLinks).calls)
@@ -236,7 +262,7 @@ func TestHost_ApplyNetwork(t *testing.T) {
 		h, _ := testHost(t, nil)
 		h.links = &fakeLinks{all: kernel[1:]}
 
-		err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{nic("")}})
+		_, err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{nic("")}}, discard)
 
 		assert.ErrorContains(t, err, `"lo"`)
 	})
@@ -250,7 +276,8 @@ func TestHost_ApplyNetwork(t *testing.T) {
 			Search:      []string{"naru.test", "lan"},
 		}
 
-		require.NoError(t, h.ApplyNetwork(cfg))
+		_, err := h.ApplyNetwork(cfg, discard)
+		require.NoError(t, err)
 
 		assert.Equal(t, "search naru.test lan\nnameserver 10.78.0.254\nnameserver 1.1.1.1\n", read(t, h.resolvConf))
 	})

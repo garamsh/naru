@@ -29,6 +29,8 @@ type timedHost interface {
 	RunTime(ctx context.Context, log *slog.Logger)
 	// TimeStatus returns what the clock's last synchronisation did.
 	TimeStatus() timesync.Status
+	// RunNetwork keeps the DHCPv4 lease, when the network has one, until ctx ends.
+	RunNetwork(ctx context.Context) error
 }
 
 // timeAPI is the Node API as the boot sequence starts it, and as it learns the clock's state.
@@ -65,10 +67,18 @@ func bootAndRenew(host timedHost, issuer *pki.Issuer, services boot.Services, co
 		defer close(ticked)
 		host.RunTime(renewing, log)
 	}()
+	leased := make(chan struct{})
+	go func() {
+		defer close(leased)
+		if err := host.RunNetwork(renewing); err != nil {
+			log.Error("the DHCPv4 lease is no longer kept", "err", err)
+		}
+	}()
 	return func() {
 		cancel()
 		<-renewed
 		<-ticked
+		<-leased
 	}, booted
 }
 

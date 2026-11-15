@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 
 	"github.com/garamsh/naru/lib/init/config"
@@ -21,8 +22,9 @@ type Host interface {
 	// ReadSeed returns the bytes of the NoCloud drive's user-data, which is
 	// naru.yaml, and of its network-config.
 	ReadSeed() (userData, networkConfig []byte, err error)
-	// ApplyNetwork brings the network up and writes the resolvers.
-	ApplyNetwork(netcfg.Config) error
+	// ApplyNetwork brings the network up and writes the resolvers, and returns what the Node was
+	// given: its addresses, its resolvers and the time servers a DHCPv4 lease named.
+	ApplyNetwork(netcfg.Config, *slog.Logger) (netcfg.Applied, error)
 	// FormatBlankDataDisk formats the blank disk spec.dataDisk.formatBlank names, and logs it.
 	FormatBlankDataDisk(config.DataDisk, *slog.Logger) error
 	// MountDataDisk mounts the data disk, or refuses it.
@@ -105,10 +107,11 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	}
 	log.Info("configuration accepted", "node", base.Metadata.Name, "services", len(base.Spec.Services))
 
-	if err := host.ApplyNetwork(network); err != nil {
+	applied, err := host.ApplyNetwork(network, log)
+	if err != nil {
 		return store.Stored{}, fmt.Errorf("apply network configuration: %w", err)
 	}
-	log.Info("network configured", "interfaces", len(network.Interfaces), "nameservers", len(network.Nameservers))
+	log.Info("network configured", "interfaces", len(network.Interfaces), "nameservers", len(applied.Nameservers))
 
 	if base.Spec.DataDisk.FormatBlank {
 		if err := host.FormatBlankDataDisk(base.Spec.DataDisk, log); err != nil {
@@ -141,15 +144,9 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 		}
 	}
 	prepareStorage(host, cfg.Spec.Storage, log)
-	syncTime(host, cfg.Spec.Time, log)
+	syncTime(host, cfg.Spec.Time, applied.NTP, log)
 	if pki := cfg.Spec.PKI; len(pki.Authorities) > 0 || len(pki.Certificates) > 0 {
-		var addrs []netip.Addr
-		for _, iface := range network.Interfaces {
-			for _, p := range iface.Addresses {
-				addrs = append(addrs, p.Addr())
-			}
-		}
-		if err := issuer.Issue(pki, addrs); err != nil {
+		if err := issuer.Issue(pki, applied.Addresses); err != nil {
 			return store.Stored{}, fmt.Errorf("issue certificates: %w", err)
 		}
 	}
@@ -215,13 +212,21 @@ func prepareStorage(host Host, storage []config.Storage, log *slog.Logger) {
 
 // syncTime sets the clock from spec.time once, before certificates are issued. It never refuses
 // the boot: a clock that no server could set is logged and the boot goes on, and the Node keeps
-// trying (timesync.Syncer.Run).
-func syncTime(host Host, spec *config.Time, log *slog.Logger) {
-	if spec == nil {
-		log.Info("time is not synchronised: the configuration has no spec.time")
+// trying (timesync.Syncer.Run). Without spec.time it uses the time servers the DHCPv4 lease named.
+func syncTime(host Host, spec *config.Time, leased []netip.Addr, log *slog.Logger) {
+	var servers []string
+	switch {
+	case spec != nil:
+		servers = spec.Addrs()
+	case len(leased) > 0:
+		for _, a := range leased {
+			servers = append(servers, net.JoinHostPort(a.String(), "123"))
+		}
+	default:
+		log.Info("time is not synchronised: the configuration has no spec.time and the lease named no time server")
 		return
 	}
-	res, err := host.SyncTime(spec.Addrs())
+	res, err := host.SyncTime(servers)
 	if err != nil {
 		log.Warn("time not synchronised; the boot goes on and init keeps trying", "err", err)
 		return

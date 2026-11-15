@@ -83,6 +83,8 @@ type recorder struct {
 	calls     []string
 	forwarded []config.Family
 	applied   netcfg.Config
+	leased    *netcfg.Applied
+	formatted config.DataDisk
 	written   []config.File
 	issuedPKI config.PKI
 	issuedTo  []netip.Addr
@@ -108,10 +110,21 @@ func (r *recorder) ReadSeed() ([]byte, []byte, error) {
 	return []byte(r.raw), []byte(r.network), r.readErr
 }
 
-func (r *recorder) ApplyNetwork(c netcfg.Config) error {
+// ApplyNetwork gives the Node the addresses of the configuration, or r.leased when it is set, as a
+// DHCPv4 lease would.
+func (r *recorder) ApplyNetwork(c netcfg.Config, _ *slog.Logger) (netcfg.Applied, error) {
 	r.calls = append(r.calls, "network")
 	r.applied = c
-	return r.networkErr
+	if r.leased != nil {
+		return *r.leased, r.networkErr
+	}
+	var got netcfg.Applied
+	for _, iface := range c.Interfaces {
+		for _, p := range iface.Addresses {
+			got.Addresses = append(got.Addresses, p.Addr())
+		}
+	}
+	return got, r.networkErr
 }
 
 func (r *recorder) WriteFiles(f []config.File) error {
@@ -122,6 +135,7 @@ func (r *recorder) WriteFiles(f []config.File) error {
 
 func (r *recorder) FormatBlankDataDisk(d config.DataDisk, _ *slog.Logger) error {
 	r.calls = append(r.calls, "format")
+	r.formatted = d
 	return r.formatErr
 }
 
@@ -538,4 +552,55 @@ func TestRun_StartsNothingWhenAnExtensionCannotBeMounted(t *testing.T) {
 
 	require.ErrorContains(t, err, "mount the system extensions: no image is stored")
 	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "extensions"}, r.calls, "the API has started, so the image can still be delivered")
+}
+
+func TestRun_TakesTheNodesAddressesFromWhatTheNetworkGave(t *testing.T) {
+	// The control is TestRun_IssuesCertificatesAfterTheNetworkAndBeforeAnyServiceStarts: with a
+	// static network-config the addresses are the configured ones.
+	leased := netcfg.Applied{Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.7")}}
+	r := &recorder{raw: withPKI(t), network: "\n", leased: &leased}
+
+	require.NoError(t, run(r))
+
+	assert.Equal(t, leased.Addresses, r.issuedTo, "a leased address is the Node's address for spec.pki")
+}
+
+func TestRun_SynchronisesTheClockWithTheLeasesTimeServersWhenThereIsNoSpecTime(t *testing.T) {
+	leased := netcfg.Applied{NTP: []netip.Addr{netip.MustParseAddr("192.0.2.1")}}
+
+	r := &recorder{raw: validConfig, leased: &leased}
+	require.NoError(t, run(r))
+	assert.Equal(t, []string{"192.0.2.1:123"}, r.timeServers)
+
+	// The control: spec.time wins over the lease.
+	r = &recorder{raw: withTime(t, validConfig), leased: &leased}
+	require.NoError(t, run(r))
+	assert.Equal(t, []string{"ntp.example:123", "192.0.2.1:1123"}, r.timeServers)
+
+	// The control: with neither, no clock is set.
+	r = &recorder{raw: validConfig}
+	require.NoError(t, run(r))
+	assert.NotContains(t, r.calls, "time")
+}
+
+func TestRun_FormatsTheFirstBlankDiskForAJoinForm(t *testing.T) {
+	join := `apiVersion: naru.garam.sh/v1alpha1
+kind: NodeConfig
+spec:
+  join:
+    orch:
+      url: https://orch.example.test:7500
+      caSHA256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    enrollKey: naru-ek-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+`
+	r := &recorder{raw: join}
+	require.NoError(t, run(r))
+	assert.True(t, r.formatted.FirstBlank)
+	assert.Equal(t, "NARUDATA", r.formatted.Label)
+	assert.Equal(t, []string{"naru-hostd"}, r.started)
+
+	// The control: a configuration that asks for formatBlank itself does not take the first disk.
+	r = &recorder{raw: replace(t, validConfig, "    label: NARUDATA\n", "    label: NARUDATA\n    formatBlank: true\n")}
+	require.NoError(t, run(r))
+	assert.False(t, r.formatted.FirstBlank)
 }

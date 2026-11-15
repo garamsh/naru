@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/lib/init/api"
+	"github.com/garamsh/naru/lib/init/apply"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/console"
 	"github.com/garamsh/naru/lib/init/extension"
@@ -100,11 +101,17 @@ func Main() {
 		Log:        log,
 	})
 	metricsCtx, stopMetrics := context.WithCancel(context.Background())
+	var engine *apply.Engine
 	stopRenewing, booted := bootAndRenew(bootHost{host, extensions}, issuer, services, configs, server, log)
 	if booted != nil {
-		server.Attach(newEngine(*booted, configs, services, host, issuer, server))
+		engine = newEngine(*booted, configs, services, host, issuer, server)
+		server.Attach(engine)
 		log.Info("the apply engine is ready", "revision", booted.Revision)
 		serveMetrics(metricsCtx, booted.Config.Spec.MetricsAddr(), services, log)
+	}
+	handingOff, stopHandoff := context.WithCancel(context.Background())
+	if booted != nil && booted.Config.Spec.Join != nil {
+		go handOff(handingOff, services, engine, config.JoinConfigFile, reboot, log)
 	}
 	// A trial boot of an upgrade is judged, and a default boot settles an upgrade left unfinished.
 	judging, stopJudging := context.WithCancel(context.Background())
@@ -116,6 +123,7 @@ func Main() {
 
 	sig := <-sigs
 	stopJudging()
+	stopHandoff()
 	stopMetrics()
 	// A renewal in flight must not restart a service after it is stopped.
 	stopRenewing()
