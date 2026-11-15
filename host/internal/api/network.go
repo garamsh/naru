@@ -35,6 +35,9 @@ const (
 	maxPeerNets = 1024
 	// maxRemoteMembers bounds the remote members of one network: every microVM on the other hosts.
 	maxRemoteMembers = 65536
+	// minPrefixBits is the widest prefix a network, a remote member or a peer may hold: a /0 in a set
+	// or an allowed-IPs list would reach every address.
+	minPrefixBits = 8
 )
 
 // checkNetwork refuses a create or resume on a network that is not declared, and one whose pod
@@ -160,7 +163,7 @@ func (s *Server) putNetwork(w http.ResponseWriter, r *http.Request) {
 		fields = append(fields, "name")
 	}
 	prefix, err := netip.ParsePrefix(req.Prefix)
-	if err != nil || !prefix.Addr().Is4() || prefix.Masked() != prefix || prefix.Bits() < 8 || prefix.Bits() > 24 {
+	if err != nil || !prefix.Addr().Is4() || prefix.Masked() != prefix || prefix.Bits() < minPrefixBits || prefix.Bits() > 24 {
 		fields = append(fields, "prefix")
 	}
 	var endpoint netip.Addr
@@ -176,7 +179,7 @@ func (s *Server) putNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	for i, x := range req.RemoteMembers {
 		p, err := netip.ParsePrefix(x)
-		if err != nil || !p.Addr().Is4() || p.Masked() != p {
+		if err != nil || !p.Addr().Is4() || p.Masked() != p || p.Bits() < minPrefixBits {
 			fields = append(fields, fmt.Sprintf("remoteMembers[%d]", i))
 			continue
 		}
@@ -300,7 +303,7 @@ func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, x := range p.Prefixes {
 			pf, err := netip.ParsePrefix(x)
-			if err != nil || pf.Masked() != pf || !pf.Addr().Is4() || held[pf] {
+			if err != nil || pf.Masked() != pf || !pf.Addr().Is4() || pf.Bits() < minPrefixBits || held[pf] {
 				bad("peers.prefixes")
 				continue
 			}

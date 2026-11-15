@@ -185,19 +185,24 @@ type call struct {
 	argv  []string
 }
 
+// fakeRunner models nft: a script is committed whole or not at all, so table is the last script
+// that succeeded. failNth makes the numbered calls (from 1) fail.
 type fakeRunner struct {
-	mu    sync.Mutex
-	calls []call
-	fail  bool
+	mu      sync.Mutex
+	calls   []call
+	fail    bool
+	failNth map[int]bool
+	table   string
 }
 
 func (f *fakeRunner) Run(_ context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, call{string(stdin), append([]string{name}, args...)})
-	if f.fail {
+	if f.fail || f.failNth[len(f.calls)] {
 		return nil, errors.New(name + " failed")
 	}
+	f.table = string(stdin)
 	return nil, nil
 }
 
@@ -212,14 +217,17 @@ func (f *fakeRunner) last() string {
 
 // fakeTunnel is the Tunnel of the tests: it records the peers it was set to.
 type fakeTunnel struct {
-	peers []network.Peer
-	fail  bool
+	peers   []network.Peer
+	fail    bool
+	sets    int
+	failNth map[int]bool // the numbered calls of Set (from 1) fail
 }
 
 func (f *fakeTunnel) PublicKey() string { return "PUBLIC" }
 func (f *fakeTunnel) Port() int         { return 51820 }
 func (f *fakeTunnel) Set(p []network.Peer) error {
-	if f.fail {
+	f.sets++
+	if f.fail || f.failNth[f.sets] {
 		return errors.New("tunnel failed")
 	}
 	f.peers = p
@@ -427,4 +435,119 @@ func TestManager_ADeclarationThatChangesNothingReplacesNoTable(t *testing.T) {
 	n.Remote = n.Remote[:1]
 	require.NoError(t, m.Declare(ctx, n))
 	assert.Len(t, f.calls, before+1, "a change is applied")
+}
+
+// held declares network a with one member and one peer and returns the table and peers the host holds.
+func held(t *testing.T, f *fakeRunner, tun *fakeTunnel, m *network.Manager) (string, []network.Peer) {
+	t.Helper()
+	ctx := context.Background()
+	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16")}))
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
+	require.NoError(t, m.SetPeers(ctx, []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}}}))
+	return f.table, tun.peers
+}
+
+func TestManager_AChangeTheTunnelRefusesLeavesTheOldTable(t *testing.T) {
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	table, peers := held(t, f, tun, m)
+
+	// The next ruleset commits, then the tunnel refuses; the host is put back by one more transaction.
+	tun.failNth = map[int]bool{tun.sets + 1: true}
+	err := m.Attach(context.Background(), network.Member{Network: "a", Address: addr("10.0.0.9")})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "set the tunnel's peers")
+	assert.NotContains(t, err.Error(), "roll back")
+	assert.Equal(t, table, f.table, "the host holds the table it had")
+	assert.Equal(t, peers, tun.peers)
+	assert.Len(t, m.Members(), 1)
+}
+
+func TestManager_AWriteOfTheStateThatFailsLeavesTheOldTable(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(blocker, nil, 0o600))
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	table, peers := held(t, f, tun, m)
+
+	m.State = filepath.Join(blocker, "networks.json")
+	err := m.Attach(context.Background(), network.Member{Network: "a", Address: addr("10.0.0.9")})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "write "+m.State)
+	assert.Equal(t, table, f.table, "the host holds the table it had")
+	assert.Equal(t, peers, tun.peers)
+	assert.Len(t, m.Members(), 1)
+}
+
+func TestManager_ARollbackThatFailsToo(t *testing.T) {
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	table, _ := held(t, f, tun, m)
+
+	// The change commits, the tunnel refuses, and the rollback's nft fails as well.
+	f.failNth = map[int]bool{len(f.calls) + 2: true}
+	tun.failNth = map[int]bool{tun.sets + 1: true}
+	err := m.Attach(context.Background(), network.Member{Network: "a", Address: addr("10.0.0.9")})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "set the tunnel's peers")
+	assert.ErrorContains(t, err, "roll back to the previous state")
+	assert.NotEqual(t, table, f.table, "the host holds the new table, which the error says")
+	assert.Len(t, m.Members(), 1, "the manager holds the previous state")
+
+	// What the host holds is unknown, so the same state is applied again and not skipped as unchanged.
+	f.failNth, tun.failNth = nil, nil
+	before := len(f.calls)
+	require.NoError(t, m.Detach(context.Background(), addr("10.0.0.99")))
+	assert.Greater(t, len(f.calls), before, "the next change is applied although it changes nothing")
+	assert.Equal(t, table, f.table, "the host is back to the manager's state")
+}
+
+func TestManager_AnRefusedRulesetChangesNothing(t *testing.T) {
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	table, peers := held(t, f, tun, m)
+
+	before := len(f.calls)
+	f.failNth = map[int]bool{before + 1: true}
+	err := m.Attach(context.Background(), network.Member{Network: "a", Address: addr("10.0.0.9")})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "apply the ruleset")
+	assert.Equal(t, table, f.table)
+	assert.Equal(t, peers, tun.peers)
+	assert.Len(t, f.calls, before+1, "a refused ruleset is not followed by a rollback")
+}
+
+func TestManager_ReconcileDropsTheMembersNoMachineHolds(t *testing.T) {
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	ctx := context.Background()
+	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16")}))
+	require.NoError(t, m.Declare(ctx, network.Network{Name: "b", Prefix: pfx("10.9.0.0/16")}))
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.4")}))
+
+	// mvmd lost 10.0.0.3 while hostd was down.
+	require.NoError(t, m.Reconcile(ctx, func(context.Context) ([]netip.Addr, error) { return []netip.Addr{addr("10.0.0.4")}, nil }))
+	assert.Equal(t, []network.Member{{Network: "a", Address: addr("10.0.0.4")}}, m.Members())
+	tb := parseTable(t, f.table)
+	assert.Equal(t, []netip.Prefix{pfx("10.0.0.4/32"), pfx("10.8.0.0/16")}, tb.sets["net_a"], "the stale address is out of a's set")
+
+	// The address is reused by a microVM of network b: it is a member of b only.
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "b", Address: addr("10.0.0.3")}))
+	tb = parseTable(t, f.table)
+	assert.NotContains(t, tb.sets["net_a"], pfx("10.0.0.3/32"))
+	assert.Contains(t, tb.sets["net_b"], pfx("10.0.0.3/32"))
+
+	// A pass that cannot list the machines changes nothing.
+	before := len(f.calls)
+	err := m.Reconcile(ctx, func(context.Context) ([]netip.Addr, error) { return nil, errors.New("mvmd is down") })
+	assert.ErrorContains(t, err, "mvmd is down")
+	assert.Len(t, m.Members(), 2)
+	assert.Len(t, f.calls, before)
+
+	// A pass that finds every member live applies nothing.
+	require.NoError(t, m.Reconcile(ctx, func(context.Context) ([]netip.Addr, error) {
+		return []netip.Addr{addr("10.0.0.3"), addr("10.0.0.4")}, nil
+	}))
+	assert.Len(t, f.calls, before)
 }

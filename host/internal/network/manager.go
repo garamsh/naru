@@ -216,6 +216,30 @@ func (m *Manager) Detach(ctx context.Context, a netip.Addr) error {
 	return m.apply(ctx, next)
 }
 
+// Reconcile drops the members whose address no machine of the host holds, and applies. live lists the
+// addresses of the host's machines; it is called with the Manager locked, so an Attach is either
+// before it and seen, or after and kept. A failure of live changes nothing.
+func (m *Manager) Reconcile(ctx context.Context, live func(context.Context) ([]netip.Addr, error)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	addrs, err := live(ctx)
+	if err != nil {
+		return fmt.Errorf("list the host's machines: %w", err)
+	}
+	held := make(map[netip.Addr]bool, len(addrs))
+	for _, a := range addrs {
+		held[a] = true
+	}
+	next := m.c
+	next.Members = nil
+	for _, x := range m.c.Members {
+		if held[x.Address] {
+			next.Members = append(next.Members, x)
+		}
+	}
+	return m.apply(ctx, next)
+}
+
 // SetPeers replaces the tunnel's peers, and applies.
 func (m *Manager) SetPeers(ctx context.Context, peers []Peer) error {
 	m.mu.Lock()
@@ -232,23 +256,55 @@ func (m *Manager) Peers() []Peer {
 	return sortedPeers(m.c.Peers)
 }
 
-// run makes next the host's state: the ruleset first, then the tunnel.
+// run makes next the host's state: the ruleset first, then the tunnel. The ruleset is one `nft -f`
+// transaction, which the kernel commits whole or not at all, so a refusal of it leaves the host as
+// it was. A refusal of the tunnel, which follows a committed ruleset, puts the host back.
 func (m *Manager) run(ctx context.Context, next Config) error {
-	next.Management, next.TapPrefix, next.Egress = m.Base.Management, m.Base.TapPrefix, m.Base.Egress
-	if _, err := m.Run.Run(ctx, []byte(Ruleset(next)), "nft", "-f", "-"); err != nil {
+	prev := m.c
+	if committed, err := m.push(ctx, m.withBase(next)); err != nil {
+		if committed {
+			return m.undo(ctx, prev, err)
+		}
 		return err
 	}
-	if m.Tunnel != nil {
-		if err := m.Tunnel.Set(next.Peers); err != nil {
-			return err
-		}
-	}
-	m.c, m.ran = next, true
+	m.c, m.ran = m.withBase(next), true
 	return nil
 }
 
+func (m *Manager) withBase(c Config) Config {
+	c.Management, c.TapPrefix, c.Egress = m.Base.Management, m.Base.TapPrefix, m.Base.Egress
+	return c
+}
+
+// push writes c to the host: the ruleset, then the tunnel's peers. committed is whether the ruleset
+// was committed, so that a failure of the tunnel is known to have changed the host.
+func (m *Manager) push(ctx context.Context, c Config) (committed bool, err error) {
+	if _, err := m.Run.Run(ctx, []byte(Ruleset(c)), "nft", "-f", "-"); err != nil {
+		return false, fmt.Errorf("apply the ruleset: %w", err)
+	}
+	if m.Tunnel != nil {
+		if err := m.Tunnel.Set(c.Peers); err != nil {
+			return true, fmt.Errorf("set the tunnel's peers: %w", err)
+		}
+	}
+	return true, nil
+}
+
+// undo puts the host back to prev after cause stopped a change that had reached it, and returns
+// cause. When the host refuses prev as well, what it holds is unknown: the next change is applied
+// even if it equals prev, and the error says both failed.
+func (m *Manager) undo(ctx context.Context, prev Config, cause error) error {
+	m.c = prev
+	if _, err := m.push(ctx, prev); err != nil {
+		m.ran = false
+		return errors.Join(cause, fmt.Errorf("roll back to the previous state: %w", err))
+	}
+	m.ran = true
+	return cause
+}
+
 // apply makes next the state when the host accepted it and State holds it. A failure leaves the
-// state as it was; one to write State puts the host back to the state before.
+// state as it was, on the host and in State.
 func (m *Manager) apply(ctx context.Context, next Config) error {
 	prev := m.c
 	// Orch declares its networks and peers again every few seconds. A declaration that changes nothing
@@ -267,8 +323,7 @@ func (m *Manager) apply(ctx context.Context, next Config) error {
 		err = writeFile(m.State, raw)
 	}
 	if err != nil {
-		_ = m.run(ctx, prev)
-		return fmt.Errorf("write %s: %w", m.State, err)
+		return m.undo(ctx, prev, fmt.Errorf("write %s: %w", m.State, err))
 	}
 	return nil
 }

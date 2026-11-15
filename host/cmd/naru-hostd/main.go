@@ -18,6 +18,7 @@ import (
 	"github.com/garamsh/naru/host/internal/enroll"
 	"github.com/garamsh/naru/host/internal/fence"
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/metrics"
 )
 
@@ -62,6 +63,7 @@ func main() {
 	}
 
 	var nets api.Networks
+	var netMgr *network.Manager
 	if *management != "" {
 		m, err := networkManager(context.Background(), networkConfig{
 			management: *management, tapPrefix: *tapPrefix, egress: *egress,
@@ -71,7 +73,7 @@ func main() {
 			log.Error("cannot set up the virtual networks", "err", err.Error())
 			os.Exit(1)
 		}
-		nets = m
+		nets, netMgr = m, m
 	}
 
 	conf, err := api.TLSConfig(*cert, *key, *clients)
@@ -98,6 +100,9 @@ func main() {
 	r := &fence.Renewer{Runtime: rt, Length: *length, Interval: *interval, Retry: 5 * time.Second, Log: log}
 	go r.Run(ctx)
 	go func() { <-ctx.Done(); _ = ln.Close() }()
+	if netMgr != nil {
+		startReconciler(ctx, netMgr, rt, log)
+	}
 
 	if *orchURL != "" {
 		id := *hostID

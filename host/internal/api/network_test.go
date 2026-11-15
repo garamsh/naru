@@ -64,11 +64,16 @@ func TestNetwork_Refusals(t *testing.T) {
 		"ipv6":             {"/v1/networks/b", hostapi.NetworkRequest{Prefix: "fd00::/16"}, 422},
 		"endpoint outside": {"/v1/networks/b", hostapi.NetworkRequest{Prefix: "10.2.0.0/16", APIEndpoint: "10.9.0.1"}, 422},
 		"bad name":         {"/v1/networks/B_", hostapi.NetworkRequest{Prefix: "10.2.0.0/16"}, 422},
+		"remote /0":        {"/v1/networks/b", hostapi.NetworkRequest{Prefix: "10.2.0.0/16", RemoteMembers: []string{"0.0.0.0/0"}}, 422},
+		"remote /7":        {"/v1/networks/b", hostapi.NetworkRequest{Prefix: "10.2.0.0/16", RemoteMembers: []string{"10.0.0.0/7"}}, 422},
 	} {
 		code, b := e.do(t, p, "PUT", tc.path, tc.body)
 		assert.Equal(t, tc.want, code, "%s: %s", name, b)
 	}
 	assert.Len(t, e.nets.Networks(), 1, "a refused network is not kept")
+
+	code, b := e.do(t, p, "PUT", "/v1/networks/b", hostapi.NetworkRequest{Prefix: "10.2.0.0/16", RemoteMembers: []string{"11.0.0.0/8"}})
+	assert.Equal(t, 200, code, "the bound itself is accepted: %s", b)
 }
 
 func TestNetwork_RolesAndAHostWithoutNetworks(t *testing.T) {
@@ -191,8 +196,12 @@ func TestPeers_SetGetAndRefusals(t *testing.T) {
 		"held by two":     {{PublicKey: keyOne, Prefixes: []string{"10.1.1.0/24"}}, {PublicKey: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", Prefixes: []string{"10.1.1.0/24"}}},
 		"not a prefix":    {{PublicKey: keyOne, Prefixes: []string{"x"}}},
 		"ipv6 allowed ip": {{PublicKey: keyOne, Prefixes: []string{"fd00::/64"}}},
+		"/0":              {{PublicKey: keyOne, Prefixes: []string{"0.0.0.0/0"}}},
+		"wider than /8":   {{PublicKey: keyOne, Prefixes: []string{"10.0.0.0/7"}}},
 	} {
 		code, b := e.do(t, p, "PUT", "/v1/peers", hostapi.PeersRequest{Peers: bad})
 		assert.Equal(t, 422, code, "%s: %s", name, b)
 	}
+	code, b = e.do(t, p, "PUT", "/v1/peers", hostapi.PeersRequest{Peers: []hostapi.Peer{{PublicKey: keyOne, Prefixes: []string{"11.0.0.0/8"}}}})
+	assert.Equal(t, 200, code, "the bound itself is accepted: %s", b)
 }
