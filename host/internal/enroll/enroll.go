@@ -31,6 +31,7 @@ import (
 
 	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Config is the agent's settings.
@@ -175,11 +176,8 @@ func AddressToward(orchURL string) (string, error) {
 	if !ok {
 		return "", errors.New("the route to orch has no local address")
 	}
-	return net.JoinHostPort(ua.IP.String(), HostPort), nil
+	return net.JoinHostPort(ua.IP.String(), wire.HostAPIPort), nil
 }
-
-// HostPort is the port naru-hostd serves its API on.
-const HostPort = "7443"
 
 func (a *Agent) client(cert *tls.Certificate) (*orchapi.Client, error) {
 	u, err := url.Parse(a.c.OrchURL)

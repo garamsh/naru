@@ -7,12 +7,8 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
-)
 
-// The ports etcd serves on, and the files its certificates are.
-const (
-	EtcdClientPort = "2379"
-	EtcdPeerPort   = "2380"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // etcd's pairs, besides the API server's: the one etcd serves clients and peers with, the one it
@@ -103,7 +99,7 @@ func (n Node) etcdServerIPs() []net.IP {
 func (n Node) etcdArgs() []string {
 	var listen, initial []string
 	for _, a := range n.listenAddrs() {
-		listen = append(listen, etcdURL(a, EtcdClientPort))
+		listen = append(listen, etcdURL(a, wire.EtcdClientPort))
 	}
 	own := n.listenAddrs()[0]
 	for _, m := range n.members() {
@@ -111,12 +107,12 @@ func (n Node) etcdArgs() []string {
 		if !n.HA() {
 			addr = own // a lone member is dialled on the loopback, which its certificate names
 		}
-		initial = append(initial, m.Name+"="+etcdURL(addr, EtcdPeerPort))
+		initial = append(initial, m.Name+"="+etcdURL(addr, wire.EtcdPeerPort))
 	}
 	return []string{
 		"--name", n.Name, "--data-dir", EtcdDir,
-		"--listen-client-urls", strings.Join(listen, ","), "--advertise-client-urls", etcdURL(own, EtcdClientPort),
-		"--listen-peer-urls", etcdURL(own, EtcdPeerPort), "--initial-advertise-peer-urls", etcdURL(own, EtcdPeerPort),
+		"--listen-client-urls", strings.Join(listen, ","), "--advertise-client-urls", etcdURL(own, wire.EtcdClientPort),
+		"--listen-peer-urls", etcdURL(own, wire.EtcdPeerPort), "--initial-advertise-peer-urls", etcdURL(own, wire.EtcdPeerPort),
 		"--initial-cluster", strings.Join(initial, ","),
 		"--cert-file", gaonPath(etcdServer.name + ".pem"), "--key-file", gaonPath(etcdServer.name + ".key"),
 		"--client-cert-auth", "--trusted-ca-file", gaonPath("ca.pem"),
@@ -133,11 +129,11 @@ func (n Node) etcdArgs() []string {
 // dialled on the loopback, which its certificate names.
 func (n Node) etcdEndpoints() string {
 	if !n.HA() {
-		return etcdURL(n.listenAddrs()[0], EtcdClientPort)
+		return etcdURL(n.listenAddrs()[0], wire.EtcdClientPort)
 	}
 	var urls []string
 	for _, m := range n.Members {
-		urls = append(urls, etcdURL(m.Address, EtcdClientPort))
+		urls = append(urls, etcdURL(m.Address, wire.EtcdClientPort))
 	}
 	return strings.Join(urls, ",")
 }
@@ -160,7 +156,7 @@ func (n Node) haServices() (fence, vip service) {
 		Name: "vip", ControlPlane: true, Binary: n.binary("vip", "/bin/naru-vip"),
 		Args: []string{
 			"-address", netip.PrefixFrom(n.APIServer, n.Address.Bits()).String(), "-interface", "eth0",
-			"-self", n.Address.Addr().String(), "-member", strings.Join(members, ","), "-port", APIPort,
+			"-self", n.Address.Addr().String(), "-member", strings.Join(members, ","), "-port", wire.KubeAPIPort,
 			"-etcd-ca-file", gaonPath("ca.pem"), "-etcd-cert-file", gaonPath(apiserverTo.name + ".pem"), "-etcd-key-file", gaonPath(apiserverTo.name + ".key"),
 		},
 	}

@@ -16,10 +16,11 @@ import (
 
 	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/config"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Dir is where a Node keeps the store, on the data disk.
-const Dir = "/var/lib/naru/config"
+const Dir = wire.DataMount + "/config"
 
 // FileName is the store's file in its directory.
 const FileName = "store.yaml"

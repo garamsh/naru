@@ -12,14 +12,13 @@ import (
 
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
 
-// Where naru-hostd's files are and the port it serves (docs/architecture/host.md).
+// Where naru-hostd's files are (docs/architecture/host.md).
 const (
-	// HostDir is the directory init writes naru-hostd's serving pair and client CA to, and
-	// HostPort the TCP port it serves the host API on.
-	HostDir  = "/run/naru-hostd"
-	HostPort = "7443"
+	// HostDir is the directory init writes naru-hostd's serving pair and client CA to.
+	HostDir = "/run/naru-hostd"
 	// HostService is naru-hostd's name in spec.services, and HostBinary its executable in the image.
 	HostService = "naru-hostd"
 	HostBinary  = "/bin/naru-hostd"
@@ -184,11 +183,11 @@ func (n Node) hostService() service {
 	return service{
 		Name: HostService, Binary: HostBinary, Env: map[string]string{"PATH": "/bin"},
 		Args: []string{
-			"--listen", "0.0.0.0:" + HostPort,
+			"--listen", "0.0.0.0:" + wire.HostAPIPort,
 			// A Node's kernel hostname is "(none)", so the host enrolls under the Node's name.
 			"--host-id", n.Name,
 			// Orch calls the host at the address its enrollment recorded, which is the Node's, not --listen's.
-			"--advertise", net.JoinHostPort(n.Address.Addr().String(), HostPort),
+			"--advertise", net.JoinHostPort(n.Address.Addr().String(), wire.HostAPIPort),
 			"--cert", path.Join(HostDir, "tls.crt"), "--key", keyFile,
 			"--client-ca", path.Join(HostDir, "client-ca.crt"),
 			"--host-file", path.Join(HostDir, "host.json"), "--mvmd-socket", MvmdSocket,

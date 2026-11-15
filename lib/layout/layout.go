@@ -16,28 +16,24 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
 // Where a Node's programs and files are, and the ports it serves.
 const (
-	// DataLabel and DataMount are the data disk's file system label and its mount point.
-	DataLabel = "NARUDATA"
-	DataMount = "/var/lib/naru"
 	// InputsDir is the tree on the data disk that carries the registry and its image.
-	InputsDir = DataMount + "/inputs"
+	InputsDir = wire.DataMount + "/inputs"
 	// MvmdDisks is the directory mvmd keeps its disk images in, which it does not let a setting
 	// move: a storage disk is mounted over it.
-	MvmdDisks = DataMount + "/mvmd/disks"
+	MvmdDisks = wire.DataMount + "/mvmd/disks"
 	// RegistryAddr is where the registry on every Node listens and mvmd pulls from.
 	RegistryAddr = "127.0.0.1:5000"
 
 	// MvmdSocket is mvmd's runtime API socket, and MvmdConfig where init writes its configuration.
 	MvmdSocket = "/run/mvmd.sock"
 	MvmdConfig = "/run/mvmd/config.json"
-	// MkfsPath is the mkfs.ext4 the image carries (ADR 0011), which mvmd's disk.mkfs names.
-	MkfsPath = "/bin/mkfs.ext4"
 	// SupervisorCgroup holds the supervisors of Machines, outside mvmd's cgroup.
 	SupervisorCgroup = "/sys/fs/cgroup/naru/detached"
 
@@ -46,7 +42,7 @@ const (
 	// AgentCertDir is where the Node Agent keeps the pair it was issued, on the data disk so that it
 	// survives a reboot; BootstrapTokenFile is the Node's own token, and BootstrapTokensFile the
 	// control-plane Node's list of every Node's token.
-	AgentCertDir = DataMount + "/gaon-node-agent"
+	AgentCertDir = wire.DataMount + "/gaon-node-agent"
 	// AgentPair is the file of AgentCertDir that holds the Node Agent's certificate and key, and
 	// AgentOrganization the Organization its signer requires of the certificate's subject.
 	AgentPair         = "node-agent.pem"
@@ -68,10 +64,8 @@ const (
 	HelperPath          = "/bin:/run/bin"
 	BootstrapTokenFile  = GaonCertDir + "/bootstrap-token"
 	BootstrapTokensFile = GaonCertDir + "/bootstrap-tokens"
-	// APIPort is the TCP port gaon-apiserver serves mutual TLS on.
-	APIPort = "6443"
 	// EtcdDir is etcd's data directory, on the data disk beside mvmd's state directory.
-	EtcdDir = DataMount + "/etcd"
+	EtcdDir = wire.DataMount + "/etcd"
 )
 
 // NIC is a network card besides the first, with a static address and no gateway.
@@ -477,7 +471,7 @@ func (n Node) binary(name, fallback string) string {
 }
 
 func (n Node) apiRoot() string {
-	return "https://" + net.JoinHostPort(n.APIServer.String(), APIPort) + "/apis/compute.gaon.garam.sh/v1alpha1"
+	return "https://" + net.JoinHostPort(n.APIServer.String(), wire.KubeAPIPort) + "/apis/compute.gaon.garam.sh/v1alpha1"
 }
 
 // UserData is the Node's naru.yaml, its NoCloud user-data. It carries mvmd's configuration as a
@@ -504,8 +498,8 @@ func (n Node) UserData() ([]byte, error) {
 		c.Metadata.Name = n.Name
 	}
 	c.Spec.ControlPlane = n.Mode.ControlPlane()
-	c.Spec.DataDisk.Label = DataLabel
-	c.Spec.DataDisk.MountPoint = DataMount
+	c.Spec.DataDisk.Label = wire.DataLabel
+	c.Spec.DataDisk.MountPoint = wire.DataMount
 	c.Spec.Network.Forwarding = []string{"ipv4"}
 	for _, p := range n.Peers {
 		c.Spec.Network.Routes = append(c.Spec.Network.Routes, route{To: p.MachinePrefix, Via: p.Address})
@@ -717,7 +711,7 @@ func (n Node) gaonServices(creds plan) []service {
 		{
 			Name: "gaon-apiserver", Binary: n.binary("gaon-apiserver", "/bin/gaon-apiserver"),
 			Args: append([]string{
-				"--listen", "0.0.0.0:" + APIPort, "--etcd-endpoints", n.etcdEndpoints(),
+				"--listen", "0.0.0.0:" + wire.KubeAPIPort, "--etcd-endpoints", n.etcdEndpoints(),
 				"--etcd-ca-file", gaonPath("ca.pem"), "--etcd-cert-file", gaonPath(apiserverTo.name + ".pem"), "--etcd-key-file", gaonPath(apiserverTo.name + ".key"),
 				"--tls-client-ca", gaonPath("ca.pem"), "--tls-cert", gaonPath("apiserver.pem"), "--tls-key", gaonPath("apiserver.key"),
 			}, creds.apiserverTokens...),

@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostcli"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
@@ -66,9 +67,9 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 			t.Logf("snapshot of the data disk: %v", err)
 			return
 		}
-		ids, _ := sn.List(node.DataMount + "/mvmd/machines")
+		ids, _ := sn.List(wire.DataMount + "/mvmd/machines")
 		for _, id := range ids {
-			b, err := sn.Read(node.DataMount + "/mvmd/machines/" + id + "/run/vmm.log")
+			b, err := sn.Read(wire.DataMount + "/mvmd/machines/" + id + "/run/vmm.log")
 			t.Logf("microVM %s console (%v):\n%s", id, err, b)
 		}
 	})
@@ -93,7 +94,7 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 		}
 		request, err := json.Marshal(hostapi.CreateRequest{
 			Name: name, CPU: 2, Memory: 4 << 30, BootSet: set, Seed: user, DataDisk: 2 << 30, PodPrefix: node.KubePodPrefix(1),
-			NetworkPolicy: hostapi.Policy{Ingress: []hostapi.Rule{allow("6443"), allow(node.NodeAPIPort)}},
+			NetworkPolicy: hostapi.Policy{Ingress: []hostapi.Rule{allow("6443"), allow(wire.NodeAPIPort)}},
 		})
 		require.NoError(t, err)
 		file := filepath.Join(dir, "microvm.json")
@@ -163,7 +164,7 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 	}, 10*time.Minute, 5*time.Second, "the API server of the microVM lists %s Ready", name)
 
 	// The Node API of the microVM answers version.
-	api, stopAPI, err := c.Host.RouteTo(ctx, net.JoinHostPort(addr.String(), node.NodeAPIPort))
+	api, stopAPI, err := c.Host.RouteTo(ctx, net.JoinHostPort(addr.String(), wire.NodeAPIPort))
 	require.NoError(t, err)
 	defer stopAPI()
 	file := filepath.Join(dir, "admin.yaml")

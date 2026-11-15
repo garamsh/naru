@@ -11,14 +11,6 @@ const (
 	HostNICAddress = "10.0.2.15"
 	// HostNICPrefix is HostNICAddress with its network's prefix length.
 	HostNICPrefix = HostNICAddress + "/24"
-	// APIPort is the TCP port the forward reaches: the one gaon-apiserver serves on, which naructl's
-	// layout fixes. The harness test of a cluster fails when the two differ.
-	APIPort = "6443"
-	// NodeAPIPort is the port init's Node API listens on by default (ADR 0017), which the second
-	// forward of a cluster that has spec.api reaches.
-	NodeAPIPort = "50000"
-	// HostAPIPort is the port naru-hostd serves the host API on, which naructl's layout fixes (ADR 0028).
-	HostAPIPort = "7443"
 	// RoutePort is the port naru-mvmroute listens on at HostNICAddress, which the forward of a cluster
 	// with Host reaches (docs/architecture/harness.md).
 	RoutePort = "7480"

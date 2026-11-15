@@ -27,6 +27,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
@@ -373,7 +374,7 @@ func Build(o Options) ([]Asset, error) {
 
 // onDisk reports whether the data disk image holds guestPath, a path as the Node sees it.
 func onDisk(image, guestPath string) bool {
-	rel := strings.TrimPrefix(guestPath, fixture.DataMount)
+	rel := strings.TrimPrefix(guestPath, wire.DataMount)
 	out, err := exec.Command("/sbin/debugfs", "-R", "stat "+path.Clean(rel), image).CombinedOutput() //nolint:gosec // arguments built here
 	return err == nil && strings.Contains(string(out), "Type: regular")
 }

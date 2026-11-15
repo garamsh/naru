@@ -30,6 +30,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/garamsh/naru/lib/identity v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/layout v0.0.0-00010101000000-000000000000
+	github.com/garamsh/naru/lib/wire v0.0.0-00010101000000-000000000000
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
@@ -88,3 +89,5 @@ replace github.com/garamsh/naru/lib/identity => ../lib/identity
 replace github.com/garamsh/naru/lib/layout => ../lib/layout
 
 replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile
+
+replace github.com/garamsh/naru/lib/wire => ../lib/wire

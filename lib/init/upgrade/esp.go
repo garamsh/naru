@@ -12,10 +12,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ESPGUID is the fixed partition GUID of the EFI system partition of the image's disk
-// (image/host/disk/disk.env, ADR 0020). The partition is found by it, not by a device name.
-const ESPGUID = "cb4162e7-9d1e-48df-b937-f5792071b950"
-
 // The files of the two kernel slots, relative to the ESP's mount, and the trial slot's path as the
 // firmware names it.
 const (
@@ -48,7 +44,7 @@ func findESP(sysClassBlock, devDir, guid string) (esp, error) {
 	for _, e := range entries {
 		dir := filepath.Join(sysClassBlock, e.Name())
 		uevent, err := os.ReadFile(filepath.Join(dir, "uevent"))
-		if err != nil || !hasPartUUID(string(uevent), guid) {
+		if err != nil || !HasPartUUID(string(uevent), guid) {
 			continue
 		}
 		p := esp{device: filepath.Join(devDir, e.Name()), guid: want}
@@ -64,7 +60,8 @@ func findESP(sysClassBlock, devDir, guid string) (esp, error) {
 	return esp{}, fmt.Errorf("no partition has the GUID %s", guid)
 }
 
-func hasPartUUID(uevent, guid string) bool {
+// HasPartUUID reports whether a partition's uevent text names guid as its PARTUUID, in either case.
+func HasPartUUID(uevent, guid string) bool {
 	for _, line := range strings.Split(uevent, "\n") {
 		if v, ok := strings.CutPrefix(line, "PARTUUID="); ok && strings.EqualFold(strings.TrimSpace(v), guid) {
 			return true

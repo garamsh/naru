@@ -7,6 +7,8 @@ import (
 	"os"
 	"regexp"
 	"sort"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // File is one guest artifact: Path is where it is inside the image, SHA256 the digest of its bytes.
@@ -134,9 +136,9 @@ func (n Node) mvmdJSON() ([]byte, error) {
 	return json.MarshalIndent(map[string]any{
 		"registry":  registry,
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
-		"state_dir": DataMount + "/mvmd",
+		"state_dir": wire.DataMount + "/mvmd",
 		"driver":    "firecracker",
-		"disk":      map[string]any{"mkfs": MkfsPath},
+		"disk":      map[string]any{"mkfs": wire.MkfsPath},
 		"firecracker": map[string]any{
 			"binary": "/bin/firecracker", "binary_sha256": n.FirecrackerSHA256,
 			"kernels": kernels, "default_kernel": g.DefaultKernel,

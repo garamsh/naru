@@ -13,6 +13,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/lib/iso9660"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Label is the volume label NoCloud looks for.
@@ -21,8 +22,6 @@ const Label = "cidata"
 var (
 	digest = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	label  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	// key is the shape of the secret orch makes, which init's join form refuses anything else than.
-	key = regexp.MustCompile(`^naru-ek-[0-9a-f]{64}$`)
 )
 
 // Join is what a host needs to enroll: orch's URL, the SHA-256 of the authority orch's certificate
@@ -66,8 +65,8 @@ func (j Join) Check() error {
 	if err := j.CheckTarget(); err != nil {
 		return err
 	}
-	if !key.MatchString(j.EnrollKey) {
-		return errors.New("the enrollment key is not naru-ek- and 64 lower-case hex digits, which is what enroll-key create prints")
+	if !wire.IsEnrollKey(j.EnrollKey) {
+		return errors.New("the enrollment key is not " + wire.EnrollKeyPrefix + " and 64 lower-case hex digits, which is what enroll-key create prints")
 	}
 	return nil
 }

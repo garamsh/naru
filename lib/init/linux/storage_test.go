@@ -131,17 +131,10 @@ func TestHost_PrepareStorageGrowsTheFileSystemToALargerDevice(t *testing.T) {
 
 func TestHost_PrepareStorageLeavesADiskThatIsNotXFSAlone(t *testing.T) {
 	tests := map[string]string{
-		"ext4":          ext4test.Image(t, "other", "", nil),
-		"unknown bytes": disk(t, 4<<20, []byte("not a file system")),
-		"data after 1 MiB": func() string {
-			p := disk(t, 4<<20, nil)
-			f, err := os.OpenFile(p, os.O_WRONLY, 0)
-			require.NoError(t, err)
-			_, err = f.WriteAt([]byte{1}, blankProbe-1)
-			require.NoError(t, err)
-			require.NoError(t, f.Close())
-			return p
-		}(),
+		"ext4":                             ext4test.Image(t, "other", "", nil),
+		"unknown bytes":                    disk(t, 4<<20, []byte("not a file system")),
+		"data at the end of the first MiB": diskWithByteAt(t, blankProbe-1),
+		"a backup table in the last MiB":   diskWithByteAt(t, 4<<20-1),
 	}
 	for name, dev := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -292,4 +285,16 @@ func TestHost_PrepareStorageLeavesAnXFSLabelledWithAnotherNameAloneAtTheGivenDev
 	after, rerr := os.ReadFile(dev)
 	require.NoError(t, rerr)
 	assert.True(t, bytes.Equal(before, after), "the disk is untouched")
+}
+
+// diskWithByteAt returns a blank 4 MiB disk with one non-zero byte at off.
+func diskWithByteAt(t *testing.T, off int64) string {
+	t.Helper()
+	p := disk(t, 4<<20, nil)
+	f, err := os.OpenFile(p, os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteAt([]byte{1}, off)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	return p
 }

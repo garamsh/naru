@@ -13,10 +13,11 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Where a Kubernetes Node's files are, and the ports its programs serve (ADR 0031). The API server
-// serves on APIPort, the port gaon's does.
+// serves on wire.KubeAPIPort, the port gaon's does.
 const (
 	// KubeDir holds the files init writes for the Kubernetes programs, and KubePKIDir the certificates.
 	KubeDir    = "/run/kubernetes"
@@ -24,8 +25,8 @@ const (
 	// ContainerdSocket is containerd's CRI endpoint, ContainerdRoot its image and snapshot store, and
 	// KubeletRoot the kubelet's, both on the data disk.
 	ContainerdSocket = "/run/containerd/containerd.sock"
-	ContainerdRoot   = DataMount + "/containerd"
-	KubeletRoot      = DataMount + "/kubelet"
+	ContainerdRoot   = wire.DataMount + "/containerd"
+	KubeletRoot      = wire.DataMount + "/kubelet"
 	// CNIConfDir is where containerd reads the network configuration, and CNIBinDir the plugins the image carries.
 	CNIConfDir = "/run/cni/net.d"
 	CNIBinDir  = "/opt/cni/bin"
@@ -170,8 +171,8 @@ func (n Node) kubeUserData() ([]byte, error) {
 	c.Kind = "NodeConfig"
 	c.Metadata.Name = "naru-" + n.Name
 	c.Spec.ControlPlane = k.ControlPlane
-	c.Spec.DataDisk.Label = DataLabel
-	c.Spec.DataDisk.MountPoint = DataMount
+	c.Spec.DataDisk.Label = wire.DataLabel
+	c.Spec.DataDisk.MountPoint = wire.DataMount
 	// A Kubernetes Node may be a microVM, whose host gives it a data disk it cannot format; a disk
 	// already labelled is left as it is (docs/architecture/init.md).
 	c.Spec.DataDisk.FormatBlank = true
@@ -208,7 +209,7 @@ func (n Node) kubeServices() []service {
 		{
 			Name: "kube-apiserver", Binary: n.binary("kube-apiserver", "/bin/kube-apiserver"),
 			Args: []string{
-				"--advertise-address=" + n.APIServer.String(), "--secure-port=" + APIPort,
+				"--advertise-address=" + n.APIServer.String(), "--secure-port=" + wire.KubeAPIPort,
 				"--etcd-servers=" + n.etcdEndpoints(), "--etcd-cafile=" + gaonPath("ca.pem"),
 				"--etcd-certfile=" + gaonPath(apiserverTo.name+".pem"), "--etcd-keyfile=" + gaonPath(apiserverTo.name+".key"),
 				"--client-ca-file=" + ca, "--tls-cert-file=" + pkiPath("apiserver.crt"), "--tls-private-key-file=" + pkiPath("apiserver.key"),
@@ -345,7 +346,7 @@ contexts:
     cluster: naru
     user: %s
 current-context: default
-`, net.JoinHostPort(n.APIServer.String(), APIPort), pkiPath("ca.crt"), user, pkiPath(pair+".crt"), pkiPath(pair+".key"), user)
+`, net.JoinHostPort(n.APIServer.String(), wire.KubeAPIPort), pkiPath("ca.crt"), user, pkiPath(pair+".crt"), pkiPath(pair+".key"), user)
 }
 
 // kubeFiles are what init writes for the Kubernetes programs: their configuration, on a worker its

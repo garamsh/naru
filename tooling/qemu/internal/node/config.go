@@ -9,6 +9,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 )
 
@@ -22,10 +23,6 @@ const (
 	supervisorCgroup = "/sys/fs/cgroup/naru/detached"
 	// mvmdConfig is where init writes mvmd's configuration, from the Node's naru.yaml.
 	mvmdConfig = "/run/mvmd/config.json"
-	// DataMount is where init mounts the data disk.
-	DataMount = fixture.DataMount
-	// MkfsPath is the mkfs.ext4 the image carries (ADR 0011), which mvmd's disk.mkfs names.
-	MkfsPath = "/bin/mkfs.ext4"
 )
 
 // Config says what one Node of a test cluster is configured with.
@@ -253,8 +250,8 @@ func (c Config) NaruYAML() ([]byte, error) {
 	n.Kind = "NodeConfig"
 	n.Metadata.Name = "naru-" + c.Name
 	n.Spec.ControlPlane = c.ControlPlane
-	n.Spec.DataDisk.Label = DataLabel
-	n.Spec.DataDisk.MountPoint = DataMount
+	n.Spec.DataDisk.Label = wire.DataLabel
+	n.Spec.DataDisk.MountPoint = wire.DataMount
 	n.Spec.Network.Forwarding = []string{"ipv4"}
 	for _, r := range c.Routes {
 		n.Spec.Network.Routes = append(n.Spec.Network.Routes, route(r))
@@ -270,7 +267,7 @@ func (c Config) NaruYAML() ([]byte, error) {
 		registry,
 		{
 			Name: "standin", Binary: "/bin/naru-standin",
-			Args: []string{"-socket", MvmdSocket, "-mount", DataMount, "-listen", c.IP() + ":" + StandinPort, "-peer", c.PeerIP() + ":" + StandinPort},
+			Args: []string{"-socket", MvmdSocket, "-mount", wire.DataMount, "-listen", c.IP() + ":" + StandinPort, "-peer", c.PeerIP() + ":" + StandinPort},
 		},
 		{Name: "control", Binary: "/bin/naru-standin", ControlPlane: true},
 	}
@@ -326,9 +323,9 @@ func (c Config) MvmdJSON() ([]byte, error) {
 	return json.MarshalIndent(map[string]any{
 		"registry":  registry,
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
-		"state_dir": DataMount + "/mvmd",
+		"state_dir": wire.DataMount + "/mvmd",
 		"driver":    "firecracker",
-		"disk":      map[string]any{"mkfs": MkfsPath},
+		"disk":      map[string]any{"mkfs": wire.MkfsPath},
 		"firecracker": map[string]any{
 			"binary": "/bin/firecracker", "binary_sha256": c.Inputs.FirecrackerSHA256,
 			"kernels": kernels, "default_kernel": g.DefaultKernel,

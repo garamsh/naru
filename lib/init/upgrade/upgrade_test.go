@@ -22,6 +22,7 @@ import (
 
 	"github.com/garamsh/naru/lib/init/service"
 	"github.com/garamsh/naru/lib/init/upgrade"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const efiGUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
@@ -90,7 +91,7 @@ func newNode(t *testing.T) *node {
 	other := filepath.Join(n.root, "sys", "vda2")
 	require.NoError(t, os.MkdirAll(other, 0o755))
 	n.write(filepath.Join(other, "uevent"), "PARTUUID=00000000-0000-0000-0000-000000000002\n")
-	n.write(filepath.Join(part, "uevent"), "DEVTYPE=partition\nPARTUUID="+strings.ToUpper(upgrade.ESPGUID)+"\n")
+	n.write(filepath.Join(part, "uevent"), "DEVTYPE=partition\nPARTUUID="+strings.ToUpper(wire.ESPGUID)+"\n")
 	n.write(filepath.Join(part, "partition"), "1\n")
 	n.write(filepath.Join(part, "start"), "2048\n")
 	n.write(filepath.Join(part, "size"), "262144\n")

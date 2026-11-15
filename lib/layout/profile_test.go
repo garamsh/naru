@@ -15,6 +15,7 @@ import (
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -66,7 +67,7 @@ func TestHostProfileNode_BuildsAHostConfigWithNoGaonAndNoClusterSections(t *test
 	// init's join form named no host and chose the data disk; the configuration that replaces it
 	// names the host by its ID and the disk by the label the layout formats (ADR 0058).
 	assert.Equal(t, h.ID, raw.Metadata.Name)
-	assert.Equal(t, map[string]any{"label": layout.DataLabel, "mountPoint": layout.DataMount}, raw.Spec["dataDisk"])
+	assert.Equal(t, map[string]any{"label": wire.DataLabel, "mountPoint": wire.DataMount}, raw.Spec["dataDisk"])
 	for _, section := range []string{"signer", "orch", "join", "pki"} {
 		assert.NotContains(t, raw.Spec, section)
 	}

@@ -17,6 +17,7 @@ require (
 	github.com/garamsh/naru/lib/identity v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/init v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/iso9660 v0.0.0-00010101000000-000000000000
+	github.com/garamsh/naru/lib/wire v0.0.0-00010101000000-000000000000
 	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
@@ -36,3 +37,5 @@ replace github.com/garamsh/naru/lib/init => ../../lib/init
 replace github.com/garamsh/naru/lib/atomicfile => ../../lib/atomicfile
 
 replace github.com/garamsh/naru/lib/orchapi => ../../lib/orchapi
+
+replace github.com/garamsh/naru/lib/wire => ../../lib/wire

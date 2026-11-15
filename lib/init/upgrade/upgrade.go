@@ -18,6 +18,7 @@ import (
 
 	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/service"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // The two slots a boot can be in.
@@ -92,12 +93,12 @@ func NewWith(cfg Config) *Upgrader {
 			*s = v
 		}
 	}
-	set(&cfg.ESPGUID, ESPGUID)
+	set(&cfg.ESPGUID, wire.ESPGUID)
 	set(&cfg.SysClassBlock, "/sys/class/block")
 	set(&cfg.DevDir, "/dev")
 	set(&cfg.ESPMount, "/run/naru/esp")
 	set(&cfg.EFIVars, "/sys/firmware/efi/efivars")
-	set(&cfg.StateDir, "/var/lib/naru/upgrade")
+	set(&cfg.StateDir, wire.DataMount+"/upgrade")
 	if cfg.MaxBytes == 0 {
 		cfg.MaxBytes = MaxBundleBytes
 	}

@@ -44,6 +44,9 @@ replace (
 require (
 	github.com/garamsh/naru/lib/init v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/vip v0.0.0-00010101000000-000000000000
+	github.com/garamsh/naru/lib/wire v0.0.0-00010101000000-000000000000
 )
 
 replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile
+
+replace github.com/garamsh/naru/lib/wire => ../lib/wire

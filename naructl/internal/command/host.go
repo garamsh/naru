@@ -17,6 +17,7 @@ import (
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/naructl/internal/client"
 )
 
@@ -29,7 +30,7 @@ func genHostClient(fs *pflag.FlagSet) runner {
 	role := fs.String("role", "", "provisioner (reads, creates and destroys microVMs) or reader (reads)")
 	cn := fs.String("cn", "", "the certificate's CN, the caller's name in a host's request log (default naru-host-<role>)")
 	out := fs.String("out", "", "the client file to write (0600: it carries a key; a file already there is replaced)")
-	fs.Var(&endpoints, "endpoint", "a host's address, an IP address with or without a port (default "+client.HostPort+"), repeatable")
+	fs.Var(&endpoints, "endpoint", "a host's address, an IP address with or without a port (default "+wire.HostAPIPort+"), repeatable")
 	return func(args []string, stdout, stderr io.Writer) error {
 		if err := require(fs, "ca-dir", "role", "endpoint", "out"); err != nil {
 			return err

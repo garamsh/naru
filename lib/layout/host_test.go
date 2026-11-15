@@ -16,6 +16,7 @@ import (
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 type parsed struct {
@@ -68,7 +69,7 @@ func TestUserData_HostRunsNaruHostdWithAPairFromTheHostAuthorityAndNeverItsKey(t
 			assert.Equal(t, n.Name, s.Args[j+1])
 			k := slices.Index(s.Args, "--advertise")
 			require.GreaterOrEqual(t, k, 0, "orch would call 0.0.0.0, which --listen names")
-			assert.Equal(t, n.Address.Addr().String()+":"+layout.HostPort, s.Args[k+1])
+			assert.Equal(t, n.Address.Addr().String()+":"+wire.HostAPIPort, s.Args[k+1])
 			i := slices.Index(s.Args, "--machine-gateway")
 			require.GreaterOrEqual(t, i, 0, "naru-hostd is not told the gateway of the Machines' network")
 			assert.Equal(t, "10.200.1.1", s.Args[i+1], "the first address of the Machine prefix, which mvmd's own gateway is")

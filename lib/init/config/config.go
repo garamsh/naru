@@ -10,6 +10,8 @@ import (
 	"os"
 	"slices"
 	"strconv"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const (
@@ -82,7 +84,7 @@ type Spec struct {
 }
 
 // StorageRoot is the directory a storage disk is mounted under, as StorageRoot/<name>, unless it names a mount point.
-const StorageRoot = "/var/lib/naru/storage"
+const StorageRoot = wire.DataMount + "/storage"
 
 // StorageFormXFS is the one file system form a storage disk takes.
 const StorageFormXFS = "xfs"
@@ -110,7 +112,7 @@ func (s Storage) Mount() string {
 }
 
 // DefaultAPIListen is where the Node API listens when spec.api names no address.
-const DefaultAPIListen = "0.0.0.0:50000"
+const DefaultAPIListen = "0.0.0.0:" + wire.NodeAPIPort
 
 // API is how the Node serves its API (docs/architecture/adr/0017-the-node-api-is-served-by-init-over-mutual-tls-from-its-own-authority-and-naructl-is-its-client.md).
 type API struct {

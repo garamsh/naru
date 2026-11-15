@@ -7,6 +7,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // The host's e2fsprogs tools read an ext4 image with no mount and no privilege.
@@ -41,11 +43,11 @@ func (n *Node) SnapshotData(dst string) (*DataSnapshot, error) {
 	return &DataSnapshot{img: dst}, nil
 }
 
-// dataPath is guestPath, a path as the Node sees it under DataMount, as debugfs names it.
+// dataPath is guestPath, a path as the Node sees it under wire.DataMount, as debugfs names it.
 func dataPath(guestPath string) (string, error) {
-	rel, ok := strings.CutPrefix(path.Clean(guestPath), DataMount)
+	rel, ok := strings.CutPrefix(path.Clean(guestPath), wire.DataMount)
 	if !ok {
-		return "", fmt.Errorf("%s is not under %s", guestPath, DataMount)
+		return "", fmt.Errorf("%s is not under %s", guestPath, wire.DataMount)
 	}
 	return path.Clean("/" + rel), nil
 }

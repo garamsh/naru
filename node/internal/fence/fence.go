@@ -16,7 +16,8 @@ import (
 // TableName is the table the rules live in. Applying replaces its rules and touches no other table.
 const TableName = "naru-controlplane"
 
-// ClientPort is etcd's client port; Ports are it and the peer port, the ones the rules close.
+// ClientPort is etcd's client port, as the integer a rule matches (wire.EtcdClientPort is its text);
+// Ports are it and the peer port, the ones the rules close.
 const ClientPort = 2379
 
 // PeerPort is etcd's peer port, the one a MicroVM never reaches.

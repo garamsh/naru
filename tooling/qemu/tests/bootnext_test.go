@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
@@ -27,11 +28,11 @@ metadata:
   name: naru-node-1
 spec:
   dataDisk:
-    label: ` + node.DataLabel + `
-    mountPoint: ` + node.DataMount + `
+    label: ` + wire.DataLabel + `
+    mountPoint: ` + wire.DataMount + `
   services:
     - name: naru56-bootnext
-      binary: ` + node.DataMount + `/inputs/bin/naru-bootnext
+      binary: ` + wire.DataMount + `/inputs/bin/naru-bootnext
 `
 
 func copyBootDisk(t *testing.T) string {

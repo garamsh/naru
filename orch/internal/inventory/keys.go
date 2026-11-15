@@ -8,13 +8,11 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // maxKeyLife is the longest an enrollment key may live.
 const maxKeyLife = 365 * 24 * time.Hour
-
-// secretPrefix marks an enrollment key's secret.
-const secretPrefix = "naru-ek-"
 
 func hashSecret(secret string) string {
 	sum := sha256.Sum256([]byte(secret))
@@ -30,11 +28,11 @@ func (s *service) CreateKey(ctx context.Context, by string, expiresAt time.Time)
 	if !expiresAt.After(now) || expiresAt.After(now.Add(maxKeyLife)) {
 		return orchapi.EnrollmentKey{}, invalid("an enrollment key expires within the next 365 days")
 	}
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
+	var raw [wire.EnrollKeyBytes]byte
+	if _, err := rand.Read(raw[:]); err != nil {
 		return orchapi.EnrollmentKey{}, err
 	}
-	secret := secretPrefix + hex.EncodeToString(raw)
+	secret := wire.EnrollKey(raw)
 	hash := hashSecret(secret)
 	k := Key{ID: keyID(hash), Hash: hash, CreatedBy: by, CreatedAt: now, ExpiresAt: expiresAt}
 	if err := s.store.PutKey(ctx, k); err != nil {
