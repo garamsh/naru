@@ -105,7 +105,7 @@ func copyTree(src, dst string, links map[inode]string) error {
 			}
 		case mode.IsRegular():
 			if st != nil && st.Nlink > 1 {
-				key := inode{uint64(st.Dev), st.Ino} //nolint:unconvert // Dev is uint64 or uint32 by architecture
+				key := inode{uint64(st.Dev), st.Ino}
 				if first, ok := links[key]; ok {
 					return os.Link(first, target)
 				}

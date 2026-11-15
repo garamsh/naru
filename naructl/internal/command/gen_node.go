@@ -317,7 +317,7 @@ func (f *nodeFlags) write(stdout io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: wrote %s", f.out)
 	if nc != nil {
-		if err := os.WriteFile(f.networkConfig, nc, 0o644); err != nil { //nolint:gosec // carries no key
+		if err := os.WriteFile(f.networkConfig, nc, 0o644); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, " and %s", f.networkConfig)
