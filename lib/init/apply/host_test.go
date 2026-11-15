@@ -1,6 +1,8 @@
 package apply_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -84,4 +86,25 @@ spec:
 	assert.Empty(t, r.calls(), "nothing stored and no file written")
 	_, after := r.engine.Config()
 	assert.Equal(t, held, after, "no secret changed")
+}
+
+func TestApply_IsRefusedWhileTheStoreCannotBeReadAndNothingIsDone(t *testing.T) {
+	r := &rig{}
+	cfg, err := config.Parse([]byte(baseDoc(t)))
+	require.NoError(t, err)
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, store.FileName), 0o700), "a read of store.yaml fails with an error other than not-exist")
+	r.engine = apply.New(apply.Deps{Store: store.New(dir), Services: r, Files: r, Time: r, Routes: r, Certificates: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
+
+	_, err = r.engine.Apply(apply.Request{Patch: patch(obj{"files": []any{obj{"path": "/run/f1", "content": "changed"}}}), Mode: apply.NoReboot})
+
+	var storeErr *apply.StoreError
+	require.ErrorAs(t, err, &storeErr)
+	assert.ErrorIs(t, err, store.ErrUnreadable)
+	assert.Empty(t, r.calls(), "no live action")
+	rev, _ := r.engine.Config()
+	assert.Equal(t, 0, rev)
+	info, statErr := os.Stat(filepath.Join(dir, store.FileName))
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir(), "store.yaml is untouched")
 }

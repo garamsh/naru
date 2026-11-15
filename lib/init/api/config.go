@@ -9,6 +9,7 @@ import (
 
 	"github.com/garamsh/naru/lib/init/apply"
 	"github.com/garamsh/naru/lib/init/config"
+	"github.com/garamsh/naru/lib/init/store"
 )
 
 // maxApplyBody bounds a request body: a configuration carries files and certificates.
@@ -159,7 +160,7 @@ func (s *Server) postConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeApplyError is the one place an apply's error becomes a status: 409 for a stale
-// revision, 422 for an invalid request, and 500 for a failure.
+// revision, 422 for an invalid request, 503 for a store that cannot be read, and 500 for a failure.
 func (s *Server) writeApplyError(w http.ResponseWriter, err error) {
 	var stale *apply.StaleError
 	var invalid *apply.InvalidError
@@ -172,6 +173,9 @@ func (s *Server) writeApplyError(w http.ResponseWriter, err error) {
 		}{errorBody{Error: stale.Error()}, stale.Stored})
 	case errors.As(err, &invalid):
 		writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: invalid.Error(), Fields: invalid.Fields})
+	case errors.Is(err, store.ErrUnreadable):
+		s.deps.Log.Error("apply refused: the store cannot be read", "err", err)
+		writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: err.Error()})
 	case errors.As(err, &failed):
 		s.deps.Log.Error("apply failed after the revision was stored", "revision", failed.Revision, "action", failed.Failed.Action, "target", failed.Failed.Target, "err", failed.Err)
 		writeJSON(w, http.StatusInternalServerError, struct {

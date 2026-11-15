@@ -135,3 +135,19 @@ func TestStore_LoadOfAStoreThatCannotBeReadIsUnreadableAndNotAbsent(t *testing.T
 func TestDigest_IsTheSHA256OfTheBytes(t *testing.T) {
 	assert.Equal(t, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", store.Digest([]byte("abc")))
 }
+
+func TestStore_SaveRefusesToWriteOverAStoreThatCannotBeRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, store.FileName)
+	require.NoError(t, os.Mkdir(path, 0o700), "a directory where the file belongs makes the read fail with an error other than not-exist")
+
+	err := store.New(dir).Save(store.Stored{Revision: 1})
+
+	require.ErrorIs(t, err, store.ErrUnreadable)
+	assert.ErrorContains(t, err, "reboot or repair")
+	info, statErr := os.Stat(path)
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir(), "the store is untouched")
+	entries, _ := os.ReadDir(dir)
+	assert.Len(t, entries, 1, "no temporary file is left beside it")
+}

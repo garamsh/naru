@@ -86,8 +86,13 @@ func (s *Store) Load() (Stored, error) {
 }
 
 // Save writes the store atomically: a temporary file in the directory, fsync,
-// rename, and fsync of the directory. A failure leaves the previous store.
+// rename, and fsync of the directory. A failure leaves the previous store. A store that exists
+// and cannot be read is not written over: Save returns an error wrapping ErrUnreadable, since
+// the revisions in it are unknown.
 func (s *Store) Save(st Stored) (err error) {
+	if _, err := os.ReadFile(filepath.Join(s.dir, FileName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %w; a reboot or repair of the data disk is needed", ErrUnreadable, err)
+	}
 	data, err := yaml.Dump(st)
 	if err != nil {
 		return err
