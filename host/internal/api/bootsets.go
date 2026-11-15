@@ -30,15 +30,6 @@ var (
 	sha256Hex   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
-// BootSetRequest is the first part, named "boot-set", of the body of POST /v1/boot-sets: the set's
-// name and the SHA-256, in hex, of its kernel and its initramfs. The body is multipart/form-data
-// whose parts are, in this order, "boot-set" (this as JSON), "kernel" and "initramfs".
-type BootSetRequest struct {
-	Name            string `json:"name"`
-	KernelSHA256    string `json:"kernelSha256"`
-	InitramfsSHA256 string `json:"initramfsSha256"`
-}
-
 // routeBootSets registers the routes of the boot sets.
 func (s *Server) routeBootSets(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/boot-sets", s.addBootSet)
@@ -117,8 +108,8 @@ func (s *Server) addBootSet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, req)
 }
 
-func readBootSetRequest(mr *multipart.Reader) (BootSetRequest, error) {
-	var req BootSetRequest
+func readBootSetRequest(mr *multipart.Reader) (hostapi.BootSetRequest, error) {
+	var req hostapi.BootSetRequest
 	part, err := nextPart(mr, "boot-set")
 	if err != nil {
 		return req, err
@@ -145,7 +136,7 @@ func (s *Server) failBody(w http.ResponseWriter, err error) {
 	}
 }
 
-func validateBootSet(req BootSetRequest) []string {
+func validateBootSet(req hostapi.BootSetRequest) []string {
 	var fields []string
 	if !bootSetName.MatchString(req.Name) {
 		fields = append(fields, "name")
