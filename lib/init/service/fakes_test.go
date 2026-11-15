@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -111,13 +112,21 @@ type fakeLauncher struct {
 	exitOnTerm bool
 	failures   chan error // a value queued here fails the next Launch
 	launched   chan launch
+	// setup, when not nil, stands for a setup step that never finishes: Launch announces itself
+	// on it and returns only when its context ends.
+	setup chan struct{}
 }
 
 func newFakeLauncher() *fakeLauncher {
 	return &fakeLauncher{exitOnTerm: true, failures: make(chan error, 8), launched: make(chan launch, 64)}
 }
 
-func (l *fakeLauncher) Launch(svc config.Service, cgroup string) (service.Process, error) {
+func (l *fakeLauncher) Launch(ctx context.Context, svc config.Service, cgroup string) (service.Process, error) {
+	if l.setup != nil {
+		l.setup <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	select {
 	case err := <-l.failures:
 		return nil, err

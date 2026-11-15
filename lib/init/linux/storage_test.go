@@ -101,6 +101,7 @@ func TestHost_PrepareStorageFormatsABlankDiskMountsItAndGrowsNothing(t *testing.
 	assert.Equal(t, [][]string{{"/bin/mkfs.xfs", "-m", "reflink=1,crc=1", "-L", "vmdisks", filepath.Join(r.host.devDir, "sdb")}}, r.mkfs)
 	assert.Equal(t, []mountCall{{filepath.Join(r.host.devDir, "sdb"), r.mnt, "xfs"}}, *r.mounts)
 	assert.Empty(t, r.grows, "a file system made to fit the device needs no growth")
+	assert.Equal(t, []string{r.mnt}, r.host.storageMounts, "the mount is kept for the shutdown to undo")
 	assert.Contains(t, r.logs.String(), "formatted")
 	assert.Contains(t, r.logs.String(), "mounted")
 }

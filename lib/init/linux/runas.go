@@ -1,12 +1,15 @@
 package linux
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/garamsh/naru/lib/init/config"
 )
@@ -45,12 +48,17 @@ func prepareDirs(dirs []config.Dir) error {
 	return nil
 }
 
+// setupTimeout is how long one setup step may run before it is killed: a step that waits for a
+// peer that is not there would otherwise keep its service from ever starting or stopping.
+const setupTimeout = 5 * time.Minute
+
 // runSetup runs the setups of svc in order, each to completion unless a path it names exists. newCmd returns
 // the command of the service's binary with the arguments given and everything else (the
 // environment, the user, the cgroup) that the service's own start has; its output goes to out.
-func (l *Launcher) runSetup(svc config.Service, newCmd func(args []string) *exec.Cmd, out io.Writer) error {
+// A step ends when ctx does, or after the bound, with the cgroup at cgroup killed.
+func (l *Launcher) runSetup(ctx context.Context, svc config.Service, cgroup string, newCmd func(args []string) *exec.Cmd, out io.Writer) error {
 	for _, st := range svc.Setup {
-		if err := l.runStep(svc.Name, st, newCmd, out); err != nil {
+		if err := l.runStep(ctx, svc.Name, cgroup, st, newCmd, out); err != nil {
 			return err
 		}
 	}
@@ -58,7 +66,7 @@ func (l *Launcher) runSetup(svc config.Service, newCmd func(args []string) *exec
 }
 
 // runStep runs one setup, unless a path it names exists, and each setup that follows it sees what it made.
-func (l *Launcher) runStep(name string, st config.Setup, newCmd func(args []string) *exec.Cmd, out io.Writer) error {
+func (l *Launcher) runStep(ctx context.Context, name, cgroup string, st config.Setup, newCmd func(args []string) *exec.Cmd, out io.Writer) error {
 	for _, u := range st.Unless {
 		if _, err := os.Lstat(u); err == nil {
 			return nil
@@ -66,37 +74,34 @@ func (l *Launcher) runStep(name string, st config.Setup, newCmd func(args []stri
 			return fmt.Errorf("setup of %s: %w", name, err)
 		}
 	}
-	r, w, err := os.Pipe()
-	if err != nil {
-		return err
+	bound := l.setupBound
+	if bound == 0 {
+		bound = setupTimeout
 	}
-	defer r.Close()
-	cmd := newCmd(st.Args)
-	cmd.Stdout, cmd.Stderr = w, w
-	exited, err := l.reaper.Spawn(func() (int, error) {
-		if err := cmd.Start(); err != nil {
-			return 0, err
-		}
-		return cmd.Process.Pid, nil
-	})
-	w.Close()
-	if err != nil {
+	stepCtx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+	ws, err := l.reaper.Exec(stepCtx, newCmd(st.Args), out, func() { killCgroup(cgroup) })
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("setup of %s: killed after %s", name, bound)
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("setup of %s: killed, the service was stopped", name)
+	case err != nil:
 		return fmt.Errorf("setup of %s: %w", name, err)
 	}
-	copied := make(chan struct{})
-	go func() {
-		defer close(copied)
-		_, _ = io.Copy(out, r)
-	}()
-	ws := <-exited
-	_ = cmd.Process.Release()
-	<-copied
-	switch {
-	case ws.Exited() && ws.ExitStatus() == 0:
-		return nil
-	case ws.Exited():
-		return fmt.Errorf("setup of %s: exit status %d", name, ws.ExitStatus())
-	default:
-		return fmt.Errorf("setup of %s: signal: %s", name, ws.Signal())
+	if err := statusError(ws); err != nil {
+		return fmt.Errorf("setup of %s: %w", name, err)
 	}
+	return nil
+}
+
+// killCgroup kills every process of the cgroup directory dir, and of its descendants. It is best
+// effort: the process it is called for is killed on its own as well.
+func killCgroup(dir string) {
+	f, err := os.OpenFile(filepath.Join(dir, "cgroup.kill"), os.O_WRONLY, 0)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString("1")
 }

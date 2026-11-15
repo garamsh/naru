@@ -250,3 +250,22 @@ func TestManager_RestartsAServiceWhenAWatchedFileGoesMissing(t *testing.T) {
 
 	recv(t, r.launcher.launched)
 }
+
+func TestManager_StopEndsAServiceWhoseSetupStepNeverFinishes(t *testing.T) {
+	r := newRig()
+	r.launcher.setup = make(chan struct{}, 1)
+	require.NoError(t, r.manager.Start(mvmd))
+	recv(t, r.launcher.setup)
+
+	stopped := make(chan struct{})
+	go func() {
+		r.manager.StopAll()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopAll is still waiting on a setup step")
+	}
+}
