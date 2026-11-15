@@ -69,3 +69,22 @@ func TestNode_ARebootModeApplyStoresAFieldOnlyARebootCanChangeThenTheNodeBootsAt
 	require.NoError(t, got.Err, got.refusal())
 	assert.Contains(t, got.Stdout, "ipv6", "the reboot-only field is in the configuration")
 }
+
+func TestNode_ANodeWhoseSeedIsDetachedBootsTheStoredConfigurationOnTheStoredNetworkWithItsDataIntact(t *testing.T) {
+	c := nodeAPI(t)
+	nd := c.Nodes[0]
+	admin := c.API.Admin
+	require.NoError(t, ctl(admin, "apply", "-f", patchFile(t, idle("1m"))).Err)
+	require.Equal(t, 1, revisionOf(t, admin), "the configuration is stored as revision 1")
+	_, bootID := versionOf(t, admin)
+
+	nd.DetachSeed()
+	require.NoError(t, nd.Reboot())
+
+	eventually(t, "the Node serves its API with no seed, so it is on the network it was given", func() bool { return ctl(admin, "version").Err == nil })
+	_, after := versionOf(t, admin)
+	assert.NotEqual(t, bootID, after, "a reboot is a new boot")
+	assert.Equal(t, 1, revisionOf(t, admin), "the Node is on the same revision")
+	eventually(t, "the service of revision 1 runs", func() bool { return pids(t, admin)["naru49-idle"] != "" })
+	assert.Contains(t, nd.Console(), "no NoCloud drive; running the stored configuration", "this boot had no seed")
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/init/boot"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/ext4/ext4test"
 	"github.com/garamsh/naru/lib/init/netcfg"
@@ -137,6 +138,7 @@ func TestHost_ReadSeedRefuses(t *testing.T) {
 		_, _, err := h.ReadSeed()
 
 		assert.ErrorIs(t, err, errNoDisk)
+		assert.ErrorIs(t, err, boot.ErrNoSeed, "the boot sequence runs the stored configuration")
 		assert.Empty(t, *calls)
 	})
 

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/garamsh/naru/lib/init/boot"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/dhcp4"
 	"github.com/garamsh/naru/lib/init/ext4"
@@ -95,9 +96,13 @@ func NewHost(diskWait time.Duration, reaper *Reaper) *Host {
 }
 
 // ReadSeed mounts the NoCloud drive read-only and returns its user-data, the
-// Node's naru.yaml, and its network-config.
+// Node's naru.yaml, and its network-config. When no disk carries the label it returns an error
+// wrapping boot.ErrNoSeed, after waiting up to diskWait for one.
 func (h *Host) ReadSeed() (userData, networkConfig []byte, err error) {
 	dev, err := h.find(isoLabel, isSeedLabel)
+	if errors.Is(err, errNoDisk) {
+		return nil, nil, fmt.Errorf("NoCloud drive %q: %w: %w", seedLabel, err, boot.ErrNoSeed)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("NoCloud drive %q: %w", seedLabel, err)
 	}

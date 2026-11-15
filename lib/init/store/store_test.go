@@ -151,3 +151,23 @@ func TestStore_SaveRefusesToWriteOverAStoreThatCannotBeRead(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	assert.Len(t, entries, 1, "no temporary file is left beside it")
 }
+
+func TestStore_LoadNetworkReturnsWhatSaveNetworkWroteAndNotFoundBefore(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "config")
+	s := store.New(dir)
+	_, err := s.LoadNetwork()
+	require.ErrorIs(t, err, store.ErrNotFound)
+
+	require.NoError(t, s.SaveNetwork([]byte("version: 1\n")))
+	got, err := s.LoadNetwork()
+
+	require.NoError(t, err)
+	assert.Equal(t, "version: 1\n", string(got))
+	require.NoError(t, s.SaveNetwork(nil))
+	got, err = s.LoadNetwork()
+	require.NoError(t, err, "an empty network-config is stored, not absent")
+	assert.Empty(t, got)
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no temporary file is left")
+}

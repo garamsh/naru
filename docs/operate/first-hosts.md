@@ -149,3 +149,11 @@ naructl host admit h-<id> --code <code from the console> --region <region> --lab
 It prints `naructl: admitted host h-<id> in region <region>`. Orch has the signer issue the host's certificate, builds the host's configuration from the host profile and delivers it to the host, which applies it and reboots: its console shows `join configuration applied revision=1`, and `naructl host pending` no longer lists it. The host then reports to orch: `naructl host list` shows its region, labels, the Machine prefix orch allocated to it and a non-zero `LAST SEEN` (`GET /v1/hosts` carries the same, with `machinePrefix`), and a group whose `requiredLabels` match places a microVM on it.
 
 Admit each host of the batch the same way, and revoke the enrollment key once the batch has joined.
+
+### The seed may be detached
+
+Once a host is admitted and shows `join configuration applied`, it no longer needs the seed. From v0.1.0-dev.12 init, with no seed attached, finds the data disk by its default label `NARUDATA`, runs the configuration orch delivered and brings the network up as the last boot with the seed did. Detach the seed CD-ROM and restart the host to do it, and destroy the seed file and the key's secret. The enrollment key may be revoked while the seed is attached or after.
+
+- A host on v0.1.0-dev.11 cannot boot without its seed. Its key may be revoked while the seed stays attached; only from dev.12 may the seed also be detached.
+- A host that was admitted on dev.11 must boot once on dev.12 with its seed attached before the seed is detached: init stores the seed's `network-config` at that boot. Detached before, it refuses with `no stored network-config; attach the seed for one boot`.
+- With no seed and no stored configuration, or with a data disk labelled other than `NARUDATA`, init refuses and says so on the console. Attach the seed again, which wins as before.
