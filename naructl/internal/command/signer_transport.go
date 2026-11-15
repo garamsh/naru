@@ -19,14 +19,15 @@ import (
 // host, and --config with --endpoint reaches it through a Node's API, whose admin role forwards
 // /v1/signer to it.
 type signerFlags struct {
-	socket, config, endpoint *string
+	socket, config, endpoint, serverName *string
 }
 
 func addSignerFlags(fs *pflag.FlagSet) signerFlags {
 	s := signerFlags{
-		socket:   fs.String("socket", "", "naru-signer's unix socket, for a command run on its host"),
-		config:   fs.String("config", "", "the Node API client file gen api-client wrote, an admin's, to reach the signer through a Node's API"),
-		endpoint: fs.String("endpoint", "", "with --config, the Node that runs the signer: an IP address with or without a port (default the client file's first endpoint)"),
+		socket:     fs.String("socket", "", "naru-signer's unix socket, for a command run on its host"),
+		config:     fs.String("config", "", "the Node API client file gen api-client wrote, an admin's, to reach the signer through a Node's API"),
+		endpoint:   fs.String("endpoint", "", "with --config, the Node that runs the signer: an IP address with or without a port (default the client file's first endpoint)"),
+		serverName: serverNameFlag(fs),
 	}
 	aliasString(fs, s.endpoint, "node", "endpoint")
 	return s
@@ -41,7 +42,7 @@ func (s signerFlags) check(fs *pflag.FlagSet) error {
 	case !set["socket"] && !set["config"]:
 		return errors.New("--socket or --config is required")
 	}
-	return needs(fs, "config", "endpoint")
+	return needs(fs, "config", "endpoint", "server-name")
 }
 
 // signerCall sends body to the signer and returns the answer's body, or the signer's refusal.
@@ -90,7 +91,7 @@ func signerThroughNode(to signerFlags, method, path string, body []byte, header 
 	if err != nil {
 		return nil, err
 	}
-	c, err := client.Dial(f, *to.endpoint)
+	c, err := client.Dial(f, *to.endpoint, *to.serverName)
 	if err != nil {
 		return nil, err
 	}

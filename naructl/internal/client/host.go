@@ -45,9 +45,11 @@ func IssueHost(authority *pki.CA, role, cn string, endpoints []string) (File, er
 
 // DialHost returns the host API's client for the host at node, an IP address with or without a
 // port; when node is empty it is the file's first endpoint. It speaks TLS 1.3 only, trusts the
-// file's authority and presents the file's pair. Nothing is sent until a call.
-func DialHost(f File, node string) (*hostapi.Client, error) {
-	hc, addr, err := mtls(f, node, wire.HostAPIPort)
+// file's authority and presents the file's pair. Nothing is sent until a call. A host that joined
+// from the install seed has a certificate that names only its host ID, so serverName is that name
+// and the certificate is verified against it instead of the address; empty verifies the address.
+func DialHost(f File, node, serverName string) (*hostapi.Client, error) {
+	hc, addr, err := mtls(f, node, wire.HostAPIPort, serverName)
 	if err != nil {
 		return nil, err
 	}
