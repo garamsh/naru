@@ -70,7 +70,8 @@ func (dep deployment) hostFlags(t *testing.T) []string {
 type daemonsData struct {
 	Spec struct {
 		Host struct {
-			Network *struct {
+			RevocationPublicKey string `yaml:"revocationPublicKey"`
+			Network             *struct {
 				ManagementPrefix string `yaml:"managementPrefix"`
 				EgressInterface  string `yaml:"egressInterface"`
 				TunnelPort       int    `yaml:"tunnelPort"`
@@ -235,6 +236,26 @@ func TestGenNode_ASignerReplicaMakesItsJoinKeyFirstAndJoinsOnceAuthorised(t *tes
 	assert.Equal(t, "192.168.0.20:7600", second.Spec.Signer.Replica.Join.Peer)
 	assert.Equal(t, in.certPEM, second.Spec.Signer.Replica.Join.PeerCA)
 	assert.Equal(t, in.authorisationText, second.Spec.Signer.Replica.Join.Authorisation)
+}
+
+func TestGenNode_HostRevocationPublicKeyIsWrittenToSpecHostAndRefusedWithoutTheHostAPI(t *testing.T) {
+	dep := newDeployment(t)
+	in := newDaemonInputs(t)
+	pub, err := os.ReadFile(in.pub)
+	require.NoError(t, err)
+	host := append(dep.hostFlags(t), "--host-orch-url", "https://192.168.0.10:7500", "--host-orch-ca-sha256", d("a"), "--host-orch-enroll-key", in.enroll)
+
+	with := dep.node(t, "node-1", append(append([]string{}, host...), "--host-revocation-public-key", in.pub)...)
+	without := dep.node(t, "node-2", host...)
+
+	validate(t, with)
+	assert.Equal(t, string(pub), parseDaemons(t, with).Spec.Host.RevocationPublicKey, "naru-hostd gets the key that verifies the list")
+	assert.Empty(t, parseDaemons(t, without).Spec.Host.RevocationPublicKey, "control: no flag, no key")
+	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-3", "--address", "192.168.0.12/24", "--api-server", "192.168.0.10",
+		"--machine-prefix", "10.200.3.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--host-revocation-public-key", in.pub,
+		"--out", filepath.Join(t.TempDir(), "x"))
+	require.Error(t, err, out)
+	assert.Contains(t, out, "--host-revocation-public-key has no effect without --host-region")
 }
 
 func TestGenNode_NoDaemonFlagsLeavesTheSectionsOut(t *testing.T) {

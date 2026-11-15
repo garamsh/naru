@@ -455,13 +455,18 @@ var (
 const hostClientCA = "/run/naru-hostd/client-ca.crt"
 
 // enroll has host Node i enroll with the enrollment key: its spec.host.orch carries orch's address, the
-// authority's SHA-256 and the key, and naru-hostd trusts the orch authority for orch's own certificate.
+// authority's SHA-256 and the key, naru-hostd trusts the orch authority for orch's own certificate, and
+// spec.host.revocationPublicKey is the signer's, which gen node's --host-revocation-public-key writes when
+// the key exists at generation (ADR 0062).
 // It returns the pairing code the host's console shows.
 func (f *fleet) enroll(i int, key string) string {
 	hostCA, err := os.ReadFile(f.c.HostCA)
 	require.NoError(f.t, err)
 	f.edit(i, func(file string) error {
 		if err := seed.SetFile(file, hostClientCA, strings.TrimSuffix(string(hostCA), "\n")+"\n"+f.orchCA); err != nil {
+			return err
+		}
+		if err := seed.Set(file, f.revPub, "spec", "host", "revocationPublicKey"); err != nil {
 			return err
 		}
 		return seed.Set(file, map[string]any{"url": "https://" + nodeIP(1) + ":" + orchPort, "caSHA256": f.caSHA, "enrollKey": key}, "spec", "host", "orch")

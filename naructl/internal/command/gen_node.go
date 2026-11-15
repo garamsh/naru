@@ -21,11 +21,11 @@ type nodeFlags struct {
 	daemonFlags
 	n layout.Node
 
-	caDir, address, gateway, apiServer, machinePrefix, guest, extraNIC, out, networkConfig string
-	awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion, hostClientCA               string
-	nameservers, serving, binaries, disable, timeServers, peers, members, registries       list
-	storage, noMasquerade, hostLabels                                                      list
-	controlPlane, pairsAsFiles                                                             bool
+	caDir, address, gateway, apiServer, machinePrefix, guest, extraNIC, out, networkConfig   string
+	awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion, hostClientCA, hostRevocation string
+	nameservers, serving, binaries, disable, timeServers, peers, members, registries         list
+	storage, noMasquerade, hostLabels                                                        list
+	controlPlane, pairsAsFiles                                                               bool
 }
 
 // genNode is gen node: it writes the user data (and with --network-config the NoCloud network
@@ -94,6 +94,7 @@ func (f *nodeFlags) declare(fs *pflag.FlagSet) {
 	fs.StringVar(&f.orchRevocation, "orch-revocation-public-key", "", "spec.orch: the file holding the revocation public key, PKIX PEM, which the signer's init printed")
 	fs.StringVar(&f.orchHostCA, "orch-host-ca", "", "spec.orch: the file holding the PEM of the authority the hosts' API certificates chain to, the host authority; without it orch trusts --orch-ca for them")
 	fs.StringVar(&f.hostClientCA, "host-client-ca", "", "spec.host: the file holding the PEM of the authority orch's certificate chains to, which naru-hostd trusts for its clients beside the host authority (with --host-region)")
+	fs.StringVar(&f.hostRevocation, "host-revocation-public-key", "", "spec.host: the file holding the revocation public key, PKIX PEM, which the signer's init printed: naru-hostd checks its clients against the signed list, read from --host-orch-url (with --host-region)")
 	fs.StringVar(&f.orchRecovery, "orch-recovery-public", "", "spec.orch: the file holding the recovery key's public half; without it orch writes no snapshot")
 	fs.StringVar(&f.orchJoin, "orch-join", "", "spec.orch.join: the client URL, https://<host>:<port>, of a running member, which this member joins; it takes the initial cluster from that cluster, so no --orch-member, and excludes --orch-restore")
 	fs.BoolVar(&f.orchRestore, "orch-restore", false, "spec.orch.restore: orchd starts empty and waits for root's etcd snapshot (PUT /v1/restore)")
@@ -122,7 +123,7 @@ func (f *nodeFlags) check(fs *pflag.FlagSet) error {
 	for _, g := range [][]string{
 		{"network-config", "mac", "gateway", "nameserver", "search", "extra-nic"},
 		{"control-plane", "serving-address", "member"},
-		{"host-region", "host-label", "host-client-ca"},
+		{"host-region", "host-label", "host-client-ca", "host-revocation-public-key"},
 		{"host-management-prefix", "host-egress-interface", "host-tunnel-port"},
 		{"host-orch-url", "host-orch-ca-sha256", "host-orch-enroll-key"},
 		{"signer-replica", "signer-join-peer", "signer-join-peer-ca", "signer-join-authorisation"},
@@ -184,6 +185,11 @@ func (f *nodeFlags) authorities() error {
 		}
 		if f.hostClientCA != "" {
 			if n.Host.ClientCA, err = readText("--host-client-ca", f.hostClientCA); err != nil {
+				return err
+			}
+		}
+		if f.hostRevocation != "" {
+			if n.Host.RevocationPublicKey, err = readText("--host-revocation-public-key", f.hostRevocation); err != nil {
 				return err
 			}
 		}
