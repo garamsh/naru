@@ -1,6 +1,6 @@
 module github.com/garamsh/naru/tooling/disk
 
-go 1.24.4
+go 1.26.0
 
 require github.com/stretchr/testify v1.12.1
 
