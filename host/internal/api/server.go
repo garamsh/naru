@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -181,12 +182,33 @@ func TLSConfig(certFile, keyFile, clientCAFile string, revocations *identity.Rev
 	return conf, nil
 }
 
-// Serve serves the API on ln until it is closed. A refused handshake is not logged: it would fill
-// the console for anyone who can reach the port.
-func (s *Server) Serve(ln net.Listener, conf *tls.Config) error {
+// DrainTimeout is how long Serve waits for the requests in flight after its context ends, before
+// it closes their connections. A create or a delete may take up to callTimeout, so a stop signal
+// that is followed by a kill leaves one that the drain could not finish.
+const DrainTimeout = 30 * time.Second
+
+// Serve serves the API on ln until ctx ends, and then drains: it closes ln, so a new connection is
+// refused, lets the requests in flight finish for up to DrainTimeout and returns nil. An error of
+// the listener before that is returned. A refused handshake is not logged: it would fill the
+// console for anyone who can reach the port.
+func (s *Server) Serve(ctx context.Context, ln net.Listener, conf *tls.Config) error {
 	srv := &http.Server{
 		Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, TLSConfig: conf,
 		ErrorLog: log.New(io.Discard, "", 0),
 	}
-	return srv.ServeTLS(ln, "", "")
+	done := make(chan error, 1)
+	go func() {
+		<-ctx.Done()
+		drain, cancel := context.WithTimeout(context.Background(), DrainTimeout)
+		defer cancel()
+		err := srv.Shutdown(drain)
+		if err != nil {
+			_ = srv.Close()
+		}
+		done <- err
+	}()
+	if err := srv.ServeTLS(ln, "", ""); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return <-done
 }

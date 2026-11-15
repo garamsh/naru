@@ -202,8 +202,10 @@ func (s *Server) resumeSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.attach(ctx, req.Network, req.PodPrefix, m); err != nil {
 		// The microVM runs; delete it and keep its disks, which are the snapshot's.
-		_ = s.deps.Runtime.StopMachine(ctx, m.ID)
-		_ = s.deps.Runtime.DeleteMachine(ctx, m.ID)
+		undo, cancelUndo := cleanupContext(ctx)
+		defer cancelUndo()
+		_ = s.deps.Runtime.StopMachine(undo, m.ID)
+		_ = s.deps.Runtime.DeleteMachine(undo, m.ID)
 		s.networkFail(w, err)
 		return
 	}

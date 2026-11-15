@@ -96,6 +96,9 @@ func (g *GRPC) fail(err error) error {
 	case codes.Unavailable:
 		_ = g.Close()
 		return fmt.Errorf("%w: %s", ErrUnavailable, msg)
+	case codes.DeadlineExceeded:
+		// mvmd's own deadline, or the call's, which a status carries and the context error does not.
+		return fmt.Errorf("%w: %s", context.DeadlineExceeded, msg)
 	}
 	return err
 }

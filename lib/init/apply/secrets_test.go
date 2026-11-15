@@ -1,6 +1,9 @@
 package apply
 
 import (
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,16 +38,15 @@ func fieldsOf(cfg config.NodeConfig) []string {
 	return out
 }
 
-func TestSecretKinds_TheFixtureHoldsAValueInEveryKindOfTheTable(t *testing.T) {
+func TestSecrets_TheFixtureHoldsAValueInEveryPlaceTheDenyListNamedBefore(t *testing.T) {
 	cfg := everySecret()
 
-	for i, k := range secretKinds {
-		places := k.places(&cfg)
-		require.NotEmpty(t, places, "kind %d of the table has no place in the fixture, so the tests below do not reach it", i)
-		for _, s := range places {
-			assert.NotEmpty(t, *s.value, s.field)
-		}
-	}
+	got := fieldsOf(cfg)
+
+	assert.ElementsMatch(t, []string{
+		"spec.api.key", "spec.pki.authorities[0].key", "spec.pki.authorities[1].key", "spec.files[1].content",
+		"spec.registries[0].credential.password", "spec.host.orch.enrollKey", "spec.join.enrollKey",
+	}, got)
 }
 
 func TestRedact_HidesEveryPlaceTheTableListsAndLeavesTheRest(t *testing.T) {
@@ -54,7 +56,7 @@ func TestRedact_HidesEveryPlaceTheTableListsAndLeavesTheRest(t *testing.T) {
 
 	assert.Equal(t, fieldsOf(cfg), fieldsOf(got))
 	for _, s := range secrets(&got) {
-		assert.Equal(t, Redacted, *s.value, s.field)
+		assert.Equal(t, Redacted, s.value.String(), s.field)
 	}
 	assert.Equal(t, "public", got.Spec.Files[0].Content, "the control: a file group and other can read keeps its content")
 	assert.Equal(t, "alice", got.Spec.Registries[0].Credential.Username)
@@ -74,7 +76,7 @@ func TestRedact_LeavesAnEmptyValueEmpty(t *testing.T) {
 	got := Redact(cfg)
 
 	for _, s := range secrets(&got) {
-		assert.Empty(t, *s.value, s.field)
+		assert.Empty(t, s.value.String(), s.field)
 	}
 }
 
@@ -109,4 +111,83 @@ func TestRefuse_MatchesAListElementByItsKeyAndNotItsIndex(t *testing.T) {
 	require.ErrorAs(t, err, &invalid)
 	assert.Contains(t, invalid.Fields, "spec.pki.authorities[0].key", "other moved to index 0 and was not redacted in the store")
 	assert.NotContains(t, invalid.Fields, "spec.pki.authorities[1].key", "ca moved to index 1 and was redacted in the store")
+}
+
+// fill sets every string of v, whatever its place, to marker, making each pointer, slice and map.
+func fill(v reflect.Value, marker string) {
+	switch v.Kind() {
+	case reflect.Pointer:
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+		fill(v.Elem(), marker)
+	case reflect.String:
+		v.SetString(marker)
+	case reflect.Slice:
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		fill(v.Index(0), marker)
+	case reflect.Map:
+		v.Set(reflect.MakeMap(v.Type()))
+		e := reflect.New(v.Type().Elem()).Elem()
+		fill(e, marker)
+		v.SetMapIndex(reflect.ValueOf("k"), e)
+	case reflect.Struct:
+		if v.Type().PkgPath() != reflect.TypeFor[config.NodeConfig]().PkgPath() {
+			return
+		}
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() {
+				fill(v.Field(i), marker)
+			}
+		}
+	}
+}
+
+func TestRedact_ShowsOnlyWhatTheAllowListNamesWhateverFieldTheConfigurationHas(t *testing.T) {
+	var cfg config.NodeConfig
+	fill(reflect.ValueOf(&cfg).Elem(), "marker")
+	cfg.Spec.Files[0].Mode = "0600" // a file group and other cannot read: its content is private
+
+	got := Redact(cfg)
+
+	var left []string
+	walkAll(reflect.ValueOf(got), "", &left)
+	for _, path := range left {
+		assert.True(t, shown[path], "%s is shown in clear and is not on the allow-list", path)
+	}
+	for path := range shown {
+		assert.Contains(t, left, path, "%s is on the allow-list and names no string of the configuration: a stale entry", path)
+	}
+}
+
+// walkAll lists the allow-list path of each string of v that is not Redacted.
+func walkAll(v reflect.Value, place string, out *[]string) {
+	switch v.Kind() {
+	case reflect.Pointer:
+		if !v.IsNil() {
+			walkAll(v.Elem(), place, out)
+		}
+	case reflect.String:
+		if v.String() != Redacted && !slices.Contains(*out, place) {
+			*out = append(*out, place)
+		}
+	case reflect.Slice:
+		for i := range v.Len() {
+			walkAll(v.Index(i), place+"[]", out)
+		}
+	case reflect.Map:
+		for it := v.MapRange(); it.Next(); {
+			walkAll(it.Value(), place+"{}", out)
+		}
+	case reflect.Struct:
+		if v.Type().PkgPath() != reflect.TypeFor[config.NodeConfig]().PkgPath() {
+			return
+		}
+		for i := range v.NumField() {
+			f := v.Type().Field(i)
+			if name := strings.Split(f.Tag.Get("yaml"), ",")[0]; f.IsExported() && name != "-" {
+				walkAll(v.Field(i), place+"."+name, out)
+			}
+		}
+	}
 }
