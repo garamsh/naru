@@ -1,0 +1,39 @@
+# ADR 0076: A tag publishes once, and a release is signed, attested, and carries an SBOM and the corresponding source
+
+> Status: accepted
+> Date: 2026-11-16
+
+Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
+
+Drafted for garamsh/naru#188, part of goal garamsh/naru#197. It changes [image.md](../image.md)'s Release assets and Release workflow; [ADR 0074](./0074-naru-cluster-is-a-release-asset-and-a-harness-downloads-it-and-checks-it-against-sha256sums.md)'s file count (fifteen) becomes seventeen, with an eighteenth file on the release.
+
+## Context
+
+- **A repeated run replaced a release's files.** `release.yml` ran `gh release upload --clobber` when the tag's release existed, so a second run, by `workflow_dispatch` or a re-run, put different bytes under a name a consumer had already pinned by URL and digest.
+- **Nothing tied an asset to this workflow.** `SHA256SUMS` is published beside the assets it lists, so anyone who can replace an asset can replace the sums.
+- **A release has no bill of materials.** The image carries GPL- and LGPL-licensed software (the Linux kernel, util-linux, e2fsprogs, xfsprogs, nftables and the libraries under them), and nothing in the release states what is in it, under which licence, or where its source is.
+- **The notes were wrong in two places.** They described "what this release carries beyond v0.3.0" in every release, they named the CA directory flag of `naructl gen node` by a deprecated spelling, and the test user-data was described twice.
+
+## Decision
+
+**A tag publishes once. A release is signed and attested, and carries an SBOM and the source of its GPL-family packages.**
+
+1. **A tag's release is never overwritten.** The publish job downloads the existing release's `SHA256SUMS` and runs `naru-release compare <published> <new>` (`tooling/qemu/internal/release`). The command fails, naming each asset that differs or that only one side lists. Two assets are exempt, because they differ in every build by design (a fresh registry authority, gaon authority and fresh tokens): `naru-data-*.qcow2` and `naru-node-<n>.test.yaml`. When the sums agree the job uploads, signs and attests nothing; when the tag has no release it creates one; `gh release upload --clobber` and `gh release edit` are gone. A release with no `SHA256SUMS`, or one that lacks an asset its `SHA256SUMS` lists, fails the job and names the fix: delete a release nobody has used and run again.
+2. **`SHA256SUMS` is signed keyless with cosign.** `cosign sign-blob --bundle SHA256SUMS.sigstore.json SHA256SUMS`, with the identity of the release workflow (`id-token: write`). The bundle is a release file and is not listed in `SHA256SUMS`, which it signs. `sigstore/cosign-installer` is pinned by commit SHA and cosign by version (`cosign-release`), per [ci.md](../../convention/ci.md).
+3. **Every asset has a build provenance attestation.** `actions/attest-build-provenance`, pinned by commit SHA, takes `SHA256SUMS` as `subject-checksums` (`attestations: write`, `id-token: write`). `SHA256SUMS` itself is covered by the cosign signature.
+4. **The SBOM is `naru-sbom-<tag>.spdx.json`, SPDX 2.3 JSON, written by `naru-release` and listed in `SHA256SUMS`.** It has one package for every component a `pin.env` under `image/` names (a prefix with a `_URL` or a `_REPO` line): name, version, download location (the tarball's URL with its SHA-256, or `git+<repo>@<commit>`) and licence. The licence is the pin's `<NAME>_LICENSE` line, an SPDX expression, which every pin carries and `naru-release` requires: a pin without one fails the release. For every Go binary the release ships (the initramfs staging directories' files that `debug/buildinfo` reads, `naructl` and `naru-cluster`) it has a package with the binary's SHA-256 and a `DEPENDS_ON` relationship to each module of its build information, and to the Go standard library of its toolchain. The only time in it is `created`, from `SOURCE_DATE_EPOCH`; it has no host or user field, so two builds of a commit write the same bytes, and `make image-repro` compares it.
+5. **The sources tar is `naru-sources-<tag>.tar`, listed in `SHA256SUMS`.** It holds the exact upstream tarball of every pin whose licence expression names a GPL, LGPL or AGPL licence (a build fails if one is not a tarball, or is missing), and `naru-source.tar`, the `git archive` of the built commit, which `make source-archive` writes on the host because a worktree's `.git` is outside the builder container. Members are sorted, owned by uid and gid 0 with no names, and dated `SOURCE_DATE_EPOCH`. **Where the tarballs come from:** the kernel and containerd builds already download and check their tarballs into `build/kernel/dl` and `build/containerd/dl`, and `naru-release` takes them from there (`-downloads`). The packages built by BuildKit (`image/pkgs/fetch.sh`) fetch inside BuildKit, so no file of theirs is on the host; `naru-release` fetches the pin's URL and checks the SHA-256 against the pin. Either way every tarball in the tar has the SHA-256 its pin states, which is what "verified downloads" means here.
+6. **The notes say what they describe and how to verify.** The false "beyond v0.3.0" paragraph is replaced, `--ca-dir` is corrected, the two test user-data paragraphs are one, and the notes name the SBOM, the sources tar, the signature bundle and the attestations, with the three commands in [verify-a-release.md](../../operate/verify-a-release.md).
+
+## Consequences
+
+- **The release has seventeen files and the signature bundle is the eighteenth.** The count in `release.yml` and [image.md](../image.md) is seventeen.
+- **A failed or partial first publish needs a person.** The run fails and names the missing asset; the fix is to delete the release and run again. This is the price of never replacing a file a consumer may have pinned.
+- **`make image-repro` covers the SBOM and the sources tar.** Both are reproducible, and an asset that differs between two builds fails it.
+- **The by-design list is stated twice.** `image/repro.sh` (`skip=`) and `internal/release` (`ByDesignPattern`) hold the same expression, because a shell script cannot import Go. `TestByDesignPattern_IsTheSkipPatternOfImageRepro` reads the script and fails if they differ.
+- **A new pin needs a `_LICENSE` line.** The release fails without one, so a package cannot enter the image without a licence stated beside its version.
+- **Two pins state `NOASSERTION`.** gaon and mvmd (`image/host/gaon/pin.env`, `image/host/mvmd/pin.env`) have no licence file at their pinned commits. The SBOM says the licence is not asserted; the owner decides what it is, and a later pull request changes the line.
+- **No written offer.** The release does not promise source on request: the corresponding source of the GPL-family packages is in the release itself, so there is nothing to offer. A package that is GPL-family and has no tarball fails the build instead of being covered by an offer.
+- **What the licence lines rest on.** For each tarball pin, the line was read from the licence files and source headers of the tarball whose SHA-256 the pin states. The Apache-2.0 lines of the git pins (containerd, runc, the CNI plugins, etcd, kubernetes and the two credential helpers) come from the repositories' licence as the GitHub API reports it, not from the files at the pinned commits.
+- **The SBOM does not state licences of Go modules.** Their `licenseDeclared` is `NOASSERTION`; the modules and their versions are exact.
+- **The signature identity of a manual run is its ref.** A run started by `workflow_dispatch` signs as the workflow at the ref it was dispatched from, not at `refs/tags/<tag>`; [verify-a-release.md](../../operate/verify-a-release.md) says how to verify it.

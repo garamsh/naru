@@ -1,4 +1,4 @@
-.PHONY: lint lint-imports lint-modules format format-apply test test-cgroup test-qemu test-fleet test-count test-harness test-release-upgrade nodes judge-serial release build image image-upgrade disk image-repro in-builder-image in-builder-image-upgrade in-builder-disk in-builder-release ci
+.PHONY: lint lint-imports lint-modules format format-apply test test-cgroup test-qemu test-fleet test-count test-harness test-release-upgrade nodes judge-serial release build image image-upgrade disk image-repro source-archive in-builder-image in-builder-image-upgrade in-builder-disk in-builder-release ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -143,6 +143,14 @@ image-upgrade: PKGS_GROUPS := default upgrade
 # --tags --always`, or VERSION=.
 VERSION ?= $(shell git describe --tags --always)
 export NARU_VERSION := $(VERSION)
+# source-archive writes the git archive of HEAD that the release's sources tar carries (ADR 0076). It runs on the
+# host: a worktree's .git is outside the builder container's view of the repository.
+SOURCE_ARCHIVE := $(CURDIR)/build/source.tar
+source-archive:
+	mkdir -p $(dir $(SOURCE_ARCHIVE))
+	git archive --format=tar -o $(SOURCE_ARCHIVE) HEAD
+
+release: source-archive
 image image-upgrade disk release:
 	NARU_TEST_ROOT='$(if $(TEST_ROOT),$(abspath $(TEST_ROOT)))' image/pkgs/build.sh $(PKGS) $(PKGS_GROUPS)
 	$(call in_builder,in-builder-$@)
@@ -181,6 +189,7 @@ in-builder-disk: in-builder-image
 REFERENCE ?=
 image-repro:
 	@set -e; \
+	$(MAKE) source-archive; \
 	if [ -n "$(REFERENCE)" ]; then \
 	  $(MAKE) release; \
 	  image/repro.sh "$(REFERENCE)" $(RELEASE)/SHA256SUMS; \
@@ -240,7 +249,7 @@ in-builder-release: in-builder-disk
 	mkdir -p $(BUILD)/naructl
 	cd naructl && $(GOBUILD) -o $(abspath $(BUILD))/naructl/naructl ./cmd/naructl
 	cd tooling/qemu && $(GOBUILD) -o $(abspath $(BUILD))/naructl/naru-cluster ./cmd/naru-cluster
-	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -naru-cluster $(BUILD)/naructl/naru-cluster -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
+	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -naru-cluster $(BUILD)/naructl/naru-cluster -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env -epoch $$(. $(CURDIR)/image/build.env && echo $$SOURCE_DATE_EPOCH) -binaries $(BUILD)/initramfs/bin,$(BUILD)/node-initramfs/bin -source-archive $(SOURCE_ARCHIVE) $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
 
 # test-qemu boots Nodes of the image under QEMU, as the user, and reads their consoles. It needs
 # /dev/kvm with nested virtualization and the host's mkfs.ext4 (for the data disk), and fails,

@@ -6,7 +6,8 @@
 // and SHA-256 of the guest kernels and initrds the boot disk carries), the inputs file (the Firecracker
 // digest and the test image's reference), a test-only NoCloud
 // user-data per Node for Proxmox that runs gaon with certificates issued for the release, and the
-// SHA256SUMS of them. `make release` runs it.
+// SHA256SUMS of them, the SPDX SBOM and the tar of the corresponding source of the GPL-family
+// components (ADR 0076). `make release` runs it.
 package release
 
 import (
@@ -183,6 +184,20 @@ type Options struct {
 	// size and the largest in-place upgrade kernel), or empty for none. It is outside Out, whose
 	// every file is an asset.
 	Figures string
+	// Epoch is SOURCE_DATE_EPOCH: the only time in the SBOM and the sources tar.
+	Epoch int64
+	// Binaries are the directories whose Go binaries the SBOM states the modules of; Naructl and
+	// NaruCluster are stated too.
+	Binaries []string
+	// Downloads are the directories that hold the verified upstream tarballs make image fetched; a
+	// tarball the sources tar needs and they lack is fetched from its pin's URL.
+	Downloads []string
+	// SourceArchive is the git archive (a tar) of the commit being built.
+	SourceArchive string
+	// Components replaces the pins under Root/image, and Fetch the HTTP fetch of a tarball: both
+	// are for tests.
+	Components []Component
+	Fetch      Fetch
 }
 
 // checkExtension refuses a release whose extension description states another digest than the
@@ -228,6 +243,12 @@ func Build(o Options) ([]Asset, error) {
 	}
 	if err := checkPrevious(o, kernel); err != nil {
 		return nil, err
+	}
+	comps := o.Components
+	if comps == nil {
+		if comps, err = ReadComponents(o.Root); err != nil {
+			return nil, err
+		}
 	}
 	if err := os.MkdirAll(o.Out, 0o755); err != nil {
 		return nil, err
@@ -353,6 +374,24 @@ func Build(o Options) ([]Asset, error) {
 		}
 		names = append(names, name)
 	}
+
+	// The SBOM and the sources are written last: they state what the other assets were built from.
+	bins, err := ReadGoBinaries(o.Binaries, []string{o.Naructl, o.NaruCluster})
+	if err != nil {
+		return nil, err
+	}
+	sbom, err := SBOM(o.Version, o.Epoch, comps, bins)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(o.Out, SBOMName(o.Version)), sbom, 0o644); err != nil {
+		return nil, err
+	}
+	names = append(names, SBOMName(o.Version))
+	if err := WriteSources(filepath.Join(o.Out, SourcesName(o.Version)), o.Epoch, comps, o.Downloads, o.SourceArchive, o.Fetch); err != nil {
+		return nil, fmt.Errorf("the sources: %w", err)
+	}
+	names = append(names, SourcesName(o.Version))
 
 	var assets []Asset
 	var sums strings.Builder

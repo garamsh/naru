@@ -7,6 +7,12 @@ name: release
 # release (`--prerelease --latest=false`, on both the create and the edit path); any other tag is
 # published as before.
 #
+# A tag publishes once. A run for a tag whose release exists compares the new build's SHA256SUMS
+# with the published one (naru-release compare, ADR 0076): if they agree on every asset it uploads,
+# signs and attests nothing, and if any differs it fails and names the asset. The publish job
+# signs SHA256SUMS with cosign, keyless through this workflow's OIDC identity, and attests the
+# provenance of every asset in it.
+#
 # Moved by (every pin below): the PM, in a pull request that reads the action's current release and
 # the GitHub Advisory Database (ci.md), when an advisory is published for it and at each Go minor
 # release. No bot proposes the bumps (.github/ holds no dependabot.yml).
@@ -171,9 +177,13 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
+      # id-token: the keyless signature and the provenance attestation are made with this run's
+      # OIDC token. attestations: the attestation is stored with the repository.
+      id-token: write
+      attestations: write
     env:
       COMMIT: ${{ needs.build.outputs.commit }}
       GH_TOKEN: ${{ github.token }}
@@ -182,33 +192,85 @@ jobs:
       ESP_BYTES: ${{ needs.build.outputs.esp_bytes }}
       UPGRADE_KERNEL_BYTES: ${{ needs.build.outputs.upgrade_kernel_bytes }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      # naru-release compare is Go code of this tree.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: false
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-assets
           path: release
 
+      # The 16 assets, their SHA256SUMS and nothing else; the signature bundle is added below, and is
+      # not in SHA256SUMS because it signs it.
       - name: Check the assets against SHA256SUMS
         working-directory: release
         run: |
           sha256sum --check SHA256SUMS
           n=$(ls | wc -l)
           echo "release: $n file(s), SHA256SUMS lists $(wc -l <SHA256SUMS)"
-          [ "$n" -eq 15 ] || { echo "release: expected 15 files" >&2; exit 1; }
+          [ "$n" -eq 17 ] || { echo "release: expected 17 files" >&2; exit 1; }
+
+      # A tag publishes once (ADR 0076). If the tag's release exists, its SHA256SUMS must agree with
+      # this build's on every asset but the ones that differ in each build by design, and then
+      # nothing is uploaded, signed or attested again; a release without SHA256SUMS, or one that
+      # lacks an asset its SHA256SUMS lists, is not repaired here.
+      - name: Compare with the release already published for the tag
+        id: existing
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release: $TAG has no release yet"
+            echo "identical=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir published
+          gh release download "$TAG" --pattern SHA256SUMS --dir published || true
+          if [ ! -s published/SHA256SUMS ]; then
+            echo "release: the release of $TAG has no SHA256SUMS, so it cannot be compared; if nobody has used it, delete it (gh release delete $TAG) and run again" >&2
+            exit 1
+          fi
+          (cd tooling/qemu && go run ./cmd/naru-release compare ../../published/SHA256SUMS ../../release/SHA256SUMS)
+          have=$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)
+          want=$( { awk '{ print $2 }' published/SHA256SUMS; echo SHA256SUMS; echo SHA256SUMS.sigstore.json; } | sort)
+          missing=$(comm -13 <(printf '%s\n' "$have") <(printf '%s\n' "$want"))
+          if [ -n "$missing" ]; then
+            echo "release: the release of $TAG lacks: $missing; if nobody has used it, delete it (gh release delete $TAG) and run again" >&2
+            exit 1
+          fi
+          echo "release: $TAG is already published and this build agrees with it; nothing to upload, sign or attest"
+          echo "identical=true" >>"$GITHUB_OUTPUT"
 
       - name: Write the release notes
+        if: steps.existing.outputs.identical != 'true'
         run: |
           cat >notes.md <<'NOTES'
           naru @TAG@, built from commit @COMMIT@ by the release workflow on a GitHub-hosted ubuntu-24.04 runner, inside the builder container of `image/builder`.
 
-          Assets: `naru-host-@TAG@.qcow2` (the boot disk of `naru-host`), `naru-host-upgrade-@TAG@.tar` (the upgrade bundle: the kernel with its initramfs inside, and a manifest that names its version and SHA-256, which an A/B upgrade writes to the boot disk's trial slot), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-node-kernel-@TAG@`, `naru-node-initramfs-@TAG@` and `naru-node-@TAG@.json` (the Node boot set: the kernel and initramfs of the guest form that runs a Node as a microVM, and the manifest that names them with their SHA-256), `naru-orch-ext-@TAG@.sqfs` and `naru-orch-ext-@TAG@.json` (the `naru-orch` system extension that carries `naru-orchd` and `naru-signer`, and its description: the `sha256` field is what `spec.extensions` names, and the image is built for this release's version only), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-inputs-@TAG@.json` (the Firecracker digest and the test image reference that `naru-cluster` reads), `naructl-@TAG@-linux-amd64` (the operator's tool: it generates a cluster CA, each Node's user-data and client certificates, and it is the Node API's client; a static binary), `naru-cluster-@TAG@-linux-amd64` (the command that boots Nodes under QEMU for an external harness, a static binary: download it, check it against `SHA256SUMS` and make it executable), `naru-node-1.test.yaml` and `naru-node-2.test.yaml` (test-only user-data for Proxmox that runs gaon) and `SHA256SUMS` of the other fourteen.
+          Assets: `naru-host-@TAG@.qcow2` (the boot disk of `naru-host`), `naru-host-upgrade-@TAG@.tar` (the upgrade bundle: the kernel with its initramfs inside, and a manifest that names its version and SHA-256, which an A/B upgrade writes to the boot disk's trial slot), `naru-data-@TAG@.qcow2` (the data disk both Nodes attach), `naru-node-kernel-@TAG@`, `naru-node-initramfs-@TAG@` and `naru-node-@TAG@.json` (the Node boot set: the kernel and initramfs of the guest form that runs a Node as a microVM, and the manifest that names them with their SHA-256), `naru-orch-ext-@TAG@.sqfs` and `naru-orch-ext-@TAG@.json` (the `naru-orch` system extension that carries `naru-orchd` and `naru-signer`, and its description: the `sha256` field is what `spec.extensions` names, and the image is built for this release's version only), `naru-guest-@TAG@.json` (the names and SHA-256 of the guest kernel and initrds the boot disk carries), `naru-inputs-@TAG@.json` (the Firecracker digest and the test image reference that `naru-cluster` reads), `naructl-@TAG@-linux-amd64` (the operator's tool: it generates a cluster CA, each Node's user-data and client certificates, and it is the Node API's client; a static binary), `naru-cluster-@TAG@-linux-amd64` (the command that boots Nodes under QEMU for an external harness, a static binary: download it, check it against `SHA256SUMS` and make it executable), `naru-node-1.test.yaml` and `naru-node-2.test.yaml` (test-only user-data for Proxmox that runs gaon), `naru-sbom-@TAG@.spdx.json` (the software bill of materials, SPDX 2.3 JSON: every package pinned under `image/` with its version, download location, SHA-256 and licence, and the Go modules each shipped Go binary was built from), `naru-sources-@TAG@.tar` (the corresponding source: the exact upstream tarball of every GPL-, LGPL- and AGPL-licensed package of the image, and a `git archive` of commit @COMMIT@), `SHA256SUMS` of the other sixteen, and `SHA256SUMS.sigstore.json` (the cosign signature of `SHA256SUMS`, which `SHA256SUMS` does not list because it signs it).
 
-          - **What this release carries beyond v0.3.0.** init serves the Node API (version, services, service logs, the stored configuration, and applying a change live or staged for the next boot) over mutual TLS on `spec.api.listen`, `0.0.0.0:50000` by default, and `naructl` is its client: `version`, `services`, `logs`, `get config` and `apply`. `naru-init` reports the release's tag as its version. A Node whose user-data has no `spec.api` serves no API and logs that the Node API is off, and user-data written for v0.3.0 boots unchanged.
+          - **What these notes describe.** The assets of this release, how to use them and how to verify them. What changed since an earlier release is the commit history between the two tags. init serves the Node API (version, services, service logs, the stored configuration, and applying a change live or staged for the next boot) over mutual TLS on `spec.api.listen`, `0.0.0.0:50000` by default, and `naructl` is its client: `version`, `services`, `logs`, `get config` and `apply`. `naru-init` reports the release's tag as its version. A Node whose user-data has no `spec.api` serves no API and logs that the Node API is off.
           - **The Node boot set and the image's room.** `naructl host boot-set add naru-node-@TAG@.json --config <host client config>` adds the boot set to a host that runs mvmd, with no reboot, under the name `naru-node-` and the tag in lower case with each character outside a-z, 0-9 and `-` replaced by `-`; the files it names are read from beside the manifest. The boot disk's ESP is @ESP_BYTES@ bytes, and the largest kernel a Node installed from this image can take as an in-place upgrade is @UPGRADE_KERNEL_BYTES@ bytes.
-          - **The test user-data has no `spec.api`.** `naru-node-1.test.yaml` and `naru-node-2.test.yaml` leave the Node API off. To enable it, make the API's authority and write the user-data from the same directory: `naructl gen api-ca --ca-dir <ca-dir>` (the cluster's CA directory, which `gen ca` wrote), then `naructl gen node --ca <ca-dir> ...`, which adds `spec.api` when `<ca-dir>/api/` exists, then `naructl gen api-client --ca-dir <ca-dir> --role admin --endpoint <node-ip> --out client.yaml`, and `naructl version --config client.yaml`. A `reader` role reads and cannot apply.
           - **The data disk carries a test-only TLS authority, private key included.** `inputs/registry/key.pem` is the private key of the CA that `inputs/registry/ca.pem` and `cert.pem` belong to. It is generated for each build, is trusted only by the mvmd on the Node that holds the disk, and the registry that uses it listens on 127.0.0.1. Anyone can read the key from this public asset; do not trust the CA anywhere else.
-          - **The user-data assets are test-only and carry private keys.** `naru-node-1.test.yaml` and `naru-node-2.test.yaml` hold the bootstrap tokens of both Nodes in `spec.files`, and `naru-node-1.test.yaml` also holds, in `spec.pki`, a test-only TLS authority, private key included: the CA generated for the build, from which init issues node-1's pairs at boot and gaon's controllers sign the Node Agents' certificate requests. The CA is valid ten years from the build and the certificates one year. Anyone can read that key and those tokens from this public asset: do not trust the CA anywhere else, and use the files on a throwaway deployment only. Two builds of one tree differ in the CA and the tokens.
+          - **The user-data assets are test-only and carry private keys.** `naru-node-1.test.yaml` and `naru-node-2.test.yaml` hold the bootstrap tokens of both Nodes in `spec.files`, and `naru-node-1.test.yaml` also holds, in `spec.pki`, a test-only TLS authority, private key included: the CA generated for the build, from which init issues node-1's pairs at boot and gaon's controllers sign the Node Agents' certificate requests. The CA is valid ten years from the build and the certificates one year. Anyone can read that key and those tokens from this public asset: do not trust the CA anywhere else, and use the files on a throwaway deployment only. Two builds of one tree differ in the CA and the tokens. They leave the Node API off (no `spec.api`). To enable it, make the API's authority in the CA's directory and write the user-data from that directory: `naructl gen api-ca --ca-dir <ca-dir>` (the cluster's CA directory, which `gen ca` wrote), then `naructl gen node --ca-dir <ca-dir> ...`, which adds `spec.api` when `<ca-dir>/api/` exists, then `naructl gen api-client --ca-dir <ca-dir> --role admin --endpoint <node-ip> --out client.yaml`, and `naructl version --config client.yaml`. A `reader` role reads and cannot apply.
           - **The data disk is not byte-reproducible.** The registry's TLS authority, certificate and key are generated anew for every build, and they are the only files that differ between two builds of one tree. Pin the digest of the asset published here, not the digest of a rebuild.
           - **Relation to a workstation build.** `make release` runs in the builder container, whose base image, packages, Go and Rust installer are pinned by digest or version, so the runner's own toolchain reaches no asset. Build the commit with `make release VERSION=@TAG@` on a workstation with Docker and compare `SHA256SUMS`: every line is equal except `naru-data-@TAG@.qcow2`, `naru-node-1.test.yaml`, and `naru-node-2.test.yaml`, which differ in each build by design. `make image-repro REFERENCE=<this SHA256SUMS> VERSION=@TAG@` does the comparison.
+          - **Verify the release.** `SHA256SUMS` is signed keyless by this workflow's identity, and every asset it lists has a build provenance attestation. Download `SHA256SUMS` and `SHA256SUMS.sigstore.json` and the assets you use, then run:
+
+            ```
+            cosign verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity 'https://github.com/garamsh/naru/.github/workflows/release.yml@refs/tags/@TAG@' --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+            sha256sum --check --ignore-missing SHA256SUMS
+            gh attestation verify <asset> -R garamsh/naru
+            ```
+
+            A release that a manual run (`workflow_dispatch`) published carries the ref that run started from in the identity instead of `refs/tags/@TAG@`. `docs/operate/verify-a-release.md` has the details.
+          - **A tag publishes once.** A second run for this tag, on the same commit, compares its `SHA256SUMS` with this release's and uploads nothing when they agree on every asset but the three that differ in each build; it fails and names the asset when any other differs.
           NOTES
           if [ -n "$RECREATE" ]; then
             cat >>notes.md <<'NOTES'
@@ -223,19 +285,37 @@ jobs:
           } >>notes.md
           cat notes.md
 
+      # cosign signs SHA256SUMS keyless: Fulcio issues a certificate for this workflow's OIDC
+      # identity, and the bundle holds the signature, the certificate and the Rekor entry. SHA256SUMS
+      # vouches for every other asset, so one signature covers the release.
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        if: steps.existing.outputs.identical != 'true'
+        with:
+          cosign-release: "v3.1.4"
+
+      - name: Sign SHA256SUMS
+        if: steps.existing.outputs.identical != 'true'
+        working-directory: release
+        run: |
+          cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+          test -s SHA256SUMS.sigstore.json
+
+      # The SLSA provenance of every asset SHA256SUMS lists, stored with the repository.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: steps.existing.outputs.identical != 'true'
+        with:
+          subject-checksums: release/SHA256SUMS
+
       - name: Publish the release
+        if: steps.existing.outputs.identical != 'true'
         run: |
           # A tag with "-" is a pre-release and never the latest release.
           case "$TAG" in
             *-*) kind="--prerelease --latest=false" ;;
             *) kind="" ;;
           esac
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            # shellcheck disable=SC2086
-            gh release edit "$TAG" --title "$TAG" --notes-file notes.md $kind
-            gh release upload "$TAG" release/* --clobber
-          else
-            # shellcheck disable=SC2086
-            gh release create "$TAG" release/* --verify-tag --title "$TAG" --notes-file notes.md $kind
-          fi
+          # The release of the tag does not exist (the step above failed on one that differs, and
+          # this step is skipped for one that agrees), so it is created, never edited or overwritten.
+          # shellcheck disable=SC2086
+          gh release create "$TAG" release/* --verify-tag --title "$TAG" --notes-file notes.md $kind
           gh release view "$TAG" --json tagName,url,assets --jq '.tagName, .url, (.assets[] | "\(.name) \(.size)")'
