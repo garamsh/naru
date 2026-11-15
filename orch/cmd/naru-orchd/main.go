@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
 	"github.com/garamsh/naru/orch/internal/groups"
@@ -50,7 +51,7 @@ func main() {
 		revoke      = flag.String("revocation-public-key", "/var/lib/naru/orch/tls/revocation.pub", "the Ed25519 public key (PKIX, PEM) that verifies the revocation list")
 		recovery    = flag.String("recovery-public-key", "", "the recovery key's public half; without it no snapshot is written")
 		snapEvery   = flag.Duration("snapshot-interval", snapshot.DefaultInterval, "how often a snapshot is taken")
-		maxAge      = flag.Duration("revocation-max-age", auth.DefaultMaxAge, "how long a revocation list that cannot be refreshed is used before callers are refused with 503")
+		maxAge      = flag.Duration("revocation-max-age", identity.DefaultMaxAge, "how long a revocation list that cannot be refreshed is used before callers are refused with 503")
 		crlEvery    = flag.Duration("revocation-sync-interval", crlsync.DefaultInterval, "how often the revocation list is synced between the signers")
 		snapKeep    = flag.Int("snapshot-keep", snapshot.DefaultKeep, "how many snapshots are kept")
 		hostCert    = flag.String("host-client-cert", "", "the certificate orch presents to the hosts' APIs; defaults to --cert")
@@ -102,7 +103,8 @@ func run(log *slog.Logger, f runFlags) error {
 	if err != nil {
 		return err
 	}
-	authn := newAuthenticator(sg, revokeKey, f.maxAge, log)
+	revocations := newRevocations(sg, revokeKey, f.maxAge, log)
+	authn := auth.Revocations{List: revocations}
 	sealer, err := newSealer(f.recovery)
 	if err != nil {
 		return err
@@ -126,9 +128,9 @@ func run(log *slog.Logger, f runFlags) error {
 		GroupInterval: f.groupEach, NetworkInterval: f.netEach, Restore: f.restore,
 	}, orchd.Deps{
 		Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
-		NewHosts: func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP) },
+		NewHosts: func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP, revocations) },
 		NewNetworkHosts: func(inv inventory.Service) netrec.Hosts {
-			return hostclient.NewNetHosts(inv, hostclient.DialNetAPI(hostHTTP))
+			return hostclient.NewNetHosts(inv, hostclient.DialNetAPI(hostHTTP, revocations))
 		},
 	})
 	if err != nil {

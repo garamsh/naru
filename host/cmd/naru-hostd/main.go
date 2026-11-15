@@ -19,6 +19,7 @@ import (
 	"github.com/garamsh/naru/host/internal/fence"
 	"github.com/garamsh/naru/host/internal/mvmd"
 	"github.com/garamsh/naru/host/internal/network"
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/metrics"
 )
 
@@ -44,6 +45,11 @@ func main() {
 		hostID    = flag.String("host-id", "", "the name this host enrolls under (default: the hostname)")
 		advertise = flag.String("advertise", "", "address orch lists for this host (default: --listen)")
 
+		revKey      = flag.String("revocation-public-key", "", "PEM public key that verifies the signer's revocation list; empty checks no revocation")
+		revMaxAge   = flag.Duration("revocation-max-age", identity.DefaultMaxAge, "how long a revocation list that cannot be refreshed is used before every client is refused")
+		revSocket   = flag.String("revocation-signer-socket", "", "the local signer's socket to read the list from; empty fetches it from --orch-url")
+		revFile     = flag.String("revocation-file", "/var/lib/naru/hostd/crl.json", "where the last verified list is kept, so a restart within the max age needs no fetch first")
+		revSeed     = flag.String("revocation-seed", "", "a signed list delivered with the host's configuration, taken when it is newer than the kept one")
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 
 		management = flag.String("management-prefix", "", "prefix of the management plane; set, it turns the virtual networks on")
@@ -76,7 +82,14 @@ func main() {
 		nets, netMgr = m, m
 	}
 
-	conf, err := api.TLSConfig(*cert, *key, *clients)
+	revocations, err := newRevocations(revocationConfig{
+		keyFile: *revKey, maxAge: *revMaxAge, signerSocket: *revSocket, orchURL: *orchURL, orchCA: *orchCA, file: *revFile, seedFile: *revSeed,
+	}, log)
+	if err != nil {
+		log.Error("cannot set up the revocation list", "err", err.Error())
+		os.Exit(1)
+	}
+	conf, err := api.TLSConfig(*cert, *key, *clients, revocations)
 	if err != nil {
 		log.Error("cannot load the serving pair or the client CA", "err", err.Error())
 		os.Exit(1)
@@ -96,6 +109,8 @@ func main() {
 	rt := mvmd.New(*socket)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	go prefetch(ctx, revocations, log)
 
 	r := &fence.Renewer{Runtime: rt, Length: *length, Interval: *interval, Retry: 5 * time.Second, Log: log}
 	go r.Run(ctx)
@@ -125,7 +140,7 @@ func main() {
 	}
 
 	reg := metrics.New()
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg})
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations})
 	if *metricsAddr != "" {
 		go func() {
 			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {

@@ -196,5 +196,5 @@ func (s *service) configFor(ctx context.Context, h Host) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return j.buildConfig(h, prefix, s.conf.OrchCA)
+	return j.buildConfig(h, prefix, s.conf.OrchCA, s.conf.RevocationPublicKey)
 }

@@ -21,6 +21,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/orch/internal/api"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
@@ -133,6 +134,12 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	}
 	// A joined host's naru-hostd trusts the authority orch's callers' certificates chain to.
 	c.Limits.OrchCA = string(callersCA)
+	if d.RevocationKey != nil {
+		// A joined host is also told the key that signs the list, to check its clients against it.
+		if c.Limits.RevocationPublicKey, err = identity.EncodeRevocationPublic(d.RevocationKey); err != nil {
+			return nil, err
+		}
+	}
 	awaitRestore := c.Restore && !member.HasData(c.DataDir)
 	if c.Restore && !awaitRestore {
 		d.Log.Warn("--restore ignored: the data directory holds a member", "data_dir", c.DataDir)

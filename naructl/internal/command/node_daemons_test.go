@@ -2,6 +2,7 @@ package command_test
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
@@ -36,7 +37,9 @@ func newDaemonInputs(t *testing.T) daemonInputs {
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "orch"}, NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour)}
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
 	require.NoError(t, err)
-	pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	revPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pubDER, err := x509.MarshalPKIXPublicKey(revPub)
 	require.NoError(t, err)
 	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
 	require.NoError(t, err)

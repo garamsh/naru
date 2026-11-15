@@ -117,13 +117,29 @@ func TestAdmittingAHostFromTheSeedBuildsItsConfigurationAndHandsItOverOnPoll(t *
 	assert.Equal(t, string(st.Certificate), files["/run/naru-hostd/tls.crt"], "the certificate orch issued is in the configuration")
 	assert.Equal(t, string(o.c.CA.PEM()), files["/run/naru-hostd/client-ca.crt"], "naru-hostd trusts the authority orch's callers chain to")
 	assert.NotContains(t, string(st.Config), "PRIVATE KEY")
+	host, _ := cfg.Spec["host"].(map[string]any)
+	wantKey, err := identity.EncodeRevocationPublic(o.c.CA.RevocationKey())
+	require.NoError(t, err)
+	assert.Equal(t, wantKey, host["revocationPublicKey"], "the host checks its clients against the key the list is signed with")
+	list, _ := host["revocationList"].(string)
+	got, err := identity.VerifyCRL(o.c.CA.RevocationKey(), []byte(list))
+	require.NoError(t, err, "the host starts with the list orch's signer held when it admitted the host")
+	assert.NotNil(t, got)
 	assert.Contains(t, string(st.Config), "10.200.1.0/24", "the lowest prefix of the pool that is not its first")
 
 	// A host that lost the response enrolls again and is handed the same.
 	again, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
 	require.NoError(t, err)
-	assert.Equal(t, st.Config, again.Config)
 	assert.Equal(t, st.Certificate, again.Certificate)
+	// The configuration is built from the record on each answer and carries the signer's list as it
+	// is then, which is signed afresh; everything else is the same.
+	var again2 builtConfig
+	require.NoError(t, yaml.Unmarshal(again.Config, &again2))
+	for _, c := range []*builtConfig{&cfg, &again2} {
+		h, _ := c.Spec["host"].(map[string]any)
+		delete(h, "revocationList")
+	}
+	assert.Equal(t, cfg, again2)
 }
 
 func TestAHostEnrolledWithItsOwnConfigurationIsAdmittedWithoutOne(t *testing.T) {

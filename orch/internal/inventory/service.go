@@ -56,6 +56,10 @@ type Config struct {
 	// OrchCA is the PEM of the authority orch's certificate chains to, which a joined host's naru-hostd
 	// trusts for orch's calls. It is the authority of the callers' certificates, which orch holds.
 	OrchCA string
+	// RevocationPublicKey is the PKIX PEM of the key that signs the revocation list. With it a
+	// joined host's configuration carries the key and the list orch's signer holds at admission
+	// (ADR 0062); empty leaves a joined host with no revocation check.
+	RevocationPublicKey string
 }
 
 type service struct {

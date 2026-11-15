@@ -1,15 +1,19 @@
 package layout_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
 )
@@ -137,4 +141,29 @@ func TestUserData_RefusesAHostInitWouldRefuse(t *testing.T) {
 	n.Host.Labels["example.com/tier"] = "gold"
 	_, err := n.UserData()
 	assert.NoError(t, err, "the control: a prefixed key is a label key")
+}
+
+func TestUserData_ANodeThatRunsOrchChecksItsClientsAgainstTheKeyOrchVerifiesWith(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pubPEM, err := identity.EncodeRevocationPublic(pub)
+	require.NoError(t, err)
+	n, _ := hostNode(t)
+	n.Signer = &layout.Signer{}
+	n.Extensions = []layout.Extension{{Name: layout.OrchExtension, SHA256: strings.Repeat("e", 64)}}
+	n.Orch = &layout.Orch{
+		PeerURL: "https://192.168.0.20:2380", ClientURL: "https://192.168.0.20:2379",
+		InitialCluster: map[string]string{"naru-" + n.Name: "https://192.168.0.20:2380"},
+		Certificate:    "c", CA: "ca", Key: "k", RevocationPublicKey: pubPEM,
+	}
+	n.API = nil
+	data, err := n.UserData()
+	require.NoError(t, err)
+	var p struct {
+		Spec struct {
+			Host map[string]any `yaml:"host"`
+		} `yaml:"spec"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &p))
+	assert.Equal(t, pubPEM, p.Spec.Host["revocationPublicKey"], "hostd reads the list from the signer on this Node")
 }

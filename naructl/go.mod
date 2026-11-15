@@ -15,6 +15,7 @@ require (
 )
 
 require (
+	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	golang.org/x/crypto v0.45.0 // indirect
 )
@@ -28,3 +29,5 @@ replace github.com/garamsh/naru/lib/iso9660 => ../lib/iso9660
 replace github.com/garamsh/naru/lib/layout => ../lib/layout
 
 replace github.com/garamsh/naru/lib/orchapi => ../lib/orchapi
+
+replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile

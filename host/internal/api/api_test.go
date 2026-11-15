@@ -30,6 +30,7 @@ import (
 	"github.com/garamsh/naru/host/internal/mvmd"
 	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/identity"
 )
 
 const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -134,6 +135,11 @@ func startWith(t *testing.T, gateway netip.Addr) *env { return startEnv(t, gatew
 
 // startEnv starts a server whose machine gateway is gateway; it has networks when networks is true.
 func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
+	return startEnvRevoking(t, gateway, networks, nil)
+}
+
+// startEnvRevoking is startEnv for a listener that checks its clients against revocations.
+func startEnvRevoking(t *testing.T, gateway netip.Addr, networks bool, revocations *identity.RevocationList) *env {
 	t.Helper()
 	dir := t.TempDir()
 	ca := newAuthority(t, "clients")
@@ -144,7 +150,7 @@ func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
 		require.NoError(t, os.WriteFile(p, b, 0o600))
 		return p
 	}
-	conf, err := TLSConfig(write("tls.crt", crt), write("tls.key", key), write("ca.crt", ca.pem))
+	conf, err := TLSConfig(write("tls.crt", crt), write("tls.key", key), write("ca.crt", ca.pem), revocations)
 	require.NoError(t, err)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -156,7 +162,7 @@ func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
 	e.tunnel = &fakeTunnel{}
 	e.state = filepath.Join(dir, "networks.json")
 	e.nets = e.manager()
-	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics}
+	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics, Revocations: revocations}
 	if networks {
 		deps.Networks = e.nets
 	}
