@@ -45,7 +45,7 @@ if ! "$docker" image inspect "$tag" >/dev/null 2>&1; then
   fi
   "$docker" buildx build --builder "$bk" --provenance=false --sbom=false \
     --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-    --output "type=oci,dest=$out/builder.tar,rewrite-timestamp=true" \
+    --output "type=docker,dest=$out/builder.tar,rewrite-timestamp=true" \
     --metadata-file "$out/metadata.json" "$here" >&2
   got=$(sed -n 's/.*"containerimage.config.digest": "\(sha256:[0-9a-f]*\)".*/\1/p' "$out/metadata.json")
   if [ "$got" != "$BUILDER_CONFIG_DIGEST" ]; then
