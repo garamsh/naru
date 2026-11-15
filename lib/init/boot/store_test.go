@@ -9,8 +9,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/init/boot"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/store"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // storedWith returns a store of revision 3 whose configuration is validConfig
@@ -92,4 +94,104 @@ func TestRun_RunsTheBaseWhenThereIsNoStore(t *testing.T) {
 	assert.Equal(t, 0, got.Revision)
 	assert.Equal(t, store.Digest([]byte(validConfig)), got.BaseSha256)
 	assert.Empty(t, r.saved, "a Node that never applied a change has nothing to store")
+}
+
+// seedless is a recorder with no NoCloud drive, which holds the stored configuration and network.
+func seedless(t *testing.T) *recorder {
+	t.Helper()
+	r := &recorder{readErr: fmt.Errorf("NoCloud drive \"cidata\": %w", boot.ErrNoSeed)}
+	r.stored = storedWith(t, validConfig, "")
+	r.storedNetwork, r.hasNetwork = []byte(validNetwork), true
+	return r
+}
+
+func TestRun_WithNoSeedRunsTheStoredConfigurationOnTheStoredNetworkAndNeverFormats(t *testing.T) {
+	r := seedless(t)
+
+	got, err := runStored(r)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"stored"}, r.started)
+	assert.Equal(t, 3, got.Revision)
+	assert.Equal(t, config.DataDisk{Label: wire.DataLabel, MountPoint: wire.DataMount}, r.mounted, "the data disk is found by the default label")
+	require.Len(t, r.applied.Interfaces, 1)
+	assert.Equal(t, "eth0", r.applied.Interfaces[0].Name, "the network is the stored one")
+	assert.Equal(t, []string{"read", "mount", "load", "network", "api", "forward", "files", "registries", "prepare", "seal", "start stored"}, r.calls, "the disk is mounted before the network, which is stored on it, and never formatted")
+	assert.Empty(t, r.saved)
+	assert.False(t, r.savedNetwork)
+}
+
+func TestRun_WithNoSeedAndNoStoredConfigurationIsRefusedNamingBoth(t *testing.T) {
+	r := seedless(t)
+	r.stored = nil
+
+	_, err := runStored(r)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, boot.ErrNoSeed)
+	assert.ErrorIs(t, err, store.ErrNotFound)
+	assert.Empty(t, r.started)
+	// The control: the same Node with its configuration stored boots.
+	ok := seedless(t)
+	_, err = runStored(ok)
+	require.NoError(t, err)
+}
+
+func TestRun_WithNoSeedAndAStoredConfigurationThatDoesNotValidateIsRefused(t *testing.T) {
+	r := seedless(t)
+	r.loadErr = errors.New("store.yaml: spec.dataDisk: must name the disk")
+
+	_, err := runStored(r)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, boot.ErrNoSeed)
+	assert.Contains(t, err.Error(), "must name the disk")
+	assert.Empty(t, r.started)
+	assert.Empty(t, r.saved, "a stored configuration is never replaced by a guess")
+}
+
+func TestRun_WithNoSeedAndNoStoredNetworkIsRefusedAndSaysToAttachTheSeed(t *testing.T) {
+	r := seedless(t)
+	r.hasNetwork = false
+
+	_, err := runStored(r)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no stored network-config; attach the seed for one boot")
+	assert.Empty(t, r.started)
+	assert.NotContains(t, r.calls, "network", "no network is guessed")
+}
+
+func TestRun_WithNoSeedAndADataDiskThatCannotBeMountedIsRefused(t *testing.T) {
+	r := seedless(t)
+	r.diskErr = errors.New("no disk with that label")
+
+	_, err := runStored(r)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, boot.ErrNoSeed)
+	assert.Contains(t, err.Error(), "no disk with that label")
+	assert.Empty(t, r.started)
+}
+
+func TestRun_ASeedStoresItsNetworkConfigForTheNextBootWithNoSeed(t *testing.T) {
+	r := &recorder{raw: validConfig}
+
+	_, err := runStored(r)
+
+	require.NoError(t, err)
+	assert.True(t, r.savedNetwork)
+	assert.Equal(t, validNetwork, string(r.networkSaved))
+}
+
+func TestRun_ASeedAttachedAgainWinsOverTheStoredConfigurationUnderTheDigestRule(t *testing.T) {
+	r := &recorder{raw: validConfig}
+	r.stored = storedWith(t, validConfig, store.Digest([]byte("an older user-data")))
+	r.storedNetwork, r.hasNetwork = []byte("stale"), true
+
+	got, err := runStored(r)
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, got.Revision, "the seed's base replaces a stored configuration of another base")
+	assert.Equal(t, validNetwork, string(r.networkSaved), "the stored network is the seed's again")
 }

@@ -15,12 +15,18 @@ import (
 	"github.com/garamsh/naru/lib/init/netcfg"
 	"github.com/garamsh/naru/lib/init/store"
 	"github.com/garamsh/naru/lib/init/timesync"
+	"github.com/garamsh/naru/lib/wire"
 )
+
+// ErrNoSeed is what Host.ReadSeed wraps when no NoCloud drive is attached, which is not a
+// refusal: the Node then runs the configuration stored on its data disk.
+var ErrNoSeed = errors.New("no NoCloud drive is attached")
 
 // Host is the machine as the sequence needs it.
 type Host interface {
 	// ReadSeed returns the bytes of the NoCloud drive's user-data, which is
-	// naru.yaml, and of its network-config.
+	// naru.yaml, and of its network-config. When no drive is attached it returns an error wrapping
+	// ErrNoSeed.
 	ReadSeed() (userData, networkConfig []byte, err error)
 	// ApplyNetwork brings the network up and writes the resolvers, and returns what the Node was
 	// given: its addresses, its resolvers and the time servers a DHCPv4 lease named.
@@ -68,6 +74,11 @@ type Configs interface {
 	Load() (store.Stored, error)
 	// Save stores st.
 	Save(store.Stored) error
+	// LoadNetwork returns the network-config stored beside the configuration, and
+	// store.ErrNotFound when none was stored.
+	LoadNetwork() ([]byte, error)
+	// SaveNetwork stores the network-config of the seed the Node booted from.
+	SaveNetwork([]byte) error
 }
 
 // Services runs the services.
@@ -93,35 +104,23 @@ type API interface {
 // Nor is a route the kernel refuses, nor a storage disk that is missing or cannot be prepared: each is logged too.
 // On success it returns the effective configuration and its revision.
 func Run(host Host, issuer Issuer, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
+	var (
+		effective store.Stored
+		applied   netcfg.Applied
+	)
 	userData, networkConfig, err := host.ReadSeed()
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrNoSeed):
+		log.Info("no NoCloud drive; running the stored configuration", "err", err)
+		effective, applied, err = bootStored(host, configs, err, log)
+	case err != nil:
 		return store.Stored{}, fmt.Errorf("read the NoCloud drive: %w", err)
+	default:
+		effective, applied, err = bootSeeded(host, configs, userData, networkConfig, log)
 	}
-	base, err := config.Parse(userData)
 	if err != nil {
-		return store.Stored{}, fmt.Errorf("invalid configuration: %w", err)
-	}
-	network, err := netcfg.Parse(networkConfig)
-	if err != nil {
-		return store.Stored{}, fmt.Errorf("invalid network configuration: %w", err)
-	}
-	log.Info("configuration accepted", "node", base.Metadata.Name, "services", len(base.Spec.Services))
-
-	applied, err := host.ApplyNetwork(network, log)
-	if err != nil {
-		return store.Stored{}, fmt.Errorf("apply network configuration: %w", err)
-	}
-	log.Info("network configured", "interfaces", len(network.Interfaces), "nameservers", len(applied.Nameservers))
-
-	if base.Spec.DataDisk.FormatBlank {
-		if err := host.FormatBlankDataDisk(base.Spec.DataDisk, log); err != nil {
-			return store.Stored{}, err
-		}
-	}
-	if err := host.MountDataDisk(base.Spec.DataDisk); err != nil {
 		return store.Stored{}, err
 	}
-	effective := choose(configs, store.Digest(userData), base, log)
 	cfg := effective.Config
 	// The API starts once the configuration is chosen, before anything else can refuse, so a
 	// Node that refuses after this still answers reads.
@@ -168,6 +167,76 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 		}
 	}
 	return effective, nil
+}
+
+// bootSeeded brings the network up from the seed, mounts the data disk the seed's configuration
+// names and chooses the effective configuration against the seed's digest. It stores the seed's
+// network-config for a boot with no seed; a store that cannot take it is logged and the boot goes on.
+func bootSeeded(host Host, configs Configs, userData, networkConfig []byte, log *slog.Logger) (store.Stored, netcfg.Applied, error) {
+	base, err := config.Parse(userData)
+	if err != nil {
+		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("invalid configuration: %w", err)
+	}
+	network, err := netcfg.Parse(networkConfig)
+	if err != nil {
+		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("invalid network configuration: %w", err)
+	}
+	log.Info("configuration accepted", "node", base.Metadata.Name, "services", len(base.Spec.Services))
+
+	applied, err := host.ApplyNetwork(network, log)
+	if err != nil {
+		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("apply network configuration: %w", err)
+	}
+	log.Info("network configured", "interfaces", len(network.Interfaces), "nameservers", len(applied.Nameservers))
+
+	if base.Spec.DataDisk.FormatBlank {
+		if err := host.FormatBlankDataDisk(base.Spec.DataDisk, log); err != nil {
+			return store.Stored{}, netcfg.Applied{}, err
+		}
+	}
+	if err := host.MountDataDisk(base.Spec.DataDisk); err != nil {
+		return store.Stored{}, netcfg.Applied{}, err
+	}
+	effective := choose(configs, store.Digest(userData), base, log)
+	if err := configs.SaveNetwork(networkConfig); err != nil {
+		log.Error("store the network-config of the seed; a boot with no seed will not have it", "err", err)
+	}
+	return effective, applied, nil
+}
+
+// bootStored runs a Node with no seed: it mounts the data disk by its default label and mount
+// point, never formatting it, loads the stored configuration and the stored network-config, and
+// brings the network up from them. noSeed is the reason there is no seed, which a refusal names
+// beside the reason there is no stored configuration. A stored configuration has no base to
+// compare with, so its digest is not checked. A Node whose network-config was never stored, because
+// it last booted with a seed before init stored it, is refused: no network is guessed.
+func bootStored(host Host, configs Configs, noSeed error, log *slog.Logger) (store.Stored, netcfg.Applied, error) {
+	disk := config.DataDisk{Label: wire.DataLabel, MountPoint: wire.DataMount}
+	if err := host.MountDataDisk(disk); err != nil {
+		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("%w, and the data disk %q that holds the stored configuration cannot be mounted: %w", noSeed, disk.Label, err)
+	}
+	stored, err := configs.Load()
+	if err != nil {
+		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("%w, and there is no valid stored configuration: %w", noSeed, err)
+	}
+	networkConfig, err := configs.LoadNetwork()
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("%w, and there is no stored network-config; attach the seed for one boot so that init stores it", noSeed)
+	case err != nil:
+		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("%w, and the stored network-config cannot be read: %w", noSeed, err)
+	}
+	network, err := netcfg.Parse(networkConfig)
+	if err != nil {
+		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("invalid stored network configuration: %w", err)
+	}
+	applied, err := host.ApplyNetwork(network, log)
+	if err != nil {
+		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("apply network configuration: %w", err)
+	}
+	log.Info("network configured", "interfaces", len(network.Interfaces), "nameservers", len(applied.Nameservers))
+	log.Info("running the stored configuration", "revision", stored.Revision)
+	return stored, applied, nil
 }
 
 // setAsidePair sets aside the pair svc kept when its certificate lacks the Organization svc needs

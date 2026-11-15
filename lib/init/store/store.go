@@ -25,6 +25,10 @@ const Dir = wire.DataMount + "/config"
 // FileName is the store's file in its directory.
 const FileName = "store.yaml"
 
+// NetworkFileName is the network-config of the seed the store was last taken from, in the same
+// directory.
+const NetworkFileName = "network-config"
+
 // ErrNotFound is returned by Load when the directory holds no store.
 var ErrNotFound = errors.New("no stored configuration")
 
@@ -102,4 +106,25 @@ func (s *Store) Save(st Stored) error {
 		return err
 	}
 	return atomicfile.Write(filepath.Join(s.dir, FileName), data, 0o600)
+}
+
+// SaveNetwork writes the network-config of the seed, which may be empty, beside the store with
+// atomicfile.Write, so that a boot with no seed brings the network up as the last one with a seed did.
+func (s *Store) SaveNetwork(networkConfig []byte) error {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	return atomicfile.Write(filepath.Join(s.dir, NetworkFileName), networkConfig, 0o600)
+}
+
+// LoadNetwork returns the network-config SaveNetwork wrote, and ErrNotFound when none was written.
+func (s *Store) LoadNetwork() ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(s.dir, NetworkFileName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrUnreadable, err)
+	}
+	return data, nil
 }

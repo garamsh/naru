@@ -64,6 +64,8 @@ type Spec struct {
 	// SerialSocket attaches the serial port as a server socket, SerialSocketPath(Dir), that
 	// nothing reads, as Proxmox does for `serial0: socket`. Console is then empty.
 	SerialSocket bool
+	// NoSeed leaves the NoCloud drive unattached: a host whose seed was detached.
+	NoSeed bool
 	// Capture records every frame of the shared network the Node sends and receives, as a pcap file at
 	// CapturePath(Dir): the tests read what crossed the link between two hosts.
 	Capture bool
@@ -80,12 +82,14 @@ type Node struct {
 	extra string
 	// extraFirst attaches the extra disk before the data disk at the next boot.
 	extraFirst bool
-	boots      int
-	console    string
-	cmd        *exec.Cmd
-	done       chan struct{}
-	waitErr    error
-	once       sync.Once
+	// noSeed leaves the NoCloud drive out at the next boot.
+	noSeed  bool
+	boots   int
+	console string
+	cmd     *exec.Cmd
+	done    chan struct{}
+	waitErr error
+	once    sync.Once
 }
 
 // Start builds the Node's disks and boots it with its serial console written
@@ -120,6 +124,7 @@ func Start(spec Spec) (*Node, error) {
 	n.argv = func(console string) []string {
 		s := spec
 		s.ExtraDiskFirst = n.extraFirst
+		s.NoSeed = n.noSeed
 		args, _ := qemuArgs(s, name, cidata, dataDisk, console)
 		return args
 	}
@@ -225,6 +230,10 @@ func (n *Node) ExtraDisk() string { return n.extra }
 // SwapDisks makes the Node's next boot attach its extra disk and data disk in the other order.
 func (n *Node) SwapDisks() { n.extraFirst = !n.extraFirst }
 
+// DetachSeed makes the Node's next boot, and every one after it, start without its NoCloud drive,
+// as an operator detaches the seed CD-ROM of an admitted host.
+func (n *Node) DetachSeed() { n.noSeed = true }
+
 // Reboot kills the Node's QEMU process, as a power cut does, and starts it again on the same boot
 // disk, data disk, NoCloud drive and firmware variables. Its Console is then the new boot's. It must
 // not be called while a WaitFor is in progress.
@@ -285,9 +294,13 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		"-device", "scsi-hd,bus=scsihw0.0,drive=boot,bootindex=0",
 	}
 	args = append(args, dataAndExtraDisks(spec, dataDisk)...)
+	if !spec.NoSeed {
+		args = append(args,
+			"-drive", "if=none,id=cidata,format=raw,media=cdrom,readonly=on,file="+cidata,
+			"-device", "ide-cd,bus=ide.1,drive=cidata",
+		)
+	}
 	args = append(args,
-		"-drive", "if=none,id=cidata,format=raw,media=cdrom,readonly=on,file="+cidata,
-		"-device", "ide-cd,bus=ide.1,drive=cidata",
 		"-netdev", "socket,id=net0,mcast="+spec.Mcast+",localaddr=127.0.0.1",
 		"-device", "virtio-net-pci,netdev=net0,mac="+spec.Config.MAC(),
 	)
