@@ -1,13 +1,14 @@
 package linux
 
 import (
-	"fmt"
+	"context"
 	"io"
 	"os"
 	"os/exec"
 	"sort"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/service"
@@ -25,6 +26,8 @@ type Sources interface {
 type Launcher struct {
 	reaper  *Reaper
 	console Sources
+	// setupBound is how long one setup step may run; setupTimeout when 0.
+	setupBound time.Duration
 }
 
 var _ service.Launcher = (*Launcher)(nil)
@@ -35,10 +38,11 @@ func NewLauncher(reaper *Reaper, console Sources) *Launcher {
 	return &Launcher{reaper: reaper, console: console}
 }
 
-// Launch starts svc with exactly the environment its configuration names.
+// Launch starts svc with exactly the environment its configuration names. ctx bounds the setup
+// steps that run first, and not the service, which runs until it is stopped.
 // The child is created in the cgroup directly (CLONE_INTO_CGROUP), so it is
 // never outside it.
-func (l *Launcher) Launch(svc config.Service, cgroup string) (service.Process, error) {
+func (l *Launcher) Launch(ctx context.Context, svc config.Service, cgroup string) (service.Process, error) {
 	dir, err := os.Open(cgroup)
 	if err != nil {
 		return nil, err
@@ -62,7 +66,7 @@ func (l *Launcher) Launch(svc config.Service, cgroup string) (service.Process, e
 		out.Close()
 		return nil, err
 	}
-	if err := l.runSetup(svc, newCmd, l.console.Source(svc.Name)); err != nil {
+	if err := l.runSetup(ctx, svc, cgroup, newCmd, l.console.Source(svc.Name)); err != nil {
 		out.Close()
 		return nil, err
 	}
@@ -122,14 +126,7 @@ type process struct {
 func (p *process) Wait() error {
 	ws := <-p.exited
 	_ = p.proc.Release()
-	switch {
-	case ws.Exited() && ws.ExitStatus() == 0:
-		return nil
-	case ws.Exited():
-		return fmt.Errorf("exit status %d", ws.ExitStatus())
-	default:
-		return fmt.Errorf("signal: %s", ws.Signal())
-	}
+	return statusError(ws)
 }
 
 func (p *process) PID() int { return p.pid }

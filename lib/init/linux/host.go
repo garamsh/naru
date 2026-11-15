@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -54,6 +55,11 @@ type Host struct {
 	links          links
 
 	dataMountPoint string
+	// storageMounts are the mount points of the storage disks, in the order they were mounted,
+	// and unmount is syscall.Unmount when nil.
+	mu            sync.Mutex
+	storageMounts []string
+	unmount       func(dir string) error
 
 	// carrierWait bounds the wait for a link with a carrier; leaseWait, the first DHCPv4 exchange
 	// (leaseWait when 0). dhcpOpen opens the DHCP transport of a link (the packet sockets when nil)
@@ -67,17 +73,17 @@ type Host struct {
 	time *timesync.Syncer
 }
 
-// NewHost returns the Host of the running machine. A disk or a network
-// interface that has not appeared when it is first looked for is waited for up
-// to diskWait.
-func NewHost(diskWait time.Duration) *Host {
+// NewHost returns the Host of the running machine, whose programs (mkfs) run through reaper. A disk
+// or a network interface that has not appeared when it is first looked for is waited for up to
+// diskWait.
+func NewHost(diskWait time.Duration, reaper *Reaper) *Host {
 	return &Host{
 		sysClassBlock: "/sys/class/block",
 		devDir:        "/dev",
 		procSys:       "/proc/sys",
 		diskWait:      diskWait,
 		mount:         syscall.Mount,
-		run:           execRun,
+		run:           reaper.Output,
 		grow:          growFS,
 
 		seedMountPoint: seedMountPoint,

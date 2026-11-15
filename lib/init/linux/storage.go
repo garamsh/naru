@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -27,10 +26,6 @@ const (
 
 // runFunc runs a program and returns its combined output.
 type runFunc func(name string, args ...string) ([]byte, error)
-
-func execRun(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
-}
 
 // growFunc grows the XFS file system mounted at dir to blocks data blocks.
 type growFunc func(dir string, blocks uint64, imaxPct uint8) error
@@ -105,6 +100,9 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	if err := h.mount(dev, mnt, "xfs", hardened, ""); err != nil {
 		return fmt.Errorf("storage %q: mount %s on %s: %w", s.Name, dev, mnt, err)
 	}
+	h.mu.Lock()
+	h.storageMounts = append(h.storageMounts, mnt)
+	h.mu.Unlock()
 	// Only the daemon lists the directory mvmd keeps its disks in.
 	if err := os.Chmod(mnt, 0o700); err != nil {
 		return fmt.Errorf("storage %q: %w", s.Name, err)
