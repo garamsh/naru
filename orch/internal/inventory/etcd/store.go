@@ -88,6 +88,9 @@ func list[T any](ctx context.Context, s *Store, prefix string) ([]T, error) {
 func update[T any](ctx context.Context, s *Store, key string, change func(*T) error, ops ...clientv3.Op) (T, error) {
 	var v T
 	for range casRetries {
+		// Each attempt decodes into a fresh value: JSON leaves a field the document omits as it
+		// was, so a reused value would carry the earlier attempt's field into the write.
+		v = *new(T)
 		rev, err := s.get(ctx, key, &v)
 		if err != nil {
 			return v, err
