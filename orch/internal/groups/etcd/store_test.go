@@ -128,14 +128,15 @@ func TestEventsGoToTheInventoryLogAndARepeatedHoldIsWrittenOnce(t *testing.T) {
 	require.NoError(t, e.Record(t.Context(), hold))
 	require.NoError(t, e.Record(t.Context(), groups.Event{Time: t0.Add(time.Second), Kind: groups.EventCreate, Group: "web", Member: "web-1", Host: "h1", Message: "create"}))
 
-	evs, err := inv.ListEvents(t.Context())
+	evs, err := inv.ListEvents(t.Context(), "")
 	require.NoError(t, err)
 	var types []string
 	for _, ev := range evs {
 		types = append(types, ev.Type)
 	}
-	require.Equal(t, []string{"group.hold", "group.create", "group.hold"}, types)
-	require.Equal(t, orchapi.Event{Time: t0.Add(time.Second), Type: "group.create", Subject: "web-1", Detail: map[string]string{"message": "create", "group": "web", "member": "web-1", "host": "h1"}}, evs[1])
+	require.Equal(t, []string{"group.hold", "group.hold", "group.create"}, types, "the log is in the order the events were committed")
+	require.Equal(t, orchapi.Event{Time: t0.Add(time.Second), Type: "group.create", Subject: "web-1", Detail: map[string]string{"message": "create", "group": "web", "member": "web-1", "host": "h1"}, Cursor: evs[2].Cursor}, evs[2])
+	require.NotEmpty(t, evs[2].Cursor)
 }
 
 func podMember(id, network, prefix string) groups.Member {
@@ -298,4 +299,20 @@ func TestAReplaceOfAGroupThatChangedMeanwhileIsRefused(t *testing.T) {
 	c := a
 	c.Count = 7
 	require.ErrorIs(t, s.PutGroup(t.Context(), c, &a), inventory.ErrConflict)
+}
+
+func TestARefusedCreatesCountAndWaitAreKeptOnTheMemberRecord(t *testing.T) {
+	s, _ := newStore(t)
+	retry := time.Date(2026, 11, 14, 9, 0, 10, 0, time.UTC)
+	m, err := s.PutMember(t.Context(), groups.Member{ID: "web-1", Group: "web", Host: "a", MachineID: "web-1", Phase: groups.PhasePending})
+	require.NoError(t, err)
+	m.CreateFailures, m.RetryAt = 2, retry
+	_, err = s.PutMember(t.Context(), m)
+	require.NoError(t, err)
+
+	all, err := s.ListMembers(t.Context())
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	require.Equal(t, 2, all[0].CreateFailures)
+	require.True(t, retry.Equal(all[0].RetryAt))
 }

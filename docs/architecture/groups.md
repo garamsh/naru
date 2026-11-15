@@ -12,7 +12,7 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
   - `template`: form, CPUs, memory, version, disks, `policy` (the egress and ingress rules), the `network` the members join with the `podPrefixBits` of each member's Pod prefix, `rootDiskBytes` (above zero for the image form) and, for an OS-form microVM, the node version and `userData`, its seed (`#cloud-config` when empty).
   - `rollout{maxUnavailable, maxSurge}` and `minAvailable`.
   - `stateful` and `fenceTTL`.
-- **A member** is the record of one microVM: `id` (`<group>-<n>`, also its machine ID), `group`, `host`, `network`, `podPrefix`, `templateHash`, a stored `phase` (pending or gone), `lastSeen` and the last fence deadline orch armed. The live phase (pending, running, draining, fenced-waiting, gone) is computed from observation on every pass.
+- **A member** is the record of one microVM: `id` (`<group>-<n>`, also its machine ID), `group`, `host`, `network`, `podPrefix`, `templateHash`, a stored `phase` (pending or gone), `lastSeen`, the last fence deadline orch armed and, while the host refuses its create, `createFailures` and `retryAt`. The live phase (pending, running, draining, fenced-waiting, gone) is computed from observation on every pass.
 - **What the engine keeps true.**
 
   | Behaviour | Rule |
@@ -36,7 +36,11 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
 - **A host is draining when the operator says so.** `groups.Host.Draining` is the `draining` flag of the host's inventory record ([orch.md](./orch.md) §Drain), which the host client copies on every pass whether or not the host answers; the engine's own rules above then apply unchanged, so a drain keeps the group's count, moves an image member off within `minAvailable`, moves a stateful member only after its stop and its fence, and places nothing on the host until `undrain`.
 - **A decision to wait is not an error.** A placement refusal, an invalid spec, a fence wait and a rollout waiting for room are recorded as hold events, with the reasons each host was refused.
 - **Events.** One event per applied action (with its reason), one per hold, and one `failed` event for an action that failed. A failed action does not stop the pass; the next pass plans again.
-- **Creation order.** The member record is written before the host is asked, so a crash between them leaves a record whose microVM is absent, which the next pass finds gone. A create the host refuses forgets its record at once.
+- **Creation order.** The member record is written before the host is asked, so a crash between them leaves a record whose microVM is absent, which the next pass finds gone. A create the host refuses keeps its record, counts the failure on it (`createFailures`) and puts the next attempt off to `retryAt`: the wait starts at the pass interval (10 s), doubles after each failure and stops at 10 minutes (`createBackoffMax`). The next attempt writes the same record, placed again, so a series of failures is one record and one `failed` event per attempt, not one record per pass; a success clears the count. Lowering `count` or a drain ends the record of a member that was never made, with no delete to a host.
+- **Bounds on what a pass asks of the world.**
+  - A call to a host has the deadline of its context alone (5 minutes, `callTimeout`); the HTTP client's own timeout is not a second one, so a create that outlasts it is not cut and made again.
+  - The inventory is read once per pass, by the host list, and the calls of that pass use the hosts it returned; a host that is not in it is not admitted for the pass.
+  - A host's tunnel and microVM probes (`hostclient.NetHosts`) answer with the last good answer until 3 consecutive probes have failed (`probeFailures`, K = 3), so the network reconciler keeps the host's peers and routes through one or two failed probes and drops them at the third; a success resets the count, and a host that has not answered once is reported as failed.
 - **Forgotten members** are written as gone and never deleted; their IDs are not reused.
 
 ## Rationale
@@ -50,4 +54,5 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
 - **A group that is deleted.** The engine lists the groups the store holds, so the members of a removed group are not reconciled. The API therefore refuses to delete a group that has a member that is not gone: lowering `count` to zero removes them first.
 - **Tombstones.** Forgotten members stay in the store; compaction waits until their number matters.
 - **Repeated holds.** A wait that lasts is recorded on every pass; the events adapter writes it once per 10 minutes. The adapter's memory is per leader, so a new leader writes it again.
+- **Event log.** The inventory's event log keeps the newest 20000 events (`maxEvents`), trimmed on each group event; admin events written in a transaction do not trim it themselves. See [orch.md](./orch.md).
 - **Group and event records.** The store interface the engine consumes lists groups and members and writes members; the API layer (`orch/internal/groupsvc`) writes groups and reads events.

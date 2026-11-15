@@ -31,8 +31,13 @@ type namedClient struct {
 	client *http.Client
 }
 
+// newNamed takes a copy of base without its Timeout: a call's deadline comes from its context
+// alone, because the client's Timeout would end a Create that the engine allows minutes at 30 s,
+// and the engine would then delete the orphan and create the group's member again.
 func newNamed(base *http.Client, revocations *identity.RevocationList) *named {
-	return &named{base: base, revocations: revocations, by: map[string]namedClient{}}
+	b := *base
+	b.Timeout = 0
+	return &named{base: &b, revocations: revocations, by: map[string]namedClient{}}
 }
 
 // client is the client for the host id at addr.
@@ -58,7 +63,7 @@ func (n *named) client(id, addr string) *http.Client {
 		dialled = addr
 	}
 	conf.VerifyConnection = identity.PeerCheck{Roots: roots, Usage: x509.ExtKeyUsageServerAuth, Names: []string{dialled, id}, Revocations: n.revocations}.VerifyConnection
-	c := &http.Client{Transport: clone, Timeout: n.base.Timeout}
+	c := &http.Client{Transport: clone}
 	n.by[id] = namedClient{addr: addr, client: c}
 	return c
 }

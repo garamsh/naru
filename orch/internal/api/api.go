@@ -276,7 +276,7 @@ func (h *handler) pending(w http.ResponseWriter, r *http.Request, _ identity.Ide
 }
 
 func (h *handler) events(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
-	out, err := h.Inventory.Events(r.Context())
+	out, err := h.Inventory.Events(r.Context(), r.URL.Query().Get("since"))
 	reply(w, r, out, err)
 }
 

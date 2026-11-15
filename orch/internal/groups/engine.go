@@ -58,12 +58,19 @@ func (e *Engine) Observe(ctx context.Context) (Observed, error) {
 		stateful[g.Name] = g.Stateful
 	}
 	listed := map[string]bool{}
+	onHost := map[string]bool{}
 	for _, h := range o.Hosts {
 		listed[h.ID] = true
+		for _, mc := range h.Machines {
+			onHost[h.ID+"/"+mc.ID] = true
+		}
 	}
 	for _, m := range o.Members {
 		if !stateful[m.Group] || m.Phase == PhaseGone || !listed[m.Host] {
 			continue
+		}
+		if m.retrying() && !onHost[m.Host+"/"+m.MachineID] {
+			continue // a create that failed made no machine whose fence there is to read
 		}
 		deadline, lapsed, err := e.hosts.InspectFence(ctx, m.Host, m.MachineID)
 		if err != nil {

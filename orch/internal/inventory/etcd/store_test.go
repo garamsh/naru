@@ -166,3 +166,26 @@ func TestAHeartbeatDoesNotWriteBackAConfigAnOlderRecordCarried(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(resp.Kvs[0].Value), "config")
 }
+
+func TestTheEventLogKeepsTheNewestEventsAndDropsTheOldest(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	s := invetcd.New(c.Members[0].Etcd())
+	const keep, extra = 10, 5
+	invetcd.KeepEvents(s, keep)
+	require.Equal(t, 20000, invetcd.MaxEvents, "the bound a store keeps by default")
+	base := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+
+	for i := range keep + extra {
+		require.NoError(t, s.AppendEvent(t.Context(), orchapi.Event{Time: base.Add(time.Duration(i) * time.Second), Type: "t", Subject: "s", Detail: map[string]string{"n": time.Duration(i).String()}}))
+	}
+
+	evs, err := s.ListEvents(t.Context(), "")
+	require.NoError(t, err)
+	require.Len(t, evs, keep, "the log stops at its bound")
+	require.True(t, evs[0].Time.Equal(base.Add(extra*time.Second)), "the oldest were the ones dropped")
+	require.True(t, evs[len(evs)-1].Time.Equal(base.Add((keep+extra-1)*time.Second)))
+
+	since, err := s.ListEvents(t.Context(), evs[len(evs)-3].Cursor)
+	require.NoError(t, err)
+	require.Len(t, since, 2)
+}

@@ -94,6 +94,11 @@ func phase(now time.Time, spec GroupSpec, ms MemberState, h Host) Phase {
 		}
 		return PhaseGone
 	case !ms.HasMachine:
+		// A create the host refused is tried again on the same record while the member still
+		// belongs on a host; the member is not gone, it was never made.
+		if ms.Member.retrying() && !ms.Outdated && !h.Draining && len(constraintGaps(spec, h)) == 0 {
+			return PhasePending
+		}
 		return PhaseGone
 	case spec.Stateful && !ms.Fence.LapsedAt.IsZero():
 		return PhaseGone

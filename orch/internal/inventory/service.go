@@ -28,7 +28,8 @@ type Service interface {
 	Heartbeat(ctx context.Context, hostID string) error
 	Hosts(ctx context.Context) ([]orchapi.Host, error)
 	Pending(ctx context.Context) ([]orchapi.Pending, error)
-	Events(ctx context.Context) ([]orchapi.Event, error)
+	// Events lists the events after the cursor after, oldest first; an empty after lists them all.
+	Events(ctx context.Context, after string) ([]orchapi.Event, error)
 	// Remove deletes the host's record and frees its Machine prefix. The host's certificate stays
 	// valid: only a person's signature revokes it.
 	Remove(ctx context.Context, by, hostID string) error

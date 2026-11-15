@@ -68,8 +68,13 @@ func newHost(t *testing.T) *fakeHost {
 
 func (f *fakeHost) addr() string { u, _ := url.Parse(f.srv.URL); return u.Host }
 
+// client is a client that has listed the hosts of inv, as the engine's pass does before it calls one.
 func client(inv inventory) *hostclient.Client {
-	return hostclient.New(inv, &http.Client{Transport: &http.Transport{TLSClientConfig: insecure()}}, nil)
+	c := hostclient.New(inv, &http.Client{Transport: &http.Transport{TLSClientConfig: insecure()}}, nil)
+	if _, err := c.List(context.Background()); err != nil {
+		panic(err)
+	}
+	return c
 }
 
 func TestListReportsReadinessCapacityKernelsAndMachines(t *testing.T) {

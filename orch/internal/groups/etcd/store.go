@@ -39,16 +39,18 @@ var errClaimMoved = errors.New("the claims of the network or the member changed"
 // member is a stored member record. Revision is the key's modification revision, so it is not
 // stored.
 type member struct {
-	ID            string    `json:"id"`
-	Group         string    `json:"group"`
-	Host          string    `json:"host"`
-	MachineID     string    `json:"machineId"`
-	TemplateHash  string    `json:"templateHash"`
-	Network       string    `json:"network,omitempty"`
-	PodPrefix     string    `json:"podPrefix,omitempty"`
-	Phase         string    `json:"phase"`
-	LastSeen      time.Time `json:"lastSeen,omitzero"`
-	FenceDeadline time.Time `json:"fenceDeadline,omitzero"`
+	ID             string    `json:"id"`
+	Group          string    `json:"group"`
+	Host           string    `json:"host"`
+	MachineID      string    `json:"machineId"`
+	TemplateHash   string    `json:"templateHash"`
+	Network        string    `json:"network,omitempty"`
+	PodPrefix      string    `json:"podPrefix,omitempty"`
+	Phase          string    `json:"phase"`
+	LastSeen       time.Time `json:"lastSeen,omitzero"`
+	FenceDeadline  time.Time `json:"fenceDeadline,omitzero"`
+	CreateFailures int       `json:"createFailures,omitempty"`
+	RetryAt        time.Time `json:"retryAt,omitzero"`
 }
 
 // Store is the groups and members over an etcd client.
@@ -166,7 +168,8 @@ func (s *Store) ListMembers(ctx context.Context) ([]groups.Member, error) {
 		}
 		out = append(out, groups.Member{
 			ID: r.ID, Group: r.Group, Host: r.Host, MachineID: r.MachineID, TemplateHash: r.TemplateHash,
-			Network: r.Network, PodPrefix: r.PodPrefix, Phase: groups.Phase(r.Phase), LastSeen: r.LastSeen, FenceDeadline: r.FenceDeadline, Revision: kv.ModRevision,
+			Network: r.Network, PodPrefix: r.PodPrefix, Phase: groups.Phase(r.Phase), LastSeen: r.LastSeen, FenceDeadline: r.FenceDeadline,
+			CreateFailures: r.CreateFailures, RetryAt: r.RetryAt, Revision: kv.ModRevision,
 		})
 	}
 	return out, nil
@@ -238,6 +241,7 @@ func (s *Store) putMember(ctx context.Context, m groups.Member) (groups.Member, 
 		ID: m.ID, Group: m.Group, Host: m.Host, MachineID: m.MachineID, TemplateHash: m.TemplateHash,
 		Network: m.Network, PodPrefix: m.PodPrefix,
 		Phase: string(m.Phase), LastSeen: m.LastSeen, FenceDeadline: m.FenceDeadline,
+		CreateFailures: m.CreateFailures, RetryAt: m.RetryAt,
 	}
 	cond := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", m.Revision)}
 	ops := []clientv3.Op{clientv3.OpPut(key, encode(rec))}

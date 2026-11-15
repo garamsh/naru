@@ -51,5 +51,7 @@ type Store interface {
 	UpdateHost(ctx context.Context, id string, change func(*Host), ev *orchapi.Event) (Host, error)
 
 	AppendEvent(ctx context.Context, ev orchapi.Event) error
-	ListEvents(ctx context.Context) ([]orchapi.Event, error)
+	// ListEvents lists the retained events after the cursor after, oldest first; an empty after lists
+	// them all. Each carries its Cursor.
+	ListEvents(ctx context.Context, after string) ([]orchapi.Event, error)
 }

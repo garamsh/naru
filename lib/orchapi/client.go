@@ -96,7 +96,10 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 		}
 		body = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base.JoinPath(path).String(), body)
+	path, query, _ := strings.Cut(path, "?")
+	u := c.base.JoinPath(path)
+	u.RawQuery = query
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return err
 	}
@@ -217,6 +220,17 @@ func (c *Client) SetProfile(ctx context.Context, yaml []byte) error {
 func (c *Client) Events(ctx context.Context) ([]Event, error) {
 	var out []Event
 	return out, c.do(ctx, http.MethodGet, "/v1/events", nil, nil, &out)
+}
+
+// EventsSince lists the events after the one whose Cursor is after, oldest first; an empty after
+// lists the whole log. Orch keeps a bounded log, so a cursor older than its oldest event lists it all.
+func (c *Client) EventsSince(ctx context.Context, after string) ([]Event, error) {
+	var out []Event
+	path := "/v1/events"
+	if after != "" {
+		path += "?since=" + url.QueryEscape(after)
+	}
+	return out, c.do(ctx, http.MethodGet, path, nil, nil, &out)
 }
 
 // CRL returns the revocation list as the signer signed it.

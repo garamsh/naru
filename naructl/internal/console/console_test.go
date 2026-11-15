@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -33,13 +34,15 @@ var now = time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
 
 // fakeOrch is an orch that holds what a test puts in it and records the admissions posted.
 type fakeOrch struct {
-	mu       sync.Mutex
-	hosts    []orchapi.Host
-	events   []orchapi.Event
-	pending  []orchapi.Pending
-	admitErr error
-	admitted []orchapi.AdmitRequest
-	fleet    *fakeFleet
+	mu     sync.Mutex
+	hosts  []orchapi.Host
+	events []orchapi.Event
+	// eventReads are the cursors the events were asked since.
+	eventReads []string
+	pending    []orchapi.Pending
+	admitErr   error
+	admitted   []orchapi.AdmitRequest
+	fleet      *fakeFleet
 	// keys are the expiries of the enrollment keys made; keyErr is what making one answers instead.
 	keys   []time.Time
 	keyErr error
@@ -57,8 +60,20 @@ func (f *fakeOrch) CreateEnrollmentKey(_ context.Context, expiresAt time.Time) (
 	return orchapi.EnrollmentKey{ID: "k-1", Secret: seedSecret, ExpiresAt: expiresAt}, nil
 }
 
-func (f *fakeOrch) Hosts(context.Context) ([]orchapi.Host, error)      { return f.hosts, nil }
-func (f *fakeOrch) Events(context.Context) ([]orchapi.Event, error)    { return f.events, nil }
+func (f *fakeOrch) Hosts(context.Context) ([]orchapi.Host, error) { return f.hosts, nil }
+func (f *fakeOrch) EventsSince(_ context.Context, after string) ([]orchapi.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.eventReads = append(f.eventReads, after)
+	var out []orchapi.Event
+	for i, ev := range f.events {
+		ev.Cursor = fmt.Sprintf("%06d", i+1)
+		if ev.Cursor > after {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
+}
 func (f *fakeOrch) Pending(context.Context) ([]orchapi.Pending, error) { return f.pending, nil }
 func (f *fakeOrch) Admit(_ context.Context, req orchapi.AdmitRequest) (orchapi.Host, error) {
 	f.mu.Lock()
@@ -73,12 +88,15 @@ func (f *fakeOrch) Admit(_ context.Context, req orchapi.AdmitRequest) (orchapi.H
 // fakeFleet holds the microVMs and groups.
 type fakeFleet struct {
 	vms    map[string][]console.MicroVM
-	vmErr  map[string]error
+	vmErr  error
 	groups []console.Group
+	// vmReads counts the reads of the fleet's microVMs.
+	vmReads int
 }
 
-func (f *fakeFleet) MicroVMs(_ context.Context, h string) ([]console.MicroVM, error) {
-	return f.vms[h], f.vmErr[h]
+func (f *fakeFleet) MicroVMs(context.Context) (map[string][]console.MicroVM, error) {
+	f.vmReads++
+	return f.vms, f.vmErr
 }
 func (f *fakeFleet) Groups(context.Context) ([]console.Group, error) { return f.groups, nil }
 
@@ -264,16 +282,46 @@ func TestPages_RenderWhatOrchHolds(t *testing.T) {
 
 func TestMicroVMs_PerHost(t *testing.T) {
 	orch := sampleOrch()
-	orch.fleet.vmErr = map[string]error{"host-b": errors.New("host unreachable")}
 	e := start(t, orch, nil)
 
 	_, all := e.get(t, "/microvms")
 	assert.Contains(t, all, "web-1")
-	assert.Contains(t, all, "host unreachable", "a host that fails shows its error beside the hosts that answered")
+	assert.Equal(t, 1, orch.fleet.vmReads, "one read of the fleet serves every host of the page")
 
 	_, one := e.get(t, "/microvms?host=host-a")
 	assert.Contains(t, one, "web-1")
 	assert.NotContains(t, one, "host-b")
+}
+
+func TestMicroVMs_AFailedReadIsTheErrorOfThePage(t *testing.T) {
+	orch := sampleOrch()
+	orch.fleet.vmErr = errors.New("host unreachable")
+	e := start(t, orch, nil)
+
+	status, body := e.get(t, "/microvms")
+
+	assert.Equal(t, http.StatusBadGateway, status)
+	assert.Contains(t, body, "host unreachable")
+}
+
+func TestEvents_AreReadIncrementallyFromTheLastCursor(t *testing.T) {
+	orch := sampleOrch()
+	e := start(t, orch, nil)
+
+	_, first := e.get(t, "/events")
+	_, again := e.get(t, "/events")
+
+	assert.Equal(t, first, again, "a read that finds nothing new shows the same events")
+	require.Len(t, orch.eventReads, 2)
+	assert.Empty(t, orch.eventReads[0], "the first read is of the whole log")
+	assert.Equal(t, fmt.Sprintf("%06d", len(orch.events)), orch.eventReads[1], "the next read is since the last event it saw")
+
+	orch.mu.Lock()
+	orch.events = append(orch.events, orchapi.Event{Time: now, Type: "host.removed", Subject: "host-z"})
+	orch.mu.Unlock()
+	_, next := e.get(t, "/events")
+	assert.Contains(t, next, "host.removed")
+	assert.Contains(t, next, "host.enrolled", "the events read before are still shown")
 }
 
 func TestPages_OrchDown(t *testing.T) {
@@ -301,8 +349,10 @@ type failingOrch struct {
 
 var errDown = errors.New("orch is down")
 
-func (*failingOrch) Hosts(context.Context) ([]orchapi.Host, error)      { return nil, errDown }
-func (*failingOrch) Events(context.Context) ([]orchapi.Event, error)    { return nil, errDown }
+func (*failingOrch) Hosts(context.Context) ([]orchapi.Host, error) { return nil, errDown }
+func (*failingOrch) EventsSince(context.Context, string) ([]orchapi.Event, error) {
+	return nil, errDown
+}
 func (*failingOrch) Pending(context.Context) ([]orchapi.Pending, error) { return nil, errDown }
 func (f *failingOrch) Groups(context.Context) ([]console.Group, error)  { return nil, errDown }
 
