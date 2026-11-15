@@ -18,7 +18,7 @@ func recorder(t *testing.T) (naructl.Tool, string) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "args")
 	bin := filepath.Join(dir, "naructl")
-	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+out+"\n"), 0o755)) //nolint:gosec // a test executable
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+out+"\n"), 0o755))
 	return naructl.Tool{Bin: bin}, out
 }
 
@@ -46,7 +46,7 @@ func TestGenNode_PassesEveryFieldAsItsFlagAndTheBinariesInNameOrder(t *testing.T
 
 func TestGenNode_AFailureCarriesNaructlsOutput(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "naructl")
-	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\necho no such guest >&2\nexit 2\n"), 0o755)) //nolint:gosec // a test executable
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\necho no such guest >&2\nexit 2\n"), 0o755))
 
 	err := naructl.Tool{Bin: bin}.GenNode(naructl.Node{})
 

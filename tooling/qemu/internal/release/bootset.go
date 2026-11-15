@@ -78,7 +78,7 @@ func WriteBootSet(dir, version, kernelPath, initramfsPath string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, manifest), append(b, '\n'), 0o644) //nolint:gosec // published with the assets
+	return os.WriteFile(filepath.Join(dir, manifest), append(b, '\n'), 0o644)
 }
 
 // Figures are the two numbers a release's notes state about its image.
@@ -98,5 +98,5 @@ func FiguresOf(kernelBytes, espBytes int64) Figures {
 
 // WriteFigures writes the figures to path as KEY=value lines a workflow step can read.
 func WriteFigures(path string, f Figures) error {
-	return os.WriteFile(path, fmt.Appendf(nil, "ESP_BYTES=%d\nLARGEST_UPGRADE_KERNEL_BYTES=%d\n", f.ESPBytes, f.LargestUpgradeKernel), 0o644) //nolint:gosec // read by the workflow
+	return os.WriteFile(path, fmt.Appendf(nil, "ESP_BYTES=%d\nLARGEST_UPGRADE_KERNEL_BYTES=%d\n", f.ESPBytes, f.LargestUpgradeKernel), 0o644)
 }

@@ -36,9 +36,8 @@ import (
 // test creates the microVM with a plain seed, reads the address mvmd gave it, deletes it, and creates
 // it again with the seed written for that address, until the second creation is given the same one.
 func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVersionThroughTheHarnessRoute(t *testing.T) {
-	if _, err := exec.LookPath("kubectl"); err != nil {
-		t.Skip("kubectl is not installed on the test host")
-	}
+	_, err := exec.LookPath("kubectl")
+	require.NoError(t, err, "kubectl is a precondition of make test-qemu")
 	c := start(t, node.ClusterSpec{N: 1, Gaon: true, NodeAPI: true, Host: true, MemoryMiB: 2*node.KubeNodeMemoryMiB + 1024})
 	require.NotNil(t, c.Host)
 	eventually(t, "the host API answers a reader", func() bool { return hctl(c.Host.Reader, []string{"host"}).Err == nil })

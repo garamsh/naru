@@ -1,4 +1,4 @@
-.PHONY: lint lint-imports format format-apply test test-cgroup test-qemu test-harness test-release-upgrade nodes judge-serial release build image image-upgrade disk image-repro ci
+.PHONY: lint lint-imports lint-modules format format-apply test test-cgroup test-qemu test-fleet test-count test-harness test-release-upgrade nodes judge-serial release build image image-upgrade disk image-repro ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -26,16 +26,34 @@ echo "$@: $$dir: ./... selects $$p package(s)"; \
 if [ "$$p" -eq 0 ]; then echo "$@: $$dir: no packages" >&2; exit 1; fi
 endef
 
-# No linter is configured yet, so lint is go vet. The second pass vets the
-# files only the QEMU test builds.
+# govulncheck is run from source at this version: the module checksum database verifies it. Moved
+# by the PM with the other pins (.github/workflows/ci.yml).
+GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+# lint is go vet over every module (the second pass vets the files only the QEMU tests build),
+# shellcheck over the scripts of image/ (it must be installed; the GitHub-hosted runner has it), and
+# govulncheck over every module, with the QEMU files included. No golangci-lint is configured: the
+# project holds no //nolint directive (docs/architecture/structure.md).
 lint:
 	$(call each_module, $(count_packages); (cd "$$dir" && go vet ./... && go vet -tags qemu_real ./...))
+	@set -e; \
+	command -v shellcheck >/dev/null || { echo "$@: shellcheck is not installed" >&2; exit 1; }; \
+	n=$$(git ls-files --cached --others --exclude-standard -z -- 'image/*.sh' | tr -cd '\0' | wc -c); \
+	echo "$@: $$(shellcheck --version | sed -n 2p): $$n script(s) selected by git ls-files --cached --others --exclude-standard 'image/*.sh'"; \
+	if [ "$$n" -eq 0 ]; then echo "$@: no script under image/" >&2; exit 1; fi; \
+	git ls-files --cached --others --exclude-standard -z -- 'image/*.sh' | xargs -0 shellcheck -x -P SCRIPTDIR
+	$(call each_module, (cd "$$dir" && go run $(GOVULNCHECK) -tags qemu_real ./...))
 
-# lint-imports fails when a unit imports another unit or lib/ imports a unit
-# (docs/architecture/structure.md). It reads every Go file of every module under the root, and
-# prints how many.
+# lint-imports fails when a unit imports another unit, when lib/ imports a unit
+# (docs/architecture/structure.md), or when a module under the root is not in go.work's use list.
+# It reads every Go file of every module under the root, and prints how many.
 lint-imports:
 	cd tooling/importcheck && go run ./cmd/importcheck -root $(CURDIR)
+
+# lint-modules fails when two modules of go.work require one dependency at different versions, or a
+# go.mod's go directive is not go.work's. It prints how many dependencies it compared.
+lint-modules:
+	cd tooling/importcheck && go run ./cmd/modcheck -root $(CURDIR)
 
 format:
 	$(call each_module, \
@@ -74,7 +92,7 @@ test-cgroup:
 # The two naru-init, naru-signer and naru-orchd are static: each is carried by an initramfs with no libc. naructl is static too: it is a release
 # asset an operator runs on any Linux amd64 host.
 build:
-	$(call each_module, $(count_packages); (cd "$$dir" && go build ./...))
+	$(call each_module, $(count_packages); (cd "$$dir" && GOWORK=off go build ./...))
 	CGO_ENABLED=0 go build -trimpath -o $(BIN)/host/naru-init ./host/cmd/naru-init
 	CGO_ENABLED=0 go build -trimpath -o $(BIN)/node/naru-init ./node/cmd/naru-init
 	CGO_ENABLED=0 go build -trimpath -o $(BIN)/host/naru-signer ./host/cmd/naru-signer
@@ -257,17 +275,48 @@ release: disk
 # root appended to the bundle (TEST_ROOT, ADR 0026), made here and read by the test that has a
 # Node trust a root through the bundle. `make image` and `make release` build the image with no
 # such root.
+# kubectl is a precondition, checked before anything is built: two of the tests drive a cluster with
+# it.
 TESTROOT := $(BUILD)/testroot
 test-qemu:
 	@set -e; \
+	command -v kubectl >/dev/null || { echo "$@: kubectl is not installed; two tests need it" >&2; exit 1; }; \
 	(cd tooling/qemu && go run ./cmd/naru-testroot -out $(TESTROOT)); \
 	$(MAKE) --no-print-directory disk image-upgrade TEST_ROOT=$(TESTROOT)/ca.pem; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
 	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) NARU_UPGRADE_DIR=$(UPGRADE) NARU_TESTROOT=$(TESTROOT) go test -tags qemu_real -count=1 -v -timeout 60m -run '^Test(Node|ControlPlane)_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
-	n=$$(grep -Ec '^--- PASS: Test(Node|ControlPlane)_' "$$log" || true); \
-	echo "$@: $$n test(s) passed, selected by -run '^Test(Node|ControlPlane)_' with -tags qemu_real"; \
-	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
+	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='Test(Node|ControlPlane)_'
+
+# test-fleet runs the TestFleet_ scenarios: several Nodes, hosts and an orch under QEMU, on the
+# image test-qemu runs on. It has a timeout of its own and the same count check as test-qemu.
+test-fleet:
+	@set -e; \
+	(cd tooling/qemu && go run ./cmd/naru-testroot -out $(TESTROOT)); \
+	$(MAKE) --no-print-directory disk image-upgrade TEST_ROOT=$(TESTROOT)/ca.pem; \
+	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
+	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) NARU_UPGRADE_DIR=$(UPGRADE) NARU_TESTROOT=$(TESTROOT) go test -tags qemu_real -count=1 -v -timeout 90m -run '^TestFleet_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	cat "$$log"; \
+	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='TestFleet_'
+
+# test-count judges the log of a `go test -v` run of the QEMU tests, for the targets above and
+# below: it prints how many tests matching PATTERN passed and how many skipped, and fails when none
+# passed or when a test skipped that SKIP_ALLOW (test names, space-separated) does not name. Nothing
+# is allowed to skip now. Usage: make test-count TARGET=<name> LOG=<file> PATTERN=<test name prefix>
+SKIP_ALLOW :=
+test-count:
+	@test -n "$(TARGET)" -a -n "$(LOG)" -a -n "$(PATTERN)" || { echo "usage: make $@ TARGET=<name> LOG=<go test -v log> PATTERN=<test name prefix, as -run takes it without ^>" >&2; exit 2; }
+	@set -e; \
+	pass=$$(grep -Ec '^--- PASS: $(PATTERN)' "$(LOG)" || true); \
+	skipped=$$(grep -E '^ *--- SKIP: $(PATTERN)' "$(LOG)" | sed -E 's/^ *--- SKIP: ([^ ]+).*/\1/' || true); \
+	skip=0; bad=""; \
+	for s in $$skipped; do \
+	  skip=$$((skip+1)); \
+	  case " $(SKIP_ALLOW) " in *" $$s "*) ;; *) bad="$$bad $$s" ;; esac; \
+	done; \
+	echo "$(TARGET): $$pass test(s) passed, $$skip skipped, selected by -run '^$(PATTERN)' with -tags qemu_real"; \
+	if [ -n "$$bad" ]; then echo "$(TARGET): skipped, and not in SKIP_ALLOW:$$bad" >&2; exit 1; fi; \
+	if [ "$$pass" -eq 0 ]; then echo "$(TARGET): no test ran" >&2; exit 1; fi
 
 # test-release-upgrade installs the release in FROM and upgrades the Node in place to the release in
 # TO, both directories as `gh release download <tag>` writes them (docs/architecture/image.md). It
@@ -279,9 +328,7 @@ test-release-upgrade:
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
 	if ! (cd tooling/qemu && NARU_FROM_RELEASE_DIR=$(abspath $(FROM)) NARU_TO_RELEASE_DIR=$(abspath $(TO)) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestRelease_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
-	n=$$(grep -c '^--- PASS: TestRelease_' "$$log" || true); \
-	echo "$@: $$n test(s) passed, selected by -run '^TestRelease_' with -tags qemu_real"; \
-	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
+	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='TestRelease_'
 
 # test-harness drives naru-cluster as an external harness does (docs/architecture/harness.md): from
 # a directory outside the checkout, against the output of `make release`, with the gaon binaries
@@ -292,8 +339,6 @@ test-harness: release
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
 	if ! (cd tooling/qemu && NARU_RELEASE_DIR=$(RELEASE) NARU_GAON_DIR=$(GAON) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestCluster_' ./tests/harness) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
-	n=$$(grep -c '^--- PASS: TestCluster_' "$$log" || true); \
-	echo "$@: $$n test(s) passed, selected by -run '^TestCluster_' with -tags qemu_real"; \
-	if [ "$$n" -eq 0 ]; then echo "$@: no test ran" >&2; exit 1; fi
+	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='TestCluster_'
 
-ci: lint lint-imports format test build
+ci: lint lint-imports lint-modules format test build

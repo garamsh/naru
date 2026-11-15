@@ -386,7 +386,7 @@ func TestNode_AwsSigningHelperAcceptsTheAgentPairAsCertificateAndKey(t *testing.
 	pairFile := filepath.Join(dir, "node-agent.pem")
 
 	run := func(args ...string) (string, error) {
-		out, err := exec.Command(helper, args...).CombinedOutput() //nolint:gosec // the helper of the image, on arguments built here
+		out, err := exec.Command(helper, args...).CombinedOutput()
 		return string(out), err
 	}
 	out, err := run("read-certificate-data", "--certificate", pairFile)

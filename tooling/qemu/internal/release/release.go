@@ -268,7 +268,7 @@ func Build(o Options) ([]Asset, error) {
 	names = append(names, bsKernel, bsInitramfs, bsManifest)
 
 	data := "naru-data-" + o.Version + ".qcow2"
-	if out, err := exec.Command("qemu-img", "convert", "-f", "raw", "-O", "qcow2", raw, filepath.Join(o.Out, data)).CombinedOutput(); err != nil { //nolint:gosec // paths built here
+	if out, err := exec.Command("qemu-img", "convert", "-f", "raw", "-O", "qcow2", raw, filepath.Join(o.Out, data)).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("qemu-img convert: %w: %s", err, out)
 	}
 	names = append(names, data)
@@ -290,7 +290,7 @@ func Build(o Options) ([]Asset, error) {
 		return nil, err
 	}
 	inputsAsset := fixture.ReleaseInputsName(o.Version)
-	if err := os.WriteFile(filepath.Join(o.Out, inputsAsset), append(ri, '\n'), 0o644); err != nil { //nolint:gosec // published with the assets
+	if err := os.WriteFile(filepath.Join(o.Out, inputsAsset), append(ri, '\n'), 0o644); err != nil {
 		return nil, err
 	}
 	names = append(names, inputsAsset)
@@ -314,7 +314,7 @@ func Build(o Options) ([]Asset, error) {
 	if err := copyFile(o.Naructl, filepath.Join(o.Out, tool)); err != nil {
 		return nil, fmt.Errorf("the naructl binary: %w", err)
 	}
-	if err := os.Chmod(filepath.Join(o.Out, tool), 0o755); err != nil { //nolint:gosec // an executable asset
+	if err := os.Chmod(filepath.Join(o.Out, tool), 0o755); err != nil {
 		return nil, err
 	}
 	names = append(names, tool)
@@ -357,7 +357,7 @@ func Build(o Options) ([]Asset, error) {
 		assets = append(assets, a)
 		fmt.Fprintf(&sums, "%s  %s\n", a.SHA256, name)
 	}
-	if err := os.WriteFile(filepath.Join(o.Out, "SHA256SUMS"), []byte(sums.String()), 0o644); err != nil { //nolint:gosec // published with the assets
+	if err := os.WriteFile(filepath.Join(o.Out, "SHA256SUMS"), []byte(sums.String()), 0o644); err != nil {
 		return nil, err
 	}
 	if o.Figures != "" {
@@ -375,7 +375,7 @@ func Build(o Options) ([]Asset, error) {
 // onDisk reports whether the data disk image holds guestPath, a path as the Node sees it.
 func onDisk(image, guestPath string) bool {
 	rel := strings.TrimPrefix(guestPath, wire.DataMount)
-	out, err := exec.Command("/sbin/debugfs", "-R", "stat "+path.Clean(rel), image).CombinedOutput() //nolint:gosec // arguments built here
+	out, err := exec.Command("/sbin/debugfs", "-R", "stat "+path.Clean(rel), image).CombinedOutput()
 	return err == nil && strings.Contains(string(out), "Type: regular")
 }
 

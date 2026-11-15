@@ -32,7 +32,7 @@ func naructlStub(t *testing.T) string {
 	b, err := json.Marshal(topo)
 	require.NoError(t, err)
 	bin := filepath.Join(t.TempDir(), "naructl")
-	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n[ \"$1\" = topology ] && echo '"+string(b)+"'\n"), 0o755)) //nolint:gosec // a test executable
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n[ \"$1\" = topology ] && echo '"+string(b)+"'\n"), 0o755))
 	return bin
 }
 
@@ -91,7 +91,7 @@ func TestRun_AServiceOfTheNaructlsTopologyThatTheLogLacksIsJudged(t *testing.T) 
 	b, err := json.Marshal(extended)
 	require.NoError(t, err)
 	bin := filepath.Join(t.TempDir(), "naructl")
-	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n[ \"$1\" = topology ] && echo '"+string(b)+"'\n"), 0o755)) //nolint:gosec // a test executable
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n[ \"$1\" = topology ] && echo '"+string(b)+"'\n"), 0o755))
 
 	code := run([]string{"-gaon", "-naructl", bin, "-node1", n1, "-node2", n2}, &out, &errOut)
 

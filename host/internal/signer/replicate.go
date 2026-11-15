@@ -133,7 +133,7 @@ func (s *Signer) Join(ctx context.Context, opts JoinOptions) error {
 }
 
 func (s *Signer) readJoinKey() (*ecdh.PrivateKey, error) {
-	data, err := os.ReadFile(filepath.Join(s.dir, joinKeyFile)) //nolint:gosec // a file of the signer's own directory
+	data, err := os.ReadFile(filepath.Join(s.dir, joinKeyFile))
 	if err != nil {
 		return nil, fmt.Errorf("read the join key (make it with NewJoinKey): %w", err)
 	}

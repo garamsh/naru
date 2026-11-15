@@ -169,7 +169,7 @@ func TLSConfig(certFile, keyFile, clientCAFile string, revocations *identity.Rev
 	if err != nil {
 		return nil, err
 	}
-	ca, err := os.ReadFile(clientCAFile) //nolint:gosec // a path of the Node's own configuration
+	ca, err := os.ReadFile(clientCAFile)
 	if err != nil {
 		return nil, err
 	}

@@ -567,7 +567,7 @@ func TestReplicate_ANewSignerReceivesTheAuthoritiesFromARunningOne(t *testing.T)
 	}
 
 	op := e.issue(identity.RoleOperator, "alice")
-	insecure := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // the test reaches routes, not trust
+	insecure := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
 	someKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	byOperator := e.signed(op, identity.ActionReplicate, identity.ReplicateRequest{HostID: "signer-b", X25519: someKey.PublicKey().Bytes()})

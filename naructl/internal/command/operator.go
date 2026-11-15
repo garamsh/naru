@@ -54,7 +54,7 @@ func operatorAdd(fs *pflag.FlagSet) runner {
 			return fmt.Errorf("the signer's certificate: %w", err)
 		}
 		pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issued.Certificate})
-		if err := os.WriteFile(*out, pemBytes, 0o644); err != nil { //nolint:gosec // a certificate holds nothing secret
+		if err := os.WriteFile(*out, pemBytes, 0o644); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "naructl: issued a %s certificate for %s, serial %s, valid until %s; wrote %s\n",

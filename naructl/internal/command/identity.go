@@ -102,7 +102,7 @@ func writeRequest(name, keyOut, csrOut string, der bool, dns []string, ips []net
 	if !der {
 		out = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr})
 	}
-	if err := os.WriteFile(csrOut, out, 0o644); err != nil { //nolint:gosec // a certificate request holds nothing secret
+	if err := os.WriteFile(csrOut, out, 0o644); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "naructl: wrote the key %s (0600) and the certificate request %s for %s\n", keyOut, csrOut, name)
@@ -110,7 +110,7 @@ func writeRequest(name, keyOut, csrOut string, der bool, dns []string, ips []net
 }
 
 func writeNew(path string, data []byte, mode os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode) //nolint:gosec // the caller names the file
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return err
 	}
@@ -221,7 +221,7 @@ func orchIssue(fs *pflag.FlagSet) runner {
 		if _, err := x509.ParseCertificate(issued.Certificate); err != nil {
 			return fmt.Errorf("the signer's certificate: %w", err)
 		}
-		if err := os.WriteFile(*out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issued.Certificate}), 0o644); err != nil { //nolint:gosec // a certificate holds nothing secret
+		if err := os.WriteFile(*out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issued.Certificate}), 0o644); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "naructl: issued an orch certificate for %s, serial %s, valid until %s; wrote %s\n",

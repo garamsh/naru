@@ -126,7 +126,7 @@ func ExtensionStore(dir string) string { return filepath.Clean(dir) + "-extensio
 
 // goBuild builds the package of the module as a static Linux executable.
 func goBuild(moduleDir, pkg, out string) error {
-	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out, pkg) //nolint:gosec // arguments are built here
+	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out, pkg)
 	cmd.Dir = moduleDir
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
 	if b, err := cmd.CombinedOutput(); err != nil {

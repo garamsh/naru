@@ -31,11 +31,11 @@ func OpenData(imagePath string) *DataSnapshot { return &DataSnapshot{img: imageP
 // SnapshotData copies the Node's data disk to dst, a path on the host, and replays the journal in
 // the copy.
 func (n *Node) SnapshotData(dst string) (*DataSnapshot, error) {
-	if out, err := exec.Command("cp", "--sparse=always", filepath.Join(n.dir, "data.img"), dst).CombinedOutput(); err != nil { //nolint:gosec // arguments built here
+	if out, err := exec.Command("cp", "--sparse=always", filepath.Join(n.dir, "data.img"), dst).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("copy the data disk: %w: %s", err, out)
 	}
 	// e2fsck exits 1 when it corrected something, which replaying a journal counts as.
-	out, err := exec.Command(e2fsck, "-fy", dst).CombinedOutput() //nolint:gosec // arguments built here
+	out, err := exec.Command(e2fsck, "-fy", dst).CombinedOutput()
 	var ee *exec.ExitError
 	if err != nil && !(errors.As(err, &ee) && ee.ExitCode() <= 1) {
 		return nil, fmt.Errorf("e2fsck the copy: %w: %s", err, out)
@@ -54,7 +54,7 @@ func dataPath(guestPath string) (string, error) {
 
 // request runs one debugfs request, read-only, and returns its standard output.
 func (s *DataSnapshot) request(req string) ([]byte, error) {
-	out, err := exec.Command(debugfs, "-R", req, s.img).Output() //nolint:gosec // arguments built here
+	out, err := exec.Command(debugfs, "-R", req, s.img).Output()
 	if err != nil {
 		return nil, fmt.Errorf("debugfs %q: %w", req, err)
 	}
@@ -111,7 +111,7 @@ func (s *DataSnapshot) Extract(guestPath, hostPath string) error {
 // Superblock returns debugfs's account of the ext4 file system in the file at imagePath, a file on
 // the host such as one Extract wrote: its magic number, features and UUID.
 func Superblock(imagePath string) (string, error) {
-	out, err := exec.Command(debugfs, "-R", "stats", imagePath).Output() //nolint:gosec // arguments built here
+	out, err := exec.Command(debugfs, "-R", "stats", imagePath).Output()
 	if err != nil {
 		return "", fmt.Errorf("debugfs stats %s: %w", imagePath, err)
 	}

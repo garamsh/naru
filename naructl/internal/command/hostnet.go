@@ -130,7 +130,7 @@ func hostPeersSet(fs *pflag.FlagSet) runner {
 		if err := require(c.fs, "file"); err != nil {
 			return err
 		}
-		b, err := os.ReadFile(*file) //nolint:gosec // an argument of the command
+		b, err := os.ReadFile(*file)
 		if err != nil {
 			return err
 		}

@@ -17,7 +17,7 @@ import (
 func printing(t *testing.T, out string) naructl.Tool {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "naructl")
-	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n[ \"$1\" = topology ] || exit 2\ncat <<'EOF'\n"+out+"\nEOF\n"), 0o755)) //nolint:gosec // a test executable
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n[ \"$1\" = topology ] || exit 2\ncat <<'EOF'\n"+out+"\nEOF\n"), 0o755))
 	return naructl.Tool{Bin: bin}
 }
 
@@ -48,7 +48,7 @@ func TestTopology_IsWhatNaructlPrintsAndAnswersWhatEachNodeRuns(t *testing.T) {
 
 func TestTopology_ANaructlWithoutTheCommandOrWithAnEmptyAnswerIsAnErrorThatSaysSo(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "naructl")
-	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\necho usage >&2\nexit 1\n"), 0o755)) //nolint:gosec // a test executable
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\necho usage >&2\nexit 1\n"), 0o755))
 
 	_, err := naructl.Tool{Bin: bin}.Topology()
 	assert.ErrorContains(t, err, "has no topology command")

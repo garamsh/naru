@@ -36,7 +36,7 @@ func New(bin, addr string, client naructl.Client) *Client {
 // Run runs the CLI with args after its global flags and returns its combined output. A non-zero
 // exit is an error that holds the output.
 func (c *Client) Run(ctx context.Context, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, c.bin, append(append([]string{}, c.flag...), args...)...).CombinedOutput() //nolint:gosec // the CLI the build wrote
+	out, err := exec.CommandContext(ctx, c.bin, append(append([]string{}, c.flag...), args...)...).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("gaon %v: %w: %s", args, err, out)
 	}

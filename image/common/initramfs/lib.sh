@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Functions the two initramfs builds share (image/host/initramfs/build.sh and
 # image/node/initramfs/build.sh), sourced and never run (ADR 0054). Each build sources
 # image/build.env and image/common/kernel/pin.env before calling them.

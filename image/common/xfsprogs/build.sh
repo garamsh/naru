@@ -91,6 +91,7 @@ mkdir -p "$work/obj-urcu"
   && make -j"$(nproc)" && make install) >>"$log" 2>&1 || fail "userspace-rcu"
 
 # inih: one source file and one header, archived by hand.
+# shellcheck disable=SC2086 # cflags is a list of flags
 (cd "$work/inih-$INIH_VERSION" \
   && gcc $cflags -c ini.c -o "$work/ini.o" \
   && ar rcsD "$deps/lib/libinih.a" "$work/ini.o" \

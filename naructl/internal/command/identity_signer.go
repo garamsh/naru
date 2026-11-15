@@ -227,7 +227,7 @@ func signerReissueRoot(fs *pflag.FlagSet) runner {
 		if _, err := x509.ParseCertificate(issued.Certificate); err != nil {
 			return fmt.Errorf("the signer's certificate: %w", err)
 		}
-		if err := os.WriteFile(*out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issued.Certificate}), 0o644); err != nil { //nolint:gosec // a certificate holds nothing secret
+		if err := os.WriteFile(*out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issued.Certificate}), 0o644); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "naructl: the signer issued a new root certificate, serial %s, valid until %s, and revoked the old root; wrote %s\n",

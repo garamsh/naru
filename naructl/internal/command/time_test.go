@@ -43,7 +43,7 @@ func TestGenNode_InitRefusesATimeServerThatIsNoHost(t *testing.T) {
 	dep := newDeployment(t)
 	path := dep.node(t, "node-2", "--time-server", "not a host")
 
-	out, err := exec.Command(naruInit(t), "-validate", path).CombinedOutput() //nolint:gosec // the binary built for these tests
+	out, err := exec.Command(naruInit(t), "-validate", path).CombinedOutput()
 
 	require.Error(t, err)
 	assert.Contains(t, string(out), "spec.time.servers[0]")
