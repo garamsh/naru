@@ -5,12 +5,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"net"
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -107,11 +109,6 @@ func main() {
 		log.Error("cannot set up the revocation list", "err", err.Error())
 		os.Exit(1)
 	}
-	conf, err := api.TLSConfig(*cert, *key, *clients, revocations)
-	if err != nil {
-		log.Error("cannot load the serving pair or the client CA", "err", err.Error())
-		os.Exit(1)
-	}
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		log.Error("cannot listen", "addr", *listen, "err", err.Error())
@@ -129,6 +126,26 @@ func main() {
 	defer stop()
 
 	go prefetch(ctx, revocations, log)
+	storedServing := filepath.Join(filepath.Dir(*hostKey), "serving.pem")
+	serving, err := chooseServing(ctx, revocations, log, *cert, *key, storedServing)
+	if err != nil {
+		log.Error("refusing to serve with a revoked key", "err", err.Error())
+		os.Exit(1)
+	}
+	conf, err := api.TLSConfig(serving, *clients, revocations)
+	if err != nil {
+		log.Error("cannot load the client CA", "err", err.Error())
+		os.Exit(1)
+	}
+	ownFiles := func() []string { return []string{serving.File(), enroll.CertPathFor(*hostKey)} }
+	if err := checkOwnCertificates(ctx, revocations, ownFiles()...); errors.Is(err, identity.ErrRevoked) {
+		log.Error("refusing to serve with a revoked key", "err", err.Error())
+		os.Exit(1)
+	}
+	go refuseRevokedKey(ctx, revocations, ownCertificateInterval, log, func(err error) {
+		log.Error("refusing to serve with a revoked key", "err", err.Error())
+		os.Exit(1)
+	}, ownFiles)
 
 	r := &fence.Renewer{Runtime: rt, Length: *length, Interval: *interval, Retry: 5 * time.Second, Log: log}
 	go r.Run(ctx)
@@ -136,6 +153,7 @@ func main() {
 		startReconciler(ctx, netMgr, rt, log)
 	}
 
+	var hostPair api.Identity
 	if *orchURL != "" {
 		id := *hostID
 		if id == "" {
@@ -149,6 +167,7 @@ func main() {
 			addr = *listen
 		}
 		agent := enroll.New(enroll.Config{OrchURL: *orchURL, CASHA256: *orchCA, EnrollKeyFile: *enrollKey, KeyFile: *hostKey, HostID: id, Address: addr, Out: os.Stdout, Log: log})
+		hostPair = agent
 		go func() {
 			if err := agent.Run(ctx); err != nil && ctx.Err() == nil {
 				log.Error("enrollment with orch ended", "err", err.Error())
@@ -161,10 +180,9 @@ func main() {
 	if err != nil {
 		log.Warn("cannot tell the host's ID; the reset call is off", "err", err.Error())
 	}
-	srv := api.New(api.Deps{
-		Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile,
-		HostID: resetID, ResetMarker: *resetMarker, Reboot: rebootInit, ConfigPair: configPair(*cert),
-	})
+	// A reset of the data disk deletes serving.pem, so the pair that serves after it is the configuration's.
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
+		HostID: resetID, ResetMarker: *resetMarker, Reboot: rebootInit, CheckPair: pairAfterReset(revocations, *cert)})
 	if *metricsAddr != "" {
 		go func() {
 			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {

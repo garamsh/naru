@@ -118,3 +118,12 @@ func ReadTokens(caDir string) ([]string, error) {
 	}
 	return out, nil
 }
+
+// RemoveToken deletes the token of the Node of that name, and reports os.ErrNotExist when there is
+// none: a revoke of a token that was never made is a mistake the caller should see.
+func RemoveToken(caDir, name string) error {
+	if !dnsLabel.MatchString(name) {
+		return fmt.Errorf("the name %q is not a DNS label", name)
+	}
+	return os.Remove(tokenPath(caDir, name))
+}

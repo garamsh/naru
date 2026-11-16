@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/api"
+	"github.com/garamsh/naru/host/internal/enroll"
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/identity"
 )
@@ -275,4 +276,40 @@ func TestHostIdentity_FlagThenEnrolledCertificateThenHostname(t *testing.T) {
 
 	id, _ = hostIdentity("flag-id", key)
 	assert.Equal(t, "flag-id", id)
+}
+
+func TestPairAfterReset_IsTheConfigurationsPairBecauseTheClearDeletesTheStoredOne(t *testing.T) {
+	dir := t.TempDir()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfgCrt, cfgKey := pairFiles(t, dir, "config", 0x2a)
+	storedCrt, storedKey := pairFiles(t, dir, "stored", 0x2b)
+	storedPath := filepath.Join(dir, "serving.pem")
+	require.NoError(t, os.WriteFile(storedPath, append(mustRead(t, storedCrt), mustRead(t, storedKey)...), 0o600))
+	list := listRevoking(t, "2a") // the configuration's pair is revoked, the stored one is not
+
+	s, err := chooseServing(t.Context(), list, log, cfgCrt, cfgKey, storedPath)
+	require.NoError(t, err, "the control: before the clear the stored pair serves")
+	require.Equal(t, storedPath, s.File())
+
+	err = pairAfterReset(list, cfgCrt)(t.Context())
+	assert.ErrorIs(t, err, identity.ErrRevoked, "a data scope is refused: after it the configuration's pair serves")
+	require.NoError(t, os.Remove(storedPath)) // what the clear does
+	_, err = chooseServing(t.Context(), list, log, cfgCrt, cfgKey, storedPath)
+	assert.ErrorIs(t, err, identity.ErrRevoked, "and the host start would refuse it, as the check said")
+
+	assert.NoError(t, pairAfterReset(listRevoking(t), cfgCrt)(t.Context()), "an unrevoked pair is no refusal")
+}
+
+func TestServingPair_UsesTheRuleOfTheHostAPI(t *testing.T) {
+	dir := t.TempDir()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hostKey := filepath.Join(dir, "host.key")
+	crt, key := pairFiles(t, dir, "host", 0x2a)
+	require.NoError(t, os.Rename(key, hostKey))
+	require.NoError(t, os.Rename(crt, enroll.CertPathFor(hostKey)))
+
+	_, err := servingPair(t.Context(), listRevoking(t), hostKey, log)
+	require.NoError(t, err, "the control: the enrolled pair serves")
+	_, err = servingPair(t.Context(), listRevoking(t, "2a"), hostKey, log)
+	assert.ErrorIs(t, err, identity.ErrRevoked, "a revoked enrolled pair is not served, whatever a self-signed one would allow")
 }

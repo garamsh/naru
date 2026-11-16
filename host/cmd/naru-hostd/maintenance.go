@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/garamsh/naru/host/internal/api"
 	"github.com/garamsh/naru/host/internal/enroll"
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 )
 
@@ -86,13 +88,12 @@ func readChain(path string) ([]*x509.Certificate, error) {
 	return out, nil
 }
 
-// configPair returns the function that reads the certificate chain the configuration's pair holds,
-// for the reset's revoked-pair check. Nil when no pair is configured.
-func configPair(certFile string) func() ([]*x509.Certificate, error) {
-	if certFile == "" {
-		return nil
-	}
-	return func() ([]*x509.Certificate, error) { return readChain(certFile) }
+// pairAfterReset returns the check a reset of the data disk makes first: it is the check that
+// chooseServing makes of the configuration's pair, the only one that can serve once the clear has
+// deleted the stored pair beside the host's key (serving.pem, on the data disk). It returns
+// identity.ErrRevoked when that pair is revoked.
+func pairAfterReset(list *identity.RevocationList, certFile string) func(context.Context) error {
+	return func(ctx context.Context) error { return checkOwnCertificates(ctx, list, certFile) }
 }
 
 // rebootInit asks init, which is process 1, to reboot the host. It is how a reset takes effect: the
@@ -131,18 +132,24 @@ func fetchAuthority(ctx context.Context, orchURL, fingerprint string) (*x509.Cer
 	return nil, errors.New("orch's chain holds no certificate with the pinned fingerprint")
 }
 
-// servingPair is the pair maintenance serves under: the host's enrolled pair beside its key, which
-// chains to the authority the operators' client files trust. A host that never enrolled has none,
-// so it serves a self-signed pair that no operator can verify: such a host is not reachable.
-func servingPair(hostKey string, log *slog.Logger) (tls.Certificate, error) {
-	pair, err := tls.LoadX509KeyPair(enroll.CertPathFor(hostKey), hostKey)
+// servingPair is the pair maintenance serves under, picked by the rule the host API uses at start
+// (ADR 0077): the pair a rotation stored beside the host's key, when it is not revoked, else the
+// host's enrolled pair beside its key, which chains to the authority the operators' client files
+// trust; identity.ErrRevoked when that pair is revoked. A host that never enrolled has none, so it
+// serves a self-signed pair that no operator can verify: such a host is not reachable.
+func servingPair(ctx context.Context, list *identity.RevocationList, hostKey string, log *slog.Logger) (func(*tls.ClientHelloInfo) (*tls.Certificate, error), error) {
+	stored := filepath.Join(filepath.Dir(hostKey), "serving.pem")
+	serving, err := chooseServing(ctx, list, log, enroll.CertPathFor(hostKey), hostKey, stored)
 	if err == nil {
-		return pair, nil
+		return serving.GetCertificate, nil
+	}
+	if errors.Is(err, identity.ErrRevoked) {
+		return nil, err
 	}
 	log.Warn("the host has no enrolled certificate; maintenance serves a self-signed one no operator can verify", "err", err.Error())
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return tls.Certificate{}, err
+		return nil, err
 	}
 	tpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "naru-hostd maintenance"},
@@ -151,9 +158,10 @@ func servingPair(hostKey string, log *slog.Logger) (tls.Certificate, error) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
 	if err != nil {
-		return tls.Certificate{}, err
+		return nil, err
 	}
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
+	pair := &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	return func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return pair, nil }, nil
 }
 
 // runMaintenance serves the maintenance report and the reset until ctx ends. Its clients are the
@@ -168,11 +176,11 @@ func runMaintenance(ctx context.Context, o maintenanceOptions, log *slog.Logger)
 	if err != nil {
 		return fmt.Errorf("the host's ID: %w", err)
 	}
-	pair, err := servingPair(o.hostKey, log)
+	revocations, err := newRevocations(o.revocation, log)
 	if err != nil {
 		return err
 	}
-	revocations, err := newRevocations(o.revocation, log)
+	pair, err := servingPair(ctx, revocations, o.hostKey, log)
 	if err != nil {
 		return err
 	}

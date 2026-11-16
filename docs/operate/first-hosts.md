@@ -74,7 +74,7 @@ naructl signer ca --config <dir>/api/admin.yaml
 naructl orch ca --config <dir>/api/admin.yaml
 ```
 
-`signer ca` prints the `orch`, `operator` and `host` authorities, and `orch ca` the orch authority alone, each as a line `# <name> authority, SHA-256 <hex of its DER certificate>` and the PEM. Save the orch authority's PEM as the orch authority file below, and keep the host authority's PEM: orch verifies the hosts' API certificates against `spec.orch.hostCA`, which must hold it (the signer issues a joined host's certificate from that authority) beside the host API authority of step 1; the hash in that line is the one the seed carries. Orch serves no authority of its own, so `orch ca` reads it from the signer, as the signer's `GET /v1/ca` gives it.
+`signer ca` prints the `orch`, `operator` and `host` authorities, and `orch ca` the orch authority alone, each as a line `# <name> authority, SHA-256 <hex of its DER certificate>` and the PEM. Save the orch authority's PEM as the orch authority file below, and put the operator authority's PEM in the same file, because `spec.orch.ca` is also the client trust of every host that joins from a seed (it must hold the operator authority for step 10), and keep the host authority's PEM: orch verifies the hosts' API certificates against `spec.orch.hostCA`, which must hold it (the signer issues a joined host's certificate from that authority) beside the host API authority of step 1; the hash in that line is the one the seed carries. Orch serves no authority of its own, so `orch ca` reads it from the signer, as the signer's `GET /v1/ca` gives it.
 
 Edit the first host's user-data to add orch (`spec.orch` and the file that carries its key, whose shapes are `lib/init/config`'s) and boot it again. Orch answers once its API does: `naructl host pending --orch-url https://<address>:7500 --orch-ca <orch authority file> --identity <dir>/root.person --passphrase-file <passphrase file>` prints the heading `HOST CODE ADDRESS FIRST SEEN HARDWARE` and no row. Every `naructl` command that talks to orch below takes those four flags, `--orch-url`, `--orch-ca`, `--identity` and `--passphrase-file`, which are left out for brevity.
 
@@ -149,6 +149,10 @@ naructl host admit h-<id> --code <code from the console> --region <region> --lab
 It prints `naructl: admitted host h-<id> in region <region>`. Orch has the signer issue the host's certificate, builds the host's configuration from the host profile and delivers it to the host, which applies it and reboots: its console shows `join configuration applied revision=1`, and `naructl host pending` no longer lists it. The host then reports to orch: `naructl host list` shows its region, labels, the Machine prefix orch allocated to it and a non-zero `LAST SEEN` (`GET /v1/hosts` carries the same, with `machinePrefix`), and a group whose `requiredLabels` match places a microVM on it.
 
 Admit each host of the batch the same way, and revoke the enrollment key once the batch has joined.
+
+### 10. Read the host with an operator certificate
+
+A joined host accepts the certificate `naructl operator add` issued, with the role of its unit: `root` and `operator` provision, `reader` and `automation` read. Save the host authority's PEM (`naructl signer ca --authority host`), and run `naructl host --identity <dir>/<name>.person --passphrase-file <passphrase file> --host-ca <host authority file> --endpoint <address> --server-name <h-id>`. The same flags go on `naructl microvm`, `naructl snapshot` and the other host commands; a reader's write is refused with 403, and a client of another authority is refused by the handshake.
 
 ### The seed may be detached
 

@@ -96,26 +96,22 @@ func (s *Server) reset(w http.ResponseWriter, r *http.Request) {
 // when no pair or list is configured to check. A list that cannot be had refuses the reset: the
 // check cannot be answered.
 func (s *Server) revokedPair(ctx context.Context) string {
-	if s.deps.ConfigPair == nil || s.deps.Revocations == nil {
+	if s.deps.CheckPair == nil {
 		return ""
-	}
-	pair, err := s.deps.ConfigPair()
-	if err != nil {
-		return "the pair the configuration names cannot be read: " + err.Error()
 	}
 	ctx, cancel := context.WithTimeout(ctx, resetCheckTimeout)
 	defer cancel()
-	if err := s.deps.Revocations.Check(ctx, [][]*x509.Certificate{pair}); err != nil {
-		return "the pair the configuration names is revoked or cannot be checked, and the host would serve it again after a reset: " + err.Error()
+	if err := s.deps.CheckPair(ctx); err != nil {
+		return "the pair that would serve after a reset is revoked or cannot be checked, and the host would be unreachable: " + err.Error()
 	}
 	return ""
 }
 
 // ServerTLS returns the configuration of a listener that serves pair, requires a client certificate
 // that chains to pool and, when revocations is not nil, refuses a revoked one at the handshake.
-func ServerTLS(pair tls.Certificate, pool *x509.CertPool, revocations *identity.RevocationList) *tls.Config {
+func ServerTLS(get func(*tls.ClientHelloInfo) (*tls.Certificate, error), pool *x509.CertPool, revocations *identity.RevocationList) *tls.Config {
 	conf := &tls.Config{
-		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{pair},
+		MinVersion: tls.VersionTLS13, GetCertificate: get,
 		ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert, NextProtos: []string{"http/1.1"},
 	}
 	if revocations != nil {

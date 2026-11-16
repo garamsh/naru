@@ -100,12 +100,24 @@ func guestFile(t *testing.T) string {
 // userDataFiles is release.UserData with naructl and the test inputs.
 func userDataFiles(t *testing.T) (map[string][]byte, error) {
 	t.Helper()
+	return userDataFor(t, "v9.9.9")
+}
+
+// userDataFor is release.UserData of a release of that version.
+func userDataFor(t *testing.T, version string) (map[string][]byte, error) {
+	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, fixture.WriteRoot(dir))
+	return userDataIn(t, dir, version)
+}
+
+// userDataIn is release.UserData of a release of that version, with the registry authority of dir.
+func userDataIn(t *testing.T, dir, version string) (map[string][]byte, error) {
+	t.Helper()
 	b, err := os.ReadFile(filepath.Join(dir, "ca.pem"))
 	require.NoError(t, err)
 	testCA = string(b)
-	return release.UserData(tool(t), guestFile(t), inputs.FirecrackerSHA256, filepath.Join(dir, "ca.pem"))
+	return release.UserData(tool(t), version, 1794355200, guestFile(t), inputs.FirecrackerSHA256, filepath.Join(dir, "ca.pem"))
 }
 
 // testCA is the registry authority of the user-data the tests last asked for.
@@ -325,14 +337,28 @@ func TestUserData_TheServingCertificateIsIssuedForNodeOnesAddress(t *testing.T) 
 	assert.ElementsMatch(t, []string{"apiserver", "scheduler", "controllers", "etcd-server", "etcd-peer", "apiserver-etcd"}, names, "the agents' pairs come through signing requests")
 }
 
-func TestUserData_TwoCallsDifferInTheAuthorityTheTokensAndNothingElse(t *testing.T) {
-	one, err := userDataFiles(t)
+func TestUserData_TwoCallsForOneVersionAreByteIdentical(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, fixture.WriteRoot(dir))
+	one, err := userDataIn(t, dir, "v9.9.9")
 	require.NoError(t, err)
-	two, err := userDataFiles(t)
+	two, err := userDataIn(t, dir, "v9.9.9")
+	require.NoError(t, err)
+
+	require.Len(t, one, 2)
+	for name := range one {
+		assert.Equal(t, string(one[name]), string(two[name]), "%s: the same authority and tokens", name)
+	}
+}
+
+func TestUserData_AnotherVersionDiffersInTheAuthorityTheTokensAndNothingElse(t *testing.T) {
+	one, err := userDataFor(t, "v9.9.9")
+	require.NoError(t, err)
+	two, err := userDataFor(t, "v9.9.10")
 	require.NoError(t, err)
 
 	for name := range one {
-		assert.NotEqual(t, one[name], two[name], "%s: a fresh authority and fresh tokens", name)
+		assert.NotEqual(t, one[name], two[name], "%s: another authority and other tokens", name)
 		a, b := parseUserData(t, one[name]), parseUserData(t, two[name])
 		assert.Equal(t, a.Spec.Services, b.Spec.Services, name)
 		for i, f := range a.Spec.Files {

@@ -367,10 +367,14 @@ func SerialSocketPath(dir string) string {
 // without the race its SCSI scan has.
 func dataAndExtraDisks(spec Spec, dataDisk string) []string {
 	device := func(id string) []string {
-		if spec.Config.VirtioDisks {
-			return []string{"-device", "virtio-blk-pci,drive=" + id}
+		serial := ""
+		if id == "extra" && spec.Config.ExtraDiskSerial != "" {
+			serial = ",serial=" + spec.Config.ExtraDiskSerial
 		}
-		return []string{"-device", "scsi-hd,bus=scsihw0.0,drive=" + id}
+		if spec.Config.VirtioDisks {
+			return []string{"-device", "virtio-blk-pci,drive=" + id + serial}
+		}
+		return []string{"-device", "scsi-hd,bus=scsihw0.0,drive=" + id + serial}
 	}
 	data := append([]string{"-drive", "if=none,id=data,format=raw,file=" + dataDisk}, device("data")...)
 	if spec.Config.ExtraDisk <= 0 {

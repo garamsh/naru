@@ -2,8 +2,7 @@ package api
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -26,7 +25,7 @@ import (
 )
 
 // resetEnv is a server whose reset is configured: the marker file, the host ID, and a Reboot that
-// reports on rebooted. pair, when not nil, is the chain ConfigPair returns, and list the list it is checked against.
+// reports on rebooted. check, when not nil, is the CheckPair the server calls before it clears the disk.
 type resetEnv struct {
 	*env
 	marker     string
@@ -34,11 +33,11 @@ type resetEnv struct {
 	failReboot bool
 }
 
-func startReset(t *testing.T, pair func() ([]*x509.Certificate, error), list *identity.RevocationList) *resetEnv {
+func startReset(t *testing.T, check func(context.Context) error, list *identity.RevocationList) *resetEnv {
 	t.Helper()
 	re := &resetEnv{marker: filepath.Join(t.TempDir(), "reset.json"), rebooted: make(chan struct{}, 1)}
 	re.env = startEnvRevoking(t, netip.MustParseAddr("10.1.0.1"), true, list, func(d *Deps) {
-		d.HostID, d.ResetMarker, d.ConfigPair = "host-1", re.marker, pair
+		d.HostID, d.ResetMarker, d.CheckPair = "host-1", re.marker, check
 		d.Reboot = func() error {
 			if re.failReboot {
 				return errors.New("no")
@@ -131,17 +130,9 @@ func TestReset_ARebootThatFailsRemovesTheMarker(t *testing.T) {
 		"a reset that did not reboot stayed recorded, and the next boot for another reason would carry it out")
 }
 
-func TestReset_AScopeThatClearsTheDiskIsRefusedWhileTheConfigurationsPairIsRevoked(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	sg := &signerStub{key: priv, seq: 1}
-	list := &identity.RevocationList{Source: sg, Key: pub, TTL: time.Second, MaxAge: time.Hour, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	ca := newAuthority(t, "servers")
-	pair, _, _ := ca.issue(t, nil, true)
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	require.NoError(t, err)
-	chain := func() ([]*x509.Certificate, error) { return []*x509.Certificate{leaf, ca.cert}, nil }
-	re := startReset(t, chain, list)
+func TestReset_AScopeThatClearsTheDiskIsRefusedWhileThePairThatWouldServeIsRevoked(t *testing.T) {
+	var verdict error
+	re := startReset(t, func(context.Context) error { return verdict }, nil)
 	prov := re.as(t, ProvisionerOrganization)
 
 	// The control: while the pair is not revoked every scope is accepted.
@@ -149,9 +140,7 @@ func TestReset_AScopeThatClearsTheDiskIsRefusedWhileTheConfigurationsPairIsRevok
 	require.Equal(t, 202, code, string(b))
 	require.NoError(t, os.Remove(re.marker))
 
-	sg.revoke(identity.SerialOf(leaf))
-	time.Sleep(1100 * time.Millisecond) // past the list's TTL, so the next check fetches
-
+	verdict = errors.Join(errors.New("the certificate in the configuration's pair is on the revocation list"), identity.ErrRevoked)
 	for _, scope := range []string{hostapi.ResetData, hostapi.ResetAll} {
 		code, b = re.do(t, prov, "POST", "/v1/reset", hostapi.ResetRequest{Scope: scope, Confirm: "host-1"})
 		require.Equal(t, 409, code, scope)
@@ -159,7 +148,7 @@ func TestReset_AScopeThatClearsTheDiskIsRefusedWhileTheConfigurationsPairIsRevok
 		require.NoError(t, json.Unmarshal(b, &eb))
 		assert.Equal(t, hostapi.CodeRevokedPair, eb.Code, scope)
 	}
-	_, err = os.Stat(re.marker)
+	_, err := os.Stat(re.marker)
 	assert.True(t, os.IsNotExist(err), "a refused reset left a marker")
 
 	// The store scope leaves the pair on disk, so it is not refused.
@@ -199,7 +188,9 @@ func serveHandler(t *testing.T, h http.Handler) *env {
 	ctx, stop := context.WithCancel(context.Background())
 	t.Cleanup(stop)
 	srv := New(Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: prometheus.NewRegistry()})
-	go func() { _ = srv.ServeHandler(ctx, ln, ServerTLS(pair, pool, nil), h) }()
+	go func() {
+		_ = srv.ServeHandler(ctx, ln, ServerTLS(func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &pair, nil }, pool, nil), h)
+	}()
 	return e
 }
 
