@@ -1,6 +1,7 @@
 package release
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/sha256"
@@ -64,15 +65,14 @@ func TestTestPKI_TheAuthorityIsOneNaructlAndInitAccept(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
-func TestDeterministicSigner_SignsVerifiablyAndRepeatably(t *testing.T) {
+func TestTestPKI_ASignatureIsVerifiableAndRepeatable(t *testing.T) {
 	key, err := derivedKey("v1")
 	require.NoError(t, err)
 	digest := sha256.Sum256([]byte("a certificate"))
-	s := deterministicSigner{key}
 
-	first, err := s.Sign(nil, digest[:], nil)
+	first, err := key.Sign(nil, digest[:], crypto.SHA256)
 	require.NoError(t, err)
-	second, err := s.Sign(nil, digest[:], nil)
+	second, err := key.Sign(nil, digest[:], crypto.SHA256)
 	require.NoError(t, err)
 
 	assert.Equal(t, first, second)
