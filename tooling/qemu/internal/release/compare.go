@@ -7,11 +7,10 @@ import (
 	"strings"
 )
 
-// ByDesignPattern matches the assets that differ in every build on purpose: the data disk and the
-// test user-data carry a fresh registry authority, a fresh gaon authority and fresh tokens. It is
-// the same expression as the skip pattern of image/repro.sh, which cannot import it; a test fails
-// when the two differ.
-const ByDesignPattern = `^(naru-data-.*\.qcow2|naru-node-[0-9]+\.test\.yaml)$`
+// ByDesignPattern matches the assets that differ in every build on purpose: the data disk carries a
+// fresh registry authority. It is the same expression as the skip pattern of image/repro.sh, which
+// cannot import it; a test fails when the two differ.
+const ByDesignPattern = `^naru-data-.*\.qcow2$`
 
 var byDesign = regexp.MustCompile(ByDesignPattern)
 
