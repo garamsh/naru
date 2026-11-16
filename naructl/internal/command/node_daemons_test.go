@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +148,10 @@ func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 	hostAuthorityFile := filepath.Join(dep.ca, "host", "ca.pem")
 	hostAuthority, err := os.ReadFile(hostAuthorityFile)
 	require.NoError(t, err)
+	// A deployment that rotates through the signer trusts two host authorities (ADR 0077): the file
+	// holds the offline one and a second certificate.
+	bothAuthorities := filepath.Join(t.TempDir(), "host-cas.pem")
+	require.NoError(t, os.WriteFile(bothAuthorities, []byte(strings.TrimSuffix(string(hostAuthority), "\n")+"\n"+in.certPEM), 0o600))
 	flags := append(hostFlags,
 		"--host-management-prefix", "192.168.0.0/24", "--host-egress-interface", "eth0", "--host-tunnel-port", "51821",
 		"--host-orch-url", "https://192.168.0.10:7500", "--host-orch-ca-sha256", d("a"), "--host-orch-enroll-key", in.enroll,
@@ -156,7 +161,7 @@ func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 		"--orch-member", "naru-node-1=https://192.168.0.10:2380", "--orch-member", "node-2=https://192.168.0.20:2380",
 		"--orch-san", "192.168.0.10", "--orch-san", "127.0.0.1", "--orch-state", "new", "--orch-listen", "0.0.0.0:7500",
 		"--orch-certificate", in.cert, "--orch-ca", in.cert, "--orch-revocation-public-key", in.pub, "--orch-recovery-public", in.recovery, "--orch-key", in.key, "--orch-restore",
-		"--orch-host-ca", hostAuthorityFile, "--host-client-ca", in.cert,
+		"--orch-host-ca", bothAuthorities, "--host-client-ca", in.cert,
 		"--metrics-listen", "192.168.0.10",
 	)
 
@@ -189,7 +194,7 @@ func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 	assert.Equal(t, in.certPEM, got.Spec.Orch.Certificate)
 	assert.Equal(t, in.recoveryText, got.Spec.Orch.RecoveryPublicKey)
 	assert.True(t, got.Spec.Orch.Restore)
-	assert.Equal(t, string(hostAuthority), got.Spec.Orch.HostCA, "orch trusts the host authority for the hosts' certificates")
+	assert.Equal(t, strings.TrimSuffix(string(hostAuthority), "\n")+"\n"+in.certPEM, got.Spec.Orch.HostCA, "orch trusts every certificate of the file for the hosts' certificates, not the first alone")
 	require.NotNil(t, got.Spec.Metrics)
 	assert.Equal(t, "192.168.0.10", got.Spec.Metrics.Listen)
 

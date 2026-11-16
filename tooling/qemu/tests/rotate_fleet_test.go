@@ -17,10 +17,29 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
+
+// trustingBoth returns a copy of the client file whose authority holds the signer's host authority
+// beside the one it has, as a deployment that rotates through the signer gives its hosts' clients
+// (ADR 0077): the serving pair a rotation delivers is issued by the signer's authority.
+func (f *fleet) trustingBoth(file string) string {
+	f.t.Helper()
+	b, err := os.ReadFile(file)
+	require.NoError(f.t, err)
+	var doc map[string]any
+	require.NoError(f.t, yaml.Unmarshal(b, &doc))
+	ca, _ := doc["ca"].(string)
+	doc["ca"] = strings.TrimSuffix(ca, "\n") + "\n" + f.hostAuthority
+	out, err := yaml.Marshal(doc)
+	require.NoError(f.t, err)
+	path := filepath.Join(f.dir, "both-"+filepath.Base(file))
+	require.NoError(f.t, os.WriteFile(path, out, 0o600))
+	return path
+}
 
 // hostPairOnDisk copies the pair a host enrolled with from its data disk into dir, as files only this
 // user reads, and returns their paths. The pair's key is never printed.
@@ -98,6 +117,7 @@ func TestFleet_RotatingARunningHostDeliversTheNewPairBeforeTheOldIsRevoked(t *te
 	h := f.hosts()[0]
 	f.enrollAndAdmit("eu-1")
 	api := f.hostOfNode(h)
+	provisioner := f.trustingBoth(api.Provisioner)
 	hosts := f.hostList(1)
 	require.Len(t, hosts, 1)
 	id := hosts[0].ID
@@ -118,7 +138,7 @@ func TestFleet_RotatingARunningHostDeliversTheNewPairBeforeTheOldIsRevoked(t *te
 
 	before := lastSeen()
 	out := f.must(nrun("signer", "rotate-host", "--admin", f.root.file, "--passphrase-file", f.pass, "--host-id", id,
-		"--host-client", api.Provisioner, "--config", f.c.API.Admin), "rotate the running host's pair")
+		"--host-client", provisioner, "--config", f.c.API.Admin), "rotate the running host's pair")
 
 	// The host holds and uses the new pair: its data disk has it, and orch hears the host again.
 	newCrt, _ := hostPairOnDisk(t, f.node(h), f.dir, "new")
@@ -133,7 +153,7 @@ func TestFleet_RotatingARunningHostDeliversTheNewPairBeforeTheOldIsRevoked(t *te
 		return err != nil || code != http.StatusNoContent
 	})
 	// The host stays up, and its own API still takes the operator's client.
-	r := hctl(api.Provisioner, []string{"microvm", "list"})
+	r := hctl(provisioner, []string{"microvm", "list"})
 	require.NoError(t, r.Err, r.Stderr)
 }
 
@@ -156,6 +176,7 @@ func TestFleet_RotatingAHostRevokesAnOfflinePairRegisteredBySerialAndTheHostServ
 	h := f.hosts()[0]
 	f.enrollAndAdmit("eu-1")
 	api := f.hostOfNode(h)
+	provisioner := f.trustingBoth(api.Provisioner)
 	hosts := f.hostList(1)
 	require.Len(t, hosts, 1)
 	id := hosts[0].ID
@@ -167,12 +188,12 @@ func TestFleet_RotatingAHostRevokesAnOfflinePairRegisteredBySerialAndTheHostServ
 		"--cert", servingCrt, "--config", f.c.API.Admin), "register the offline pair by its serial")
 
 	out := f.must(nrun("signer", "rotate-host", "--admin", f.root.file, "--passphrase-file", f.pass, "--host-id", id,
-		"--host-client", api.Provisioner, "--config", f.c.API.Admin), "rotate the host's pair")
+		"--host-client", provisioner, "--config", f.c.API.Admin), "rotate the host's pair")
 
 	newSerial := servedSerial(t, api.Addr)
 	assert.NotEqual(t, oldSerial, newSerial, "the host serves the new pair")
 	assert.Contains(t, out, newSerial, "naructl reports the serial the host reports with")
-	r := hctl(api.Provisioner, []string{"microvm", "list"})
+	r := hctl(provisioner, []string{"microvm", "list"})
 	require.NoError(t, r.Err, "the host stays reachable with the new pair: "+r.Stderr)
 
 	// Restarted from the configuration that still carries the revoked pair, it serves the stored one.
@@ -188,6 +209,6 @@ func TestFleet_RotatingAHostRevokesAnOfflinePairRegisteredBySerialAndTheHostServ
 		return conn.ConnectionState().PeerCertificates[0].SerialNumber.Text(16) == newSerial
 	})
 	assert.Equal(t, was, strings.Count(f.node(h).Console(), refusal), "it did not refuse: the pair it holds is not revoked")
-	r = hctl(api.Provisioner, []string{"microvm", "list"})
+	r = hctl(provisioner, []string{"microvm", "list"})
 	require.NoError(t, r.Err, r.Stderr)
 }

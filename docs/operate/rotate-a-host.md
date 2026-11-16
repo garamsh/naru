@@ -4,6 +4,16 @@ Replace the pair one host reports to orch with through the signer and the host A
 
 `<admin>` is root's or an operator's encrypted person file, and each command takes `--socket` or `--config` as the other signer commands do ([first-hosts.md](./first-hosts.md)). `<host client>` is a provisioner's file from `naructl gen host-client`; the host must be one that client already reaches. `TestFleet_RotatingARunningHostDeliversTheNewPairBeforeTheOldIsRevoked` and `TestFleet_RotatingAHostRevokesAnOfflinePairRegisteredBySerialAndTheHostRefusesItAfterARestart` (`tooling/qemu/tests/rotate_fleet_test.go`) run steps 1 to 3.
 
+## 0. Trust both host authorities
+
+The pair a rotation delivers is issued by the signer's host authority, which is not the offline authority `naructl gen host-ca` wrote. A deployment that rotates through the signer gives its hosts' clients both authorities, or they refuse the new pair:
+
+1. Read the signer's host authority with `naructl signer ca` (`GET /v1/ca`) and keep it as `<signer host ca>`.
+2. Orch: put it beside the offline authority in one PEM file and give that file to `gen node --orch-host-ca` (`spec.orch.hostCA`). Orch trusts every certificate of the file for the hosts' pairs. `gen node` accepts a file of several certificates.
+3. The operator: append it to the `ca` of the `<host client>` file the rotation uses and of every other client of the host API.
+
+Skip this only for a host whose serving certificate the signer's host authority already issued.
+
 ## 1. A pair `gen node` wrote: register its serial
 
 A host whose certificate the signer issued is already known to it. A `gen node` pair is issued offline from the host authority, so the signer holds no record of it: register the certificate, from the user-data's `/run/naru-hostd/tls.crt` saved as `<tls.crt>`:
