@@ -103,6 +103,60 @@ type recorder struct {
 	registriesErr error
 	storage       []config.Storage
 	extensions    []config.Extension
+
+	// resetScope is the reset waiting, when resetWaiting. discarded, cleared and wiped record what
+	// was done of it.
+	resetScope   string
+	resetWaiting bool
+	resetErr     error
+	discarded    bool
+	cleared      bool
+	wiped        *config.DataDisk
+	clearErr     error
+	wipeErr      error
+	// anchor is the stored maintenance anchor, when hasAnchor; anchorSaved is what SaveAnchor was given.
+	anchor      []byte
+	hasAnchor   bool
+	anchorSaved []byte
+	appliedAll  []netcfg.Config
+	wrote       []config.File
+	startedSvc  []config.Service
+}
+
+func (r *recorder) Discard() error {
+	r.calls = append(r.calls, "discard")
+	r.discarded = true
+	return nil
+}
+
+func (r *recorder) TakeReset() (string, bool, error) {
+	scope, ok := r.resetScope, r.resetWaiting
+	r.resetWaiting = false
+	return scope, ok, r.resetErr
+}
+
+func (r *recorder) ClearDataDisk() error {
+	r.calls = append(r.calls, "clear")
+	r.cleared = true
+	return r.clearErr
+}
+
+func (r *recorder) WipeDataDisk(d config.DataDisk) error {
+	r.calls = append(r.calls, "wipe")
+	r.wiped = &d
+	return r.wipeErr
+}
+
+func (r *recorder) LoadAnchor() ([]byte, error) {
+	if !r.hasAnchor {
+		return nil, store.ErrNotFound
+	}
+	return r.anchor, nil
+}
+
+func (r *recorder) SaveAnchor(b []byte) error {
+	r.anchorSaved = b
+	return nil
 }
 
 func (r *recorder) MountExtensions(e []config.Extension) error {
@@ -121,6 +175,7 @@ func (r *recorder) ReadSeed() ([]byte, []byte, error) {
 func (r *recorder) ApplyNetwork(c netcfg.Config, _ *slog.Logger) (netcfg.Applied, error) {
 	r.calls = append(r.calls, "network")
 	r.applied = c
+	r.appliedAll = append(r.appliedAll, c)
 	if r.leased != nil {
 		return *r.leased, r.networkErr
 	}
@@ -136,6 +191,7 @@ func (r *recorder) ApplyNetwork(c netcfg.Config, _ *slog.Logger) (netcfg.Applied
 func (r *recorder) WriteFiles(f []config.File) error {
 	r.calls = append(r.calls, "files")
 	r.written = f
+	r.wrote = append(r.wrote, f...)
 	return r.filesErr
 }
 
@@ -206,6 +262,7 @@ func (r *recorder) Prepare() error {
 func (r *recorder) Start(s config.Service) error {
 	r.calls = append(r.calls, "start "+s.Name)
 	r.started = append(r.started, s.Name)
+	r.startedSvc = append(r.startedSvc, s)
 	return r.startErr
 }
 
