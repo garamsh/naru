@@ -97,3 +97,27 @@ func TestTopology_KubernetesIsTheOneBesidesGaons(t *testing.T) {
 	_, err = run(t, "topology", "other")
 	assert.Error(t, err)
 }
+
+func TestGenKubernetesNode_ANodeAPIAuthorityGivesTheNodeSpecAPISoATokenCanBePatchedLive(t *testing.T) {
+	dep := newDeployment(t)
+	dep.kubernetes(t)
+	plain := dep.kubeNode(t, "control-plane", "--bootstrap-tokens")
+	assert.Nil(t, apiOf(t, plain), "control: without the authority there is no API")
+	apiAuthority(t, dep)
+
+	out := dep.kubeNode(t, "control-plane", "--bootstrap-tokens")
+	validate(t, out)
+	got := apiOf(t, out)
+
+	require.NotNil(t, got)
+	assert.NotEmpty(t, got.Certificate)
+}
+
+func TestGenKubernetesBootstrapRBAC_PrintsTheBindingsASingleApplyNeeds(t *testing.T) {
+	out, err := run(t, "gen", "kubernetes-bootstrap-rbac")
+
+	require.NoError(t, err)
+	for _, want := range []string{"system:node-bootstrapper", "system:bootstrappers"} {
+		assert.Contains(t, out, want)
+	}
+}

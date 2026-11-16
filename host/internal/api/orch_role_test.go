@@ -53,8 +53,6 @@ func TestRoles_OnlyTheOrchUnitGrantsTheOrchRole(t *testing.T) {
 
 	for name, units := range map[string][]string{
 		"host":         {string(identity.RoleHost)},
-		"operator":     {string(identity.RoleOperator)},
-		"reader":       {string(identity.RoleReader)},
 		"orch and one": {string(identity.RoleOrch), string(identity.RoleOperator)},
 		"unknown":      {"naru:host-provisioner"},
 	} {
@@ -75,4 +73,32 @@ func TestRoles_OrchsUnitDoesNotRaiseAReader(t *testing.T) {
 	assert.Equal(t, 200, code)
 	code, _ = e.do(t, reader, "POST", "/v1/microvms", createBody())
 	assert.Equal(t, 403, code)
+}
+
+// The signer issues roles to people and tools under the operator authority, which a seed-joined host
+// trusts: the host API takes their role from the certificate's unit (ADR 0080).
+func TestRoles_ThePeopleAndToolsRolesTheSignerIssuesAreTheHostsRoles(t *testing.T) {
+	e := start(t)
+	tests := []struct {
+		unit             identity.Role
+		read, write, del int
+	}{
+		{identity.RoleRoot, 200, 201, 204},
+		{identity.RoleOperator, 200, 201, 204},
+		{identity.RoleReader, 200, 403, 403},
+		{identity.RoleAutomation, 200, 403, 403},
+		{identity.RoleHost, 403, 403, 403},
+	}
+	for _, tc := range tests {
+		c := e.asUnits(t, []string{string(tc.unit)}, nil)
+		name := "vm-" + string(tc.unit)
+		code, b := e.do(t, c, "GET", "/v1/host", nil)
+		assert.Equal(t, tc.read, code, "%s reads: %s", tc.unit, b)
+		body := createBody()
+		body["name"] = name
+		code, b = e.do(t, c, "POST", "/v1/microvms", body)
+		assert.Equal(t, tc.write, code, "%s creates: %s", tc.unit, b)
+		code, _ = e.do(t, c, "DELETE", "/v1/microvms/"+name, nil)
+		assert.Equal(t, tc.del, code, "%s deletes", tc.unit)
+	}
 }

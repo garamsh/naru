@@ -9,9 +9,6 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// removedIn is the release that stops accepting the flag spellings ADR 0067 deprecates.
-const removedIn = "v0.1.0-dev.13"
-
 // runner runs a command once cobra has parsed its flags; args are the positional arguments.
 type runner func(args []string, stdout, stderr io.Writer) error
 
@@ -19,38 +16,11 @@ type runner func(args []string, stdout, stderr io.Writer) error
 // values it declares are the closure the runner reads.
 type binder func(fs *pflag.FlagSet) runner
 
-// aliasKey marks a flag as a deprecated spelling of the flag the annotation names.
-const aliasKey = "naructl-alias"
-
-// aliasString registers old as a hidden spelling of the string flag new, which p holds. Using it
-// works as using the flag and prints a deprecation line.
-func aliasString(fs *pflag.FlagSet, p *string, old, new string) {
-	fs.StringVar(p, old, *p, "deprecated spelling of --"+new)
-	_ = fs.MarkHidden(old)
-	_ = fs.SetAnnotation(old, aliasKey, []string{new})
-}
-
-// setFlags is the names of the flags the command line gave, a deprecated spelling counted as the
-// flag it stands for.
+// setFlags is the names of the flags the command line gave.
 func setFlags(fs *pflag.FlagSet) map[string]bool {
 	set := map[string]bool{}
-	fs.Visit(func(f *pflag.Flag) {
-		if a, ok := f.Annotations[aliasKey]; ok {
-			set[a[0]] = true
-			return
-		}
-		set[f.Name] = true
-	})
+	fs.Visit(func(f *pflag.Flag) { set[f.Name] = true })
 	return set
-}
-
-// warnAliases prints one line for each deprecated spelling the command line used.
-func warnAliases(fs *pflag.FlagSet, stderr io.Writer) {
-	fs.Visit(func(f *pflag.Flag) {
-		if a, ok := f.Annotations[aliasKey]; ok {
-			_, _ = fmt.Fprintf(stderr, "naructl: --%s is deprecated, use --%s (it stops working in %s)\n", f.Name, a[0], removedIn)
-		}
-	})
 }
 
 // leaf is a command that does something.
@@ -58,7 +28,6 @@ func leaf(use, short string, b binder) *cobra.Command {
 	c := &cobra.Command{Use: use, Short: short, Args: cobra.ArbitraryArgs}
 	run := b(c.Flags())
 	c.RunE = func(c *cobra.Command, args []string) error {
-		warnAliases(c.Flags(), c.ErrOrStderr())
 		return run(args, c.OutOrStdout(), c.ErrOrStderr())
 	}
 	return c

@@ -68,9 +68,12 @@ format-apply:
 
 # The tests need neither root nor a VM. The ones that need a delegated cgroup
 # are skipped here and run by test-cgroup; those that need PID 1 run in the
-# QEMU test of the image.
+# QEMU test of the image. The timeout is above go test's 10 minutes because
+# tooling/disk builds four disks and sgdisk ends each with sync(2), which waits
+# for every dirty page of the machine: on a machine others write to, one build
+# took 40 minutes.
 test:
-	$(call each_module, $(count_packages); (cd "$$dir" && go test -race -count=1 ./...))
+	$(call each_module, $(count_packages); (cd "$$dir" && go test -race -count=1 -timeout 60m ./...))
 
 # test-cgroup runs the tests that use real cgroups, in a cgroup the user
 # delegates to itself with systemd-run --user. They are not part of ci: a
@@ -232,7 +235,7 @@ judge-serial:
 # set a host takes with `naructl host boot-set add`, ADR 0046), naru-data-<version>.qcow2 (the one data
 # disk both Nodes attach), naru-guest-<version>.json,
 # naru-inputs-<version>.json (what naru-cluster reads besides the disks), naructl-<version>-linux-amd64
-# (the operator's tool, which also writes the test user-data below from a CA that lives only for the
+# (the operator's tool, which also writes the test user-data below from a CA derived from the version (ADR 0078) that lives only for the
 # run), naru-cluster-<version>-linux-amd64 (the harness's command, a static binary, ADR 0074), naru-node-1.test.yaml and naru-node-2.test.yaml (test-only user-data for Proxmox: they carry
 # gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. $(BUILD)/release-figures.env,
 # outside $(RELEASE) because every file there is an asset, holds the ESP size and the largest in-place

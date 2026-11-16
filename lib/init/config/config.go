@@ -89,7 +89,7 @@ const StorageRoot = wire.DataMount + "/storage"
 // StorageFormXFS is the one file system form a storage disk takes.
 const StorageFormXFS = "xfs"
 
-// Storage is one extra disk, found by Label or by Device, exactly one of them.
+// Storage is one extra disk, found by Label, by Device or by Serial, exactly one of them.
 type Storage struct {
 	// Name keys the entry and is the file system's label when init formats the disk.
 	Name string `yaml:"name"`
@@ -97,6 +97,9 @@ type Storage struct {
 	Label string `yaml:"label,omitempty"`
 	// Device is a device path such as /dev/sdb.
 	Device string `yaml:"device,omitempty"`
+	// Serial is the serial number of a blank disk (a virtio-blk or SCSI disk's), which init
+	// formats at the first boot; later boots find it by its XFS label, the Name.
+	Serial string `yaml:"serial,omitempty"`
 	// Form is the file system, "xfs", which is also what an empty Form means.
 	Form string `yaml:"form,omitempty"`
 	// MountPoint is where the disk is mounted. It is StorageRoot/<Name> when empty.

@@ -66,28 +66,28 @@ func UserDataName(index int) string { return fmt.Sprintf("naru-node-%d.test.yaml
 
 // UserData has the naructl binary write the user-data files by name (UserDataName), each running
 // gaon: mvmd, the registry, etcd and gaon's control plane on node-1, and gaon's Node Agent on both.
-// The CA is new at each call and is a test authority: node-1's user-data carries it, private key
-// included, in spec.pki, so that its controllers sign the agents' requests (ADR 0016), and every
-// Node carries a bootstrap token. The CA's directory is removed before UserData returns, so the key
+// The CA is a test authority: node-1's user-data carries it, private key included, in spec.pki, so
+// that its controllers sign the agents' requests (ADR 0016), and every Node carries a bootstrap
+// token. The CA and the tokens are derived from version and epoch (testpki.go), so that two builds
+// of one commit write the same files. The CA's directory is removed before UserData returns, so the key
 // is in no file but node-1's user-data, and no file carries a client pair for an operator.
 // guest is the guest manifest's path, firecracker the digest of the Firecracker binary, and
 // registryCA the path of the authority of the registry service, which every Node trusts for the
 // registry's address through spec.registries.
-func UserData(tool naructl.Tool, guest, firecracker, registryCA string) (map[string][]byte, error) {
+func UserData(tool naructl.Tool, version string, epoch int64, guest, firecracker, registryCA string) (map[string][]byte, error) {
 	work, err := os.MkdirTemp("", "naru15-userdata-")
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(work) }()
 	ca := filepath.Join(work, "ca")
-	if err := tool.GenCA(ca); err != nil {
-		return nil, fmt.Errorf("make the CA: %w", err)
-	}
+	var names []string
 	for i := 1; i <= Nodes; i++ {
 		// node-1's user-data, written first, lists the token of every Node.
-		if err := tool.GenToken(ca, Deployment(i).Name); err != nil {
-			return nil, err
-		}
+		names = append(names, Deployment(i).Name)
+	}
+	if err := testPKI(ca, version, epoch, names); err != nil {
+		return nil, fmt.Errorf("make the CA: %w", err)
 	}
 	out := map[string][]byte{}
 	for i := 1; i <= Nodes; i++ {
@@ -349,7 +349,7 @@ func Build(o Options) ([]Asset, error) {
 		names = append(names, b.name)
 	}
 
-	files, err := UserData(naructl.Tool{Bin: o.Naructl}, filepath.Join(o.GuestDir, "guest.json"), inputs.FirecrackerSHA256, filepath.Join(inputs.Dir, "registry", "ca.pem"))
+	files, err := UserData(naructl.Tool{Bin: o.Naructl}, o.Version, o.Epoch, filepath.Join(o.GuestDir, "guest.json"), inputs.FirecrackerSHA256, filepath.Join(inputs.Dir, "registry", "ca.pem"))
 	if err != nil {
 		return nil, err
 	}

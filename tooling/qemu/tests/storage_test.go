@@ -114,3 +114,26 @@ func TestNode_AStorageDiskIsFoundByItsLabelWhenTheDisksSwapNamesBetweenBoots(t *
 	assert.False(t, nd.Has(formatted), "and formatted nothing, the data disk now at /dev/vdb included")
 	assert.False(t, nd.Has("storage disk not prepared"), "and did not refuse the entry")
 }
+
+// storageSerial is the serial number the extra disk is given, and the entry names it by.
+const storageSerial = "naru-vmdisks-01"
+
+func TestNode_ABlankStorageDiskNamedBySerialIsFormattedAtFirstBootAndFoundByLabelWhenTheDisksSwap(t *testing.T) {
+	c := start(t, node.ClusterSpec{N: 1, ExtraDiskFirst: true, Configure: func(c *node.Config) {
+		withStorageDisk(c)
+		c.ExtraDiskSerial = storageSerial
+		c.Storage = []node.Storage{{Name: "vmdisks", Serial: storageSerial, MountPoint: storageDir}}
+	}})
+	nd := c.Nodes[0]
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "storageprobe", "fs=xfs", "marker=written"))
+	require.True(t, nd.Has(formatted, "device=/dev/vda"), "the first boot formatted the extra disk, which the kernel named /dev/vda, where the entry names no device")
+	require.False(t, nd.Has(formatted, "device=/dev/vdb"), "and left the data disk alone")
+	nd.Stop()
+	nd.SwapDisks()
+
+	require.NoError(t, nd.Reboot())
+
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "storageprobe", "fs=xfs", "marker=kept"))
+	assert.True(t, nd.Has(storageMark, "device=/dev/vdb"), "the same disk is mounted where the kernel now names it, with its marker")
+	assert.False(t, nd.Has("storage disk not prepared"))
+}
