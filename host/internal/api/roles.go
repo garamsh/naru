@@ -35,13 +35,21 @@ const (
 	ReaderOrganization      = "naru:host-reader"
 )
 
-// roleOf returns the highest role among the Organizations of cert. A certificate that carries
-// lib/identity's orch role, as naru-signer issues to orch, is a provisioner: orch creates, stops,
-// starts and deletes microVMs and sets networks and peers on every host it admitted.
+// roleOf returns the highest role among those cert carries. A certificate with lib/identity's
+// orch role, as naru-signer issues to orch, is a provisioner: orch creates, stops, starts and
+// deletes microVMs and sets networks and peers on every host it admitted. The roles the signer
+// issues to people and tools, whose certificates chain to the operator authority a seed-joined
+// host trusts, take their role from it (ADR 0080): root and operator are provisioners, reader and
+// automation are readers, and a host's own certificate is no role here.
 func roleOf(cert *x509.Certificate) Role {
 	role := None
-	if r, err := identity.RoleOf(cert); err == nil && r == identity.RoleOrch {
-		role = Provisioner
+	if r, err := identity.RoleOf(cert); err == nil {
+		switch r {
+		case identity.RoleOrch, identity.RoleRoot, identity.RoleOperator:
+			role = Provisioner
+		case identity.RoleReader, identity.RoleAutomation:
+			role = Reader
+		}
 	}
 	for _, o := range cert.Subject.Organization {
 		switch o {

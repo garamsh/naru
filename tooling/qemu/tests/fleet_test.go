@@ -450,8 +450,9 @@ var (
 )
 
 // hostClientCA is the file of naru-hostd's trust of its clients: the host authority's certificate, then
-// the authority orch's certificate chains to, which gen node's --host-client-ca writes when that
-// authority exists at generation. The signer's root is made after the Nodes' first boot, so enroll sets it.
+// the authorities orch trusts its callers by (spec.orch.ca), which is what orch gives a host that joined
+// from a seed as its client trust: orch's own, and the operator authority the signer's people are
+// issued under (ADR 0080). The signer's root is made after the Nodes' first boot, so enroll sets it.
 const hostClientCA = "/run/naru-hostd/client-ca.crt"
 
 // enroll has host Node i enroll with the enrollment key: its spec.host.orch carries orch's address, the
@@ -463,7 +464,7 @@ func (f *fleet) enroll(i int, key string) string {
 	hostCA, err := os.ReadFile(f.c.HostCA)
 	require.NoError(f.t, err)
 	f.edit(i, func(file string) error {
-		if err := seed.SetFile(file, hostClientCA, strings.TrimSuffix(string(hostCA), "\n")+"\n"+f.orchCA); err != nil {
+		if err := seed.SetFile(file, hostClientCA, strings.TrimSuffix(string(hostCA), "\n")+"\n"+f.orchTrust); err != nil {
 			return err
 		}
 		if err := seed.Set(file, f.revPub, "spec", "host", "revocationPublicKey"); err != nil {
