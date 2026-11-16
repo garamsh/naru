@@ -1,8 +1,12 @@
 package command
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -232,6 +236,103 @@ func signerReissueRoot(fs *pflag.FlagSet) runner {
 		}
 		_, _ = fmt.Fprintf(stdout, "naructl: the signer issued a new root certificate, serial %s, valid until %s, and revoked the old root; wrote %s\n",
 			issued.Serial, issued.NotAfter.Format(time.RFC3339), *out)
+		return nil
+	}
+}
+
+// signerRotateHost makes a new key for a host, has the signer issue a host certificate for it and
+// put the serials it holds for the host on the revocation list, and writes the new pair. Nothing is
+// written when the signer refuses.
+func signerRotateHost(fs *pflag.FlagSet) runner {
+	admin := fs.String("admin", "", "root's or an operator's encrypted person file")
+	pass := fs.String("passphrase-file", "", "file holding the person file's passphrase")
+	hostID := fs.String("host-id", "", "the host whose pair is replaced")
+	keyOut := fs.String("key-out", "", "the file the new private key is written to (0600), PKCS #8 PEM")
+	certOut := fs.String("cert-out", "", "the file the new certificate is written to, PEM")
+	sg := addSignerFlags(fs)
+	return func(_ []string, stdout, _ io.Writer) error {
+		if err := sg.check(fs); err != nil {
+			return err
+		}
+		if err := require(fs, "admin", "passphrase-file", "host-id", "key-out", "cert-out"); err != nil {
+			return err
+		}
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return err
+		}
+		csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: *hostID}}, key)
+		if err != nil {
+			return err
+		}
+		keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			return err
+		}
+		signed, err := signAs(*admin, *pass, identity.ActionRotateHost, identity.RotateHostRequest{HostID: *hostID, CSR: csr})
+		if err != nil {
+			return err
+		}
+		body, err := signerCall(sg, http.MethodPost, "/v1/rotate-host", signed)
+		if err != nil {
+			return err
+		}
+		var issued identity.Issued
+		if err := json.Unmarshal(body, &issued); err != nil {
+			return fmt.Errorf("the signer's answer: %w", err)
+		}
+		if _, err := x509.ParseCertificate(issued.Certificate); err != nil {
+			return fmt.Errorf("the signer's certificate: %w", err)
+		}
+		// The old serial is revoked by now: the key is written first and never over a file, so a
+		// certificate nobody holds the key of is never the only thing left.
+		if err := writeNew(*keyOut, pem.EncodeToMemory(&pem.Block{Type: keyBlock, Bytes: keyDER}), 0o600); err != nil {
+			return err
+		}
+		if err := os.WriteFile(*certOut, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issued.Certificate}), 0o644); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "naructl: rotated %s: the old serial is revoked; wrote the new key %s (0600) and certificate %s, serial %s, valid until %s\n",
+			*hostID, *keyOut, *certOut, issued.Serial, issued.NotAfter.Format(time.RFC3339))
+		return nil
+	}
+}
+
+// signerRegisterHost records the serial of a certificate another authority issued to a host, such as
+// the offline pair gen node writes, so that rotate-host can revoke it.
+func signerRegisterHost(fs *pflag.FlagSet) runner {
+	admin := fs.String("admin", "", "root's or an operator's encrypted person file")
+	pass := fs.String("passphrase-file", "", "file holding the person file's passphrase")
+	hostID := fs.String("host-id", "", "the host the certificate was issued to")
+	certFile := fs.String("cert", "", "the host's certificate, PEM or DER, whose serial is registered")
+	sg := addSignerFlags(fs)
+	return func(_ []string, stdout, _ io.Writer) error {
+		if err := sg.check(fs); err != nil {
+			return err
+		}
+		if err := require(fs, "admin", "passphrase-file", "host-id", "cert"); err != nil {
+			return err
+		}
+		der, err := readCSR(*certFile)
+		if err != nil {
+			return err
+		}
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return fmt.Errorf("%s: %w", *certFile, err)
+		}
+		if cert.Subject.CommonName != *hostID {
+			return fmt.Errorf("%s is the certificate of %q, not of %q", *certFile, cert.Subject.CommonName, *hostID)
+		}
+		serial := identity.SerialOf(cert)
+		signed, err := signAs(*admin, *pass, identity.ActionRegisterHost, identity.RegisterHostRequest{HostID: *hostID, Serial: serial})
+		if err != nil {
+			return err
+		}
+		if _, err := signerCall(sg, http.MethodPost, "/v1/register-host", signed); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "naructl: registered serial %s for %s; rotate-host revokes it\n", serial, *hostID)
 		return nil
 	}
 }

@@ -39,7 +39,8 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 	f := &fakeSigner{socket: shortSocketPath(t), roots: roots, got: map[string]json.RawMessage{}, who: map[string]identity.Identity{}, status: http.StatusOK}
 	l, err := net.Listen("unix", f.socket)
 	require.NoError(t, err)
-	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/revoke": identity.ActionRevoke}
+	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/revoke": identity.ActionRevoke,
+		"/v1/rotate-host": identity.ActionRotateHost, "/v1/register-host": identity.ActionRegisterHost}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/ca" {
 			_ = json.NewEncoder(w).Encode(f.authorities)
@@ -56,8 +57,16 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 			http.Error(w, "refused by the fake", f.status)
 			return
 		}
-		if r.URL.Path == "/v1/revoke" {
+		if r.URL.Path == "/v1/revoke" || r.URL.Path == "/v1/register-host" {
 			_, _ = w.Write([]byte("crl"))
+			return
+		}
+		if r.URL.Path == "/v1/rotate-host" {
+			var rot identity.RotateHostRequest
+			_ = json.Unmarshal(body, &rot)
+			csr, _ := x509.ParseCertificateRequest(rot.CSR)
+			cert := issueFrom(t, caOf(t), rot.HostID, identity.RoleHost, csr.PublicKey)
+			_ = json.NewEncoder(w).Encode(identity.Issued{Certificate: cert.Raw, Serial: cert.SerialNumber.Text(16), NotAfter: cert.NotAfter})
 			return
 		}
 		var req identity.IssueRequest
@@ -212,4 +221,67 @@ func TestOperatorRevoke_SendsTheSerialSignedByTheAdmin(t *testing.T) {
 	assert.Error(t, err, "the serial is required")
 	_, err = run(t, "operator", "nonsense")
 	assert.Error(t, err)
+}
+
+func TestSignerRotateHost_WritesTheNewPairOnlyWhenTheSignerIssuesIt(t *testing.T) {
+	pool := x509.NewCertPool()
+	pool.AddCert(caOf(t).cert)
+	f := startFakeSigner(t, pool)
+	admin, pass := adminFile(t, identity.RoleOperator, "pw")
+	dir := t.TempDir()
+	keyOut, certOut := filepath.Join(dir, "host.key"), filepath.Join(dir, "host.crt")
+
+	f.status = http.StatusConflict
+	_, err := run(t, "signer", "rotate-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-1", "--key-out", keyOut, "--cert-out", certOut, "--socket", f.socket)
+	require.Error(t, err)
+	assert.NoFileExists(t, keyOut, "a refused rotation writes no key")
+	assert.NoFileExists(t, certOut)
+
+	f.status = http.StatusOK
+	text, err := run(t, "signer", "rotate-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-1", "--key-out", keyOut, "--cert-out", certOut, "--socket", f.socket)
+	require.NoError(t, err, text)
+	var req identity.RotateHostRequest
+	require.NoError(t, json.Unmarshal(f.got["/v1/rotate-host"], &req))
+	assert.Equal(t, "h-1", req.HostID)
+	assert.Equal(t, identity.RoleOperator, f.who["/v1/rotate-host"].Role)
+
+	info, err := os.Stat(keyOut)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	keyPEM, err := os.ReadFile(keyOut)
+	require.NoError(t, err)
+	kb, _ := pem.Decode(keyPEM)
+	require.NotNil(t, kb)
+	key, err := x509.ParsePKCS8PrivateKey(kb.Bytes)
+	require.NoError(t, err)
+	certPEM, err := os.ReadFile(certOut)
+	require.NoError(t, err)
+	cb, _ := pem.Decode(certPEM)
+	require.NotNil(t, cb)
+	cert, err := x509.ParseCertificate(cb.Bytes)
+	require.NoError(t, err)
+	assert.True(t, key.(*ecdsa.PrivateKey).PublicKey.Equal(cert.PublicKey), "the certificate is for the key written beside it")
+	assert.Contains(t, text, "old serial is revoked")
+}
+
+func TestSignerRegisterHost_SendsTheSerialOfTheCertificateAndRefusesAnotherHostsOne(t *testing.T) {
+	pool := x509.NewCertPool()
+	pool.AddCert(caOf(t).cert)
+	f := startFakeSigner(t, pool)
+	admin, pass := adminFile(t, identity.RoleOperator, "pw")
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	cert := issueFrom(t, caOf(t), "h-1", identity.RoleHost, &key.PublicKey)
+	file := filepath.Join(t.TempDir(), "host.crt")
+	require.NoError(t, os.WriteFile(file, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}), 0o644))
+
+	_, err = run(t, "signer", "register-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-2", "--cert", file, "--socket", f.socket)
+	require.Error(t, err, "the certificate is h-1's")
+	assert.NotContains(t, f.got, "/v1/register-host")
+
+	text, err := run(t, "signer", "register-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-1", "--cert", file, "--socket", f.socket)
+	require.NoError(t, err, text)
+	var req identity.RegisterHostRequest
+	require.NoError(t, json.Unmarshal(f.got["/v1/register-host"], &req))
+	assert.Equal(t, identity.RegisterHostRequest{HostID: "h-1", Serial: cert.SerialNumber.Text(16)}, req)
 }

@@ -30,6 +30,11 @@ Those three are root's. reissue-root is the recovery key's, for an operator who 
 it signs on this machine a once-only request for a new root certificate for the request --csr names,
 and the signer revokes the old root. Its --recovery-key and --passphrase-file are local files.
 
+rotate-host makes a new key for --host-id, has the signer issue a host certificate for it, and puts every serial
+the signer holds for that host on the revocation list; it writes --key-out and --cert-out, and nothing when the
+signer refuses. register-host records the serial of the certificate --cert, one gen node wrote offline, for a host
+the signer did not admit, so that rotate-host can revoke it. Both are root's or an operator's.
+
 Each takes exactly one of --socket, the one naru-signer serves on this host, and --config, an admin's client
 file for a Node's API, which forwards to the signer of --endpoint. The signer checks every request's signature
 itself, so the client file alone does not authorise anything.`
@@ -116,6 +121,8 @@ func newRoot() *cobra.Command {
 			leaf("ca", "print the signer's authorities", signerCA("orch", "operator", "host")),
 			leaf("authorise-replica", "sign root's authorisation for a signer replica", signerAuthoriseReplica),
 			leaf("bundle", "write the authorities sealed to the recovery key", signerBundle),
+			leaf("rotate-host", "replace a host's key pair through the signer and revoke its old serial", signerRotateHost),
+			leaf("register-host", "record the serial of a host's offline certificate so rotate-host can revoke it", signerRegisterHost),
 			leaf("reissue-root", "sign a request for a new root certificate with the recovery key", signerReissueRoot),
 			leaf("restore", "fill a blank signer from a bundle", signerRestore)), signerLong, ""),
 		parent("extension", "store, list and remove system extension images on a Node",
