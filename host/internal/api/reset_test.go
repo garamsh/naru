@@ -202,3 +202,14 @@ func serveHandler(t *testing.T, h http.Handler) *env {
 	go func() { _ = srv.ServeHandler(ctx, ln, ServerTLS(pair, pool, nil), h) }()
 	return e
 }
+
+func TestHost_ReportsTheIDAResetConfirms(t *testing.T) {
+	re := startReset(t, nil, nil)
+
+	code, b := re.do(t, re.as(t, ReaderOrganization), "GET", "/v1/host", nil)
+
+	require.Equal(t, 200, code)
+	var h hostapi.Host
+	require.NoError(t, json.Unmarshal(b, &h))
+	assert.Equal(t, "host-1", h.HostID)
+}
