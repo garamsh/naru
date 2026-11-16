@@ -65,7 +65,6 @@ func newCall(fs *pflag.FlagSet) call {
 		endpoint:   fs.String("endpoint", "", "the Node's address, an IP address with or without a port (default the client file's first endpoint)"),
 		serverName: serverNameFlag(fs),
 	}
-	aliasString(fs, c.endpoint, "node", "endpoint")
 	return c
 }
 
