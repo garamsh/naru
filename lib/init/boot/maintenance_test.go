@@ -71,6 +71,34 @@ func TestRun_ARefusedSeedlessHostThatKeptAnAnchorServesMaintenanceOnItsStoredNet
 	assert.Empty(t, r.api, "no Node API: only hostd's maintenance mode is served")
 }
 
+func TestRun_ASeedRefusedBeforeTheDataDiskMountsStillReadsTheAnchorAndNetworkStoredOnIt(t *testing.T) {
+	r := &recorder{raw: "not: [a configuration"}
+	r.anchor, r.hasAnchor = anchor(t, boot.Anchor{OrchURL: "https://orch.example.test:7500", OrchCASHA256: maintSHA, RevocationPublicKey: maintKey}), true
+	r.storedNetwork, r.hasNetwork = []byte(validNetwork), true
+
+	_, err := runStored(r)
+
+	require.Error(t, err)
+	assert.Equal(t, config.DataDisk{Label: "NARUDATA", MountPoint: "/var/lib/naru"}, r.mounted, "the default label and mount point")
+	svc := hostd(t, r)
+	assert.Contains(t, svc.Args, "--orch-url=https://orch.example.test:7500", "the stored anchor, which the seed did not give")
+	assert.Equal(t, maintKey, r.wrote[0].Content)
+	require.Len(t, r.appliedAll, 1)
+	assert.Equal(t, "eth0", r.appliedAll[0].Interfaces[0].Name, "the stored network-config")
+	assert.False(t, r.discarded, "maintenance carries out no reset")
+}
+
+func TestRun_AHostWhoseDataDiskCannotBeMountedInMaintenanceIsRefusedWithNoMaintenanceMode(t *testing.T) {
+	r := &recorder{raw: "not: [a configuration", diskErr: errors.New("no such disk")}
+	r.anchor, r.hasAnchor = anchor(t, boot.Anchor{OrchURL: "https://orch.example.test:7500", OrchCASHA256: maintSHA, RevocationPublicKey: maintKey}), true
+
+	_, err := runStored(r)
+
+	require.Error(t, err)
+	assert.Empty(t, r.started)
+	assert.Empty(t, r.startedSvc, "fail closed: no anchor could be read")
+}
+
 func TestRun_AHostWithNoAnchorIsRefusedWithNoMaintenanceMode(t *testing.T) {
 	r := seedless(t)
 	r.stored = nil

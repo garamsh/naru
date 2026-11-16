@@ -10,6 +10,7 @@ import (
 
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/netcfg"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // maintenanceKeyFile is where init writes the revocation public key naru-hostd's maintenance mode
@@ -77,11 +78,35 @@ func saveAnchor(configs Configs, spec config.Spec, log *slog.Logger) {
 }
 
 // watchedHost records what maintenance mode needs to know of the boot that was refused: the seed it
-// read and whether the network was brought up.
+// read, whether the network was brought up and whether the data disk is mounted.
 type watchedHost struct {
 	Host
 	userData, networkConfig []byte
-	networked               bool
+	networked, dataMounted  bool
+}
+
+func (h *watchedHost) MountDataDisk(d config.DataDisk) error {
+	err := h.Host.MountDataDisk(d)
+	h.dataMounted = err == nil
+	return err
+}
+
+func (h *watchedHost) WipeDataDisk(d config.DataDisk) error {
+	h.dataMounted = false
+	return h.Host.WipeDataDisk(d)
+}
+
+// mountDataDisk mounts the data disk by its default label and mount point, as a boot with no seed
+// does, when the refusal came before it was mounted, so that the stored anchor and network-config
+// can be read. It never carries out a reset. A disk that cannot be mounted is logged and the
+// stored files stay unread.
+func (h *watchedHost) mountDataDisk(log *slog.Logger) {
+	if h.dataMounted {
+		return
+	}
+	if err := h.MountDataDisk(config.DataDisk{Label: wire.DataLabel, MountPoint: wire.DataMount}); err != nil {
+		log.Error("maintenance mode: the data disk cannot be mounted, so the stored anchor and network-config are not read", "err", err)
+	}
 }
 
 func (h *watchedHost) ReadSeed() ([]byte, []byte, error) {
@@ -130,6 +155,7 @@ func (s *watchedServices) Start(svc config.Service) error {
 // no anchor to trust, no revocation key to check the list with, or already runs hostd; it never
 // changes the refusal, which Run still returns.
 func maintain(host *watchedHost, services *watchedServices, configs Configs, refusal error, log *slog.Logger) {
+	host.mountDataDisk(log)
 	anchor := host.anchor(configs)
 	switch {
 	case services.started[config.HostdService]:
