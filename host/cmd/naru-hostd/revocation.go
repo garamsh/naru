@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -74,4 +76,72 @@ func prefetch(ctx context.Context, list *identity.RevocationList, log *slog.Logg
 	}
 	st := list.Status()
 	log.Info("revocation list", "seq", st.Seq, "fetched", st.FetchedAt.Format(time.RFC3339))
+}
+
+// ownCertificateInterval is how often a running hostd checks its own certificates again.
+const ownCertificateInterval = time.Minute
+
+// checkOwnCertificates returns identity.ErrRevoked, naming the file and the serial, when a
+// certificate in any of files is on list: a host whose seed or stored configuration carries a key
+// the signer revoked must not serve with it. A file that is not there is skipped, a nil list
+// revokes nothing, and a list that cannot be had is not a verdict (the error is returned plain, for
+// the caller to retry).
+func checkOwnCertificates(ctx context.Context, list *identity.RevocationList, files ...string) error {
+	if list == nil {
+		return nil
+	}
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read %s: %w", file, err)
+		}
+		var chain []*x509.Certificate
+		for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
+			if block.Type != "CERTIFICATE" {
+				continue
+			}
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", file, err)
+			}
+			chain = append(chain, cert)
+		}
+		if len(chain) == 0 {
+			continue
+		}
+		if err := list.Check(ctx, [][]*x509.Certificate{chain}); err != nil {
+			if errors.Is(err, identity.ErrRevoked) {
+				return fmt.Errorf("the certificate in %s (subject %s) is on the revocation list, so its key is not used: %w", file, chain[0].Subject.CommonName, err)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// refuseRevokedKey checks the host's own certificates every interval, and calls fail with the reason
+// when one is revoked. A list that cannot be had is logged, and the check retried. It returns when
+// one is revoked and when ctx ends.
+func refuseRevokedKey(ctx context.Context, list *identity.RevocationList, interval time.Duration, log *slog.Logger, fail func(error), files ...string) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		err := checkOwnCertificates(ctx, list, files...)
+		switch {
+		case err == nil:
+		case errors.Is(err, identity.ErrRevoked):
+			fail(err)
+			return
+		case ctx.Err() == nil:
+			log.Warn("cannot check the host's own certificates against the revocation list yet", "err", err.Error())
+		}
+	}
 }

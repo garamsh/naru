@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"net"
@@ -111,6 +112,15 @@ func main() {
 	defer stop()
 
 	go prefetch(ctx, revocations, log)
+	ownFiles := []string{*cert, enroll.CertPathFor(*hostKey)}
+	if err := checkOwnCertificates(ctx, revocations, ownFiles...); errors.Is(err, identity.ErrRevoked) {
+		log.Error("refusing to serve with a revoked key", "err", err.Error())
+		os.Exit(1)
+	}
+	go refuseRevokedKey(ctx, revocations, ownCertificateInterval, log, func(err error) {
+		log.Error("refusing to serve with a revoked key", "err", err.Error())
+		os.Exit(1)
+	}, ownFiles...)
 
 	r := &fence.Renewer{Runtime: rt, Length: *length, Interval: *interval, Retry: 5 * time.Second, Log: log}
 	go r.Run(ctx)
