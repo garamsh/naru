@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -21,10 +22,23 @@ type Tool struct {
 	// Bin is the path of the executable.
 	Bin string
 	// Legacy is set for the naructl of a release made before naructl moved to cobra (v0.1.0-dev.11
-	// and earlier), which knows only the flag spellings it was released with: gen takes --ca for
+	// and earlier; see ForRelease), which knows only the flag spellings it was released with: gen takes --ca for
 	// the CA directory of token, client, etcd-client and node, and --out for the directory gen ca
 	// writes. A later naructl keeps those as hidden aliases for one release only.
 	Legacy bool
+}
+
+// lastLegacyDev is the number of the last v0.1.0-dev.N release whose naructl knows only the flag
+// spellings from before cobra; dev.12 keeps them as hidden aliases until dev.13.
+const lastLegacyDev = 11
+
+// ForRelease is the Tool for the naructl at bin that the release of that version shipped: a release
+// of v0.1.0-dev.11 or earlier is driven with the spellings it was released with. Any other version,
+// including one that is not a v0.1.0-dev.N, is driven with the current ones.
+func ForRelease(bin, version string) Tool {
+	n, ok := strings.CutPrefix(version, "v0.1.0-dev.")
+	dev, err := strconv.Atoi(n)
+	return Tool{Bin: bin, Legacy: ok && err == nil && dev <= lastLegacyDev}
 }
 
 // caDirFlag is the flag that names the directory of the CA the gen command reads.

@@ -68,6 +68,8 @@ func TestTool_LegacySpeaksTheFlagSpellingsOfAReleaseBeforeCobra(t *testing.T) {
 		{"gen client", func(tl naructl.Tool) error { _, err := tl.GenClient("/ca", "cn", "/o"); return err }, "gen client --ca /ca --cn cn --out /o"},
 		{"gen etcd-client", func(tl naructl.Tool) error { return tl.GenEtcdClient("/ca", "/o") }, "gen etcd-client --ca /ca --out /o"},
 		{"gen node", func(tl naructl.Tool) error { return tl.GenNode(naructl.Node{CA: "/ca", Name: "n"}) }, "gen node --ca /ca --name n"},
+		{"gen kubernetes", func(tl naructl.Tool) error { return tl.GenKubernetes("/ca", "1.2.3.4:6443", "") }, "gen kubernetes --ca /ca --endpoint 1.2.3.4:6443"},
+		{"gen kubernetes-node", func(tl naructl.Tool) error { return tl.GenKubernetesNode(naructl.KubernetesNode{CA: "/ca", Name: "n"}) }, "gen kubernetes-node --ca /ca --name n"},
 		{"gen api-ca", func(tl naructl.Tool) error { return tl.GenAPICA("/ca") }, "gen api-ca --ca-dir /ca"},
 		{"gen api-client", func(tl naructl.Tool) error { return tl.GenAPIClient("/ca", "admin", "1.2.3.4:1", "/o") }, "gen api-client --ca-dir /ca --role admin"},
 	}
@@ -95,4 +97,28 @@ func TestTool_TheCheckoutsNaructlIsDrivenWithTheCurrentSpellings(t *testing.T) {
 	b, err = os.ReadFile(out)
 	require.NoError(t, err)
 	assert.Equal(t, "gen token --ca-dir /ca --name n", strings.ReplaceAll(strings.TrimSpace(string(b)), "\n", " "))
+}
+
+func TestForRelease_OnlyAReleaseBeforeDev12IsDrivenWithTheOldSpellings(t *testing.T) {
+	tests := []struct {
+		version string
+		legacy  bool
+	}{
+		{"v0.1.0-dev.9", true},
+		{"v0.1.0-dev.11", true},
+		{"v0.1.0-dev.12", false},
+		{"v0.1.0-dev.13", false},
+		{"v0.1.0-dev.100", false},
+		{"v0.1.0", false},
+		{"v0.2.0-dev.3", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			tool := naructl.ForRelease("/bin/naructl", tt.version)
+
+			assert.Equal(t, tt.legacy, tool.Legacy)
+			assert.Equal(t, "/bin/naructl", tool.Bin)
+		})
+	}
 }
