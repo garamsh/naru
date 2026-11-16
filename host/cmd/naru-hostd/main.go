@@ -21,6 +21,7 @@ import (
 	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/metrics"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 func main() {
@@ -53,7 +54,7 @@ func main() {
 		revSeed     = flag.String("revocation-seed", "", "a signed list delivered with the host's configuration, taken when it is newer than the kept one")
 		maintenance = flag.Bool("maintenance", false, "serve only the maintenance report and the reset, for a host whose boot init refused (ADR 0082); needs --orch-url, --orch-ca-sha256 and --revocation-public-key")
 		maintReason = flag.String("maintenance-reason", "", "why the boot was refused, as init says it, reported by GET /v1/maintenance")
-		resetMarker = flag.String("reset-marker", "/var/lib/naru/config/reset.json", "the file a reset leaves for init, which carries it out at the next boot; it is init's store directory's reset.json")
+		resetMarker = flag.String("reset-marker", wire.ResetMarker, "the file a reset leaves for init, which carries it out at the next boot")
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 
 		management = flag.String("management-prefix", "", "prefix of the management plane; set, it turns the virtual networks on")

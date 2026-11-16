@@ -31,7 +31,7 @@ const FileName = "store.yaml"
 const NetworkFileName = "network-config"
 
 // ResetFileName is the file naru-hostd writes to ask the next boot for a reset (ADR 0082), in the
-// same directory. Its path is the --reset-marker flag's default in naru-hostd.
+// same directory: the base name of wire.ResetMarker.
 const ResetFileName = "reset.json"
 
 // AnchorFileName is the maintenance anchor, in the same directory: what init keeps of the trust

@@ -13,6 +13,9 @@ const (
 	// DataLabel and DataMount are the data disk's file system label and its mount point.
 	DataLabel = "NARUDATA"
 	DataMount = "/var/lib/naru"
+	// ResetMarker is the file naru-hostd writes to ask init for a reset at its next boot, in init's
+	// store directory on the data disk (ADR 0082). Both read this one path.
+	ResetMarker = DataMount + "/config/reset.json"
 	// MvmdStateDir is mvmd's state directory, on the data disk, whose file system has fs-verity for
 	// the Image Store (ADR 0003).
 	MvmdStateDir = DataMount + "/mvmd"

@@ -10,6 +10,7 @@ import (
 
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/store"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const doc = `apiVersion: naru.garam.sh/v1alpha1
@@ -228,4 +229,8 @@ func TestAnchor_RoundTripsAndIsNotFoundBeforeItIsSaved(t *testing.T) {
 	got, err := s.LoadAnchor()
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"a":1}`, string(got))
+}
+
+func TestResetFileName_IsTheBaseOfThePathHostdWrites(t *testing.T) {
+	assert.Equal(t, wire.ResetMarker, filepath.Join(store.Dir, store.ResetFileName))
 }

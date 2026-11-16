@@ -124,7 +124,7 @@ func TestNode_ABrokenNetworkConfigRefusesTheBoot(t *testing.T) {
 		t.Logf("console of %s:\n%s", n.Name, n.Console())
 	})
 
-	require.NoError(t, n.WaitFor(context.Background(), bootTimeout, "boot refused; no further service will start"))
+	require.NoError(t, n.WaitFor(context.Background(), bootTimeout, "boot refused; no service of the configuration will start"))
 	assert.Error(t, n.WaitFor(context.Background(), time.Millisecond, "started", "service="), "no service started")
 }
 
