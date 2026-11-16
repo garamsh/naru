@@ -68,9 +68,6 @@ func genAuthority(a authority) binder {
 			where = "the cluster's directory, which receives " + a.subdir + "/ca.pem and " + a.subdir + "/ca.key"
 		}
 		caDir := fs.String("ca-dir", "", where)
-		if a.subdir == "" {
-			aliasString(fs, caDir, "out", "ca-dir")
-		}
 		return func(_ []string, stdout, _ io.Writer) error {
 			if err := require(fs, "ca-dir"); err != nil {
 				return err
@@ -96,7 +93,6 @@ func genAuthority(a authority) binder {
 
 func genClient(fs *pflag.FlagSet) runner {
 	caDir := fs.String("ca-dir", "", "directory of ca.pem and ca.key")
-	aliasString(fs, caDir, "ca", "ca-dir")
 	cn := fs.String("cn", "", "the certificate's CN, the caller's identity to gaon")
 	out := fs.String("out", "", "directory that receives client.pem and client.key (0600)")
 	return func(args []string, stdout, stderr io.Writer) error {
@@ -126,7 +122,6 @@ const EtcdClientCN = "gaon-etcd-snapshot"
 
 func genEtcdClient(fs *pflag.FlagSet) runner {
 	caDir := fs.String("ca-dir", "", "directory of ca.pem and ca.key")
-	aliasString(fs, caDir, "ca", "ca-dir")
 	out := fs.String("out", "", "directory that receives ca.crt, tls.crt and tls.key (0600), the keys of gaon's Secret etcd-snapshot-etcd-client")
 	return func(args []string, stdout, stderr io.Writer) error {
 		if err := require(fs, "ca-dir", "out"); err != nil {
@@ -161,7 +156,6 @@ func genEtcdClient(fs *pflag.FlagSet) runner {
 
 func genToken(fs *pflag.FlagSet) runner {
 	caDir := fs.String("ca-dir", "", "directory of the cluster's authority, which holds tokens/")
-	aliasString(fs, caDir, "ca", "ca-dir")
 	name := fs.String("name", "", "the Node's name, such as node-2")
 	return func(args []string, stdout, stderr io.Writer) error {
 		if err := require(fs, "ca-dir", "name"); err != nil {
