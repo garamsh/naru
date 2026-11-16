@@ -11,11 +11,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/garamsh/naru/orch/internal/auth"
+	"github.com/garamsh/naru/lib/identity"
 )
 
 func TestAnUnknownOrStaleRevocationListIsA503(t *testing.T) {
-	for _, err := range []error{auth.ErrNoRevocationList, fmt.Errorf("x: %w", auth.ErrStaleRevocationList)} {
+	for _, err := range []error{identity.ErrNoRevocationList, fmt.Errorf("x: %w", identity.ErrStaleRevocationList)} {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, slog.New(slog.NewTextHandler(io.Discard, nil))))

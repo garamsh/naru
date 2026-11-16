@@ -10,15 +10,15 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
 
-// Where naru-hostd's files are and the port it serves (docs/architecture/host.md).
+// Where naru-hostd's files are (docs/architecture/host.md).
 const (
-	// HostDir is the directory init writes naru-hostd's serving pair and client CA to, and
-	// HostPort the TCP port it serves the host API on.
-	HostDir  = "/run/naru-hostd"
-	HostPort = "7443"
+	// HostDir is the directory init writes naru-hostd's serving pair and client CA to.
+	HostDir = "/run/naru-hostd"
 	// HostService is naru-hostd's name in spec.services, and HostBinary its executable in the image.
 	HostService = "naru-hostd"
 	HostBinary  = "/bin/naru-hostd"
@@ -44,6 +44,25 @@ type Host struct {
 	// ClientCA is the PEM of the authority orch's certificate chains to, which naru-hostd trusts
 	// for its clients beside the host authority; empty trusts the host authority alone.
 	ClientCA string
+	// RevocationPublicKey is the PKIX PEM of the key that signs the revocation list, and
+	// RevocationList the signed list orch held when it admitted the host: a joined host checks its
+	// clients' certificates against the list and starts with this one (ADR 0062). Both empty on a
+	// host that is not joined; a Node that runs orch takes the key from its Orch.
+	RevocationPublicKey string
+	RevocationList      string
+}
+
+// revocationKey is the PEM of the key that signs the list this Node checks its clients against, and
+// empty when the Node checks none: a joined host's own, or the key of the orch the Node runs, whose
+// signer it then reads the list from.
+func (n Node) revocationKey() string {
+	switch {
+	case n.Host != nil && n.Host.RevocationPublicKey != "":
+		return n.Host.RevocationPublicKey
+	case n.Orch != nil && n.Signer != nil:
+		return n.Orch.RevocationPublicKey
+	}
+	return ""
 }
 
 var (
@@ -77,6 +96,14 @@ func (h Host) check() error {
 	if h.ClientCA != "" && !x509.NewCertPool().AppendCertsFromPEM([]byte(h.ClientCA)) {
 		return fmt.Errorf("the authority naru-hostd trusts for orch is not a PEM certificate")
 	}
+	if (h.RevocationList != "") && h.RevocationPublicKey == "" {
+		return fmt.Errorf("a revocation list needs the key that signed it")
+	}
+	if h.RevocationPublicKey != "" {
+		if _, err := identity.ParseRevocationPublic([]byte(h.RevocationPublicKey)); err != nil {
+			return fmt.Errorf("the host's revocation public key: %w", err)
+		}
+	}
 	for k, v := range h.Labels {
 		prefix, name, found := strings.Cut(k, "/")
 		if !found {
@@ -100,6 +127,9 @@ type hostSpec struct {
 	Network *hostNetworkSpec `yaml:"network,omitempty"`
 	// Orch is spec.host.orch.
 	Orch *hostOrchSpec `yaml:"orch,omitempty"`
+	// RevocationPublicKey and RevocationList are spec.host.revocationPublicKey and revocationList.
+	RevocationPublicKey string `yaml:"revocationPublicKey,omitempty"`
+	RevocationList      string `yaml:"revocationList,omitempty"`
 }
 
 // servingIPs are the addresses the Node's serving certificates name: its own, its serving
@@ -153,11 +183,11 @@ func (n Node) hostService() service {
 	return service{
 		Name: HostService, Binary: HostBinary, Env: map[string]string{"PATH": "/bin"},
 		Args: []string{
-			"--listen", "0.0.0.0:" + HostPort,
+			"--listen", "0.0.0.0:" + wire.HostAPIPort,
 			// A Node's kernel hostname is "(none)", so the host enrolls under the Node's name.
 			"--host-id", n.Name,
 			// Orch calls the host at the address its enrollment recorded, which is the Node's, not --listen's.
-			"--advertise", net.JoinHostPort(n.Address.Addr().String(), HostPort),
+			"--advertise", net.JoinHostPort(n.Address.Addr().String(), wire.HostAPIPort),
 			"--cert", path.Join(HostDir, "tls.crt"), "--key", keyFile,
 			"--client-ca", path.Join(HostDir, "client-ca.crt"),
 			"--host-file", path.Join(HostDir, "host.json"), "--mvmd-socket", MvmdSocket,

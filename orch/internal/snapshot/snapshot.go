@@ -16,6 +16,7 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 )
@@ -102,27 +103,7 @@ func (t *Taker) Take(ctx context.Context) (orchapi.SnapshotResult, error) {
 		return orchapi.SnapshotResult{}, err
 	}
 	name := filePrefix + t.Now().UTC().Format("20060102T150405.000000000Z") + fileSuffix
-	tmp, err := os.CreateTemp(t.Dir, ".snap-*")
-	if err != nil {
-		return orchapi.SnapshotResult{}, err
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(sealed); err != nil {
-		_ = tmp.Close()
-		return orchapi.SnapshotResult{}, err
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return orchapi.SnapshotResult{}, err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return orchapi.SnapshotResult{}, err
-	}
-	if err := tmp.Close(); err != nil {
-		return orchapi.SnapshotResult{}, err
-	}
-	if err := os.Rename(tmp.Name(), filepath.Join(t.Dir, name)); err != nil {
+	if err := atomicfile.Write(filepath.Join(t.Dir, name), sealed, 0o600); err != nil {
 		return orchapi.SnapshotResult{}, err
 	}
 	return orchapi.SnapshotResult{File: name, Size: int64(len(sealed))}, t.prune()

@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -13,7 +14,6 @@ import (
 type hostMicroVMs struct {
 	Host     orchapi.Host
 	MicroVMs []MicroVM
-	Error    string
 }
 
 type pendingRow struct {
@@ -87,19 +87,21 @@ func (s *Server) microvms(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].ID < hosts[j].ID })
+	// One read of the fleet serves every host: a read for each host would make orch probe all of
+	// them once per host.
+	byHost, err := s.cfg.Fleet.MicroVMs(ctx)
+	if err != nil {
+		s.fail(w, "microvms", p, err)
+		return
+	}
 	only := r.URL.Query().Get("host")
 	for _, h := range hosts {
 		if only != "" && h.ID != only {
 			continue
 		}
-		row := hostMicroVMs{Host: h}
-		vms, err := s.cfg.Fleet.MicroVMs(ctx, h.ID)
-		if err != nil {
-			row.Error = err.Error()
-		}
+		vms := byHost[h.ID]
 		sort.Slice(vms, func(i, j int) bool { return vms[i].Name < vms[j].Name })
-		row.MicroVMs = vms
-		p.MicroVMs = append(p.MicroVMs, row)
+		p.MicroVMs = append(p.MicroVMs, hostMicroVMs{Host: h, MicroVMs: vms})
 	}
 	s.render(w, http.StatusOK, "microvms", p)
 }
@@ -127,18 +129,34 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.orchCtx(r)
 	defer cancel()
 	p := page{Title: "Events", Active: "events", Refresh: true}
-	events, err := s.cfg.Orch.Events(ctx)
+	events, err := s.newestEvents(ctx)
 	if err != nil {
 		s.fail(w, "events", p, err)
 		return
 	}
-	// Newest first, and no more than a page holds.
-	slices.Reverse(events)
-	if len(events) > eventLimit {
-		events = events[:eventLimit]
-	}
 	p.Events = events
 	s.render(w, http.StatusOK, "events", p)
+}
+
+// newestEvents reads the events that came since the last read and returns the newest eventLimit
+// of all of them, newest first.
+func (s *Server) newestEvents(ctx context.Context) ([]orchapi.Event, error) {
+	s.evMu.Lock()
+	defer s.evMu.Unlock()
+	fresh, err := s.cfg.Orch.EventsSince(ctx, s.cursor)
+	if err != nil {
+		return nil, err
+	}
+	if len(fresh) > 0 {
+		s.recent = append(s.recent, fresh...)
+		if over := len(s.recent) - eventLimit; over > 0 {
+			s.recent = slices.Clone(s.recent[over:])
+		}
+		s.cursor = fresh[len(fresh)-1].Cursor
+	}
+	out := slices.Clone(s.recent)
+	slices.Reverse(out)
+	return out, nil
 }
 
 func (s *Server) pending(w http.ResponseWriter, r *http.Request) {

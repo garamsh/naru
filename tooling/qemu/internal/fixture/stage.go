@@ -9,15 +9,13 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/guest"
 )
 
-// Where the staged tree appears inside a Node: the data disk is mounted at
-// /var/lib/naru, and the tree is the disk's inputs directory.
-const (
-	DataMount = "/var/lib/naru"
-	GuestRoot = DataMount + "/inputs"
-)
+// GuestRoot is where the staged tree appears inside a Node: the data disk is mounted at
+// wire.DataMount, and the tree is the disk's inputs directory.
+const GuestRoot = wire.DataMount + "/inputs"
 
 // Inputs is the staged tree and what the Node's configuration says of it.
 type Inputs struct {
@@ -29,7 +27,7 @@ type Inputs struct {
 	// FirecrackerSHA256 is the digest of the Firecracker binary the image carries.
 	FirecrackerSHA256 string
 	// Guest names the guest kernels and initrds the image carries, by their paths inside it and
-	// their digests, as image/host/guest/build.sh wrote them (ADR 0010).
+	// their digests, as the initramfs-host package (image/pkgs) wrote them (ADR 0010).
 	Guest guest.Manifest
 	// Extension is the system extension that carries naru-orchd and naru-signer, stored the way a
 	// Node stores it (ADR 0055). Its StoreDir is not in Dir: the data disk takes it as
@@ -43,7 +41,7 @@ type Sources struct {
 	Root string
 	// ImageDir holds inputs.env and extensions/, which make image writes.
 	ImageDir string
-	// GuestDir holds guest.json, which image/host/guest/build.sh writes.
+	// GuestDir holds guest.json, which the initramfs-host package (image/pkgs) writes.
 	GuestDir string
 }
 
@@ -128,7 +126,7 @@ func ExtensionStore(dir string) string { return filepath.Clean(dir) + "-extensio
 
 // goBuild builds the package of the module as a static Linux executable.
 func goBuild(moduleDir, pkg, out string) error {
-	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out, pkg) //nolint:gosec // arguments are built here
+	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out, pkg)
 	cmd.Dir = moduleDir
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
 	if b, err := cmd.CombinedOutput(); err != nil {

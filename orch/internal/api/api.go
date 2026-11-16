@@ -100,7 +100,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/networks/{name}", h.guard(auth.Read, h.networkGet))
 	mux.HandleFunc("PUT /v1/networks/{name}", h.guard(auth.Operate, h.networkApply))
 	mux.HandleFunc("DELETE /v1/networks/{name}", h.guard(auth.Operate, h.networkDelete))
-	mux.HandleFunc("GET /v1/crl", h.guard(auth.Any, h.crl))
+	mux.HandleFunc("GET /v1/crl", h.crl)
 	mux.HandleFunc("POST /v1/admit", h.guard(auth.Operate, h.admit))
 	mux.HandleFunc("POST /v1/enrollment-keys", h.guard(auth.Operate, h.createKey))
 	mux.HandleFunc("DELETE /v1/enrollment-keys/{id}", h.guard(auth.Operate, h.revokeKey))
@@ -189,14 +189,28 @@ func (h *handler) guard(a auth.Action, fn authed) http.HandlerFunc {
 	}
 }
 
+// tooLarge reports whether err is the body limit being hit, which is not a malformed body.
+func tooLarge(err error) bool {
+	var big *http.MaxBytesError
+	return errors.As(err, &big)
+}
+
 func decode(w http.ResponseWriter, r *http.Request, out any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(out); err != nil {
+		if tooLarge(err) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, orchapi.Error{Message: "the request body is too large"})
+			return false
+		}
 		writeJSON(w, http.StatusBadRequest, orchapi.Error{Message: "the request body is not valid"})
 		return false
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		if tooLarge(err) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, orchapi.Error{Message: "the request body is too large"})
+			return false
+		}
 		writeJSON(w, http.StatusBadRequest, orchapi.Error{Message: "the request body holds more than one value"})
 		return false
 	}
@@ -216,7 +230,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, identity.ErrRevoked), errors.Is(err, identity.ErrRole), errors.Is(err, identity.ErrNoChain):
 		status, msg = http.StatusForbidden, err.Error()
-	case errors.Is(err, auth.ErrNoRevocationList), errors.Is(err, auth.ErrStaleRevocationList):
+	case errors.Is(err, identity.ErrNoRevocationList), errors.Is(err, identity.ErrStaleRevocationList):
 		status, msg = http.StatusServiceUnavailable, "the revocation list is not available"
 		logger(r).Error("no revocation list", "err", err.Error())
 	case errors.Is(err, inventory.ErrRateLimited):
@@ -238,6 +252,8 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusConflict, err.Error()
 	case errors.Is(err, inventory.ErrRedacted):
 		status, msg = http.StatusUnprocessableEntity, err.Error()
+	case tooLarge(err):
+		status, msg = http.StatusRequestEntityTooLarge, "the request body is too large"
 	case errors.Is(err, inventory.ErrInvalid), errors.Is(err, orchapi.ErrBadProof):
 		status, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, inventory.ErrSignerFailed):
@@ -260,13 +276,21 @@ func (h *handler) pending(w http.ResponseWriter, r *http.Request, _ identity.Ide
 }
 
 func (h *handler) events(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
-	out, err := h.Inventory.Events(r.Context())
+	out, err := h.Inventory.Events(r.Context(), r.URL.Query().Get("since"))
 	reply(w, r, out, err)
 }
 
-func (h *handler) crl(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+// crl answers without a client certificate: the list is signed by the revocation key and holds
+// only serial numbers, so it is public, and a host that has none of the certificates orch accepts
+// needs it to check the ones it is offered (ADR 0062).
+func (h *handler) crl(w http.ResponseWriter, r *http.Request) {
 	out, err := h.Signer.CRL(r.Context())
-	reply(w, r, out, err)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(out)
 }
 
 func (h *handler) admit(w http.ResponseWriter, r *http.Request, who identity.Identity) {
@@ -466,7 +490,11 @@ func (h *handler) enroll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) poll(w http.ResponseWriter, r *http.Request) {
-	out, err := h.Inventory.Poll(r.Context(), r.PathValue("hostID"), r.Header.Get(orchapi.HeaderTime), r.Header.Get(orchapi.HeaderSignature))
+	src, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		src = r.RemoteAddr
+	}
+	out, err := h.Inventory.Poll(r.Context(), src, r.PathValue("hostID"), r.Header.Get(orchapi.HeaderTime), r.Header.Get(orchapi.HeaderSignature))
 	reply(w, r, out, err)
 }
 

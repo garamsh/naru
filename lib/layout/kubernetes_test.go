@@ -12,6 +12,7 @@ import (
 
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // kubeSpec is the part of a Kubernetes Node's user-data the tests read.
@@ -128,7 +129,7 @@ func TestKubernetesUserData_AsksInitToFormatABlankDataDiskForAMicroVMWhoseHostGi
 	for _, controlPlane := range []bool{true, false} {
 		s := kubeUserData(t, kubeNode(t, controlPlane, nil))
 
-		assert.Equal(t, layout.DataLabel, s.Spec.DataDisk.Label)
+		assert.Equal(t, wire.DataLabel, s.Spec.DataDisk.Label)
 		assert.True(t, s.Spec.DataDisk.FormatBlank, "a microVM's data disk is blank at its first boot, and init refuses the boot without a labelled one")
 	}
 }

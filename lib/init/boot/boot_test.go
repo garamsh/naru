@@ -76,9 +76,15 @@ type recorder struct {
 
 	stored  *store.Stored
 	loadErr error
-	saved   []store.Stored
-	mounted config.DataDisk
-	started []string
+	// storedNetwork is the network-config the store holds, when hasNetwork; networkSaved is what
+	// SaveNetwork was given, when savedNetwork.
+	storedNetwork []byte
+	hasNetwork    bool
+	networkSaved  []byte
+	savedNetwork  bool
+	saved         []store.Stored
+	mounted       config.DataDisk
+	started       []string
 
 	calls     []string
 	forwarded []config.Family
@@ -218,6 +224,18 @@ func (r *recorder) Load() (store.Stored, error) {
 		return store.Stored{}, store.ErrNotFound
 	}
 	return *r.stored, r.loadErr
+}
+
+func (r *recorder) LoadNetwork() ([]byte, error) {
+	if !r.hasNetwork {
+		return nil, store.ErrNotFound
+	}
+	return r.storedNetwork, nil
+}
+
+func (r *recorder) SaveNetwork(b []byte) error {
+	r.networkSaved, r.savedNetwork = b, true
+	return nil
 }
 
 func (r *recorder) Save(st store.Stored) error {

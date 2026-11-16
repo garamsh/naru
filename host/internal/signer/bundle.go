@@ -107,7 +107,7 @@ func (s *Signer) openBundleFor(body identity.RestoreBody, req *identity.RestoreR
 const maxSmallFile = 64 << 10
 
 func readSmall(path string) ([]byte, error) {
-	f, err := os.Open(path) //nolint:gosec // a path the restore request names
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}

@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -566,7 +567,7 @@ func TestReplicate_ANewSignerReceivesTheAuthoritiesFromARunningOne(t *testing.T)
 	}
 
 	op := e.issue(identity.RoleOperator, "alice")
-	insecure := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // the test reaches routes, not trust
+	insecure := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
 	someKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	byOperator := e.signed(op, identity.ActionReplicate, identity.ReplicateRequest{HostID: "signer-b", X25519: someKey.PublicKey().Bytes()})
@@ -623,6 +624,9 @@ func TestListenSocket_SetsTheModeAndReplacesAStaleSocket(t *testing.T) {
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o660), info.Mode().Perm())
+	left, err := os.ReadDir(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.Len(t, left, 1, "the directory the socket was bound in is gone")
 	require.NoError(t, l.Close())
 
 	l2, err := signer.ListenSocket(path, 0o600, quiet)
@@ -665,4 +669,59 @@ func shortSocketPath(t *testing.T, name string) string {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return filepath.Join(dir, name)
+}
+
+// crashInitAt makes Init stop at the first step whose name step has as its prefix, as a crash would,
+// and returns the signer's directory.
+func crashInitAt(t *testing.T, step string) (dir string, pub identity.RecoveryPublic, csr []byte) {
+	t.Helper()
+	rec, err := identity.GenerateRecovery()
+	require.NoError(t, err)
+	raw, err := rec.Public().MarshalPublic()
+	require.NoError(t, err)
+	pub, err = identity.ParseRecoveryPublic(raw)
+	require.NoError(t, err)
+	csr = csrFor(t, newKey(t))
+	dir = privateDir(t, t.TempDir())
+	restore := signer.SetStageHook(func(s string) error {
+		if strings.HasPrefix(s, step) {
+			return errors.New("crash")
+		}
+		return nil
+	})
+	defer restore()
+	_, err = openAt(t, dir).Init(signer.InitOptions{RecoveryPublic: pub, RootCSR: csr})
+	require.Error(t, err, "the crash stopped Init at %q", step)
+	return dir, pub, csr
+}
+
+func TestInit_ACrashAtAnyStepLeavesNothingOrEveryFile(t *testing.T) {
+	steps := []string{"write host-ca.crt", "write host-ca.key", "write crl.json", "write root.crt", "commit", "rename host-ca.crt", "rename host-ca.key", "rename crl.json", "rename root.crt"}
+	for _, step := range steps {
+		t.Run(step, func(t *testing.T) {
+			dir, pub, csr := crashInitAt(t, step)
+
+			s := openAt(t, dir)
+
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			if !s.Initialised() {
+				assert.Empty(t, entries, "a crash before the commit leaves nothing")
+				_, err = s.Init(signer.InitOptions{RecoveryPublic: pub, RootCSR: csr})
+				require.NoError(t, err, "the directory is blank and Init runs again")
+				return
+			}
+			names := map[string]bool{}
+			for _, e := range entries {
+				names[e.Name()] = true
+			}
+			for _, want := range []string{"host-ca.crt", "host-ca.key", "operator-ca.crt", "operator-ca.key", "orch-ca.crt", "orch-ca.key", "revocation.key", "recovery-public.json", "issued.json", "crl.json", "root.crt"} {
+				assert.True(t, names[want], "a crash after the commit leaves %s", want)
+			}
+			assert.False(t, names[".staging"], "the staging directory is gone")
+			cert, err := s.RootCertificate()
+			require.NoError(t, err)
+			assert.NotEmpty(t, cert, "the root certificate survives")
+		})
+	}
 }

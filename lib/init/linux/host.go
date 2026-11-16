@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/garamsh/naru/lib/init/boot"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/dhcp4"
 	"github.com/garamsh/naru/lib/init/ext4"
@@ -18,6 +20,7 @@ import (
 	"github.com/garamsh/naru/lib/init/netcfg"
 	"github.com/garamsh/naru/lib/init/registry"
 	"github.com/garamsh/naru/lib/init/timesync"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const (
@@ -28,10 +31,14 @@ const (
 	carrierWait = 30 * time.Second
 )
 
-// seedLabel is the NoCloud drive's label. It is a variable so that the build can stamp it with
-// -ldflags -X: the QEMU test of an upgrade that has to roll back builds a naru-init that cannot
-// find its configuration drive. No other build changes it.
-var seedLabel = "cidata"
+// seedLabel is the NoCloud drive's label.
+const seedLabel = "cidata"
+
+// dataDiskLabel, when not empty, is the label MountDataDisk looks for in place of the label it is
+// given. It is a variable so that the build can stamp it with -ldflags -X: the QEMU test of an
+// upgrade that has to roll back builds a naru-init that cannot find its data disk, so that its boot
+// is refused with a seed and without one. No other build changes it.
+var dataDiskLabel = ""
 
 // errNoDisk is returned when no block device carries the label.
 var errNoDisk = errors.New("no disk with that label")
@@ -54,6 +61,14 @@ type Host struct {
 	links          links
 
 	dataMountPoint string
+	// mvmdStorage is the storage mount point that mvmdState's disks, snapshots and disk snapshots are linked into.
+	mvmdStorage string
+	mvmdState   string
+	// storageMounts are the mount points of the storage disks, in the order they were mounted,
+	// and unmount is syscall.Unmount when nil.
+	mu            sync.Mutex
+	storageMounts []string
+	unmount       func(dir string) error
 
 	// carrierWait bounds the wait for a link with a carrier; leaseWait, the first DHCPv4 exchange
 	// (leaseWait when 0). dhcpOpen opens the DHCP transport of a link (the packet sockets when nil)
@@ -67,20 +82,22 @@ type Host struct {
 	time *timesync.Syncer
 }
 
-// NewHost returns the Host of the running machine. A disk or a network
-// interface that has not appeared when it is first looked for is waited for up
-// to diskWait.
-func NewHost(diskWait time.Duration) *Host {
+// NewHost returns the Host of the running machine, whose programs (mkfs) run through reaper. A disk
+// or a network interface that has not appeared when it is first looked for is waited for up to
+// diskWait.
+func NewHost(diskWait time.Duration, reaper *Reaper) *Host {
 	return &Host{
 		sysClassBlock: "/sys/class/block",
 		devDir:        "/dev",
 		procSys:       "/proc/sys",
 		diskWait:      diskWait,
 		mount:         syscall.Mount,
-		run:           execRun,
+		run:           reaper.Output,
 		grow:          growFS,
 
 		seedMountPoint: seedMountPoint,
+		mvmdStorage:    wire.MvmdStorageMount,
+		mvmdState:      wire.MvmdStateDir,
 		resolvConf:     resolvConf,
 		links:          netlinkLinks{},
 		carrierWait:    carrierWait,
@@ -89,9 +106,13 @@ func NewHost(diskWait time.Duration) *Host {
 }
 
 // ReadSeed mounts the NoCloud drive read-only and returns its user-data, the
-// Node's naru.yaml, and its network-config.
+// Node's naru.yaml, and its network-config. When no disk carries the label it returns an error
+// wrapping boot.ErrNoSeed, after waiting up to diskWait for one.
 func (h *Host) ReadSeed() (userData, networkConfig []byte, err error) {
 	dev, err := h.find(isoLabel, isSeedLabel)
+	if errors.Is(err, errNoDisk) {
+		return nil, nil, fmt.Errorf("NoCloud drive %q: %w: %w", seedLabel, err, boot.ErrNoSeed)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("NoCloud drive %q: %w", seedLabel, err)
 	}
@@ -116,9 +137,13 @@ func (h *Host) ReadSeed() (userData, networkConfig []byte, err error) {
 func (h *Host) MountDataDisk(d config.DataDisk) error {
 	dev := d.Device
 	if dev == "" {
+		label := d.Label
+		if dataDiskLabel != "" {
+			label = dataDiskLabel
+		}
 		var err error
-		if dev, err = h.find(ext4Label, func(got string) bool { return got == d.Label }); err != nil {
-			return fmt.Errorf("data disk %q: %w", d.Label, err)
+		if dev, err = h.find(ext4Label, func(got string) bool { return got == label }); err != nil {
+			return fmt.Errorf("data disk %q: %w", label, err)
 		}
 	}
 	if err := h.checkVerity(dev); err != nil {

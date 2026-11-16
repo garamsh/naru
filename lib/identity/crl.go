@@ -2,7 +2,9 @@ package identity
 
 import (
 	"crypto/ed25519"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"slices"
@@ -39,6 +41,17 @@ func (c *CRL) Used(nonce string, now time.Time) bool {
 // Revokes reports whether serial is on the list. A nil list revokes nothing.
 func (c *CRL) Revokes(serial string) bool {
 	return c != nil && slices.Contains(c.Serials, serial)
+}
+
+// CheckChain returns ErrRevoked, naming the serial, when any certificate of chain is on the list.
+// A nil list revokes nothing.
+func (c *CRL) CheckChain(chain []*x509.Certificate) error {
+	for _, cert := range chain {
+		if c.Revokes(SerialOf(cert)) {
+			return fmt.Errorf("%w: serial %s", ErrRevoked, SerialOf(cert))
+		}
+	}
+	return nil
 }
 
 // CheckSeq refuses a list whose Seq is lower than lastSeen, so an attacker
@@ -81,4 +94,30 @@ func VerifyCRL(pub ed25519.PublicKey, data []byte) (*CRL, error) {
 		return nil, fmt.Errorf("parse revocation list: %w", err)
 	}
 	return &crl, nil
+}
+
+// ParseRevocationPublic parses the Ed25519 public key (PKIX, PEM) that verifies the revocation list.
+func ParseRevocationPublic(data []byte) (ed25519.PublicKey, error) {
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("the revocation public key is not PEM")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse the revocation public key: %w", err)
+	}
+	key, ok := pub.(ed25519.PublicKey)
+	if !ok {
+		return nil, errors.New("the revocation public key is not Ed25519")
+	}
+	return key, nil
+}
+
+// EncodeRevocationPublic is the PKIX PEM of the revocation public key.
+func EncodeRevocationPublic(key ed25519.PublicKey) (string, error) {
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), nil
 }

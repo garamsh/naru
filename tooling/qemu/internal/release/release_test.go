@@ -115,7 +115,7 @@ var testCA string
 func buildInit(t *testing.T) string {
 	t.Helper()
 	initBin := filepath.Join(t.TempDir(), "naru-init")
-	build := exec.Command("go", "build", "-o", initBin, "./cmd/naru-init") //nolint:gosec // fixed arguments
+	build := exec.Command("go", "build", "-o", initBin, "./cmd/naru-init")
 	build.Dir = filepath.Join(repoRoot(t), "node")
 	build.Env = append(os.Environ(), "GOWORK=off")
 	out, err := build.CombinedOutput()
@@ -133,7 +133,7 @@ func TestUserData_EachFileIsOneNaruInitParses(t *testing.T) {
 		p := filepath.Join(t.TempDir(), name)
 		require.NoError(t, os.WriteFile(p, content, 0o600))
 
-		out, err := exec.Command(initBin, "-validate", p).CombinedOutput() //nolint:gosec // the binary built above
+		out, err := exec.Command(initBin, "-validate", p).CombinedOutput()
 
 		require.NoError(t, err, "%s: %s", name, out)
 		assert.Contains(t, string(out), "valid; node=naru-"+strings.TrimSuffix(strings.TrimPrefix(name, "naru-"), ".test.yaml"))
@@ -147,7 +147,7 @@ func TestUserData_ABrokenFileIsRefusedByNaruInit(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "naru-node-1.test.yaml")
 	require.NoError(t, os.WriteFile(p, []byte(strings.Replace(string(files["naru-node-1.test.yaml"]), "kind: NodeConfig", "kind: Other", 1)), 0o600))
 
-	_, err = exec.Command(initBin, "-validate", p).CombinedOutput() //nolint:gosec // the binary built above
+	_, err = exec.Command(initBin, "-validate", p).CombinedOutput()
 
 	assert.Error(t, err, "the validation rejects what init would")
 }
@@ -404,7 +404,17 @@ func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
 	d := strings.Repeat("a", 64)
 	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "guest.json"), []byte(`{"kernels":{"naru":{"path":"/k","sha256":"`+d+`"}},"default_kernel":"naru",
 "guest_initrd":{"path":"/g","sha256":"`+d+`"},"converter_initrd":{"path":"/c","sha256":"`+d+`"}}`), 0o600))
-	return release.Options{Root: repoRoot(t), ImageDir: imageDir, DiskDir: diskDir, GuestDir: guestDir, Out: t.TempDir(), Version: "v9", Naructl: tool(t).Bin}
+	cluster := filepath.Join(t.TempDir(), "naru-cluster")
+	require.NoError(t, os.WriteFile(cluster, []byte("naru-cluster binary"), 0o600))
+	comps, downloads := fakeComponents(t)
+	require.NoError(t, os.WriteFile(filepath.Join(downloads, "lgplpkg-2.tar.gz"), []byte("lgpl tarball"), 0o600))
+	archive := filepath.Join(t.TempDir(), "source.tar")
+	require.NoError(t, os.WriteFile(archive, []byte("git archive"), 0o600))
+	return release.Options{
+		Root: repoRoot(t), ImageDir: imageDir, DiskDir: diskDir, GuestDir: guestDir, Out: t.TempDir(), Version: "v9", Naructl: tool(t).Bin, NaruCluster: cluster,
+		Epoch: 1794355200, Components: comps, Downloads: []string{downloads}, SourceArchive: archive,
+		Fetch: func(url, _ string) error { return fmt.Errorf("a test fetched %s", url) },
+	}
 }
 
 func TestBuild_WritesTheInputsAssetListsItInSHA256SUMSAndCarriesWhatWasStaged(t *testing.T) {
@@ -456,6 +466,41 @@ func TestBuild_ShipsNaructlAsAnExecutableAssetListedInSHA256SUMS(t *testing.T) {
 	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums))
 }
 
+func TestBuild_ShipsNaruClusterAsAnExecutableAssetWhoseSHA256SUMSLineIsItsDigest(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+
+	assets, err := release.Build(o)
+
+	require.NoError(t, err)
+	name := release.NaruClusterName("v9")
+	assert.Equal(t, "naru-cluster-v9-linux-amd64", name)
+	st, err := os.Stat(filepath.Join(o.Out, name))
+	require.NoError(t, err, "the release holds the naru-cluster asset")
+	assert.Equal(t, os.FileMode(0o755), st.Mode().Perm())
+	got, err := os.ReadFile(filepath.Join(o.Out, name))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("naru-cluster binary"), got, "the asset is the binary Options named")
+	var listed []string
+	for _, a := range assets {
+		listed = append(listed, a.Name)
+	}
+	assert.Contains(t, listed, name)
+	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
+	require.NoError(t, err)
+	assert.Contains(t, string(sums), hexOf(got)+"  "+name+"\n", "SHA256SUMS lists the asset with the digest of its bytes")
+}
+
+func TestBuild_RefusesAReleaseWhoseNaruClusterBinaryIsMissing(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+	o.NaruCluster = filepath.Join(t.TempDir(), "absent")
+
+	_, err := release.Build(o)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "naru-cluster-v9-linux-amd64")
+	assert.NoFileExists(t, filepath.Join(o.Out, "SHA256SUMS"))
+}
+
 func TestBuild_NamesTheHostArtifactsNaruHostAndLeavesTheOldNamesOut(t *testing.T) {
 	o := fakeBuildInputs(t, strings.Repeat("7", 64))
 
@@ -475,7 +520,7 @@ func TestBuild_NamesTheHostArtifactsNaruHostAndLeavesTheOldNamesOut(t *testing.T
 	assert.NoFileExists(t, filepath.Join(o.Out, "naru-v9.qcow2"))
 	entries, err := os.ReadDir(o.Out)
 	require.NoError(t, err)
-	assert.Len(t, entries, 14, "the assets and SHA256SUMS")
+	assert.Len(t, entries, 17, "the assets and SHA256SUMS")
 }
 
 func TestBuild_ShipsTheUpgradeBundleListedInSHA256SUMS(t *testing.T) {
@@ -544,7 +589,7 @@ func TestBuild_ShipsTheNodeBootSetAsKernelInitramfsAndAManifestThatNamesTheirDig
 	for _, name := range []string{"naru-node-kernel-v9", "naru-node-initramfs-v9", "naru-node-v9.json"} {
 		assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists "+name)
 	}
-	assert.Len(t, assets, 13, "the eight assets of before, the three of the boot set and the two of the extension, which SHA256SUMS makes 14 files")
+	assert.Len(t, assets, 16, "the nine assets of before, the three of the boot set, the two of the extension, the SBOM and the sources, which SHA256SUMS makes 17 files")
 }
 
 func TestBuild_ShipsTheOrchExtensionAndItsDescriptionListedInSHA256SUMS(t *testing.T) {
@@ -662,7 +707,7 @@ func TestUserData_EveryNodeTrustsTheRegistryServiceThroughSpecRegistries(t *test
 }
 
 func TestInitramfsList_CarriesNeitherOrchdNorTheSignerTheExtensionDoes(t *testing.T) {
-	list, err := os.ReadFile("../../../../image/host/initramfs/initramfs.list")
+	list, err := os.ReadFile("../../../../image/pkgs/initramfs-host/initramfs.list")
 	require.NoError(t, err)
 
 	assert.Regexp(t, `(?m)^file /bin/naru-hostd `, string(list), "the list still installs the programs init runs from the initramfs")

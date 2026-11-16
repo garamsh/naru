@@ -1,0 +1,11 @@
+go 1.26.0
+
+use (
+	./host
+	./lib/other
+	./lib/shared
+	./naructl
+	./node
+	./tooling/disk
+	./tooling/qemu
+)

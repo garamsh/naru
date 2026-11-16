@@ -4,6 +4,7 @@ toolchain go1.26.11
 
 use (
 	./host
+	./lib/atomicfile
 	./lib/hostapi
 	./lib/identity
 	./lib/init
@@ -12,6 +13,7 @@ use (
 	./lib/metrics
 	./lib/orchapi
 	./lib/vip
+	./lib/wire
 	./naructl
 	./node
 	./orch

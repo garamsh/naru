@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/gaoncli"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
@@ -406,9 +407,9 @@ func TestNode_AMachineAppliedWithTheGaonCLIIsBoundRunsOnTheGuestKernelFromTheTes
 					}
 				}
 			}
-			walk(node.DataMount+"/mvmd", 4)
+			walk(wire.DataMount+"/mvmd", 4)
 			for _, f := range []string{"machines/hello-e1/run/vmm.log"} {
-				b, err := sn.Read(node.DataMount + "/mvmd/" + f)
+				b, err := sn.Read(wire.DataMount + "/mvmd/" + f)
 				t.Logf("%s %s (%v):\n%s", nd.Name, f, err, b)
 			}
 		}
@@ -440,12 +441,12 @@ func TestNode_AMachineAppliedWithTheGaonCLIIsBoundRunsOnTheGuestKernelFromTheTes
 		if err != nil {
 			return false
 		}
-		ids, err := snap.List(node.DataMount + "/mvmd/machines")
+		ids, err := snap.List(wire.DataMount + "/mvmd/machines")
 		if err != nil {
 			return false
 		}
 		for _, id := range ids {
-			b, err := snap.Read(node.DataMount + "/mvmd/machines/" + id + "/run/vmm.log")
+			b, err := snap.Read(wire.DataMount + "/mvmd/machines/" + id + "/run/vmm.log")
 			if err == nil && strings.Contains(string(b), rootMounted) {
 				vmm = string(b)
 				return true
@@ -463,7 +464,7 @@ func TestNode_AMachineAppliedWithTheGaonCLIIsBoundRunsOnTheGuestKernelFromTheTes
 	assert.Contains(t, vmm, string(banner), "the Machine booted the image's guest kernel")
 
 	// The root disk is ext4, made by the mkfs mvmd runs.
-	disks, err := snap.List(node.DataMount + "/mvmd/disks")
+	disks, err := snap.List(wire.DataMount + "/mvmd/disks")
 	require.NoError(t, err)
 	var disk string
 	for _, n := range disks {
@@ -473,7 +474,7 @@ func TestNode_AMachineAppliedWithTheGaonCLIIsBoundRunsOnTheGuestKernelFromTheTes
 	}
 	require.NotEmpty(t, disk, "mvmd made the Machine's root disk: %v", disks)
 	img := filepath.Join(work, "root.img")
-	require.NoError(t, snap.Extract(node.DataMount+"/mvmd/disks/"+disk, img))
+	require.NoError(t, snap.Extract(wire.DataMount+"/mvmd/disks/"+disk, img))
 	sb, err := node.Superblock(img)
 	require.NoError(t, err)
 	assert.Contains(t, sb, "Filesystem magic number:  0xEF53", "the root disk is an ext4 file system")

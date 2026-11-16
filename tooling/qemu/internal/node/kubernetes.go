@@ -60,7 +60,7 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 		return nil, fmt.Errorf("pick a host port for the API server: %w", err)
 	}
 	caDir := filepath.Join(spec.Dir, "ca")
-	if err := os.MkdirAll(spec.Dir, 0o755); err != nil { //nolint:gosec // a test directory
+	if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
 		return nil, err
 	}
 	// The CA's directory goes once the Nodes' user-data is written: it holds the authority's key, the
@@ -90,7 +90,7 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 	if err := os.WriteFile(c.Kubeconfig, admin, 0o600); err != nil {
 		return nil, err
 	}
-	mcast := fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000)) //nolint:gosec // a port, not a secret
+	mcast := fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000))
 	for i := 1; i <= total; i++ {
 		cfg := Config{Name: fmt.Sprintf("node-%d", i), Index: i, Total: total, ControlPlane: i == 1, Inputs: spec.Inputs, MemoryMiB: KubeNodeMemoryMiB}
 		if i == 1 {
@@ -116,7 +116,7 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	n := c.net()
 	ones, _ := net.IPMask(net.ParseIP(n.Netmask).To4()).Size()
 	dir := filepath.Join(spec.Dir, c.Name)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, nil, err
 	}
 	other := 3 - c.Index // the other Node of the two

@@ -12,19 +12,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
-// Label and size of the data disk of a Node (docs/architecture/config.md).
+// Size of the data disk of a Node (docs/architecture/config.md).
 const (
-	DataLabel = "NARUDATA"
-
 	// The data disk is sparse. It holds the staged inputs, the Machines' root disks and mvmd's state.
 	dataDiskBytes = 2 << 30
 	mkfs          = "/sbin/mkfs.ext4"
 )
 
 // BuildDataDisk writes the data disk into dir and returns its path: ext4 with
-// the verity feature, labelled DataLabel, holding at inputs the tree of the
+// the verity feature, labelled wire.DataLabel, holding at inputs the tree of the
 // directory inputsDir (hard-linked into the build, so it costs no copy when
 // both are on one file system). It has nothing of the Node in it: what differs
 // between Nodes is on the NoCloud drive.
@@ -48,7 +48,7 @@ func BuildDataDiskWith(dir, inputsDir, agentPair, extensions string) (string, er
 	if extensions != "" {
 		trees["extensions"] = extensions
 	}
-	if err := makeDisk(data, DataLabel, dataDiskBytes, []string{"-O", "verity"}, trees, nil); err != nil {
+	if err := makeDisk(data, wire.DataLabel, dataDiskBytes, []string{"-O", "verity"}, trees, nil); err != nil {
 		return "", err
 	}
 	return data, nil
@@ -70,7 +70,7 @@ func BuildReleaseDataDisk(dir, inputsDir string) (string, error) {
 	data := filepath.Join(dir, "data.img")
 	extra := []string{"-O", "verity", "-U", releaseUUID, "-E", "hash_seed=" + releaseHashSeed}
 	env := []string{"E2FSPROGS_FAKE_TIME=" + releaseClockUnix, "SOURCE_DATE_EPOCH=" + releaseClockUnix}
-	if err := makeDisk(data, DataLabel, dataDiskBytes, extra, map[string]string{"inputs": inputsDir}, env); err != nil {
+	if err := makeDisk(data, wire.DataLabel, dataDiskBytes, extra, map[string]string{"inputs": inputsDir}, env); err != nil {
 		return "", err
 	}
 	return data, nil

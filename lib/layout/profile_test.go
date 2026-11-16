@@ -1,6 +1,8 @@
 package layout_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"net"
 	"net/netip"
 	"slices"
@@ -10,8 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -63,7 +67,7 @@ func TestHostProfileNode_BuildsAHostConfigWithNoGaonAndNoClusterSections(t *test
 	// init's join form named no host and chose the data disk; the configuration that replaces it
 	// names the host by its ID and the disk by the label the layout formats (ADR 0058).
 	assert.Equal(t, h.ID, raw.Metadata.Name)
-	assert.Equal(t, map[string]any{"label": layout.DataLabel, "mountPoint": layout.DataMount}, raw.Spec["dataDisk"])
+	assert.Equal(t, map[string]any{"label": wire.DataLabel, "mountPoint": wire.DataMount}, raw.Spec["dataDisk"])
 	for _, section := range []string{"signer", "orch", "join", "pki"} {
 		assert.NotContains(t, raw.Spec, section)
 	}
@@ -118,6 +122,52 @@ func TestHostProfileNode_ServesTheNodeAPIFromTheHostCertificateAndItsKeyFile(t *
 	assert.Equal(t, h.Certificate, raw.Spec.API["certificate"])
 	assert.Equal(t, layout.HostKeyFile, raw.Spec.API["keyFile"])
 	assert.NotContains(t, raw.Spec.API, "key")
+}
+
+func TestHostProfileNode_CarriesTheRevocationKeyAndListToHostdAndTheNodeAPI(t *testing.T) {
+	p := profile(t)
+	ca, err := pki.New("clients")
+	require.NoError(t, err)
+	p.APIClientCA = string(ca.CertPEM)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pubPEM, err := identity.EncodeRevocationPublic(pub)
+	require.NoError(t, err)
+	list, err := identity.SignCRL(priv, identity.CRL{Seq: 4})
+	require.NoError(t, err)
+	h := joined(t)
+	h.RevocationPublicKey, h.CRL = pubPEM, string(list)
+	n, err := p.Node(h)
+	require.NoError(t, err)
+	data, err := n.UserData()
+	require.NoError(t, err)
+
+	var raw struct {
+		Spec struct {
+			Host map[string]any    `yaml:"host"`
+			API  map[string]string `yaml:"api"`
+		} `yaml:"spec"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &raw))
+	assert.Equal(t, pubPEM, raw.Spec.Host["revocationPublicKey"])
+	assert.Equal(t, string(list), raw.Spec.Host["revocationList"])
+	assert.Equal(t, pubPEM, raw.Spec.API["revocationPublicKey"])
+}
+
+func TestHostProfileNode_WithNoRevocationKeyCarriesNoneAndRefusesAListWithoutOne(t *testing.T) {
+	p := profile(t)
+	h := joined(t)
+	n, err := p.Node(h)
+	require.NoError(t, err)
+	data, err := n.UserData()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "revocation")
+
+	h.CRL = "{}"
+	n, err = p.Node(h)
+	require.NoError(t, err)
+	_, err = n.UserData()
+	assert.ErrorContains(t, err, "needs the key")
 }
 
 func TestParseHostProfile_RefusesWhatIsOneHostsOwn(t *testing.T) {

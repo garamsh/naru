@@ -11,13 +11,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/guest"
 )
 
 func sum(c string) string { return strings.Repeat(c, 64) }
 
-// guestFiles is a manifest as image/host/guest/build.sh writes it, for the one kernel naru builds.
+// guestFiles is a manifest as the initramfs-host package (image/pkgs) writes it, for the one kernel naru builds.
 var guestFiles = guest.Manifest{
 	Kernels:         map[string]guest.File{"naru": {Path: "/usr/lib/naru/guest/kernels/naru/vmlinux", SHA256: sum("k")}},
 	DefaultKernel:   "naru",
@@ -107,7 +108,7 @@ func TestNaruYAML_MvmdTrustsTheRegistryAuthorityThroughSpecRegistriesAndForwards
 		"credentials_file": "/run/naru/registry/credentials.json", "ca_file": "/run/naru/registry/ca.pem",
 	}, m.Registry)
 	assert.Equal(t, []string{"ipv4"}, n.Spec.Network.Forwarding)
-	assert.Equal(t, DataLabel, n.Spec.DataDisk.Label)
+	assert.Equal(t, wire.DataLabel, n.Spec.DataDisk.Label)
 }
 
 func mvmd(t *testing.T, c Config) map[string]any {
@@ -155,8 +156,8 @@ func TestMvmdJSON_NamesTheMkfsExt4TheInitramfsInstallsAndNotOneOnTheDataDisk(t *
 
 	mkfs := m["disk"].(map[string]any)["mkfs"].(string)
 	assert.Equal(t, "/bin/mkfs.ext4", mkfs)
-	assert.False(t, strings.HasPrefix(mkfs, DataMount), "the data disk carries no mkfs")
-	list, err := os.ReadFile("../../../../image/host/initramfs/initramfs.list")
+	assert.False(t, strings.HasPrefix(mkfs, wire.DataMount), "the data disk carries no mkfs")
+	list, err := os.ReadFile("../../../../image/pkgs/initramfs-host/initramfs.list")
 	require.NoError(t, err)
 	assert.Regexp(t, `(?m)^file `+regexp.QuoteMeta(mkfs)+` @OUT@/mkfs\.ext4 0755 `, string(list))
 }

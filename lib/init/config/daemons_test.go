@@ -161,7 +161,7 @@ func TestParse_SectionsBecomeServicesAndFlags(t *testing.T) {
 	assert.Equal(t, []config.Dir{{Path: "/var/lib/naru/orch", Mode: "0700", UID: 6002, GID: 6002}}, orch.Dirs)
 	for _, want := range []string{
 		"--name=host-1", "--initial-cluster=host-1=https://192.168.0.40:2380,host-2=https://192.168.0.41:2380",
-		"--initial-cluster-state=new", "--listen=0.0.0.0:7500", "--san=192.168.0.40,127.0.0.1",
+		"--initial-cluster-state=new", "--listen=0.0.0.0:7500",
 		"--key=/run/naru-orchd/orch.key", "--signer-socket=/run/naru-signer/signer.sock",
 		"--recovery-public-key=/run/naru-orchd/recovery.pub", "--metrics-addr=192.168.0.40:9102",
 		"--host-client-cert=/run/naru-orchd/orch.crt", "--host-client-key=/run/naru-orchd/orch.key", "--host-ca=/run/naru-orchd/host-ca.crt",

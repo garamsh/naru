@@ -43,3 +43,7 @@ Drafted for garamsh/naru#120 (plan: garamsh/naru#113). It extends [ADR 0028](./0
 - Snapshots on a host are numerous enough that listing them to inspect one is slow: mvmd gets an inspect call and hostd uses it.
 - Callers keep lapsing fences because they renew late: hostd renews the fence of a microVM it was told to keep.
 - A snapshot of a microVM with named disks is wanted after its delete: delete keeps the disks the snapshot records.
+
+## Errata
+
+- 2026-11-15: item 5's "naructl keeps its own client until it is moved" no longer holds: naructl calls `lib/hostapi`'s client (`naructl/internal/client.DialHost` returns a `*hostapi.Client` over naructl's mutual TLS), and its copies of the host API types are gone. The decision stands. `lib/hostapi` gained `CreateMicroVMReport`, `AddBootSet` and `RemoveBootSet` for the calls naructl makes, and `CreateRequest.Image` and `RootDiskBytes` are omitted when empty.

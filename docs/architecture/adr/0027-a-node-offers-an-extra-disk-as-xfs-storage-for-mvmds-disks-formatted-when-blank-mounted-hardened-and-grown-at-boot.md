@@ -57,3 +57,4 @@ Drafted for garamsh/naru#66, part of garamsh/naru#62 (E5) and garamsh/aurora#749
 ## Errata
 
 - 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/xfsprogs/` is `image/common/xfsprogs/`.
+- 2026-11-15: item 6 and the mount over `mvmd/disks` did not work, since mvmd refused to start on a state directory and a disk directory on two file systems; [ADR 0073](./0073-mvmds-disks-snapshots-and-run-directories-are-on-the-first-storage-disk-through-links-while-its-state-directory-stays-on-the-data-disk.md) amends it: the first storage disk is mounted at `/var/lib/naru/mvmd-storage` and mvmd's disks and snapshots are links into it.

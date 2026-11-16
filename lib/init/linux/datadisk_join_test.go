@@ -10,6 +10,7 @@ import (
 
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/ext4/ext4test"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 var firstBlankDisk = config.DataDisk{Label: "NARUDATA", MountPoint: "/var/lib/naru", FormatBlank: true, FirstBlank: true}
@@ -31,7 +32,7 @@ func TestHost_FormatBlankDataDiskTakesTheFirstBlankDiskThatIsNotTheBootDiskForAJ
 	devices := map[string]string{"vda": disk(t, 4<<20, nil), "vdb": disk(t, 4<<20, nil), "vdc": disk(t, 4<<20, nil)}
 
 	r := newFormatRig(t, devices)
-	withBootPartition(t, r.host, "vda", bootESPGUID)
+	withBootPartition(t, r.host, "vda", wire.ESPGUID)
 	require.NoError(t, r.host.FormatBlankDataDisk(firstBlankDisk, r.log))
 	assert.Equal(t, filepath.Join(r.host.devDir, "vdb"), formatted(r), "vda holds the ESP, so vdb is the first blank disk")
 
@@ -57,7 +58,7 @@ func TestHost_FormatBlankDataDiskPrefersTheLabelledDiskToABlankOneForAJoinForm(t
 
 func TestHost_FormatBlankDataDiskRefusesAJoinFormWhenOnlyTheBootDiskIsBlank(t *testing.T) {
 	r := newFormatRig(t, map[string]string{"vda": disk(t, 4<<20, nil)})
-	withBootPartition(t, r.host, "vda", bootESPGUID)
+	withBootPartition(t, r.host, "vda", wire.ESPGUID)
 	r.host.diskWait = 0
 
 	err := r.host.FormatBlankDataDisk(firstBlankDisk, r.log)

@@ -116,7 +116,7 @@ func TestFleet_MetricsAnswerFromInitHostdOrchdAndTheSigner(t *testing.T) {
 		{1, "9102", "naru-orchd"}, {1, "9103", "naru-signer"},
 	} {
 		eventually(t, fmt.Sprintf("/metrics answers from %s", c.what), func() bool {
-			resp, err := http.Get("http://" + f.forward(c.node, c.port) + "/metrics") //nolint:noctx // a test's request to a loopback forward
+			resp, err := http.Get("http://" + f.forward(c.node, c.port) + "/metrics")
 			if err != nil {
 				return false
 			}

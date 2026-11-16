@@ -71,7 +71,7 @@ func TestLoad_RefusesAnAuthorityThatHasExpired(t *testing.T) {
 
 func TestWriteFile_GivesAnExistingFileTheModeAndReplacesItsContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.key")
-	require.NoError(t, os.WriteFile(path, []byte("old and long content"), 0o644)) //nolint:gosec // the case under test
+	require.NoError(t, os.WriteFile(path, []byte("old and long content"), 0o644))
 
 	require.NoError(t, WriteFile(path, []byte("new"), 0o600))
 

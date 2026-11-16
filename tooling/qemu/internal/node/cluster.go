@@ -15,6 +15,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
@@ -188,7 +189,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 	}
 	// The Nodes of one cluster meet on a multicast group and port of their own, so that
 	// clusters running side by side on one host do not share a network.
-	mcast := fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000)) //nolint:gosec // a port, not a secret
+	mcast := fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000))
 	c := &Cluster{Mcast: mcast}
 	var gen *gaonFiles
 	if spec.Gaon {
@@ -205,7 +206,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 			if err != nil {
 				return nil, fmt.Errorf("read the host authority's certificate: %w", err)
 			}
-			if err := os.WriteFile(c.HostCA, ca, 0o644); err != nil { //nolint:gosec // a certificate holds nothing secret
+			if err := os.WriteFile(c.HostCA, ca, 0o644); err != nil {
 				return nil, err
 			}
 		}
@@ -376,7 +377,7 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(spec.Dir, 0o755); err != nil { //nolint:gosec // a test directory
+	if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(g.guest, manifest, 0o600); err != nil {
@@ -420,7 +421,7 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 		return nil, err
 	}
 	g.client.CA = filepath.Join(clientDir, "ca.pem")
-	if err := os.WriteFile(g.client.CA, cert, 0o644); err != nil { //nolint:gosec // a certificate
+	if err := os.WriteFile(g.client.CA, cert, 0o644); err != nil {
 		return nil, err
 	}
 	return g, nil
@@ -436,7 +437,7 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	n := c.net()
 	ones, _ := net.IPMask(net.ParseIP(n.Netmask).To4()).Size()
 	dir := filepath.Join(spec.Dir, c.Name)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, nil, err
 	}
 	a := naructl.Node{
@@ -470,6 +471,13 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 	if a.Registries == nil {
 		a.Registries = []string{"host=" + fixture.RegistryAddr + ",ca=" + filepath.Join(spec.Inputs.Dir, "registry", "ca.pem")}
 	}
+	for i, s := range c.Storage {
+		// naructl mounts the first disk where mvmd keeps its disks and the others under its own directory.
+		if i == 0 && s.MountPoint != "" && s.MountPoint != wire.MvmdStorageMount {
+			return nil, nil, fmt.Errorf("storage %q is mounted at %s; a Gaon Node mounts its first disk at %s", s.Name, s.MountPoint, wire.MvmdStorageMount)
+		}
+		a.Storage = append(a.Storage, s.Name+"="+s.Device)
+	}
 	if spec.GenFlags != nil {
 		a.Extra = spec.GenFlags(c)
 	}
@@ -490,6 +498,11 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 			svc["env"] = e.Env
 		}
 		if err := appendService(a.Out, svc); err != nil {
+			return nil, nil, err
+		}
+	}
+	if c.StorageProbe != "" {
+		if err := appendService(a.Out, storageProbeService(c.StorageProbe)); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -543,7 +556,7 @@ func (g *gaonFiles) nodeAPIFiles(spec ClusterSpec) error {
 	g.apiPort = port
 	addr := "127.0.0.1:" + strconv.Itoa(port)
 	dir := filepath.Join(spec.Dir, "api-client")
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	api := &NodeAPI{Addr: addr, Admin: filepath.Join(dir, "admin.yaml"), Reader: filepath.Join(dir, "reader.yaml"), Foreign: filepath.Join(dir, "foreign.yaml")}
@@ -703,7 +716,7 @@ func (g *gaonFiles) hostAPIFilesOf(spec ClusterSpec, i int, other string) error 
 		suffix = fmt.Sprintf("-%d", i) // node-1's directory keeps its name
 	}
 	dir := filepath.Join(spec.Dir, "host-client"+suffix)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a test directory
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	h := &HostAPI{
@@ -733,7 +746,7 @@ func (g *gaonFiles) hostAPIFilesOf(spec ClusterSpec, i int, other string) error 
 }
 
 // appendService appends svc to the services of the user-data in file, the last to start.
-func appendService(file string, svc map[string]any) error {
+func appendService(file string, svc any) error {
 	b, err := os.ReadFile(file)
 	if err != nil {
 		return err

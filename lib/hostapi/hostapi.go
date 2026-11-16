@@ -35,7 +35,13 @@ type Kernel struct {
 type ErrorBody struct {
 	Error  string   `json:"error"`
 	Fields []string `json:"fields,omitempty"`
+	// Code names a refusal a caller acts on; it is empty for the rest.
+	Code string `json:"code,omitempty"`
 }
+
+// CodeStaleLeader is the Code of the 409 the host answers to a call whose leader token is lower
+// than the highest the host has seen (ADR 0071).
+const CodeStaleLeader = "stale-leader-token"
 
 // Resources are the amounts GET /v1/host reports as capacity and as free. Memory and Disk are bytes.
 type Resources struct {

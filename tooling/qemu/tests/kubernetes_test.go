@@ -77,9 +77,8 @@ spec:
 }
 
 func TestNode_KubernetesTwoNodesAreReadyAndAPodOnTheWorkerReachesAPodOnTheControlPlaneAndAServiceClusterIP(t *testing.T) {
-	if _, err := exec.LookPath("kubectl"); err != nil {
-		t.Skip("kubectl is not installed on the test host")
-	}
+	_, err := exec.LookPath("kubectl")
+	require.NoError(t, err, "kubectl is a precondition of make test-qemu")
 	spec := node.KubeSpec{Disk: filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), Dir: t.TempDir(), Inputs: inputs, Naructl: tool}
 	c, err := node.StartKubernetes(spec)
 	require.NoError(t, err)

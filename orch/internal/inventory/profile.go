@@ -2,13 +2,14 @@ package inventory
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/orch/internal/prefixes"
 )
 
 // maxProfile bounds the profile a caller sends.
@@ -24,7 +25,34 @@ func (s *service) Profile(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return p.Redacted().Marshal()
+	return shown(p).Marshal()
+}
+
+// shown is the profile as GET /v1/profile shows it. It is built field by field from a list of what
+// may be shown, so a field the profile gains later is not shown until it is listed here; a registry
+// keeps its host, CA, user name and helper, and a password it holds is replaced by layout.Redacted.
+func shown(p layout.HostProfile) layout.HostProfile {
+	out := layout.HostProfile{
+		Guest:             p.Guest,
+		FirecrackerSHA256: p.FirecrackerSHA256,
+		TimeServers:       p.TimeServers,
+		AWS:               p.AWS,
+		MetricsListen:     p.MetricsListen,
+		Network:           p.Network,
+		Storage:           p.Storage,
+		Extensions:        p.Extensions,
+		Orch:              p.Orch,
+		APIClientCA:       p.APIClientCA,
+		MachinePool:       p.MachinePool,
+	}
+	for _, r := range p.Registries {
+		shownRegistry := layout.Registry{Host: r.Host, CA: r.CA, Username: r.Username, Helper: r.Helper}
+		if r.Password != "" {
+			shownRegistry.Password = layout.Redacted
+		}
+		out.Registries = append(out.Registries, shownRegistry)
+	}
+	return out
 }
 
 func (s *service) SetProfile(ctx context.Context, by string, yaml []byte) error {
@@ -47,28 +75,17 @@ func (s *service) Remove(ctx context.Context, by, hostID string) error {
 	return err
 }
 
-// allocate returns the lowest /24 of pool that is not in used. A pool of more than one /24 gives
-// up its first, which holds the pool's own network address.
-func allocate(pool netip.Prefix, used []netip.Prefix) (netip.Prefix, error) {
-	taken := make(map[netip.Prefix]bool, len(used))
-	for _, u := range used {
-		taken[u] = true
+// nextPrefix picks the Machine prefix of an admission from the pool, given the prefixes claimed.
+// A pool of more than one /24 gives up its first, which holds the pool's own network address.
+func nextPrefix(pool netip.Prefix, claimed []netip.Prefix) (netip.Prefix, error) {
+	if pool.Bits() < layout.MachinePrefixBits {
+		claimed = append(claimed[:len(claimed):len(claimed)], netip.PrefixFrom(pool.Masked().Addr(), layout.MachinePrefixBits))
 	}
-	base := pool.Addr().As4()
-	start := binary.BigEndian.Uint32(base[:])
-	count := uint32(1) << (layout.MachinePrefixBits - pool.Bits())
-	for i := uint32(0); i < count; i++ {
-		if i == 0 && count > 1 {
-			continue
-		}
-		var b [4]byte
-		binary.BigEndian.PutUint32(b[:], start+i<<(32-layout.MachinePrefixBits))
-		p := netip.PrefixFrom(netip.AddrFrom4(b), layout.MachinePrefixBits)
-		if !taken[p] {
-			return p, nil
-		}
+	p, err := prefixes.Allocate(pool, layout.MachinePrefixBits, claimed)
+	if errors.Is(err, prefixes.ErrFull) {
+		return netip.Prefix{}, ErrPoolFull
 	}
-	return netip.Prefix{}, ErrPoolFull
+	return p, err
 }
 
 // hostAddress is the IPv4 address of the host:port a joining host reported.
@@ -88,6 +105,9 @@ func hostAddress(s string) (netip.Addr, error) {
 type joinedPlan struct {
 	profile layout.HostProfile
 	addr    netip.Addr
+	// crl is the signed revocation list the host's configuration starts with; nil when orch
+	// has no revocation key.
+	crl []byte
 }
 
 func (s *service) planJoined(ctx context.Context, p Pending) (joinedPlan, error) {
@@ -106,29 +126,38 @@ func (s *service) planJoined(ctx context.Context, p Pending) (joinedPlan, error)
 	if err != nil || !addr.Is4() {
 		return joinedPlan{}, invalid("the address %q the host reported is not an IPv4 address", p.Address)
 	}
-	return joinedPlan{profile: prof, addr: addr}, nil
-}
-
-// nextPrefix is the free prefix a new admission takes.
-func (s *service) nextPrefix(ctx context.Context, pool netip.Prefix) (netip.Prefix, error) {
-	as, err := s.store.ListAllocations(ctx)
-	if err != nil {
-		return netip.Prefix{}, err
-	}
-	used := make([]netip.Prefix, 0, len(as))
-	for _, a := range as {
-		if pf, err := netip.ParsePrefix(a.Prefix); err == nil {
-			used = append(used, pf)
+	plan := joinedPlan{profile: prof, addr: addr}
+	if s.conf.RevocationPublicKey != "" {
+		if plan.crl, err = s.currentList(ctx); err != nil {
+			return joinedPlan{}, err
 		}
 	}
-	return allocate(pool, used)
+	return plan, nil
+}
+
+// currentList is the signer's revocation list, checked against the key a joined host will verify it
+// with, so that an admission does not hand out a configuration the host would refuse.
+func (s *service) currentList(ctx context.Context) ([]byte, error) {
+	key, err := identity.ParseRevocationPublic([]byte(s.conf.RevocationPublicKey))
+	if err != nil {
+		return nil, fmt.Errorf("%w: the revocation public key: %v", ErrConflict, err)
+	}
+	list, err := s.signer.CRL(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: the revocation list: %v", ErrSignerFailed, err)
+	}
+	if _, err := identity.VerifyCRL(key, list); err != nil {
+		return nil, fmt.Errorf("%w: the revocation list: %v", ErrSignerFailed, err)
+	}
+	return list, nil
 }
 
 // buildConfig is the naru.yaml of the joined host h.
-func (j joinedPlan) buildConfig(h Host, prefix netip.Prefix, orchCA string) ([]byte, error) {
+func (j joinedPlan) buildConfig(h Host, prefix netip.Prefix, orchCA, revocationKey string) ([]byte, error) {
 	n, err := j.profile.Node(layout.JoinedHost{
 		ID: h.ID, Address: j.addr, Region: h.Region, Labels: h.Labels,
 		MachinePrefix: prefix, Certificate: string(h.Certificate), OrchCA: orchCA,
+		RevocationPublicKey: revocationKey, CRL: string(j.crl),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrConflict, err)

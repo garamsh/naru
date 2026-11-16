@@ -178,9 +178,38 @@ type Member struct {
 	LastSeen time.Time
 	// FenceDeadline is the last deadline orch renewed for a stateful member.
 	FenceDeadline time.Time
+	// CreateFailures counts the creates of this member the host refused in a row, and RetryAt is
+	// when the next may be made. The member is one record for the whole series: each retry writes
+	// this record again, so a create that never succeeds adds no record, only attempts.
+	CreateFailures int
+	RetryAt        time.Time
 	// Revision is the store's compare-and-swap token; 0 means the record does not exist.
 	Revision int64
 }
+
+// Bounds of the wait between two attempts to create one member. The wait doubles from the base
+// after each failure and stops at the cap. The base is the engine's own pass interval, since
+// a shorter wait would only be waited out; the cap keeps a template that can never be created
+// to a few attempts an hour, while a host that comes back is found within the cap.
+const (
+	createBackoffBase = DefaultInterval
+	createBackoffMax  = 10 * time.Minute
+)
+
+// createBackoff is how long to wait after the failures-th failure in a row.
+func createBackoff(failures int) time.Duration {
+	d := createBackoffBase
+	for range failures - 1 {
+		d *= 2
+		if d >= createBackoffMax {
+			return createBackoffMax
+		}
+	}
+	return d
+}
+
+// retrying reports whether the member is waiting for a create the host refused to be tried again.
+func (m Member) retrying() bool { return m.CreateFailures > 0 }
 
 // ordinal is the number a member's ID carries after its group's name, or 0.
 func (m Member) ordinal() int {

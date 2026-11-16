@@ -14,17 +14,27 @@ import (
 
 	"go.yaml.in/yaml/v4"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/config"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Dir is where a Node keeps the store, on the data disk.
-const Dir = "/var/lib/naru/config"
+const Dir = wire.DataMount + "/config"
 
 // FileName is the store's file in its directory.
 const FileName = "store.yaml"
 
+// NetworkFileName is the network-config of the seed the store was last taken from, in the same
+// directory.
+const NetworkFileName = "network-config"
+
 // ErrNotFound is returned by Load when the directory holds no store.
 var ErrNotFound = errors.New("no stored configuration")
+
+// ErrUnreadable is returned by Load when the store exists and cannot be read. The store is
+// intact as far as the caller knows, unlike one that was read and does not validate.
+var ErrUnreadable = errors.New("the stored configuration cannot be read")
 
 // Stored is the effective configuration of a Node.
 type Stored struct {
@@ -50,14 +60,14 @@ func New(dir string) *Store { return &Store{dir: dir} }
 
 // Load reads the store and parses its configuration with config.Parse, so a
 // stored configuration that does not validate is an error. It returns
-// ErrNotFound when there is no store.
+// ErrNotFound when there is no store and an error wrapping ErrUnreadable when reading it fails.
 func (s *Store) Load() (Stored, error) {
 	data, err := os.ReadFile(filepath.Join(s.dir, FileName))
 	if errors.Is(err, fs.ErrNotExist) {
 		return Stored{}, ErrNotFound
 	}
 	if err != nil {
-		return Stored{}, err
+		return Stored{}, fmt.Errorf("%w: %w", ErrUnreadable, err)
 	}
 	var raw struct {
 		Revision   int       `yaml:"revision"`
@@ -81,9 +91,13 @@ func (s *Store) Load() (Stored, error) {
 	return Stored{Revision: raw.Revision, BaseSha256: raw.BaseSha256, Config: cfg}, nil
 }
 
-// Save writes the store atomically: a temporary file in the directory, fsync,
-// rename, and fsync of the directory. A failure leaves the previous store.
-func (s *Store) Save(st Stored) (err error) {
+// Save writes the store atomically with atomicfile.Write. A failure leaves the previous store. A store that exists
+// and cannot be read is not written over: Save returns an error wrapping ErrUnreadable, since
+// the revisions in it are unknown.
+func (s *Store) Save(st Stored) error {
+	if _, err := os.ReadFile(filepath.Join(s.dir, FileName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %w; a reboot or repair of the data disk is needed", ErrUnreadable, err)
+	}
 	data, err := yaml.Dump(st)
 	if err != nil {
 		return err
@@ -91,27 +105,26 @@ func (s *Store) Save(st Stored) (err error) {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(s.dir, ".store-*")
+	return atomicfile.Write(filepath.Join(s.dir, FileName), data, 0o600)
+}
+
+// SaveNetwork writes the network-config of the seed, which may be empty, beside the store with
+// atomicfile.Write, so that a boot with no seed brings the network up as the last one with a seed did.
+func (s *Store) SaveNetwork(networkConfig []byte) error {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	return atomicfile.Write(filepath.Join(s.dir, NetworkFileName), networkConfig, 0o600)
+}
+
+// LoadNetwork returns the network-config SaveNetwork wrote, and ErrNotFound when none was written.
+func (s *Store) LoadNetwork() ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(s.dir, NetworkFileName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ErrNotFound
+	}
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("%w: %w", ErrUnreadable, err)
 	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(f.Name())
-		}
-	}()
-	if _, err = f.Write(data); err == nil {
-		err = f.Sync()
-	}
-	if err = errors.Join(err, f.Close()); err != nil {
-		return err
-	}
-	if err = os.Rename(f.Name(), filepath.Join(s.dir, FileName)); err != nil {
-		return err
-	}
-	d, err := os.Open(s.dir)
-	if err != nil {
-		return err
-	}
-	return errors.Join(d.Sync(), d.Close())
+	return data, nil
 }

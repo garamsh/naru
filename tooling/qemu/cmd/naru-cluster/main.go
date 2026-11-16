@@ -1,8 +1,8 @@
 // Command naru-cluster boots QEMU Nodes from the assets of a naru release, with the gaon binaries a
 // harness supplies, writes cluster.json once every Node is up, and keeps the Nodes running until
-// it is signalled. It needs nothing of a checkout: `GOBIN=<dir> go install
-// github.com/garamsh/naru/tooling/qemu/cmd/naru-cluster@<commit>` builds it, and `<dir>/naru-cluster`
-// runs it. docs/architecture/harness.md is its contract: the flags, cluster.json, the exit statuses
+// it is signalled. It needs nothing of a checkout: a release carries it as the asset
+// naru-cluster-<tag>-linux-amd64, which a harness downloads and checks against SHA256SUMS.
+// docs/architecture/harness.md is its contract: the flags, cluster.json, the exit statuses
 // and what a harness may rely on.
 package main
 

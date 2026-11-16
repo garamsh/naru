@@ -30,6 +30,7 @@ import (
 	"github.com/garamsh/naru/host/internal/mvmd"
 	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/identity"
 )
 
 const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -98,16 +99,26 @@ type env struct {
 	nft      *recorder
 	tunnel   *fakeTunnel
 	state    string
+	// stop ends the server's context, which starts its drain; served receives what Serve returned.
+	stop   context.CancelFunc
+	served chan error
 }
 
 // recorder is the network.Runner of the tests: it records what the host would have run.
 type recorder struct {
+	// hook, when set, runs first in Run with the caller's context: a test blocks it, or fails it.
+	hook  func(context.Context) error
 	mu    sync.Mutex
 	calls [][]string
 	stdin []string
 }
 
-func (r *recorder) Run(_ context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+func (r *recorder) Run(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+	if r.hook != nil {
+		if err := r.hook(ctx); err != nil {
+			return nil, err
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, append([]string{name}, args...))
@@ -134,6 +145,11 @@ func startWith(t *testing.T, gateway netip.Addr) *env { return startEnv(t, gatew
 
 // startEnv starts a server whose machine gateway is gateway; it has networks when networks is true.
 func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
+	return startEnvRevoking(t, gateway, networks, nil)
+}
+
+// startEnvRevoking is startEnv for a listener that checks its clients against revocations.
+func startEnvRevoking(t *testing.T, gateway netip.Addr, networks bool, revocations *identity.RevocationList) *env {
 	t.Helper()
 	dir := t.TempDir()
 	ca := newAuthority(t, "clients")
@@ -144,7 +160,7 @@ func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
 		require.NoError(t, os.WriteFile(p, b, 0o600))
 		return p
 	}
-	conf, err := TLSConfig(write("tls.crt", crt), write("tls.key", key), write("ca.crt", ca.pem))
+	conf, err := TLSConfig(write("tls.crt", crt), write("tls.key", key), write("ca.crt", ca.pem), revocations)
 	require.NoError(t, err)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -156,13 +172,15 @@ func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
 	e.tunnel = &fakeTunnel{}
 	e.state = filepath.Join(dir, "networks.json")
 	e.nets = e.manager()
-	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics}
+	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics, Revocations: revocations, LeaderTokenFile: filepath.Join(dir, "leader-token")}
 	if networks {
 		deps.Networks = e.nets
 	}
 	srv := New(deps)
-	go func() { _ = srv.Serve(ln, conf) }()
-	t.Cleanup(func() { _ = ln.Close() })
+	ctx, stop := context.WithCancel(context.Background())
+	e.stop, e.served = stop, make(chan error, 1)
+	go func() { e.served <- srv.Serve(ctx, ln, conf) }()
+	t.Cleanup(stop)
 	return e
 }
 
@@ -383,4 +401,49 @@ func TestDelete_RetryRemovesDisksAHalfDoneDeleteLeft(t *testing.T) {
 	assert.Equal(t, 404, code)
 	assert.NotContains(t, e.rt.disks, "web.data")
 	assert.Contains(t, e.rt.disks, "webb.data", "another microVM's disk is left")
+}
+
+func TestServe_DrainsTheRequestInFlightAndRefusesANewOne(t *testing.T) {
+	e := start(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	e.rt.infoHook = func(context.Context) error {
+		close(entered)
+		<-release
+		return nil
+	}
+	reader := e.as(t, "naru:host-reader")
+	type answer struct {
+		status int
+		body   []byte
+	}
+	inFlight := make(chan answer, 1)
+	go func() {
+		status, body := e.do(t, reader, "GET", "/v1/host", nil)
+		inFlight <- answer{status, body}
+	}()
+	<-entered
+
+	e.stop()
+	require.Eventually(t, func() bool {
+		conn, err := net.DialTimeout("tcp", e.addr, 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+		}
+		return err != nil
+	}, 5*time.Second, 10*time.Millisecond, "a new connection is refused once the drain began")
+	select {
+	case err := <-e.served:
+		t.Fatalf("Serve returned (%v) while a request was in flight", err)
+	default:
+	}
+
+	close(release)
+	got := <-inFlight
+	assert.Equal(t, http.StatusOK, got.status, string(got.body))
+	select {
+	case err := <-e.served:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after the last request finished")
+	}
 }

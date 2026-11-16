@@ -31,7 +31,7 @@ func TestGenKubernetesNode_PassesEveryFieldAsItsFlag(t *testing.T) {
 	}))
 
 	line := argsOf(t, out)
-	assert.True(t, strings.HasPrefix(line, "gen kubernetes-node --ca /ca --name node-2 --role worker --address 10.78.0.2/24"), line)
+	assert.True(t, strings.HasPrefix(line, "gen kubernetes-node --ca-dir /ca --name node-2 --role worker --address 10.78.0.2/24"), line)
 	for _, want := range []string{
 		"--peer 10.78.0.1=10.64.1.0/24", "--local-registry", "--registry-ca /ca.pem", "--sandbox-image 127.0.0.1:5000/x@sha256:ab",
 		"--network-config /nc", "--mac 02:00:00:00:00:02", "--binary containerd=/c --binary kubelet=/k", "--disable kube-proxy",
@@ -46,8 +46,8 @@ func TestGenKubernetes_NamesTheAdminAddressOnlyWhenThereIsOne(t *testing.T) {
 	tool, out := recorder(t)
 
 	require.NoError(t, tool.GenKubernetes("/ca", "10.78.0.1", "127.0.0.1:41000"))
-	assert.Equal(t, "gen kubernetes --ca /ca --endpoint 10.78.0.1 --admin-address 127.0.0.1:41000", argsOf(t, out))
+	assert.Equal(t, "gen kubernetes --ca-dir /ca --endpoint 10.78.0.1 --admin-address 127.0.0.1:41000", argsOf(t, out))
 
 	require.NoError(t, tool.GenKubernetes("/ca", "10.78.0.1", ""))
-	assert.Equal(t, "gen kubernetes --ca /ca --endpoint 10.78.0.1", argsOf(t, out))
+	assert.Equal(t, "gen kubernetes --ca-dir /ca --endpoint 10.78.0.1", argsOf(t, out))
 }

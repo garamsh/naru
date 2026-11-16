@@ -60,6 +60,12 @@ func (t *CgroupTree) Prepare() error {
 	return nil
 }
 
+// KillDetached kills every process in naru/detached, the ones a service placed outside its own
+// cgroup, and waits for the group to empty.
+func (t *CgroupTree) KillDetached() error {
+	return (&leaf{path: filepath.Join(t.root, naruGroup, config.DetachedName)}).Kill()
+}
+
 // Leaf returns the cgroup of the service name, creating it if absent.
 func (t *CgroupTree) Leaf(name string) (service.Leaf, error) {
 	path := filepath.Join(t.root, naruGroup, name)

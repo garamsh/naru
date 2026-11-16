@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/gaoncli"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostapi"
@@ -359,7 +360,7 @@ func TestNode_ANodeThatKeepsAnAgentPairWithoutTheOrganizationEndsWithOneThatHasI
 		if err != nil {
 			return false
 		}
-		kept, err = sn.Read(node.DataMount + "/gaon-node-agent/node-agent.pem")
+		kept, err = sn.Read(wire.DataMount + "/gaon-node-agent/node-agent.pem")
 		if err != nil {
 			return false
 		}
@@ -368,7 +369,7 @@ func TestNode_ANodeThatKeepsAnAgentPairWithoutTheOrganizationEndsWithOneThatHasI
 	assert.Equal(t, []string{"gaon:nodes"}, subjectOrganizations(t, kept))
 	sn, err := nd.SnapshotData(filepath.Join(t.TempDir(), "data-after.img"))
 	require.NoError(t, err)
-	old, err := sn.Read(node.DataMount + "/gaon-node-agent/node-agent.pem.o-less")
+	old, err := sn.Read(wire.DataMount + "/gaon-node-agent/node-agent.pem.o-less")
 	require.NoError(t, err)
 	assert.Empty(t, subjectOrganizations(t, old), "the pair that was set aside is the one the data disk had")
 }
@@ -385,7 +386,7 @@ func TestNode_AwsSigningHelperAcceptsTheAgentPairAsCertificateAndKey(t *testing.
 	pairFile := filepath.Join(dir, "node-agent.pem")
 
 	run := func(args ...string) (string, error) {
-		out, err := exec.Command(helper, args...).CombinedOutput() //nolint:gosec // the helper of the image, on arguments built here
+		out, err := exec.Command(helper, args...).CombinedOutput()
 		return string(out), err
 	}
 	out, err := run("read-certificate-data", "--certificate", pairFile)

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
@@ -33,7 +34,7 @@ import (
 const upgradeTimeout = 6 * time.Minute
 
 // storeFile is the Node's stored configuration on the data disk.
-const storeFile = node.DataMount + "/config/store.yaml"
+const storeFile = wire.DataMount + "/config/store.yaml"
 
 // startUpgradeNode boots a one-Node cluster that runs gaon, with the Node API, on a copy of the boot
 // disk of the build with its ESP writable, with the user-data of the naructl of the checkout. It
@@ -81,7 +82,7 @@ func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, d
 
 	nd, err := node.Start(node.Spec{
 		Config: cfg, Disk: disk, WritableDisk: true, Dir: nodeDir,
-		Mcast: fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000)), NaruYAML: userData, NetworkConfig: networkConfig, //nolint:gosec // a port, not a secret
+		Mcast: fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000)), NaruYAML: userData, NetworkConfig: networkConfig,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -224,7 +225,7 @@ func TestNode_UpgradeToAKernelThatRefusesIsRolledBackByTheNodeToTheVersionBefore
 	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
 
 	require.NoError(t, r.Err, r.refusal())
-	// Nothing is done to the Node from here: the trial kernel cannot read its configuration, init
+	// Nothing is done to the Node from here: the trial kernel cannot find its data disk, init
 	// gives up on it and reboots, and the default slot boots again.
 	awaitRestarting(t, nd, "the Node is back on its old version and says the upgrade rolled back", func() bool {
 		s, err := statusOf(tool, admin)

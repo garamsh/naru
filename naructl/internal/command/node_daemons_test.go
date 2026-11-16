@@ -2,6 +2,7 @@ package command_test
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
@@ -36,7 +37,9 @@ func newDaemonInputs(t *testing.T) daemonInputs {
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "orch"}, NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour)}
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
 	require.NoError(t, err)
-	pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	revPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pubDER, err := x509.MarshalPKIXPublicKey(revPub)
 	require.NoError(t, err)
 	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
 	require.NoError(t, err)
@@ -67,7 +70,8 @@ func (dep deployment) hostFlags(t *testing.T) []string {
 type daemonsData struct {
 	Spec struct {
 		Host struct {
-			Network *struct {
+			RevocationPublicKey string `yaml:"revocationPublicKey"`
+			Network             *struct {
 				ManagementPrefix string `yaml:"managementPrefix"`
 				EgressInterface  string `yaml:"egressInterface"`
 				TunnelPort       int    `yaml:"tunnelPort"`
@@ -234,6 +238,26 @@ func TestGenNode_ASignerReplicaMakesItsJoinKeyFirstAndJoinsOnceAuthorised(t *tes
 	assert.Equal(t, in.authorisationText, second.Spec.Signer.Replica.Join.Authorisation)
 }
 
+func TestGenNode_HostRevocationPublicKeyIsWrittenToSpecHostAndRefusedWithoutTheHostAPI(t *testing.T) {
+	dep := newDeployment(t)
+	in := newDaemonInputs(t)
+	pub, err := os.ReadFile(in.pub)
+	require.NoError(t, err)
+	host := append(dep.hostFlags(t), "--host-orch-url", "https://192.168.0.10:7500", "--host-orch-ca-sha256", d("a"), "--host-orch-enroll-key", in.enroll)
+
+	with := dep.node(t, "node-1", append(append([]string{}, host...), "--host-revocation-public-key", in.pub)...)
+	without := dep.node(t, "node-2", host...)
+
+	validate(t, with)
+	assert.Equal(t, string(pub), parseDaemons(t, with).Spec.Host.RevocationPublicKey, "naru-hostd gets the key that verifies the list")
+	assert.Empty(t, parseDaemons(t, without).Spec.Host.RevocationPublicKey, "control: no flag, no key")
+	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-3", "--address", "192.168.0.12/24", "--api-server", "192.168.0.10",
+		"--machine-prefix", "10.200.3.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--host-revocation-public-key", in.pub,
+		"--out", filepath.Join(t.TempDir(), "x"))
+	require.Error(t, err, out)
+	assert.Contains(t, out, "--host-revocation-public-key has no effect without --host-region")
+}
+
 func TestGenNode_NoDaemonFlagsLeavesTheSectionsOut(t *testing.T) {
 	dep := newDeployment(t)
 
@@ -251,7 +275,7 @@ func TestGenNode_DaemonFlagsRefuseWhatInitWouldRefuseOrWhatDoesNothing(t *testin
 	in := newDaemonInputs(t)
 	host := dep.hostFlags(t)
 	base := []string{
-		"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+		"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"),
 	}
 	orch := []string{
@@ -317,7 +341,7 @@ func TestGenNode_TheOrchKeyAndTheEnrollmentKeyAreNeverPrinted(t *testing.T) {
 	in := newDaemonInputs(t)
 	out := filepath.Join(t.TempDir(), "x")
 	args := []string{
-		"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+		"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out,
 		"--signer", "--extension", orchExtension, "--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
 		"--orch-member", "naru-node-1=https://192.168.0.10:2380", "--orch-certificate", in.cert, "--orch-ca", in.cert,
@@ -351,7 +375,7 @@ func TestGenNode_OrchJoinWritesTheRunningMemberInsteadOfTheClusterAndInitAccepts
 	assert.Empty(t, got.Spec.Orch.InitialCluster, "the member takes the initial cluster from the one it joins")
 
 	base := []string{
-		"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+		"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"),
 	}
 	for name, tc := range map[string]struct {

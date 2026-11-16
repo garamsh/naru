@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/init/boot"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/ext4/ext4test"
 	"github.com/garamsh/naru/lib/init/netcfg"
@@ -137,6 +138,7 @@ func TestHost_ReadSeedRefuses(t *testing.T) {
 		_, _, err := h.ReadSeed()
 
 		assert.ErrorIs(t, err, errNoDisk)
+		assert.ErrorIs(t, err, boot.ErrNoSeed, "the boot sequence runs the stored configuration")
 		assert.Empty(t, *calls)
 	})
 
@@ -212,7 +214,7 @@ func TestHost_ApplyNetwork(t *testing.T) {
 		}
 		return i
 	}
-	kernel := []link{{1, "lo", nil}, {2, "ens18", net.HardwareAddr{0x02, 0, 0, 0, 0, 0x08}}, {3, "ens19", mac}}
+	kernel := []link{loopback(), {Index: 2, Name: "ens18", MAC: net.HardwareAddr{0x02, 0, 0, 0, 0, 0x08}}, {Index: 3, Name: "ens19", MAC: mac}}
 
 	t.Run("finds the interface by MAC whatever the kernel named it, and applies address, link and route", func(t *testing.T) {
 		h, _ := testHost(t, nil)
@@ -358,6 +360,18 @@ func TestHost_MountDataDisk(t *testing.T) {
 		err := h.MountDataDisk(config.DataDisk{Label: "NARUDATA", MountPoint: mp})
 
 		assert.ErrorContains(t, err, "verity")
+		assert.Empty(t, *calls)
+	})
+
+	t.Run("refuses a disk found by label when the build stamps another label", func(t *testing.T) {
+		h, calls := testHost(t, map[string]string{"vda": verity})
+		prev := dataDiskLabel
+		dataDiskLabel = "naru67-absent"
+		t.Cleanup(func() { dataDiskLabel = prev })
+
+		err := h.MountDataDisk(config.DataDisk{Label: "NARUDATA", MountPoint: mp})
+
+		assert.ErrorIs(t, err, errNoDisk)
 		assert.Empty(t, *calls)
 	})
 

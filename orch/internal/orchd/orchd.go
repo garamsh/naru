@@ -21,6 +21,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/orch/internal/api"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
@@ -133,6 +134,12 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	}
 	// A joined host's naru-hostd trusts the authority orch's callers' certificates chain to.
 	c.Limits.OrchCA = string(callersCA)
+	if d.RevocationKey != nil {
+		// A joined host is also told the key that signs the list, to check its clients against it.
+		if c.Limits.RevocationPublicKey, err = identity.EncodeRevocationPublic(d.RevocationKey); err != nil {
+			return nil, err
+		}
+	}
 	awaitRestore := c.Restore && !member.HasData(c.DataDir)
 	if c.Restore && !awaitRestore {
 		d.Log.Warn("--restore ignored: the data directory holds a member", "data_dir", c.DataDir)
@@ -214,13 +221,17 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	invStore := invetcd.New(m.Client())
 	svc := inventory.NewService(invStore, d.Signer, d.Clock, c.Limits)
 	groupStore := groupsetcd.New(m.Client())
+	// The engine and the leader's own inventory writes go through the guard of the leader's term;
+	// the API keeps the plain client, since any member serves an operator's write (ADR 0071).
+	leaderKV := leader.Guard(m.Client())
+	leaderInv := invetcd.New(leaderKV)
 	var hosts groups.Hosts
 	if d.NewHosts != nil {
 		hosts = d.NewHosts(svc)
 	}
 	if d.Reconciler == nil && hosts != nil {
 		d.Reconciler = groups.New(groups.Config{
-			Hosts: hosts, Store: groupStore, Clock: groupClock{d.Clock}, Events: groupsetcd.NewEvents(invStore), Interval: c.GroupInterval,
+			Hosts: hosts, Store: groupsetcd.New(leaderKV), Clock: groupClock{d.Clock}, Events: groupsetcd.NewEvents(leaderInv), Interval: c.GroupInterval,
 		})
 	}
 	networkStore := netetcd.New(m.Client())
@@ -252,7 +263,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	}()
 	go func() {
 		defer o.wg.Done()
-		leader.Run(o.runCtx, m.Client(), c.Name, c.LeaderTTL, d.Log, o.lead(d, reconcilers))
+		leader.Run(o.runCtx, m.Client(), c.Name, c.LeaderTTL, d.Log, o.lead(d, reconcilers, func(ctx context.Context) { dropStoredConfigs(ctx, d, leaderInv) }))
 	}()
 	return true
 }
@@ -262,12 +273,36 @@ type groupClock struct{ inventory.Clock }
 
 func (groupClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
-// lead is what the leader does: note itself, then run the reconcilers until leadership ends.
-func (o *Orchd) lead(d Deps, reconcilers []Reconciler) func(context.Context) {
+// dropStoredConfigs is the one-shot migration ADR 0066 asks of a new leader: host records written
+// before it carry a naru.yaml with the profile's credential in it, and the rewrite drops it. It is
+// idempotent, so a leader that finds nothing to do says nothing; one that fails tries again a few
+// times, and the next leader runs it if all fail.
+func dropStoredConfigs(ctx context.Context, d Deps, store inventory.Store) {
+	for attempt := range 3 {
+		n, err := store.DropStoredConfigs(ctx)
+		if err == nil {
+			if n > 0 {
+				d.Log.Info("dropped the stored host configuration from host records", "records", n)
+			}
+			return
+		}
+		d.Log.Error("dropping the stored host configuration failed", "err", err.Error(), "attempt", attempt+1)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// lead is what the leader does: note itself, run onLead, then run the reconcilers until leadership
+// ends. onLead runs before the reconcilers start.
+func (o *Orchd) lead(d Deps, reconcilers []Reconciler, onLead func(context.Context)) func(context.Context) {
 	return func(ctx context.Context) {
 		o.leading.Store(true)
 		defer o.leading.Store(false)
 		d.Log.Info("leading", "member", o.name)
+		onLead(ctx)
 		var wg sync.WaitGroup
 		for _, r := range reconcilers {
 			wg.Add(1)

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -115,7 +116,7 @@ func TestRunSetup(t *testing.T) {
 		var out bytes.Buffer
 		svc := config.Service{Name: "s", Setup: []config.Setup{{Args: []string{"hello"}, Unless: []string{marker}}}}
 
-		err := l.runSetup(svc, sh(`echo "said $1"; echo err >&2; : > `+marker), &out)
+		err := l.runSetup(context.Background(), svc, "", sh(`echo "said $1"; echo err >&2; : > `+marker), &out)
 
 		require.NoError(t, err)
 		assert.Contains(t, out.String(), "said hello")
@@ -127,7 +128,7 @@ func TestRunSetup(t *testing.T) {
 		var out bytes.Buffer
 		svc := config.Service{Name: "s", Setup: []config.Setup{{Args: []string{"x"}, Unless: []string{marker}}}}
 
-		err := l.runSetup(svc, sh(`echo ran`), &out)
+		err := l.runSetup(context.Background(), svc, "", sh(`echo ran`), &out)
 
 		require.NoError(t, err)
 		assert.Empty(t, out.String())
@@ -142,7 +143,7 @@ func TestRunSetup(t *testing.T) {
 			{Args: []string{third}, Unless: []string{filepath.Join(dir, "none"), third}},
 		}}
 
-		err := l.runSetup(svc, sh(`: > "$1"`), &bytes.Buffer{})
+		err := l.runSetup(context.Background(), svc, "", sh(`: > "$1"`), &bytes.Buffer{})
 
 		require.NoError(t, err)
 		assert.FileExists(t, first)
@@ -154,7 +155,7 @@ func TestRunSetup(t *testing.T) {
 		after := filepath.Join(t.TempDir(), "after")
 		svc := config.Service{Name: "s", Setup: []config.Setup{{Args: []string{"x"}}, {Args: []string{after}}}}
 
-		err := l.runSetup(svc, sh(`case "$1" in x) exit 1;; *) : > "$1";; esac`), &bytes.Buffer{})
+		err := l.runSetup(context.Background(), svc, "", sh(`case "$1" in x) exit 1;; *) : > "$1";; esac`), &bytes.Buffer{})
 
 		require.Error(t, err)
 		assert.NoFileExists(t, after)
@@ -163,7 +164,7 @@ func TestRunSetup(t *testing.T) {
 	t.Run("fails the start when it exits non-zero", func(t *testing.T) {
 		svc := config.Service{Name: "s", Setup: []config.Setup{{Args: []string{"x"}, Unless: []string{marker + ".none"}}}}
 
-		err := l.runSetup(svc, sh(`exit 3`), &bytes.Buffer{})
+		err := l.runSetup(context.Background(), svc, "", sh(`exit 3`), &bytes.Buffer{})
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "exit status 3")
@@ -172,12 +173,46 @@ func TestRunSetup(t *testing.T) {
 	t.Run("fails when the binary cannot start", func(t *testing.T) {
 		svc := config.Service{Name: "s", Setup: []config.Setup{{Args: []string{"x"}}}}
 
-		err := l.runSetup(svc, func([]string) *exec.Cmd { return exec.Command("/nonexistent/bin") }, &bytes.Buffer{})
+		err := l.runSetup(context.Background(), svc, "", func([]string) *exec.Cmd { return exec.Command("/nonexistent/bin") }, &bytes.Buffer{})
 
 		assert.Error(t, err)
 	})
 
 	t.Run("is nothing for a service without one", func(t *testing.T) {
-		assert.NoError(t, l.runSetup(config.Service{Name: "s"}, nil, &bytes.Buffer{}))
+		assert.NoError(t, l.runSetup(context.Background(), config.Service{Name: "s"}, "", nil, &bytes.Buffer{}))
+	})
+
+	t.Run("is killed when its context ends, with its cgroup", func(t *testing.T) {
+		cgroup := t.TempDir()
+		killFile := filepath.Join(cgroup, "cgroup.kill")
+		require.NoError(t, os.WriteFile(killFile, nil, 0o644))
+		svc := config.Service{Name: "s", Setup: []config.Setup{{Args: []string{"x"}}}}
+		ctx, stop := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- l.runSetup(ctx, svc, cgroup, sh(`exec sleep 60`), &bytes.Buffer{}) }()
+		time.Sleep(200 * time.Millisecond)
+
+		stop()
+
+		select {
+		case err := <-done:
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "the service was stopped")
+		case <-time.After(5 * time.Second):
+			t.Fatal("the step outlived its context")
+		}
+		killed, err := os.ReadFile(killFile)
+		require.NoError(t, err)
+		assert.Equal(t, "1", string(killed), "the cgroup is killed")
+	})
+
+	t.Run("is killed when it outlasts its bound", func(t *testing.T) {
+		bounded := &Launcher{reaper: reaper, setupBound: 200 * time.Millisecond}
+		svc := config.Service{Name: "s", Setup: []config.Setup{{Args: []string{"x"}}}}
+
+		err := bounded.runSetup(context.Background(), svc, "", sh(`exec sleep 60`), &bytes.Buffer{})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "killed after 200ms")
 	})
 }

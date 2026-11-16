@@ -151,10 +151,7 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 			ids = append(ids, id)
 		}
 		// The microVM runs unless it is fenced, and mvmd deletes only a Machine that does not.
-		if m.State == mvmd.StateRunning || !p.create.Fenced {
-			_ = rt.StopMachine(ctx, m.ID)
-		}
-		s.dropMade(m.ID, ids)
+		s.dropMade(m.ID, ids, m.State == mvmd.StateRunning || !p.create.Fenced)
 		s.networkFail(w, err)
 		return
 	}
@@ -185,7 +182,7 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 			create = func(ctx context.Context, id string, size uint64) error { return rt.CreateRawDisk(ctx, id, size, nil) }
 		}
 		if err := create(ctx, id, d.SizeBytes); err != nil {
-			s.dropMade("", made)
+			s.dropMade("", made, false)
 			return mvmd.Machine{}, nil, err
 		}
 		made = append(made, id)
@@ -193,13 +190,13 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 	}
 	m, err := rt.CreateMachine(ctx, p.create)
 	if err != nil {
-		s.dropMade("", made)
+		s.dropMade("", made, false)
 		return mvmd.Machine{}, nil, err
 	}
 	if osForm {
 		seedID, seedSize, err := s.makeSeed(ctx, p, m, &made)
 		if err != nil {
-			s.dropMade(m.ID, made)
+			s.dropMade(m.ID, made, false)
 			return mvmd.Machine{}, nil, err
 		}
 		sizes[seedID] = seedSize
@@ -257,12 +254,26 @@ func (s *Server) makeSeed(ctx context.Context, p plan, m mvmd.Machine, made *[]s
 	return id, uint64(len(vol)), nil
 }
 
+// cleanupTimeout bounds what a request undoes after it failed.
+const cleanupTimeout = 30 * time.Second
+
+// cleanupContext returns the context an undo runs in. It carries the parent's values and not its
+// cancellation, because the request may have failed by being
+// cancelled, and an undo run in its context would fail at once and leave what it made.
+func cleanupContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), cleanupTimeout)
+}
+
 // dropMade deletes what a request made that did not end in a started Machine: the Machine, when
-// this request made it, and then the disks by ID. It uses a context of its own, since the
-// request's may be what ended.
-func (s *Server) dropMade(machine string, disks []string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// this request made it, and then the disks by ID. With stop set it stops the Machine first, since
+// mvmd deletes only one that does not run. It uses a context of its own, since the request's may
+// be what ended.
+func (s *Server) dropMade(machine string, disks []string, stop bool) {
+	ctx, cancel := cleanupContext(context.Background())
 	defer cancel()
+	if machine != "" && stop {
+		_ = s.deps.Runtime.StopMachine(ctx, machine)
+	}
 	if machine != "" {
 		if err := s.deps.Runtime.DeleteMachine(ctx, machine); err != nil {
 			s.deps.Log.Error("cannot remove a microVM that was not started", "machine", machine, "err", err.Error())

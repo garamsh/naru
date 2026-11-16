@@ -211,7 +211,7 @@ func size(f *os.File) (int64, error) {
 func roundUp(n, to int64) int64 { return (n + to - 1) / to * to }
 
 func run(name string, args ...string) error {
-	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil { //nolint:gosec // the tool and its arguments are built here
+	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("%s %v: %w: %s", name, args, err, out)
 	}
 	return nil

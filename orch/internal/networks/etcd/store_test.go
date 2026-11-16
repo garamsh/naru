@@ -1,6 +1,10 @@
 package etcd_test
 
 import (
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -26,8 +30,8 @@ func TestNetworksRoundTripThroughTheStore(t *testing.T) {
 	require.Empty(t, none)
 
 	lab := orchapi.Network{Name: "lab", Prefix: "10.9.0.0/24", APIEndpoint: "10.9.0.2"}
-	require.NoError(t, s.Put(t.Context(), lab))
-	require.NoError(t, s.Put(t.Context(), orchapi.Network{Name: "edge", Prefix: "10.8.0.0/24"}))
+	require.NoError(t, s.Put(t.Context(), lab, nil))
+	require.NoError(t, s.Put(t.Context(), orchapi.Network{Name: "edge", Prefix: "10.8.0.0/24"}, nil))
 	got, err := s.Get(t.Context(), "lab")
 	require.NoError(t, err)
 	require.Equal(t, lab, got)
@@ -36,8 +40,9 @@ func TestNetworksRoundTripThroughTheStore(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []orchapi.Network{{Name: "edge", Prefix: "10.8.0.0/24"}, lab}, all, "in name order")
 
+	old := lab
 	lab.Prefix = "10.7.0.0/24"
-	require.NoError(t, s.Put(t.Context(), lab))
+	require.NoError(t, s.Put(t.Context(), lab, &old))
 	got, err = s.Get(t.Context(), "lab")
 	require.NoError(t, err)
 	require.Equal(t, "10.7.0.0/24", got.Prefix, "a put replaces")
@@ -49,4 +54,41 @@ func TestNetworksRoundTripThroughTheStore(t *testing.T) {
 	all, err = s.List(t.Context())
 	require.NoError(t, err)
 	require.Len(t, all, 1)
+}
+
+func TestOnlyOneOfManyCreatesOfANetworkWins(t *testing.T) {
+	s := newStore(t)
+	var wins, conflicts atomic.Int32
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := s.Put(t.Context(), orchapi.Network{Name: "lab", Prefix: fmt.Sprintf("10.%d.0.0/24", i)}, nil)
+			switch {
+			case err == nil:
+				wins.Add(1)
+			case errors.Is(err, inventory.ErrConflict):
+				conflicts.Add(1)
+			default:
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, int32(1), wins.Load())
+	require.Equal(t, int32(7), conflicts.Load())
+}
+
+func TestAReplaceOfANetworkThatChangedMeanwhileIsRefused(t *testing.T) {
+	s := newStore(t)
+	a := orchapi.Network{Name: "lab", Prefix: "10.9.0.0/24"}
+	require.NoError(t, s.Put(t.Context(), a, nil))
+	b := a
+	b.Prefix = "10.8.0.0/24"
+	require.NoError(t, s.Put(t.Context(), b, &a))
+	c := a
+	c.Prefix = "10.7.0.0/24"
+	require.ErrorIs(t, s.Put(t.Context(), c, &a), inventory.ErrConflict, "a was read before b replaced it")
+	require.ErrorIs(t, s.Put(t.Context(), c, nil), inventory.ErrConflict, "the network exists")
 }

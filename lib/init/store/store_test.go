@@ -117,10 +117,57 @@ func TestStore_LoadRefusesWhatDoesNotValidate(t *testing.T) {
 
 			require.Error(t, err)
 			assert.NotErrorIs(t, err, store.ErrNotFound)
+			assert.NotErrorIs(t, err, store.ErrUnreadable, "a store that was read and does not validate is not an unreadable one")
 		})
 	}
 }
 
+func TestStore_LoadOfAStoreThatCannotBeReadIsUnreadableAndNotAbsent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, store.FileName), 0o700), "a directory where the file belongs makes the read fail with an error other than not-exist")
+
+	_, err := store.New(dir).Load()
+
+	require.ErrorIs(t, err, store.ErrUnreadable)
+	assert.NotErrorIs(t, err, store.ErrNotFound)
+}
+
 func TestDigest_IsTheSHA256OfTheBytes(t *testing.T) {
 	assert.Equal(t, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", store.Digest([]byte("abc")))
+}
+
+func TestStore_SaveRefusesToWriteOverAStoreThatCannotBeRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, store.FileName)
+	require.NoError(t, os.Mkdir(path, 0o700), "a directory where the file belongs makes the read fail with an error other than not-exist")
+
+	err := store.New(dir).Save(store.Stored{Revision: 1})
+
+	require.ErrorIs(t, err, store.ErrUnreadable)
+	assert.ErrorContains(t, err, "reboot or repair")
+	info, statErr := os.Stat(path)
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir(), "the store is untouched")
+	entries, _ := os.ReadDir(dir)
+	assert.Len(t, entries, 1, "no temporary file is left beside it")
+}
+
+func TestStore_LoadNetworkReturnsWhatSaveNetworkWroteAndNotFoundBefore(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "config")
+	s := store.New(dir)
+	_, err := s.LoadNetwork()
+	require.ErrorIs(t, err, store.ErrNotFound)
+
+	require.NoError(t, s.SaveNetwork([]byte("version: 1\n")))
+	got, err := s.LoadNetwork()
+
+	require.NoError(t, err)
+	assert.Equal(t, "version: 1\n", string(got))
+	require.NoError(t, s.SaveNetwork(nil))
+	got, err = s.LoadNetwork()
+	require.NoError(t, err, "an empty network-config is stored, not absent")
+	assert.Empty(t, got)
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no temporary file is left")
 }

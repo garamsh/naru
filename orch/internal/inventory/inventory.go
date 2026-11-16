@@ -29,6 +29,8 @@ var (
 	ErrNoProfile = errors.New("no host profile is set")
 	// ErrAllocationTaken is the store's answer to an admission whose prefix another admission took first.
 	ErrAllocationTaken = errors.New("the prefix was allocated meanwhile")
+	// ErrAlreadyAdmitted is the store's answer to an enrollment write that finds the host admitted.
+	ErrAlreadyAdmitted = errors.New("the host is admitted")
 )
 
 // Event types.
@@ -67,10 +69,13 @@ type Pending struct {
 	Hardware *orchapi.Hardware `json:"hardware,omitempty"`
 }
 
-// Allocation is the Machine prefix given to a host.
+// Allocation is the Machine prefix given to a host. A non-zero ReservedUntil marks a reservation,
+// which an admission holds between asking the signer and writing the host and which another
+// admission may take over once it has passed; confirming the allocation clears it.
 type Allocation struct {
-	Prefix string `json:"prefix"`
-	HostID string `json:"hostId"`
+	Prefix        string    `json:"prefix"`
+	HostID        string    `json:"hostId"`
+	ReservedUntil time.Time `json:"reservedUntil,omitzero"`
 }
 
 // Host is an admitted host.
@@ -84,11 +89,13 @@ type Host struct {
 	AdmittedAt  time.Time         `json:"admittedAt"`
 	LastSeen    time.Time         `json:"lastSeen,omitzero"`
 	Draining    bool              `json:"draining,omitempty"`
-	// Config is the naru.yaml orch built at the admission of a host that joined from the install seed,
-	// and MachinePrefix the prefix it allocated for it. Both are empty for a host enrolled with its
-	// own configuration.
-	Config        []byte `json:"config,omitempty"`
+	// MachinePrefix is the prefix orch allocated for a host that joined from the install seed, and
+	// empty for a host enrolled with its own configuration. Orch builds the naru.yaml of a joined host
+	// on each answer from this record and the current profile, so no credential is stored here.
 	MachinePrefix string `json:"machinePrefix,omitempty"`
+	// Config is what records written before ADR 0066 carried: the naru.yaml with the profile's
+	// credential in it. It is read only so that the migration can drop it, and never written.
+	Config []byte `json:"config,omitempty"`
 }
 
 func (h Host) api() orchapi.Host {

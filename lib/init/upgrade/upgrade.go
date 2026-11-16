@@ -16,7 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/service"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // The two slots a boot can be in.
@@ -91,12 +93,12 @@ func NewWith(cfg Config) *Upgrader {
 			*s = v
 		}
 	}
-	set(&cfg.ESPGUID, ESPGUID)
+	set(&cfg.ESPGUID, wire.ESPGUID)
 	set(&cfg.SysClassBlock, "/sys/class/block")
 	set(&cfg.DevDir, "/dev")
 	set(&cfg.ESPMount, "/run/naru/esp")
 	set(&cfg.EFIVars, "/sys/firmware/efi/efivars")
-	set(&cfg.StateDir, "/var/lib/naru/upgrade")
+	set(&cfg.StateDir, wire.DataMount+"/upgrade")
 	if cfg.MaxBytes == 0 {
 		cfg.MaxBytes = MaxBundleBytes
 	}
@@ -205,10 +207,10 @@ func (u *Upgrader) Install(body io.Reader, wantSHA string) (Staged, error) {
 		}
 		if err != nil {
 			_ = os.Remove(trial)
-			_ = syncDir(dir)
+			_ = atomicfile.SyncDir(dir)
 			return err
 		}
-		return syncDir(dir)
+		return atomicfile.SyncDir(dir)
 	})
 	if err != nil {
 		return Staged{}, err
@@ -263,7 +265,7 @@ func (u *Upgrader) dropTrial(p esp) (was bool, err error) {
 		if err != nil {
 			return err
 		}
-		return syncDir(dir)
+		return atomicfile.SyncDir(dir)
 	})
 	return was, err
 }
@@ -328,7 +330,7 @@ func (u *Upgrader) Promote() error {
 		if err := os.Rename(filepath.Join(dir, trialSlot), filepath.Join(dir, defaultSlot)); err != nil {
 			return err
 		}
-		return syncDir(dir)
+		return atomicfile.SyncDir(dir)
 	})
 	if err != nil {
 		return fmt.Errorf("promote the trial slot: %w", err)
@@ -370,7 +372,8 @@ type Services interface {
 
 // Watch judges a trial boot and acts on it, and returns once it has. booted is whether the boot
 // sequence finished without a refusal. A refusal gives up at once. Otherwise the trial is healthy
-// when every started service has been running, and has not restarted, for Settle; a healthy trial
+// when every started service has been running, or has exited with status 0 and stays stopped
+// (service.StateExited), and has not restarted, for Settle; a healthy trial
 // is promoted. A trial that is not healthy Bound after init started, or whose promotion fails,
 // gives up. To give up is to record the reason and call reboot, which must reboot without
 // promoting. Watch ends early when ctx does.
@@ -386,7 +389,7 @@ func (u *Upgrader) Watch(ctx context.Context, booted bool, svcs Services, reboot
 		ok, now := true, map[string]int{}
 		for _, s := range svcs.Status() {
 			now[s.Name] = s.Restarts
-			ok = ok && s.State == service.StateRunning
+			ok = ok && (s.State == service.StateRunning || s.State == service.StateExited)
 		}
 		if !ok || !sameCounts(prev, now) {
 			since = u.cfg.Now()

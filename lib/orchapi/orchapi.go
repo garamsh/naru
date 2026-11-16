@@ -136,6 +136,9 @@ type Event struct {
 	Type    string            `json:"type"`
 	Subject string            `json:"subject"`
 	Detail  map[string]string `json:"detail,omitempty"`
+	// Cursor places the event in the log: orch sets it when it lists events, and a reader that
+	// passes the last Cursor it saw to EventsSince is given only what came after.
+	Cursor string `json:"cursor,omitempty"`
 }
 
 // SnapshotResult names the sealed snapshot orch wrote.

@@ -40,8 +40,28 @@ func Run(dir string, log *slog.Logger) error {
 	if err := reflinkCopy(dir); err != nil {
 		reflink = "failed: " + err.Error()
 	}
-	log.Info("storageprobe", "fs", fs, "reflink", reflink, "marker", marker, "size", uint64(st.Blocks)*uint64(st.Bsize)) //nolint:gosec // a size
+	log.Info("storageprobe", "fs", fs, "reflink", reflink, "marker", marker, "size", uint64(st.Blocks)*uint64(st.Bsize))
 	return nil
+}
+
+// Tree reports through one log line, "storagetree", how many entries dir holds under disks,
+// snapshots (not counting the store's staging directory) and machines: what mvmd keeps on a
+// storage disk mounted at wire.MvmdStorageMount.
+func Tree(dir string, log *slog.Logger) {
+	count := func(name string) int {
+		entries, err := os.ReadDir(filepath.Join(dir, name))
+		if err != nil {
+			return 0
+		}
+		n := 0
+		for _, e := range entries {
+			if e.Name() != "staging" {
+				n++
+			}
+		}
+		return n
+	}
+	log.Info("storagetree", "disks", count("disks"), "snapshots", count("snapshots"), "machines", count("machines"))
 }
 
 // mark writes the marker file and reports "written", or reports "kept" when it holds the marker.

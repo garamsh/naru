@@ -28,12 +28,12 @@ func storage(t *testing.T, path string) []storedDisk {
 	return u.Spec.Storage
 }
 
-func TestGenNode_StorageIsWrittenAndTheFirstDiskIsMountedWhereMvmdKeepsItsDisks(t *testing.T) {
+func TestGenNode_StorageIsWrittenAndTheFirstDiskIsMountedWhereMvmdKeepsItsDisksSnapshotsAndRunDirectories(t *testing.T) {
 	dep := newDeployment(t)
 	path := dep.node(t, "node-1", "--storage", "vmdisks=vmdisks", "--storage", "scratch=extra")
 
 	assert.Equal(t, []storedDisk{
-		{"vmdisks", "vmdisks", "", "/var/lib/naru/mvmd/disks"},
+		{"vmdisks", "vmdisks", "", "/var/lib/naru/mvmd-storage"},
 		{"scratch", "extra", "", ""},
 	}, storage(t, path))
 	validate(t, path) // naru-init accepts spec.storage
@@ -44,7 +44,7 @@ func TestGenNode_AValueStartingWithDevIsTheDeviceAndAnyOtherIsTheLabel(t *testin
 	path := dep.node(t, "node-1", "--storage", "vmdisks=/dev/sdc", "--storage", "scratch=extra")
 
 	assert.Equal(t, []storedDisk{
-		{"vmdisks", "", "/dev/sdc", "/var/lib/naru/mvmd/disks"},
+		{"vmdisks", "", "/dev/sdc", "/var/lib/naru/mvmd-storage"},
 		{"scratch", "extra", "", ""},
 	}, storage(t, path))
 	validate(t, path) // naru-init accepts a device entry
@@ -76,7 +76,7 @@ func TestGenNode_RefusesStorageInitWouldRefuse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			args := []string{
-				"gen", "node", "--ca", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
+				"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
 				"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 			}
 			for _, s := range tt.storage {

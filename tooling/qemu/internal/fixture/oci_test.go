@@ -65,7 +65,7 @@ func served(t *testing.T, dir string) (*httptest.Server, *http.Client) {
 
 func fetch(t *testing.T, c *http.Client, url string) []byte {
 	t.Helper()
-	res, err := c.Get(url) //nolint:noctx // loopback test server
+	res, err := c.Get(url)
 	require.NoError(t, err)
 	defer func() { _ = res.Body.Close() }()
 	require.Equal(t, http.StatusOK, res.StatusCode, url)
@@ -113,7 +113,7 @@ func TestWriteRegistry_IsTrustedOnlyThroughItsOwnAuthority(t *testing.T) {
 	require.NoError(t, err)
 	s, _ := served(t, dir)
 
-	_, err = (&http.Client{}).Get(s.URL + "/v2/") //nolint:noctx // loopback test server
+	_, err = (&http.Client{}).Get(s.URL + "/v2/")
 
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "certificate"), err.Error())

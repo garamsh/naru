@@ -5,7 +5,10 @@ package etcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/netip"
+	"reflect"
 	"strings"
 	"time"
 
@@ -16,6 +19,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/groups/wire"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	netetcd "github.com/garamsh/naru/orch/internal/networks/etcd"
+	"github.com/garamsh/naru/orch/internal/prefixes"
 )
 
 // Prefixes of the records. A group is kept under its name and a member under its ID.
@@ -27,19 +31,26 @@ const (
 	claimPrefix = "/naru/orch/pod-prefix-claims/"
 )
 
+// claimRetries bounds the reads of a network's claims that a concurrent claim made stale.
+const claimRetries = 8
+
+var errClaimMoved = errors.New("the claims of the network or the member changed")
+
 // member is a stored member record. Revision is the key's modification revision, so it is not
 // stored.
 type member struct {
-	ID            string    `json:"id"`
-	Group         string    `json:"group"`
-	Host          string    `json:"host"`
-	MachineID     string    `json:"machineId"`
-	TemplateHash  string    `json:"templateHash"`
-	Network       string    `json:"network,omitempty"`
-	PodPrefix     string    `json:"podPrefix,omitempty"`
-	Phase         string    `json:"phase"`
-	LastSeen      time.Time `json:"lastSeen,omitzero"`
-	FenceDeadline time.Time `json:"fenceDeadline,omitzero"`
+	ID             string    `json:"id"`
+	Group          string    `json:"group"`
+	Host           string    `json:"host"`
+	MachineID      string    `json:"machineId"`
+	TemplateHash   string    `json:"templateHash"`
+	Network        string    `json:"network,omitempty"`
+	PodPrefix      string    `json:"podPrefix,omitempty"`
+	Phase          string    `json:"phase"`
+	LastSeen       time.Time `json:"lastSeen,omitzero"`
+	FenceDeadline  time.Time `json:"fenceDeadline,omitzero"`
+	CreateFailures int       `json:"createFailures,omitempty"`
+	RetryAt        time.Time `json:"retryAt,omitzero"`
 }
 
 // Store is the groups and members over an etcd client.
@@ -60,10 +71,38 @@ func encode(v any) string {
 	return string(b)
 }
 
-// PutGroup creates the group or replaces its spec.
-func (s *Store) PutGroup(ctx context.Context, g groups.GroupSpec) error {
-	_, err := s.kv.Put(ctx, groupPrefix+g.Name, encode(wire.API(g)))
-	return err
+// PutGroup writes g as one transaction that holds only while the stored group is still prev, or is
+// still absent when prev is nil. It returns inventory.ErrConflict when another writer got there first.
+func (s *Store) PutGroup(ctx context.Context, g groups.GroupSpec, prev *groups.GroupSpec) error {
+	key := groupPrefix + g.Name
+	resp, err := s.kv.Get(ctx, key)
+	if err != nil {
+		return err
+	}
+	var cond clientv3.Cmp
+	switch {
+	case len(resp.Kvs) == 0 && prev == nil:
+		cond = clientv3.Compare(clientv3.CreateRevision(key), "=", 0)
+	case len(resp.Kvs) == 0 || prev == nil:
+		return inventory.ErrConflict
+	default:
+		cur, err := decodeGroup(resp.Kvs[0].Key, resp.Kvs[0].Value)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(cur, *prev) {
+			return inventory.ErrConflict
+		}
+		cond = clientv3.Compare(clientv3.ModRevision(key), "=", resp.Kvs[0].ModRevision)
+	}
+	t, err := s.kv.Txn(ctx).If(cond).Then(clientv3.OpPut(key, encode(wire.API(g)))).Commit()
+	if err != nil {
+		return err
+	}
+	if !t.Succeeded {
+		return inventory.ErrConflict
+	}
+	return nil
 }
 
 // GetGroup returns the group, or inventory.ErrNotFound.
@@ -129,7 +168,8 @@ func (s *Store) ListMembers(ctx context.Context) ([]groups.Member, error) {
 		}
 		out = append(out, groups.Member{
 			ID: r.ID, Group: r.Group, Host: r.Host, MachineID: r.MachineID, TemplateHash: r.TemplateHash,
-			Network: r.Network, PodPrefix: r.PodPrefix, Phase: groups.Phase(r.Phase), LastSeen: r.LastSeen, FenceDeadline: r.FenceDeadline, Revision: kv.ModRevision,
+			Network: r.Network, PodPrefix: r.PodPrefix, Phase: groups.Phase(r.Phase), LastSeen: r.LastSeen, FenceDeadline: r.FenceDeadline,
+			CreateFailures: r.CreateFailures, RetryAt: r.RetryAt, Revision: kv.ModRevision,
 		})
 	}
 	return out, nil
@@ -153,11 +193,46 @@ func claimKey(network, podPrefix string) string {
 	return claimPrefix + network + "/" + strings.ReplaceAll(podPrefix, "/", "_")
 }
 
+func networkClaims(network string) string { return claimPrefix + network + "/" }
+
+// claimFree reports whether podPrefix overlaps no claim of the network, and the revision it read at.
+func (s *Store) claimFree(ctx context.Context, network, podPrefix string) (bool, int64, error) {
+	want, err := netip.ParsePrefix(podPrefix)
+	if err != nil {
+		return false, 0, fmt.Errorf("pod prefix %q: %w", podPrefix, err)
+	}
+	resp, err := s.kv.Get(ctx, networkClaims(network), clientv3.WithPrefix())
+	if err != nil {
+		return false, 0, err
+	}
+	var held []netip.Prefix
+	for _, kv := range resp.Kvs {
+		p, err := netip.ParsePrefix(strings.ReplaceAll(strings.TrimPrefix(string(kv.Key), networkClaims(network)), "_", "/"))
+		if err != nil {
+			return false, 0, fmt.Errorf("claim %s: %w", kv.Key, err)
+		}
+		held = append(held, p)
+	}
+	return !prefixes.Overlaps(held, want), resp.Header.Revision, nil
+}
+
 // PutMember writes m when m.Revision is the stored revision, and returns the record with its new
 // one. A Revision of 0 creates the record, and fails with groups.ErrConflict when it exists or when
 // another member holds the Pod prefix m asks for: the record and the claim are written in one
-// step. Writing a member that is gone ends its claim.
+// step. A claim that overlaps another of the network is a conflict. Writing a member that is gone ends its claim.
 func (s *Store) PutMember(ctx context.Context, m groups.Member) (groups.Member, error) {
+	// A new claim also loses when an unrelated claim of the network was written between its read
+	// and its write; it is then read again.
+	for range claimRetries {
+		out, err := s.putMember(ctx, m)
+		if !errors.Is(err, errClaimMoved) {
+			return out, err
+		}
+	}
+	return groups.Member{}, groups.ErrConflict
+}
+
+func (s *Store) putMember(ctx context.Context, m groups.Member) (groups.Member, error) {
 	if m.ID == "" || strings.Contains(m.ID, "/") {
 		return groups.Member{}, fmt.Errorf("member ID %q cannot be a key", m.ID)
 	}
@@ -166,6 +241,7 @@ func (s *Store) PutMember(ctx context.Context, m groups.Member) (groups.Member, 
 		ID: m.ID, Group: m.Group, Host: m.Host, MachineID: m.MachineID, TemplateHash: m.TemplateHash,
 		Network: m.Network, PodPrefix: m.PodPrefix,
 		Phase: string(m.Phase), LastSeen: m.LastSeen, FenceDeadline: m.FenceDeadline,
+		CreateFailures: m.CreateFailures, RetryAt: m.RetryAt,
 	}
 	cond := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", m.Revision)}
 	ops := []clientv3.Op{clientv3.OpPut(key, encode(rec))}
@@ -176,7 +252,16 @@ func (s *Store) PutMember(ctx context.Context, m groups.Member) (groups.Member, 
 			// Only the holder ends a claim: the prefix may be another member's by now.
 			ops = append(ops, clientv3.OpTxn([]clientv3.Cmp{clientv3.Compare(clientv3.Value(claim), "=", m.ID)}, []clientv3.Op{clientv3.OpDelete(claim)}, nil))
 		case m.Revision == 0:
-			cond = append(cond, clientv3.Compare(clientv3.CreateRevision(claim), "=", 0))
+			// The claims are read at one revision and the write compares that none under the
+			// network changed since, so two claims that overlap cannot both be written.
+			free, rev, err := s.claimFree(ctx, m.Network, m.PodPrefix)
+			if err != nil {
+				return groups.Member{}, err
+			}
+			if !free {
+				return groups.Member{}, groups.ErrConflict
+			}
+			cond = append(cond, clientv3.Compare(clientv3.ModRevision(networkClaims(m.Network)), "<", rev+1).WithPrefix())
 			ops = append(ops, clientv3.OpPut(claim, m.ID))
 		}
 	}
@@ -185,6 +270,9 @@ func (s *Store) PutMember(ctx context.Context, m groups.Member) (groups.Member, 
 		return groups.Member{}, err
 	}
 	if !resp.Succeeded {
+		if m.Revision == 0 && m.PodPrefix != "" && m.Phase != groups.PhaseGone {
+			return groups.Member{}, errClaimMoved
+		}
 		return groups.Member{}, groups.ErrConflict
 	}
 	m.Revision = resp.Header.Revision

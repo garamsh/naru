@@ -18,6 +18,8 @@ import (
 	"github.com/garamsh/naru/host/internal/enroll"
 	"github.com/garamsh/naru/host/internal/fence"
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/host/internal/network"
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/metrics"
 )
 
@@ -43,10 +45,15 @@ func main() {
 		hostID    = flag.String("host-id", "", "the name this host enrolls under (default: the hostname)")
 		advertise = flag.String("advertise", "", "address orch lists for this host (default: --listen)")
 
+		revKey      = flag.String("revocation-public-key", "", "PEM public key that verifies the signer's revocation list; empty checks no revocation")
+		revMaxAge   = flag.Duration("revocation-max-age", identity.DefaultMaxAge, "how long a revocation list that cannot be refreshed is used before every client is refused")
+		revSocket   = flag.String("revocation-signer-socket", "", "the local signer's socket to read the list from; empty fetches it from --orch-url")
+		tokenFile   = flag.String("leader-token-file", "/var/lib/naru/hostd/leader-token", "where the highest leader token orch has sent is kept, so a restart does not forget it")
+		revFile     = flag.String("revocation-file", "/var/lib/naru/hostd/crl.json", "where the last verified list is kept, so a restart within the max age needs no fetch first")
+		revSeed     = flag.String("revocation-seed", "", "a signed list delivered with the host's configuration, taken when it is newer than the kept one")
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 
 		management = flag.String("management-prefix", "", "prefix of the management plane; set, it turns the virtual networks on")
-		_          = flag.String("host-addrs", "", "ignored: the input chain drops a new connection from any microVM to any address of this host")
 		tapPrefix  = flag.String("tap-prefix", "tap", "name prefix of the microVMs' tap devices, for the forged-source rule")
 		egress     = flag.String("egress-interface", "", "interface the networks' egress leaves by; empty gives them none")
 		tunnel     = flag.String("tunnel", "wg-naru", "name of the WireGuard interface, which hostd creates; empty turns the tunnel off")
@@ -62,6 +69,7 @@ func main() {
 	}
 
 	var nets api.Networks
+	var netMgr *network.Manager
 	if *management != "" {
 		m, err := networkManager(context.Background(), networkConfig{
 			management: *management, tapPrefix: *tapPrefix, egress: *egress,
@@ -71,10 +79,17 @@ func main() {
 			log.Error("cannot set up the virtual networks", "err", err.Error())
 			os.Exit(1)
 		}
-		nets = m
+		nets, netMgr = m, m
 	}
 
-	conf, err := api.TLSConfig(*cert, *key, *clients)
+	revocations, err := newRevocations(revocationConfig{
+		keyFile: *revKey, maxAge: *revMaxAge, signerSocket: *revSocket, orchURL: *orchURL, orchCA: *orchCA, file: *revFile, seedFile: *revSeed,
+	}, log)
+	if err != nil {
+		log.Error("cannot set up the revocation list", "err", err.Error())
+		os.Exit(1)
+	}
+	conf, err := api.TLSConfig(*cert, *key, *clients, revocations)
 	if err != nil {
 		log.Error("cannot load the serving pair or the client CA", "err", err.Error())
 		os.Exit(1)
@@ -95,9 +110,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	go prefetch(ctx, revocations, log)
+
 	r := &fence.Renewer{Runtime: rt, Length: *length, Interval: *interval, Retry: 5 * time.Second, Log: log}
 	go r.Run(ctx)
-	go func() { <-ctx.Done(); _ = ln.Close() }()
+	if netMgr != nil {
+		startReconciler(ctx, netMgr, rt, log)
+	}
 
 	if *orchURL != "" {
 		id := *hostID
@@ -120,7 +139,7 @@ func main() {
 	}
 
 	reg := metrics.New()
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg})
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile})
 	if *metricsAddr != "" {
 		go func() {
 			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {
@@ -130,7 +149,7 @@ func main() {
 	}
 
 	log.Info("naru-hostd serving", "addr", *listen)
-	if err := srv.Serve(ln, conf); err != nil && ctx.Err() == nil {
+	if err := srv.Serve(ctx, ln, conf); err != nil {
 		log.Error("the host API stopped", "err", err.Error())
 		os.Exit(1)
 	}

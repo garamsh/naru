@@ -64,3 +64,29 @@ func TestCheck_RootWithNoModuleFails(t *testing.T) {
 	_, err := importcheck.Check(filepath.Join("testdata", "empty"))
 	assert.ErrorContains(t, err, "no go.mod")
 }
+
+// A module that go.mod finds and go.work does not use is the one the other checks skip.
+func TestCheck_ModuleNotUsedByGoWorkFails(t *testing.T) {
+	res := check(t, "unlisted")
+	assert.Equal(t, []string{"node"}, res.Unlisted)
+	assert.Empty(t, res.Missing)
+	assert.Equal(t, 2, res.Modules)
+}
+
+func TestCheck_UsedFolderWithNoGoModFails(t *testing.T) {
+	res := check(t, "missing")
+	assert.Equal(t, []string{"ghost"}, res.Missing)
+	assert.Empty(t, res.Unlisted)
+}
+
+// The control of the two cases above: the clean tree lists exactly the modules it holds.
+func TestCheck_TreeThatGoWorkListsInFullHasNoUnlistedOrMissing(t *testing.T) {
+	res := check(t, "clean")
+	assert.Empty(t, res.Unlisted)
+	assert.Empty(t, res.Missing)
+}
+
+func TestCheck_RootWithNoGoWorkFails(t *testing.T) {
+	_, err := importcheck.Check(filepath.Join("testdata", "nowork"))
+	assert.Error(t, err)
+}

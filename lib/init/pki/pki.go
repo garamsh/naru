@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/config"
 )
 
@@ -64,13 +65,23 @@ type Issuer struct {
 	addrs   []netip.Addr
 	issued  []*issued
 	refused bool
+	// stepped is set when the clock was stepped, and cleared by the pass that
+	// re-evaluates the certificates against it.
+	stepped bool
 }
 
 // issued is one certificate of the spec as it was last issued.
 type issued struct {
 	cert config.Certificate
-	due  time.Time
+	// due is wall-clock time, without a monotonic reading, so a step of the
+	// clock moves it with the certificate's validity.
+	due time.Time
+	// from and to are the certificate's NotBefore and NotAfter.
+	from, to time.Time
 }
+
+// validAt reports whether the certificate is valid at t.
+func (s *issued) validAt(t time.Time) bool { return !t.Before(s.from) && !t.After(s.to) }
 
 // New returns an Issuer that writes the paths of the configuration under
 // root, which is empty on a Node.
@@ -115,7 +126,7 @@ func (i *Issuer) Issue(spec config.PKI, addrs []netip.Addr) (err error) {
 		if err := i.create(c.CertificatePath, certPEM, 0o644); err != nil {
 			return fmt.Errorf("write certificate %s: %w", c.Name, err)
 		}
-		i.issued = append(i.issued, &issued{cert: c, due: dueAt(now, expires.Sub(now))})
+		i.issued = append(i.issued, newIssued(c, now, expires))
 		i.log.Info("certificate issued", "name", c.Name, "authority", c.Authority, "usage", string(c.Usage), "path", c.CertificatePath, "expires", expires.UTC().Format(time.RFC3339))
 	}
 	return nil
@@ -144,7 +155,7 @@ func (i *Issuer) Reissue(spec config.PKI, names []string) error {
 		if err := i.place(c, certPEM, keyPEM); err != nil {
 			return fmt.Errorf("write certificate %s: %w", c.Name, err)
 		}
-		entry := &issued{cert: c, due: dueAt(now, expires.Sub(now))}
+		entry := newIssued(c, now, expires)
 		if at := slices.IndexFunc(i.issued, func(s *issued) bool { return s.cert.Name == c.Name }); at >= 0 {
 			i.issued[at] = entry
 		} else {
@@ -184,7 +195,8 @@ func (i *Issuer) place(c config.Certificate, certPEM, keyPEM []byte) error {
 	return i.create(c.CertificatePath, certPEM, 0o644)
 }
 
-// Run renews each issued certificate when two thirds of its life has passed,
+// Run renews each issued certificate when two thirds of its life has passed, and
+// each that a step of the clock (ClockStepped) left not valid,
 // until ctx ends, and returns at once when the last Issue refused. A renewal
 // that fails is logged and retried. It waits for Reissue when nothing is
 // issued. It may run while Reissue does: the two take turns.
@@ -210,9 +222,24 @@ func (i *Issuer) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-i.wake:
+			i.renewDue(ctx)
 		case <-due:
 			i.renewDue(ctx)
 		}
+	}
+}
+
+// ClockStepped tells the Issuer the clock was stepped. Run then re-evaluates every
+// certificate against the new time: it renews each that is not valid then, a
+// forward step having expired it or a backward one not yet begun it, and works
+// out again when the others are due.
+func (i *Issuer) ClockStepped() {
+	i.mu.Lock()
+	i.stepped = true
+	i.mu.Unlock()
+	select {
+	case i.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -234,12 +261,14 @@ func (i *Issuer) renewDue(ctx context.Context) {
 // to restart. i.mu is held.
 func (i *Issuer) renewLocked(ctx context.Context) (restart []string) {
 	now := i.clock.Now()
+	recheck := i.stepped
+	i.stepped = false
 	named := map[string]bool{}
 	for _, s := range i.issued {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if s.due.After(now) {
+		if s.due.After(now) && !(recheck && !s.validAt(now)) {
 			continue
 		}
 		certPEM, keyPEM, expires, err := i.sign(s.cert, now)
@@ -251,7 +280,7 @@ func (i *Issuer) renewLocked(ctx context.Context) (restart []string) {
 			i.log.Error("certificate renewal failed", "name", s.cert.Name, "err", err, "retry", retryAfter.String())
 			continue
 		}
-		s.due = dueAt(now, expires.Sub(now))
+		*s = *newIssued(s.cert, now, expires)
 		i.log.Info("certificate renewed", "name", s.cert.Name, "authority", s.cert.Authority, "path", s.cert.CertificatePath, "expires", expires.UTC().Format(time.RFC3339))
 		for _, name := range s.cert.Restart {
 			if !named[name] {
@@ -263,10 +292,15 @@ func (i *Issuer) renewLocked(ctx context.Context) (restart []string) {
 	return restart
 }
 
+// newIssued is the record of c issued at now, to expire at expires.
+func newIssued(c config.Certificate, now, expires time.Time) *issued {
+	return &issued{cert: c, due: dueAt(now, expires.Sub(now)), from: now.Add(-backdate).Round(0), to: expires.Round(0)}
+}
+
 // dueAt is when a certificate issued at now, with a life of d, is renewed: two
 // thirds of d, taken as d/3*2 because d*2 overflows for a d over about 146 years.
 func dueAt(now time.Time, d time.Duration) time.Time {
-	return now.Add(d / 3 * 2)
+	return now.Add(d / 3 * 2).Round(0)
 }
 
 // sign returns a new certificate for c, issued at now, with a new key, both in
@@ -380,7 +414,8 @@ func (i *Issuer) create(path string, data []byte, perm os.FileMode) error {
 // replace swaps in a renewed key and certificate. It writes both beside their
 // paths first, and renames only once both are written, the key first. When the
 // certificate's rename fails it puts the old key back, from a link made before
-// the key was replaced, so a failure leaves the old pair. What it cannot close
+// the key was replaced, so a failure leaves the old pair. Each staged file is
+// synced before the renames and the directories after them. What it cannot close
 // is a crash between the two renames, and a failure to put the old key back;
 // the error says so for the latter.
 func (i *Issuer) replace(c config.Certificate, certPEM, keyPEM []byte) (err error) {
@@ -411,10 +446,11 @@ func (i *Issuer) replace(c config.Certificate, certPEM, keyPEM []byte) (err erro
 		}
 		return err
 	}
-	return nil
+	// Both paths may sit in different directories; make each rename durable.
+	return errors.Join(atomicfile.SyncDir(filepath.Dir(keyPath)), atomicfile.SyncDir(filepath.Dir(certPath)))
 }
 
-// stage writes data to a new file beside path, with exactly perm, and returns
+// stage writes data to a new file beside path, with exactly perm, syncs it, and returns
 // its name.
 func stage(path string, data []byte, perm os.FileMode) (string, error) {
 	f, err := os.CreateTemp(filepath.Dir(path), ".naru-pki-*")
@@ -424,6 +460,9 @@ func stage(path string, data []byte, perm os.FileMode) (string, error) {
 	_, err = f.Write(data)
 	if err == nil {
 		err = f.Chmod(perm)
+	}
+	if err == nil {
+		err = f.Sync()
 	}
 	if err = errors.Join(err, f.Close()); err != nil {
 		_ = os.Remove(f.Name())

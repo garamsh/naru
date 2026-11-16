@@ -2,7 +2,8 @@
 
 // Package harness_test drives naru-cluster as an external harness does: it runs the command from a
 // directory outside the checkout against the output of `make release`, gives it the gaon binaries
-// of the pin as -gaon-bin, and then uses only what cluster.json says: the API server's address,
+// of the pin as -gaon-bin (the release directory's own naru-cluster asset when `make test-harness` is
+// given RELEASE=<dir>), and then uses only what cluster.json says: the API server's address,
 // the CA and the client pair, the Nodes' pids and roles, and the image reference. `make
 // test-harness` runs it.
 package harness_test
@@ -35,8 +36,8 @@ import (
 const upTimeout = 6 * time.Minute
 
 var (
-	// naruCluster is the command, built once, and releaseDir and gaonDir are the inputs `make
-	// test-harness` names.
+	// naruCluster is the command, and releaseDir and gaonDir are the inputs `make test-harness`
+	// names.
 	naruCluster, releaseDir, gaonDir string
 )
 
@@ -57,11 +58,43 @@ func run(m *testing.M) int {
 	}
 	defer func() { _ = os.RemoveAll(bin) }()
 	naruCluster = filepath.Join(bin, "naru-cluster")
-	if out, err := exec.Command("go", "build", "-o", naruCluster, "github.com/garamsh/naru/tooling/qemu/cmd/naru-cluster").CombinedOutput(); err != nil {
-		os.Stderr.WriteString("build naru-cluster: " + err.Error() + "\n" + string(out))
+	if os.Getenv("NARU_HARNESS_RELEASE_BINARY") != "" {
+		err = installReleaseBinary(releaseDir, naruCluster)
+	} else if out, berr := exec.Command("go", "build", "-o", naruCluster, "github.com/garamsh/naru/tooling/qemu/cmd/naru-cluster").CombinedOutput(); berr != nil {
+		err = fmt.Errorf("build naru-cluster: %w\n%s", berr, out)
+	}
+	if err != nil {
+		os.Stderr.WriteString(err.Error() + "\n")
 		return 1
 	}
 	return m.Run()
+}
+
+// installReleaseBinary does what harness.md tells a harness to do with the release's
+// naru-cluster-<tag>-linux-amd64: check it against SHA256SUMS and make it executable, here as to.
+// It fails when the directory holds no such asset, more than one, or one SHA256SUMS does not vouch
+// for.
+func installReleaseBinary(dir, to string) error {
+	found, err := filepath.Glob(filepath.Join(dir, "naru-cluster-*-linux-amd64"))
+	if err != nil {
+		return err
+	}
+	if len(found) != 1 {
+		return fmt.Errorf("%s holds %d naru-cluster-<tag>-linux-amd64 assets, want exactly one: %v", dir, len(found), found)
+	}
+	b, err := os.ReadFile(found[0])
+	if err != nil {
+		return err
+	}
+	sums, err := os.ReadFile(filepath.Join(dir, "SHA256SUMS"))
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(b)
+	if want := hex.EncodeToString(sum[:]) + "  " + filepath.Base(found[0]); !strings.Contains("\n"+string(sums), "\n"+want+"\n") {
+		return fmt.Errorf("SHA256SUMS has no line %q: %s is not the release's asset", want, found[0])
+	}
+	return os.WriteFile(to, b, 0o755)
 }
 
 // running is a naru-cluster process.
@@ -82,8 +115,8 @@ func launch(t *testing.T, args ...string) *running {
 	require.NoError(t, err)
 	absRelease, err := filepath.Abs(releaseDir)
 	require.NoError(t, err)
-	r.cmd = exec.Command(naruCluster, append([]string{"-release", absRelease, "-dir", r.dir}, args...)...) //nolint:gosec // the command just built
-	r.cmd.Dir = t.TempDir()                                                                                // not the checkout
+	r.cmd = exec.Command(naruCluster, append([]string{"-release", absRelease, "-dir", r.dir}, args...)...)
+	r.cmd.Dir = t.TempDir() // not the checkout
 	r.cmd.Stdout, r.cmd.Stderr = logFile, logFile
 	require.NoError(t, r.cmd.Start())
 	go func() { _ = r.cmd.Wait(); close(r.exited) }()
@@ -176,7 +209,7 @@ func client(t *testing.T, f clusterfile.File) (*hostapi.Client, []string) {
 
 func gaonCLI(t *testing.T, global []string, args ...string) string {
 	t.Helper()
-	out, err := exec.Command(filepath.Join(gaonDir, "gaon"), append(append([]string{}, global...), args...)...).CombinedOutput() //nolint:gosec // the pin's CLI
+	out, err := exec.Command(filepath.Join(gaonDir, "gaon"), append(append([]string{}, global...), args...)...).CombinedOutput()
 	require.NoError(t, err, string(out))
 	return string(out)
 }
@@ -198,7 +231,7 @@ func markedBinaries(t *testing.T) (string, map[string]string) {
 		b, err := os.ReadFile(filepath.Join(gaonDir, name))
 		require.NoError(t, err, "make image builds the pin's binaries")
 		b = append(b, 0)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), b, 0o755)) //nolint:gosec // an executable
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), b, 0o755))
 		sum := sha256.Sum256(b)
 		sums[name] = hex.EncodeToString(sum[:])
 	}

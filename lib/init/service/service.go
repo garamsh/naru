@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -84,9 +85,12 @@ type manager struct {
 type supervised struct {
 	stop     chan struct{}
 	stopOnce sync.Once
-	svc      config.Service
-	done     chan struct{}
-	exited   chan struct{}
+	// ctx ends with the stop, so a setup step in flight does not outlast it.
+	ctx    context.Context
+	cancel context.CancelFunc
+	svc    config.Service
+	done   chan struct{}
+	exited chan struct{}
 
 	mu     sync.Mutex
 	status Status
@@ -112,7 +116,8 @@ func (m *manager) Start(svc config.Service) error {
 	if err != nil {
 		return fmt.Errorf("cgroup of service %q: %w", svc.Name, err)
 	}
-	s := &supervised{svc: svc, stop: make(chan struct{}), done: make(chan struct{}), exited: make(chan struct{}), status: Status{Name: svc.Name, State: StateBackoff}}
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &supervised{svc: svc, ctx: ctx, cancel: cancel, stop: make(chan struct{}), done: make(chan struct{}), exited: make(chan struct{}), status: Status{Name: svc.Name, State: StateBackoff}}
 	m.running[svc.Name] = s
 	go m.supervise(s, svc, leaf)
 	return nil
@@ -126,7 +131,7 @@ func (m *manager) Stop(name string) {
 	if !ok {
 		return
 	}
-	s.stopOnce.Do(func() { close(s.stop) })
+	s.stopOnce.Do(func() { close(s.stop); s.cancel() })
 	<-s.done
 }
 
@@ -192,6 +197,7 @@ func (m *manager) StopAll() {
 // process left in the leaf, so a restart starts from an empty cgroup.
 func (m *manager) supervise(s *supervised, svc config.Service, leaf Leaf) {
 	defer close(s.done)
+	defer s.cancel()
 	log := m.log.With("service", svc.Name)
 	var backoff Backoff
 	for launches := 0; ; launches++ {
@@ -200,7 +206,7 @@ func (m *manager) supervise(s *supervised, svc config.Service, leaf Leaf) {
 		}
 		started := m.clock.Now()
 		before := digests(svc.RestartOnChange)
-		proc, err := m.launcher.Launch(svc, leaf.Path())
+		proc, err := m.launcher.Launch(s.ctx, svc, leaf.Path())
 		if err != nil {
 			log.Error("start failed", "err", err)
 		} else {

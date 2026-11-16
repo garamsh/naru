@@ -33,3 +33,7 @@ Drafted for garamsh/naru#45, part of goal garamsh/naru#44. It adds to [ADR 0015]
 - Another consumer of the layout appears that cannot run a binary, which would say the topology belongs in a package both modules may import.
 - The topology needs a field the harness reads that is not about services, which would say `naructl topology` is becoming a second `cluster.json` and wants a versioned contract.
 - A pre-`topology` release has to be booted again, which would say the refusal in item 4 should give way to a pinned fallback.
+
+## Errata
+
+- 2026-11-15: `tooling/qemu` has `replace` directives, so "no `replace`" in the first Context item no longer holds ([ADR 0074](./0074-naru-cluster-is-a-release-asset-and-a-harness-downloads-it-and-checks-it-against-sha256sums.md)); it still cannot import the layout and runs `naructl` as a binary, which stands.

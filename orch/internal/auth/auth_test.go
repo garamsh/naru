@@ -33,8 +33,8 @@ func (s *source) CRL(context.Context) ([]byte, error) {
 	return s.ca.CRL()
 }
 
-func newAuth(src *source, clock func() time.Time) *auth.Revocations {
-	return &auth.Revocations{Source: src, Key: src.ca.RevocationKey(), TTL: time.Minute, Now: clock, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+func newAuth(src *source, clock func() time.Time) auth.Revocations {
+	return auth.Revocations{List: &identity.RevocationList{Source: src, Key: src.ca.RevocationKey(), TTL: time.Minute, Now: clock, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}}
 }
 
 func chains(id orchtest.Identity) [][]*x509.Certificate { return [][]*x509.Certificate{{id.Cert}} }
@@ -61,7 +61,7 @@ func TestWithoutAnyListNobodyIsAuthenticated(t *testing.T) {
 	ca := orchtest.NewCA(t)
 	a := newAuth(&source{ca: ca, down: true}, time.Now)
 	_, err := a.Authenticate(t.Context(), chains(ca.Issue(t, "alice", identity.RoleOperator)))
-	require.ErrorIs(t, err, auth.ErrNoRevocationList)
+	require.ErrorIs(t, err, identity.ErrNoRevocationList)
 }
 
 func TestTheLastListIsKeptWhenARefreshFails(t *testing.T) {
@@ -90,14 +90,15 @@ func TestAListThatCannotBeRefreshedIsRefusedOnceItIsOlderThanMaxAge(t *testing.T
 	require.NoError(t, err)
 
 	src.down = true
-	now = now.Add(auth.DefaultMaxAge - time.Second)
+	now = now.Add(identity.DefaultMaxAge - time.Second)
 	_, err = a.Authenticate(t.Context(), chains(op))
 	require.NoError(t, err, "control: still within the bound")
 	now = now.Add(2 * time.Second)
 	_, err = a.Authenticate(t.Context(), chains(op))
-	require.ErrorIs(t, err, auth.ErrStaleRevocationList)
+	require.ErrorIs(t, err, identity.ErrStaleRevocationList)
 
 	src.down = false
+	now = now.Add(identity.DefaultRetryInterval + time.Second) // the failed refresh holds the next off
 	_, err = a.Authenticate(t.Context(), chains(op))
 	require.NoError(t, err, "a refresh that succeeds ends the refusal")
 }
@@ -126,7 +127,7 @@ func TestAListSignedByAnotherKeyIsNotTaken(t *testing.T) {
 	require.NoError(t, err)
 	a := newAuth(&source{ca: ca, data: bad}, time.Now)
 	_, err = a.Authenticate(t.Context(), chains(ca.Issue(t, "alice", identity.RoleOperator)))
-	require.ErrorIs(t, err, auth.ErrNoRevocationList)
+	require.ErrorIs(t, err, identity.ErrNoRevocationList)
 }
 
 func TestAllowedByRole(t *testing.T) {

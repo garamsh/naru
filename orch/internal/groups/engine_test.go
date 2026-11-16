@@ -90,9 +90,65 @@ func TestCreate_FailureIsRecordedAndLeavesNothingBehind(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Len(t, w.kinds(groups.EventFailed), 1)
-	assert.Empty(t, w.live("web"), "the record of the failed create is forgotten")
 	m, _ := w.machine("web-1")
-	assert.Nil(t, m)
+	assert.Nil(t, m, "no machine is left behind")
+	live := w.live("web")
+	require.Len(t, live, 1, "the record stays, to be tried again")
+	assert.Equal(t, 1, live[0].CreateFailures)
+	assert.Equal(t, t0.Add(10*time.Second), live[0].RetryAt)
+}
+
+// A create the host always refuses is one record, tried again after a wait that doubles to a cap.
+func TestCreate_AlwaysFailingIsOneRecordAndBacksOff(t *testing.T) {
+	w := newWorld(t)
+	w.addHost("a", "kr-1", nil).failCreate = true
+	w.setGroup(spec("web", 1))
+	e := w.engine()
+
+	var attempts []time.Time
+	for range 360 { // an hour of 10 s passes
+		before := len(w.kinds(groups.EventFailed))
+		o, err := e.Observe(context.Background())
+		require.NoError(t, err)
+		_ = e.Apply(context.Background(), groups.Plan(groups.Evaluate(o), o))
+		if len(w.kinds(groups.EventFailed)) > before {
+			attempts = append(attempts, w.now)
+		}
+		w.advance(10 * time.Second)
+	}
+
+	assert.Len(t, w.members, 1, "one record for the whole series")
+	require.GreaterOrEqual(t, len(attempts), 8)
+	assert.LessOrEqual(t, len(attempts), 14, "an hour of failures is a dozen attempts, not 360")
+	assert.Equal(t, 10*time.Second, attempts[1].Sub(attempts[0]))
+	assert.Equal(t, 20*time.Second, attempts[2].Sub(attempts[1]))
+	last := len(attempts) - 1
+	assert.Equal(t, 10*time.Minute, attempts[last].Sub(attempts[last-1]), "the wait stops at the cap")
+
+	// The host recovers: the same record becomes the member.
+	w.hosts["a"].failCreate = false
+	w.advance(10 * time.Minute)
+	w.settle(e, 5)
+	assert.Equal(t, 1, w.running("web"))
+	assert.Len(t, w.members, 1)
+	assert.Zero(t, w.members["web-1"].CreateFailures)
+}
+
+// A member whose create was refused is dropped, not retried, once its group no longer wants it.
+func TestCreate_RefusedMemberIsForgottenWhenTheCountDrops(t *testing.T) {
+	w := newWorld(t)
+	w.addHost("a", "kr-1", nil).failCreate = true
+	w.setGroup(spec("web", 1))
+	e := w.engine()
+	o, err := e.Observe(context.Background())
+	require.NoError(t, err)
+	_ = e.Apply(context.Background(), groups.Plan(groups.Evaluate(o), o))
+	require.Len(t, w.live("web"), 1)
+
+	w.setGroup(spec("web", 0))
+	w.settle(e, 5)
+
+	assert.Empty(t, w.live("web"))
 }
 
 func TestRollingUpdate_KeepsMinAvailableAtEveryStep(t *testing.T) {
@@ -411,6 +467,7 @@ func TestRun_AFailedPassIsRecordedAndTheLoopContinues(t *testing.T) {
 			for _, h := range w.hosts {
 				h.failCreate = false
 			}
+			w.advance(10 * time.Second) // the wait after the refused create is over
 		case 3:
 			cancel()
 		}

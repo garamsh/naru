@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the UEFI disk image from the kernel that image/host/kernel/embed.sh wrote, initramfs inside:
+# Builds the UEFI disk image from the kernel that the bzImage package holds, initramfs inside:
 # naru.img, a raw GPT disk whose one EFI system partition holds the kernel as \EFI\BOOT\BOOTX64.EFI
 # and has room for a second, the trial slot \EFI\BOOT\TRIAL.EFI (ADR 0020), and naru.qcow2, the same
 # disk as an uncompressed qcow2 for Proxmox's import_from. The disk is written by tooling/disk
@@ -25,14 +25,12 @@ img=$(cd "$2" && pwd)
 # shellcheck source=../../build.env
 . "$here/../../build.env"
 
-for f in bzImage; do
-  if [ ! -f "$img/$f" ]; then
-    echo "disk: $img/$f is missing; make image builds it" >&2
-    exit 1
-  fi
-done
+if [ ! -f "$img/bzImage" ]; then
+  echo "disk: $img/bzImage is missing; make image builds it" >&2
+  exit 1
+fi
 
-(cd "$root/tooling/disk" && CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -o "$build/naru-disk" ./cmd/naru-disk)
+(cd "$root/tooling/disk" && CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build/naru-disk" ./cmd/naru-disk)
 
 rm -f "$img/naru.img.part" "$img/naru.qcow2.part"
 "$build/naru-disk" -kernel "$img/bzImage" -out "$img/naru.img.part" \

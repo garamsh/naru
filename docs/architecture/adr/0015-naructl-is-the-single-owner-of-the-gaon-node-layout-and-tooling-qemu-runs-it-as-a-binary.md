@@ -43,3 +43,4 @@ Drafted for garamsh/naru#36, part of goal garamsh/naru#34, with the PM's amendme
 ## Errata
 
 - 2026-11-15: the layout is no longer `naructl/internal/layout` and `naructl` is no longer its single owner: it is the module `lib/layout`, called by `naructl` and by orch ([ADR 0060](./0060-the-gaon-node-layout-is-the-library-lib-layout-called-by-naructl-and-by-orch-when-it-builds-a-joining-hosts-configuration.md), which supersedes this ADR in part). `naructl/internal/pki` moved to `lib/layout/pki`.
+- 2026-11-15: `tooling/qemu` has `replace` directives, so the third Context item's "no `replace`" and its `go install …@<commit>` reason no longer hold ([ADR 0074](./0074-naru-cluster-is-a-release-asset-and-a-harness-downloads-it-and-checks-it-against-sha256sums.md)); it still runs `naructl` as a binary, which stands.

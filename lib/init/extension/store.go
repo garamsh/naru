@@ -16,10 +16,13 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/garamsh/naru/lib/atomicfile"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Dir is where a Node keeps its extension images, on the data disk, beside the configuration store.
-const Dir = "/var/lib/naru/extensions"
+const Dir = wire.DataMount + "/extensions"
 
 // MaxBytes is the largest image a Node takes.
 const MaxBytes = 1 << 30
@@ -167,7 +170,7 @@ func (s *Store) Put(body io.Reader, digest string) (img Image, err error) {
 		_ = os.Remove(s.manifestPath(digest))
 		return Image{}, err
 	}
-	if err = syncDir(s.dir); err != nil {
+	if err = atomicfile.SyncDir(s.dir); err != nil {
 		return Image{}, err
 	}
 	return Image{SHA256: digest, Size: n, Manifest: m}, nil
@@ -277,7 +280,7 @@ func (s *Store) Delete(digest string) error {
 	if err := os.Remove(s.manifestPath(digest)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return syncDir(s.dir)
+	return atomicfile.SyncDir(s.dir)
 }
 
 // Open returns the stored image of digest open, with its manifest. It hashes the file, so an
@@ -318,7 +321,7 @@ func (s *Store) Sweep() error {
 	}
 	var errs []error
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), tempPrefix) {
+		if strings.HasPrefix(e.Name(), tempPrefix) || strings.HasPrefix(e.Name(), atomicfile.TempPrefix) {
 			errs = append(errs, os.Remove(filepath.Join(s.dir, e.Name())))
 		}
 	}
@@ -326,29 +329,6 @@ func (s *Store) Sweep() error {
 }
 
 // writeAtomic writes data to path through a temporary file and a rename.
-func writeAtomic(path string, data []byte) (err error) {
-	f, err := os.CreateTemp(filepath.Dir(path), tempPrefix+"*")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(f.Name())
-		}
-	}()
-	if _, err = f.Write(data); err == nil {
-		err = f.Sync()
-	}
-	if err = errors.Join(err, f.Close()); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	return errors.Join(d.Sync(), d.Close())
+func writeAtomic(path string, data []byte) error {
+	return atomicfile.Write(path, data, 0o600)
 }

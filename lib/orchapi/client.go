@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/garamsh/naru/lib/identity"
 )
 
 // maxBody bounds what the client reads from an answer.
@@ -54,8 +56,8 @@ func TrustCA(pool *x509.CertPool, cert *tls.Certificate) *tls.Config {
 // SHA-256 is caSHA256 (hex) and the leaf verifies against that certificate and names host, a DNS
 // name or an IP address, which is the host of orch's URL. The host is checked by name because every
 // certificate the authority issues carries the server EKU, so the chain alone would also accept a
-// host's own certificate. It presents cert when it is not nil. The built-in verification is
-// replaced by that check.
+// host's own certificate. It checks no revocation, because its callers hold no revocation key. It
+// presents cert when it is not nil. The built-in verification is replaced by that check.
 func PinCA(caSHA256, host string, cert *tls.Certificate) (*tls.Config, error) {
 	want, err := hex.DecodeString(strings.ReplaceAll(strings.ToLower(caSHA256), ":", ""))
 	if err != nil || len(want) != sha256.Size {
@@ -67,10 +69,8 @@ func PinCA(caSHA256, host string, cert *tls.Certificate) (*tls.Config, error) {
 			return errors.New("orch presented no certificate")
 		}
 		pool := x509.NewCertPool()
-		inter := x509.NewCertPool()
 		pinned := false
 		for _, p := range cs.PeerCertificates[1:] {
-			inter.AddCert(p)
 			if sum := sha256.Sum256(p.Raw); bytes.Equal(sum[:], want) {
 				pool.AddCert(p)
 				pinned = true
@@ -79,14 +79,7 @@ func PinCA(caSHA256, host string, cert *tls.Certificate) (*tls.Config, error) {
 		if !pinned {
 			return errors.New("orch's chain holds no certificate with the pinned fingerprint")
 		}
-		_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-			Roots: pool, Intermediates: inter,
-			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		})
-		if err != nil {
-			return err
-		}
-		return cs.PeerCertificates[0].VerifyHostname(host)
+		return identity.PeerCheck{Roots: pool, Usage: x509.ExtKeyUsageServerAuth, Names: []string{host}}.VerifyConnection(cs)
 	}
 	if cert != nil {
 		c.Certificates = []tls.Certificate{*cert}
@@ -103,7 +96,10 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 		}
 		body = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base.JoinPath(path).String(), body)
+	path, query, _ := strings.Cut(path, "?")
+	u := c.base.JoinPath(path)
+	u.RawQuery = query
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return err
 	}
@@ -226,6 +222,17 @@ func (c *Client) Events(ctx context.Context) ([]Event, error) {
 	return out, c.do(ctx, http.MethodGet, "/v1/events", nil, nil, &out)
 }
 
+// EventsSince lists the events after the one whose Cursor is after, oldest first; an empty after
+// lists the whole log. Orch keeps a bounded log, so a cursor older than its oldest event lists it all.
+func (c *Client) EventsSince(ctx context.Context, after string) ([]Event, error) {
+	var out []Event
+	path := "/v1/events"
+	if after != "" {
+		path += "?since=" + url.QueryEscape(after)
+	}
+	return out, c.do(ctx, http.MethodGet, path, nil, nil, &out)
+}
+
 // CRL returns the revocation list as the signer signed it.
 func (c *Client) CRL(ctx context.Context) ([]byte, error) {
 	var out []byte
@@ -275,4 +282,18 @@ func (c *Client) Restore(ctx context.Context, plain io.Reader, sha256Hex string)
 // Heartbeat tells orch the calling host, which the client certificate names, is alive.
 func (c *Client) Heartbeat(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/v1/heartbeat", nil, nil, nil)
+}
+
+// RevocationSource returns a source of the signed revocation list that fetches it from orch at
+// orchURL over PinCA. Orch answers GET /v1/crl without a client certificate, so none is presented.
+func RevocationSource(orchURL, caSHA256 string) (identity.CRLSource, error) {
+	u, err := url.Parse(orchURL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return nil, errors.New("the orch URL is not an https URL")
+	}
+	conf, err := PinCA(caSHA256, u.Hostname(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return New(orchURL, HTTPClient(conf, 10*time.Second))
 }

@@ -54,6 +54,7 @@ func Main() {
 	// Subscribe before anything is started, so a signal sent during boot is held.
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	ignoreSignals()
 
 	// Ctrl-Alt-Del, the stop request mvmd sends a Firecracker guest, reaches init as SIGINT, which
 	// reboots through the one stop path, rather than restarting the kernel with nothing stopped.
@@ -62,19 +63,18 @@ func Main() {
 	}
 
 	// The first thing, before anything is mounted: pivot_root, which the VMM supervisor does, fails on the rootfs.
-	if err := linux.LeaveRootfs(); err != nil {
-		log.Error("leave the rootfs", "err", err)
-	}
-	if err := linux.MountPseudoFilesystems(); err != nil {
-		log.Error("mount pseudo file systems", "err", err)
+	if err := earlyBoot(linux.LeaveRootfs, linux.MountPseudoFilesystems); err != nil {
+		log.Error("boot refused; nothing is started", "err", err)
+		refuse(sigs)
 	}
 
 	reaper := linux.NewReaper()
 	go reaper.Run(context.Background())
 
-	host := linux.NewHost(diskWait)
+	host := linux.NewHost(diskWait, reaper)
 	extensions := extension.NewManager(extension.NewStore(extension.Dir, extensionProbeDir, extension.MaxBytes, linux.Loop{}), linux.Loop{}, config.ExtensionsRoot, version(), log)
-	services := service.NewManager(linux.NewCgroupTree(cgroupRoot), linux.NewLauncher(reaper, con), service.SystemClock{}, log)
+	cgroups := linux.NewCgroupTree(cgroupRoot)
+	services := service.NewManager(cgroups, linux.NewLauncher(reaper, con), service.SystemClock{}, log)
 
 	issuer := pki.New("", service.SystemClock{}, services, log)
 	configs := store.New(store.Dir)
@@ -99,8 +99,9 @@ func Main() {
 		Upgrades:   upgrades,
 		Extensions: extensions,
 		// The same path the signer's own --socket is derived from.
-		SignerSocket: config.SignerSocket,
-		Log:          log,
+		SignerSocket:   config.SignerSocket,
+		RevocationFile: config.APIRevocationFile,
+		Log:            log,
 	})
 	metricsCtx, stopMetrics := context.WithCancel(context.Background())
 	var engine *apply.Engine
@@ -109,7 +110,7 @@ func Main() {
 		engine = newEngine(*booted, configs, services, host, issuer, server)
 		server.Attach(engine)
 		log.Info("the apply engine is ready", "revision", booted.Revision)
-		serveMetrics(metricsCtx, booted.Config.Spec.MetricsAddr(), services, log)
+		serveMetrics(metricsCtx, booted.Config.Spec.MetricsAddr(), services, server.Revocations, log)
 	}
 	handingOff, stopHandoff := context.WithCancel(context.Background())
 	if booted != nil && booted.Config.Spec.Join != nil {
@@ -134,6 +135,12 @@ func Main() {
 	if err := server.Close(); err != nil {
 		log.Error("close the Node API", "err", err)
 	}
+	// Nothing writes to a disk now: end what a service left outside its cgroup, then undo the
+	// mounts, the data disk last.
+	if err := cgroups.KillDetached(); err != nil {
+		log.Error("kill the detached processes", "err", err)
+	}
+	host.Settle(log, extensionMounts(extensions, log))
 	// The console writes in the background; give it a moment to take the last lines, but never
 	// wait on a device that does not.
 	flushing, stopFlushing := context.WithTimeout(context.Background(), 2*time.Second)
@@ -148,6 +155,51 @@ func Main() {
 		log.Error("power off", "err", err)
 	}
 	select {}
+}
+
+// earlyBoot does the two steps that come before anything else, and refuses at the first that
+// fails: init is then in a root half deleted or without /proc, and goes no further.
+func earlyBoot(leaveRootfs, mountPseudo func() error) error {
+	if err := leaveRootfs(); err != nil {
+		return fmt.Errorf("leave the rootfs: %w", err)
+	}
+	if err := mountPseudo(); err != nil {
+		return fmt.Errorf("mount pseudo file systems: %w", err)
+	}
+	return nil
+}
+
+// refuse stays up after a refused early boot, so that the reason stays on the console and the
+// machine can still be stopped, and never returns: exiting would panic the kernel.
+func refuse(sigs <-chan os.Signal) {
+	if <-sigs == syscall.SIGINT {
+		_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+	} else {
+		_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
+	}
+	select {}
+}
+
+// ignoreSignals has init ignore the signals it does not act on. Go's default for SIGHUP, SIGQUIT
+// and SIGABRT is to exit, and if PID 1 exits the kernel panics.
+func ignoreSignals() {
+	signal.Ignore(syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT)
+}
+
+// extensionMounts returns where the system extensions are mounted.
+func extensionMounts(extensions *extension.Manager, log *slog.Logger) []string {
+	entries, err := extensions.List()
+	if err != nil {
+		log.Error("list the extensions to unmount them", "err", err)
+		return nil
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.Mounted {
+			dirs = append(dirs, e.MountPoint)
+		}
+	}
+	return dirs
 }
 
 // buildVersion is the release version the image build gives init with -ldflags -X; it is empty in

@@ -8,6 +8,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/netip"
+	"time"
 
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
@@ -44,51 +46,71 @@ func (s *service) Admit(ctx context.Context, by string, req orchapi.AdmitRequest
 		}
 		return orchapi.Host{}, ErrCodeMismatch
 	}
-	cert, err := s.signer.IssueHost(ctx, req.Statement, p.CSR)
-	if err != nil {
-		if errors.Is(err, ErrSignerRefused) {
-			return orchapi.Host{}, err
-		}
-		return orchapi.Host{}, fmt.Errorf("%w: %v", ErrSignerFailed, err)
-	}
-	if err := certificateIsFor(cert, p.PublicKey); err != nil {
-		return orchapi.Host{}, fmt.Errorf("%w: %v", ErrSignerFailed, err)
-	}
 	now := s.clock.Now()
-	h := Host{ID: p.HostID, PublicKey: p.PublicKey, Certificate: cert, Region: req.Region, Labels: req.Labels, Address: p.Address, AdmittedAt: now}
+	h := Host{ID: p.HostID, PublicKey: p.PublicKey, Region: req.Region, Labels: req.Labels, Address: p.Address, AdmittedAt: now}
 	ev := orchapi.Event{Time: now, Type: EventAdmitted, Subject: p.HostID, Detail: map[string]string{"by": by, "region": req.Region}}
 	if p.Hardware == nil {
+		if h.Certificate, err = s.issue(ctx, req.Statement, p); err != nil {
+			return orchapi.Host{}, err
+		}
 		if err := s.store.Admit(ctx, p, h, ev, nil); err != nil {
 			return orchapi.Host{}, err
 		}
 		return h.api(), nil
 	}
-	// Another admission may take the prefix between the read of the allocations and the write, which
-	// the store refuses; the next prefix is then tried with the certificate already issued.
-	for range admitRetries {
-		prefix, err := s.nextPrefix(ctx, joined.profile.MachinePool)
-		if err != nil {
-			return orchapi.Host{}, err
-		}
-		if h.Config, err = joined.buildConfig(h, prefix, s.conf.OrchCA); err != nil {
-			return orchapi.Host{}, err
-		}
-		h.MachinePrefix = prefix.String()
-		ev.Detail["machinePrefix"] = h.MachinePrefix
-		err = s.store.Admit(ctx, p, h, ev, &Allocation{Prefix: h.MachinePrefix, HostID: h.ID})
-		if errors.Is(err, ErrAllocationTaken) {
-			continue
-		}
-		if err != nil {
-			return orchapi.Host{}, err
-		}
-		return h.api(), nil
+	// A joined host takes its prefix first, so a full pool is refused before the signer issues
+	// anything. The reservation holds the prefix while the signer is asked; one transaction then
+	// writes the host and confirms the prefix, and any failure before that drops the reservation.
+	res, err := s.store.Reserve(ctx, h.ID, func(claimed []netip.Prefix) (netip.Prefix, error) {
+		return nextPrefix(joined.profile.MachinePool, claimed)
+	}, now.Add(reservationTTL), now)
+	if err != nil {
+		return orchapi.Host{}, err
 	}
-	return orchapi.Host{}, ErrConflict
+	released := false
+	defer func() {
+		if !released {
+			// The admission may have been cancelled, and the reservation is dropped regardless.
+			_ = s.store.Release(context.WithoutCancel(ctx), res)
+		}
+	}()
+	if h.Certificate, err = s.issue(ctx, req.Statement, p); err != nil {
+		return orchapi.Host{}, err
+	}
+	prefix := netip.MustParsePrefix(res.Prefix)
+	h.MachinePrefix = res.Prefix
+	// The configuration is built here only to refuse an admission it cannot be built for; it is not
+	// stored, and is built again from the record on each answer.
+	if _, err := joined.buildConfig(h, prefix, s.conf.OrchCA, s.conf.RevocationPublicKey); err != nil {
+		return orchapi.Host{}, err
+	}
+	ev.Detail["machinePrefix"] = h.MachinePrefix
+	if err := s.store.Admit(ctx, p, h, ev, &res); err != nil {
+		return orchapi.Host{}, err
+	}
+	released = true
+	return h.api(), nil
 }
 
-// admitRetries bounds the admissions that lost the race for a prefix.
-const admitRetries = 8
+// reservationTTL is how long an admission may hold a prefix before it commits. An admission that
+// stops between the two steps leaves the reservation, which the next admission takes over once
+// this has passed.
+const reservationTTL = 2 * time.Minute
+
+// issue asks the signer for the host's certificate and checks it is for the host's key.
+func (s *service) issue(ctx context.Context, statement []byte, p Pending) ([]byte, error) {
+	cert, err := s.signer.IssueHost(ctx, statement, p.CSR)
+	if err != nil {
+		if errors.Is(err, ErrSignerRefused) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %v", ErrSignerFailed, err)
+	}
+	if err := certificateIsFor(cert, p.PublicKey); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSignerFailed, err)
+	}
+	return cert, nil
+}
 
 // certificateIsFor checks that certPEM holds a certificate for the key a host enrolled with.
 func certificateIsFor(certPEM, publicKeyDER []byte) error {

@@ -89,7 +89,7 @@ func TestGenAPICA_IsIndependentOfGaonsCA(t *testing.T) {
 	api, err := os.ReadFile(filepath.Join(dep.ca, "api", "ca.pem"))
 	require.NoError(t, err)
 	assert.NotEqual(t, gaon, api, "two authorities")
-	out, err := run(t, "gen", "ca", "--out", dep.ca)
+	out, err := run(t, "gen", "ca", "--ca-dir", dep.ca)
 	require.Error(t, err)
 	assert.Contains(t, out, "already holds an authority", "gen ca still sees its own key beside api/")
 }
@@ -157,7 +157,7 @@ func TestGenNode_AnAPIDirectoryThatHoldsNoAuthorityIsRefused(t *testing.T) {
 	dep := newDeployment(t)
 	require.NoError(t, os.Mkdir(filepath.Join(dep.ca, "api"), 0o750))
 
-	out, err := run(t, "gen", "node", "--ca", dep.ca, "--name", "node-2", "--address", "192.168.0.20/24", "--api-server", "192.168.0.10",
+	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-2", "--address", "192.168.0.20/24", "--api-server", "192.168.0.10",
 		"--machine-prefix", "10.200.2.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "n.yaml"))
 
 	require.Error(t, err, "a half-made authority would silently leave the Node without an API")
@@ -239,6 +239,8 @@ type fakeNode struct {
 	// upgradeBody and upgradeQuery are what the last POST /v1/upgrade carried.
 	upgradeBody  []byte
 	upgradeQuery string
+	// upgradeRefusal is the 422 body POST /v1/upgrade answers with, when it is not nil.
+	upgradeRefusal map[string]any
 	// lastUpgrade is the outcome GET /v1/version reports, when it is not nil.
 	lastUpgrade map[string]any
 	// extensionPath and extensionBody are what the last PUT /v1/extensions/ carried.
@@ -369,7 +371,12 @@ func newFakeNodeTLS(t *testing.T, dep deployment, maxTLS uint16) *fakeNode {
 		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.upgradeBody, f.upgradeQuery = body, r.URL.RawQuery
+		refusal := f.upgradeRefusal
 		f.mu.Unlock()
+		if refusal != nil {
+			writeJSON(w, 422, refusal)
+			return
+		}
 		writeJSON(w, 202, map[string]any{"actions": []map[string]any{{"action": "upgrade", "target": "v2"}, {"action": "reboot", "target": "node"}}})
 	})
 	mux.HandleFunc("/v1/signer/{path...}", func(w http.ResponseWriter, r *http.Request) {
@@ -457,7 +464,7 @@ func TestServices_PrintsEachServicesState(t *testing.T) {
 	apiAuthority(t, dep)
 	node := newFakeNode(t, dep)
 
-	out, err := run(t, "services", "--config", node.clientFile(t, dep, "reader"), "--node", node.addr())
+	out, err := run(t, "services", "--config", node.clientFile(t, dep, "reader"), "--endpoint", node.addr())
 
 	require.NoError(t, err, out)
 	lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -675,8 +682,8 @@ func TestClientCommands_NeedAClientFileTheNodeTrustsAndAKnownNode(t *testing.T) 
 		"no --config":                          {"version"},
 		"a client file from another authority": {"version", "--config", foreign},
 		"a missing client file":                {"version", "--config", filepath.Join(t.TempDir(), "none")},
-		"a node that is a name":                {"version", "--config", good, "--node", "node-1"},
-		"a Node nothing listens on":            {"version", "--config", good, "--node", "127.0.0.1:1"},
+		"a node that is a name":                {"version", "--config", good, "--endpoint", "node-1"},
+		"a Node nothing listens on":            {"version", "--config", good, "--endpoint", "127.0.0.1:1"},
 		"extra arguments":                      {"version", "--config", good, "extra"},
 		"an unknown get":                       {"get", "nodes", "--config", good},
 	} {

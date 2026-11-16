@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -19,7 +19,7 @@ import (
 
 const (
 	mkfsXFS = "/bin/mkfs.xfs"
-	// blankProbe is how much of the start of a disk must be zeros for it to count as blank.
+	// blankProbe is how much of each end of a disk must be zeros for it to count as blank.
 	blankProbe = 1 << 20
 	// xfsIocFSGrowFSData is XFS_IOC_FSGROWFSDATA, _IOW('X', 110, struct xfs_growfs_data).
 	xfsIocFSGrowFSData = 0x4010586e
@@ -27,10 +27,6 @@ const (
 
 // runFunc runs a program and returns its combined output.
 type runFunc func(name string, args ...string) ([]byte, error)
-
-func execRun(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
-}
 
 // growFunc grows the XFS file system mounted at dir to blocks data blocks.
 type growFunc func(dir string, blocks uint64, imaxPct uint8) error
@@ -76,7 +72,7 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	switch {
 	case err == nil:
 	case errors.Is(err, xfs.ErrNotXFS):
-		blank, berr := isBlank(f)
+		blank, berr := isBlankDisk(f)
 		if berr != nil {
 			return fmt.Errorf("storage %q: probe %s: %w", s.Name, dev, berr)
 		}
@@ -105,11 +101,20 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	if err := h.mount(dev, mnt, "xfs", hardened, ""); err != nil {
 		return fmt.Errorf("storage %q: mount %s on %s: %w", s.Name, dev, mnt, err)
 	}
-	// Only the daemon lists the directory mvmd keeps its disks in.
+	h.mu.Lock()
+	h.storageMounts = append(h.storageMounts, mnt)
+	h.mu.Unlock()
+	// Only the daemon lists the storage mount that mvmd keeps its disks in.
 	if err := os.Chmod(mnt, 0o700); err != nil {
 		return fmt.Errorf("storage %q: %w", s.Name, err)
 	}
 	log.Info("storage disk mounted", "name", s.Name, "device", dev, "mount", mnt, "blocks", sb.DataBlocks, "blockSize", sb.BlockSize)
+	if mnt == h.mvmdStorage {
+		if err := h.linkMvmdStorage(mnt); err != nil {
+			return fmt.Errorf("storage %q: %w", s.Name, err)
+		}
+		log.Info("mvmd's disks, snapshots and disk snapshots linked into storage", "mount", mnt)
+	}
 
 	size, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
@@ -124,10 +129,83 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	return nil
 }
 
-// isBlank reports whether the first blankProbe bytes of r are all zero, or all of r if it is shorter.
-func isBlank(r io.ReaderAt) (bool, error) {
+// mvmdLinked are the directories of mvmd's state directory that live on the storage mount.
+var mvmdLinked = []string{"disks", "snapshots", "disk-snapshots"}
+
+// linkMvmdStorage makes each of mvmdLinked a directory of the storage mount at mnt, which only the
+// daemon may list, and a link to it in mvmd's state directory. An empty directory there, as the
+// mount point of an earlier release left, is replaced; a link that is right stays; a directory
+// that holds files is an error, since a link would hide them.
+func (h *Host) linkMvmdStorage(mnt string) error {
+	if err := os.MkdirAll(h.mvmdState, 0o700); err != nil {
+		return err
+	}
+	for _, name := range mvmdLinked {
+		target, link := filepath.Join(mnt, name), filepath.Join(h.mvmdState, name)
+		if err := os.MkdirAll(target, 0o700); err != nil {
+			return err
+		}
+		if err := os.Chmod(target, 0o700); err != nil {
+			return err
+		}
+		if err := linkTo(link, target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// linkTo makes link a symbolic link to target.
+func linkTo(link, target string) error {
+	info, err := os.Lstat(link)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return err
+	case info.Mode()&fs.ModeSymlink != 0:
+		if got, err := os.Readlink(link); err != nil || got != target {
+			return fmt.Errorf("%s links to %q, not to %s; mvmd will refuse to start with its disks, snapshots and disk snapshots on two file systems", link, got, target)
+		}
+		return nil
+	case info.IsDir():
+		entries, err := os.ReadDir(link)
+		if err != nil {
+			return err
+		}
+		if len(entries) > 0 {
+			return fmt.Errorf("%s already holds %d entries, which a link would hide; mvmd will refuse to start with its disks, snapshots and disk snapshots on two file systems", link, len(entries))
+		}
+		if err := os.Remove(link); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("%s is not a directory; mvmd will refuse to start", link)
+	}
+	return os.Symlink(target, link)
+}
+
+// isBlankDisk is the one rule for a blank disk, for the data disk and for a storage disk: f holds at
+// least one byte, and its first and its last blankProbe bytes (all of it when it is smaller) are
+// zeros, so it has no partition table, no file system signature and no backup GPT. Data only
+// between the two probes is not seen.
+func isBlankDisk(f *os.File) (bool, error) {
+	size, err := f.Seek(0, io.SeekEnd)
+	if err != nil || size == 0 {
+		return false, err
+	}
+	if ok, err := zeros(f, 0); err != nil || !ok {
+		return false, err
+	}
+	if size <= blankProbe {
+		return true, nil
+	}
+	return zeros(f, size-blankProbe)
+}
+
+// zeros reports whether the blankProbe bytes of r at off, or those that exist, are all zero.
+func zeros(r io.ReaderAt, off int64) (bool, error) {
 	buf := make([]byte, blankProbe)
-	n, err := r.ReadAt(buf, 0)
+	n, err := r.ReadAt(buf, off)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, err
 	}

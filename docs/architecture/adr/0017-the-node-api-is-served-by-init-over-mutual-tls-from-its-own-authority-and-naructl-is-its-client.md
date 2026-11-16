@@ -42,7 +42,7 @@ Drafted for garamsh/naru#46, part of goal garamsh/naru#44. The direction is deci
    - `GET /v1/config`: `{"revision": number, "config": <NodeConfig as JSON>}`.
    - Every refusal and failure: `{"error": string, "fields": [string]}` with `fields` naming the offending fields where there are any, and 409 also carries `"revision"`, the current one.
    - Status codes: 200, 400 (a body that is not JSON or not the request's shape), 403, 404, 409, 422, 500.
-9. **`naructl` is the client** (the Talos client-configuration analogue). `naructl gen api-client --role admin|reader` writes a client file (mode `0600`): endpoints, the authority's certificate, a client certificate whose Organization is `naru:admin` or `naru:reader`, and its key. The commands `version`, `services`, `logs <svc> [-f]`, `get config` and `apply -f FILE [--mode no-reboot|staged] [--dry-run]` take `--config <client file>` and `--node <address>`. The exact names and flags are the worker's, subject to review; a 403, 409 or 422 is one line and exit code 1.
+9. **`naructl` is the client** (the Talos client-configuration analogue). `naructl gen api-client --role admin|reader` writes a client file (mode `0600`): endpoints, the authority's certificate, a client certificate whose Organization is `naru:admin` or `naru:reader`, and its key. The commands `version`, `services`, `logs <svc> [-f]`, `get config` and `apply -f FILE [--mode no-reboot|staged] [--dry-run]` take `--config <client file>` and `--endpoint <address>`. The exact names and flags are the worker's, subject to review; a 403, 409 or 422 is one line and exit code 1.
 10. **No SSH, no shell on the Node.** The Node API is the only way in, which is already so: `image/initramfs` names no SSH daemon.
 
 ## Consequences
@@ -66,3 +66,4 @@ Drafted for garamsh/naru#46, part of goal garamsh/naru#44. The direction is deci
 ## Errata
 
 - 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/initramfs` is `image/host/initramfs`.
+- 2026-11-15: `GET /v1/services` reports a fourth `state`, `exited`: a service that exited with status 0 under restart policy `on-failure`, which init does not start again (`lib/init/service`, `lib/init/api`). The states are `running`, `backoff`, `exited` and `stopped`. [init.md](../init.md) holds the current list.

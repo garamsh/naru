@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 	"github.com/garamsh/naru/tooling/qemu/internal/pcap"
 )
@@ -115,7 +116,7 @@ func (f *fleet) netVMOn(i int, name, network string) netVM {
 
 // try is the probe's answer to a request of one line, or false when it did not answer.
 func (v netVM) try(pathQuery string) (string, bool) {
-	resp, err := http.Get(v.base + pathQuery) //nolint:noctx // a test's request to a loopback listener
+	resp, err := http.Get(v.base + pathQuery)
 	if err != nil {
 		return "", false
 	}
@@ -230,9 +231,9 @@ func TestFleet_NetworksAreSeparateMembershipSetsAndOnlyWireGuardCrossesBetweenTh
 	denied := []string{b1.ip + ":" + probePort, b2.ip + ":" + probePort, f.targetOf(1, "7500")}
 	for _, h := range []int{h1, h2} {
 		denied = append(denied,
-			nodeIP(h)+":"+node.HostAPIPort, nodeIP(h)+":"+node.NodeAPIPort,
-			node.HostNICAddress+":"+node.HostAPIPort,
-			fmt.Sprintf("10.77.%d.1:%s", h, node.HostAPIPort), fmt.Sprintf("10.77.%d.1:%s", h, node.NodeAPIPort))
+			nodeIP(h)+":"+wire.HostAPIPort, nodeIP(h)+":"+wire.NodeAPIPort,
+			node.HostNICAddress+":"+wire.HostAPIPort,
+			fmt.Sprintf("10.77.%d.1:%s", h, wire.HostAPIPort), fmt.Sprintf("10.77.%d.1:%s", h, wire.NodeAPIPort))
 	}
 	for _, target := range denied {
 		assert.False(t, a1.dials(t, target), "a microVM of net A does not reach %s", target)

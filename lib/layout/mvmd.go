@@ -7,6 +7,8 @@ import (
 	"os"
 	"regexp"
 	"sort"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // File is one guest artifact: Path is where it is inside the image, SHA256 the digest of its bytes.
@@ -15,7 +17,7 @@ type File struct {
 	SHA256 string `json:"sha256" yaml:"sha256"`
 }
 
-// Manifest is guest.json, which image/host/guest/build.sh writes and the release carries as
+// Manifest is guest.json, which the initramfs-host package (image/pkgs) writes and the release carries as
 // naru-guest-<version>.json (ADR 0010): the guest kernels and initrds a Node boots Machines from.
 type Manifest struct {
 	Kernels         map[string]File `json:"kernels" yaml:"kernels"`
@@ -131,12 +133,19 @@ func (n Node) mvmdJSON() ([]byte, error) {
 	if len(helpers) > 0 {
 		registry["credential_helpers"] = helpers
 	}
+	// Without storage supervision.dir is left out, so it is "machines" under state_dir on the data
+	// disk. With it, the run directories sit on the storage mount that init links disks/ and
+	// snapshots/ into, so mvmd's rename of a snapshot stays on one file system (ADR 0073).
+	supervision := map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": SupervisorCgroup}
+	if len(n.Storage) > 0 {
+		supervision["dir"] = wire.MvmdStorageMount + "/machines"
+	}
 	return json.MarshalIndent(map[string]any{
 		"registry":  registry,
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
-		"state_dir": DataMount + "/mvmd",
+		"state_dir": wire.MvmdStateDir,
 		"driver":    "firecracker",
-		"disk":      map[string]any{"mkfs": MkfsPath},
+		"disk":      map[string]any{"mkfs": wire.MkfsPath},
 		"firecracker": map[string]any{
 			"binary": "/bin/firecracker", "binary_sha256": n.FirecrackerSHA256,
 			"kernels": kernels, "default_kernel": g.DefaultKernel,
@@ -150,9 +159,7 @@ func (n Node) mvmdJSON() ([]byte, error) {
 			"output_bytes": 256 << 20, "name_set_bytes": 1 << 20,
 			"limit": "5m",
 		},
-		// supervision.dir is left out, so it is "machines" under state_dir on the data disk:
-		// the state directory and the run directories stay on one file system (mvmd ADR 0015).
-		"supervision":   map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": SupervisorCgroup},
+		"supervision":   supervision,
 		"vmm_uid_range": map[string]any{"first": 100000, "count": 1000},
 		"network":       network,
 		"pull_timeout":  "4m",

@@ -29,7 +29,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Config is the agent's settings.
@@ -174,11 +176,8 @@ func AddressToward(orchURL string) (string, error) {
 	if !ok {
 		return "", errors.New("the route to orch has no local address")
 	}
-	return net.JoinHostPort(ua.IP.String(), HostPort), nil
+	return net.JoinHostPort(ua.IP.String(), wire.HostAPIPort), nil
 }
-
-// HostPort is the port naru-hostd serves its API on.
-const HostPort = "7443"
 
 func (a *Agent) client(cert *tls.Certificate) (*orchapi.Client, error) {
 	u, err := url.Parse(a.c.OrchURL)
@@ -375,21 +374,5 @@ func writeFileAtomic(path string, b []byte, mode os.FileMode, prefix string) err
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".cert-*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return atomicfile.Write(path, b, mode)
 }

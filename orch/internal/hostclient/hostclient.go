@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/groups"
 )
@@ -29,6 +30,10 @@ const (
 type Client struct {
 	inv   Inventory
 	hosts *named
+	// pass is the inventory List read, which the calls of the same pass use: one pass reads the
+	// inventory once and not once per host call.
+	mu   sync.Mutex
+	pass map[string]orchapi.Host
 	// Now is the clock the fence lengths are measured on; it defaults to time.Now.
 	Now func() time.Time
 }
@@ -36,24 +41,31 @@ type Client struct {
 var _ groups.Hosts = (*Client)(nil)
 
 // New returns a client that dials the hosts of inv through hc, which carries orch's client
-// identity for the host API.
-// A host's certificate is accepted when it chains to hc's authority and names the host's address or
-// its ID.
-func New(inv Inventory, hc *http.Client) *Client {
-	return &Client{inv: inv, hosts: newNamed(hc), Now: time.Now}
+// identity for the host API. A host's certificate is accepted when it chains to hc's authority,
+// names the host's address or its ID and, when revocations is not nil, is not on that list.
+func New(inv Inventory, hc *http.Client, revocations *identity.RevocationList) *Client {
+	return &Client{inv: inv, hosts: newNamed(hc, revocations), Now: time.Now}
 }
 
 // api is the host API of h.
 func (c *Client) api(h orchapi.Host) *hostapi.Client {
-	return hostapi.NewClient((&url.URL{Scheme: "https", Host: h.Address}).String(), c.hosts.client(h.ID, h.Address))
+	return hostapi.NewClient((&url.URL{Scheme: "https", Host: h.Address}).String(), withToken(c.hosts.client(h.ID, h.Address)))
 }
 
-// List returns every admitted host. A host that does not answer is listed as not ready.
+// List returns every admitted host. A host that does not answer is listed as not ready. The
+// hosts it read are the ones the calls that follow, until the next List, reach.
 func (c *Client) List(ctx context.Context) ([]groups.Host, error) {
 	admitted, err := c.inv.Hosts(ctx)
 	if err != nil {
 		return nil, err
 	}
+	pass := make(map[string]orchapi.Host, len(admitted))
+	for _, h := range admitted {
+		pass[h.ID] = h
+	}
+	c.mu.Lock()
+	c.pass = pass
+	c.mu.Unlock()
 	out := make([]groups.Host, len(admitted))
 	var wg sync.WaitGroup
 	for i, h := range admitted {
@@ -149,19 +161,17 @@ func request(spec groups.MachineSpec) (hostapi.CreateRequest, error) {
 	return r, nil
 }
 
-// host is the API of the admitted host hostID, with the context of one call.
+// host is the API of the host hostID as the last List read it, with the context of one call. A
+// host that List did not read is not admitted as far as this pass goes.
 func (c *Client) host(ctx context.Context, hostID string) (*hostapi.Client, context.Context, context.CancelFunc, error) {
-	hs, err := c.inv.Hosts(ctx)
-	if err != nil {
-		return nil, nil, nil, err
+	c.mu.Lock()
+	h, ok := c.pass[hostID]
+	c.mu.Unlock()
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("host %s is not admitted", hostID)
 	}
-	for _, h := range hs {
-		if h.ID == hostID {
-			ctx, cancel := context.WithTimeout(ctx, callTimeout)
-			return c.api(h), ctx, cancel, nil
-		}
-	}
-	return nil, nil, nil, fmt.Errorf("host %s is not admitted", hostID)
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	return c.api(h), ctx, cancel, nil
 }
 
 // Create asks the host to make the microVM. The host starts it unless it is fenced; a fenced one

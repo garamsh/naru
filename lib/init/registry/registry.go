@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/config"
 )
 
@@ -79,22 +80,7 @@ func (w Writer) put(rel string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	_, err = tmp.Write(data)
-	if err == nil {
-		err = tmp.Chmod(mode)
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), path)
-	}
-	if err != nil {
-		_ = os.Remove(tmp.Name())
+	if err := atomicfile.Write(path, data, mode); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

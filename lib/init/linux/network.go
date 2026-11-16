@@ -16,6 +16,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"github.com/garamsh/naru/lib/atomicfile"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/netcfg"
 )
@@ -29,6 +30,9 @@ type link struct {
 	Index int
 	Name  string
 	MAC   net.HardwareAddr
+	// Loopback is the kernel's IFF_LOOPBACK flag. The kernel gives lo a 6-byte zero MAC, so the
+	// MAC does not tell it from an Ethernet link.
+	Loopback bool
 }
 
 // links is the kernel's network interfaces, reached through netlink.
@@ -130,7 +134,7 @@ func resolvers(cfg netcfg.Config, leased []netip.Addr) []netip.Addr {
 	return leased
 }
 
-// firstCarrierLink brings every Ethernet link up and returns the first one that sees a carrier,
+// firstCarrierLink brings every Ethernet link up, loopback excluded, and returns the first one that sees a carrier,
 // waiting up to carrierWait for one.
 func (h *Host) firstCarrierLink() (link, error) {
 	deadline := time.Now().Add(h.carrierWait)
@@ -140,7 +144,7 @@ func (h *Host) firstCarrierLink() (link, error) {
 			return link{}, fmt.Errorf("list network interfaces: %w", err)
 		}
 		for _, l := range all {
-			if len(l.MAC) != 6 {
+			if !isEthernet(l) {
 				continue
 			}
 			if err := h.links.SetUp(l); err != nil {
@@ -148,7 +152,7 @@ func (h *Host) firstCarrierLink() (link, error) {
 			}
 		}
 		for _, l := range all {
-			if len(l.MAC) == 6 && h.links.Carrier(l) {
+			if isEthernet(l) && h.links.Carrier(l) {
 				return l, nil
 			}
 		}
@@ -158,6 +162,10 @@ func (h *Host) firstCarrierLink() (link, error) {
 		time.Sleep(diskPollInterval)
 	}
 }
+
+// isEthernet reports whether l is a link a DHCP client can lease on: it has a MAC and is not
+// loopback.
+func isEthernet(l link) bool { return len(l.MAC) == 6 && !l.Loopback }
 
 // findLink returns the interface with the MAC of want, or with its name when
 // it has no MAC.
@@ -216,31 +224,18 @@ func (h *Host) WriteFiles(files []config.File) error {
 // ReplaceFile writes the file of the configuration over the one at its path,
 // or creates it, so a reader sees the old file or the new one and never a
 // partial one. It creates the file's directories.
-func (h *Host) ReplaceFile(f config.File) (err error) {
+func (h *Host) ReplaceFile(f config.File) error {
 	if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
 		return fmt.Errorf("write %s: %w", f.Path, err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(f.Path), ".naru-file-*")
-	if err != nil {
+	var opts []atomicfile.Option
+	if f.Owner != nil {
+		opts = append(opts, atomicfile.Owner(int(f.Owner.UID), int(f.Owner.GID)))
+	}
+	if err := atomicfile.Write(f.Path, []byte(f.Content), f.Perm(), opts...); err != nil {
 		return fmt.Errorf("write %s: %w", f.Path, err)
 	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(tmp.Name())
-			err = fmt.Errorf("write %s: %w", f.Path, err)
-		}
-	}()
-	_, err = tmp.WriteString(f.Content)
-	if err == nil {
-		err = tmp.Chmod(f.Perm())
-	}
-	if err == nil && f.Owner != nil {
-		err = tmp.Chown(int(f.Owner.UID), int(f.Owner.GID))
-	}
-	if err = errors.Join(err, tmp.Close()); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), f.Path)
+	return nil
 }
 
 // writeFile creates path, and its directories, with exactly the mode given and
@@ -272,7 +267,7 @@ func (netlinkLinks) List() ([]link, error) {
 	out := make([]link, 0, len(all))
 	for _, l := range all {
 		a := l.Attrs()
-		out = append(out, link{Index: a.Index, Name: a.Name, MAC: a.HardwareAddr})
+		out = append(out, link{Index: a.Index, Name: a.Name, MAC: a.HardwareAddr, Loopback: a.RawFlags&unix.IFF_LOOPBACK != 0})
 	}
 	return out, nil
 }

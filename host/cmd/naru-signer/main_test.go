@@ -114,6 +114,16 @@ func TestRunInit_PrintsTheRootCertificateAndTheRevocationKeyAsPEMOnTheConsole(t 
 	require.NoError(t, err)
 	assert.Equal(t, onDisk, block.Bytes, "the console shows the certificate the file holds")
 	assert.Contains(t, string(rest), "-----BEGIN PUBLIC KEY-----", "the revocation key follows")
+
+	// An init that a crash stopped after the signer committed but before the outputs were written
+	// is run again: it gives the certificate the signer kept.
+	require.NoError(t, os.Remove(filepath.Join(work, "root.crt")))
+	require.NoError(t, os.Remove(filepath.Join(work, "rev.pub")))
+	again := runInit(slog.New(slog.NewTextHandler(io.Discard, nil)), args)
+	require.NoError(t, again)
+	redone, err := os.ReadFile(filepath.Join(work, "root.crt"))
+	require.NoError(t, err)
+	assert.Equal(t, onDisk, redone, "the certificate init lost is the one it wrote before")
 }
 
 func TestRunServe_ABlankDirectoryServesItsSocketSoThatARestoreCanReachIt(t *testing.T) {

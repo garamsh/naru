@@ -1,0 +1,14 @@
+# The context of the `naru` named context of image/pkgs/docker-bake.hcl (the repository root):
+# the Go workspace and the sources the image's programs are built from, and nothing else, so that
+# build/, bin/, docs/ and the worktrees do not enter the build's inputs or its cache key. The other
+# contexts of the bake file are folders of their own and read no file of this one.
+*
+!go.work
+!go.work.sum
+!lib
+!host
+!node
+!orch
+!naructl
+!tooling
+**/*_test.go

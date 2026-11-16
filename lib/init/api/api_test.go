@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -548,6 +549,9 @@ func TestServer_PostMapsEachEngineErrorToItsStatus(t *testing.T) {
 		}},
 		"the store failed": {&apply.StoreError{Err: errors.New("disk full")}, http.StatusInternalServerError, func(t *testing.T, b map[string]any) {
 			assert.Contains(t, b["error"], "disk full")
+		}},
+		"the store cannot be read": {&apply.StoreError{Err: fmt.Errorf("%w: input/output error; a reboot or repair of the data disk is needed", store.ErrUnreadable)}, http.StatusServiceUnavailable, func(t *testing.T, b map[string]any) {
+			assert.Contains(t, b["error"], "reboot or repair")
 		}},
 		"anything else": {errors.New("surprise"), http.StatusInternalServerError, func(t *testing.T, b map[string]any) {
 			assert.Contains(t, b["error"], "surprise")

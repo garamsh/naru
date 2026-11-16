@@ -6,7 +6,8 @@
 // and SHA-256 of the guest kernels and initrds the boot disk carries), the inputs file (the Firecracker
 // digest and the test image's reference), a test-only NoCloud
 // user-data per Node for Proxmox that runs gaon with certificates issued for the release, and the
-// SHA256SUMS of them. `make release` runs it.
+// SHA256SUMS of them, the SPDX SBOM and the tar of the corresponding source of the GPL-family
+// components (ADR 0076). `make release` runs it.
 package release
 
 import (
@@ -27,6 +28,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
@@ -53,6 +55,10 @@ func Deployment(index int) Proxmox {
 
 // APIServer is the address every Node dials: node-1's.
 const APIServer = "192.168.0.40"
+
+// NaruClusterName is the name of the naru-cluster asset: the static binary an external harness
+// downloads and checks against SHA256SUMS (ADR 0074).
+func NaruClusterName(version string) string { return "naru-cluster-" + version + "-linux-amd64" }
 
 // UserDataName is the name of Node index's user-data asset. ".test" marks it as one that carries
 // key material, which is for a test deployment only.
@@ -166,6 +172,8 @@ type Options struct {
 	// Naructl is the naructl binary, built static for linux/amd64: it is an asset, and it writes the
 	// user-data.
 	Naructl string
+	// NaruCluster is the naru-cluster binary, built static for linux/amd64: it is an asset.
+	NaruCluster string
 	// PrevManifest is the path of the manifest.json of the previous release's upgrade bundle, or
 	// empty when there is none to check against. Build refuses a kernel that would not fit the
 	// trial slot of a Node installed from that release, unless RequiresRecreation is set, which
@@ -176,6 +184,21 @@ type Options struct {
 	// size and the largest in-place upgrade kernel), or empty for none. It is outside Out, whose
 	// every file is an asset.
 	Figures string
+	// Epoch is SOURCE_DATE_EPOCH: the only time in the SBOM and the sources tar.
+	Epoch int64
+	// Binaries are the directories whose Go binaries the SBOM states the modules of, and Archives
+	// the gzip-compressed cpio archives (the initramfs) whose Go binaries it states too; Naructl and
+	// NaruCluster are stated as well.
+	Binaries, Archives []string
+	// Downloads are the directories that hold the verified upstream tarballs make image fetched; a
+	// tarball the sources tar needs and they lack is fetched from its pin's URL.
+	Downloads []string
+	// SourceArchive is the git archive (a tar) of the commit being built.
+	SourceArchive string
+	// Components replaces the pins under Root/image, and Fetch the HTTP fetch of a tarball: both
+	// are for tests.
+	Components []Component
+	Fetch      Fetch
 }
 
 // checkExtension refuses a release whose extension description states another digest than the
@@ -222,6 +245,12 @@ func Build(o Options) ([]Asset, error) {
 	if err := checkPrevious(o, kernel); err != nil {
 		return nil, err
 	}
+	comps := o.Components
+	if comps == nil {
+		if comps, err = ReadComponents(o.Root); err != nil {
+			return nil, err
+		}
+	}
 	if err := os.MkdirAll(o.Out, 0o755); err != nil {
 		return nil, err
 	}
@@ -267,7 +296,7 @@ func Build(o Options) ([]Asset, error) {
 	names = append(names, bsKernel, bsInitramfs, bsManifest)
 
 	data := "naru-data-" + o.Version + ".qcow2"
-	if out, err := exec.Command("qemu-img", "convert", "-f", "raw", "-O", "qcow2", raw, filepath.Join(o.Out, data)).CombinedOutput(); err != nil { //nolint:gosec // paths built here
+	if out, err := exec.Command("qemu-img", "convert", "-f", "raw", "-O", "qcow2", raw, filepath.Join(o.Out, data)).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("qemu-img convert: %w: %s", err, out)
 	}
 	names = append(names, data)
@@ -289,7 +318,7 @@ func Build(o Options) ([]Asset, error) {
 		return nil, err
 	}
 	inputsAsset := fixture.ReleaseInputsName(o.Version)
-	if err := os.WriteFile(filepath.Join(o.Out, inputsAsset), append(ri, '\n'), 0o644); err != nil { //nolint:gosec // published with the assets
+	if err := os.WriteFile(filepath.Join(o.Out, inputsAsset), append(ri, '\n'), 0o644); err != nil {
 		return nil, err
 	}
 	names = append(names, inputsAsset)
@@ -308,21 +337,23 @@ func Build(o Options) ([]Asset, error) {
 	}
 
 	// naructl is the operator's tool and the one owner of the Node layout: the release ships the
-	// binary and writes the test user-data with it.
+	// binary and writes the test user-data with it. naru-cluster is what a harness runs.
 	tool := "naructl-" + o.Version + "-linux-amd64"
-	if err := copyFile(o.Naructl, filepath.Join(o.Out, tool)); err != nil {
-		return nil, fmt.Errorf("the naructl binary: %w", err)
+	for _, b := range []struct{ from, name string }{{o.Naructl, tool}, {o.NaruCluster, NaruClusterName(o.Version)}} {
+		if err := copyFile(b.from, filepath.Join(o.Out, b.name)); err != nil {
+			return nil, fmt.Errorf("the %s binary: %w", b.name, err)
+		}
+		if err := os.Chmod(filepath.Join(o.Out, b.name), 0o755); err != nil {
+			return nil, err
+		}
+		names = append(names, b.name)
 	}
-	if err := os.Chmod(filepath.Join(o.Out, tool), 0o755); err != nil { //nolint:gosec // an executable asset
-		return nil, err
-	}
-	names = append(names, tool)
 
 	files, err := UserData(naructl.Tool{Bin: o.Naructl}, filepath.Join(o.GuestDir, "guest.json"), inputs.FirecrackerSHA256, filepath.Join(inputs.Dir, "registry", "ca.pem"))
 	if err != nil {
 		return nil, err
 	}
-	list, err := os.ReadFile(filepath.Join(o.Root, "image/host/initramfs/initramfs.list"))
+	list, err := os.ReadFile(filepath.Join(o.Root, "image/pkgs/initramfs-host/initramfs.list"))
 	if err != nil {
 		return nil, err
 	}
@@ -345,6 +376,24 @@ func Build(o Options) ([]Asset, error) {
 		names = append(names, name)
 	}
 
+	// The SBOM and the sources are written last: they state what the other assets were built from.
+	bins, err := ReadGoBinaries(o.Binaries, []string{o.Naructl, o.NaruCluster}, o.Archives)
+	if err != nil {
+		return nil, err
+	}
+	sbom, err := SBOM(o.Version, o.Epoch, comps, bins)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(o.Out, SBOMName(o.Version)), sbom, 0o644); err != nil {
+		return nil, err
+	}
+	names = append(names, SBOMName(o.Version))
+	if err := WriteSources(filepath.Join(o.Out, SourcesName(o.Version)), o.Epoch, comps, o.Downloads, o.SourceArchive, o.Fetch); err != nil {
+		return nil, fmt.Errorf("the sources: %w", err)
+	}
+	names = append(names, SourcesName(o.Version))
+
 	var assets []Asset
 	var sums strings.Builder
 	for _, name := range names {
@@ -356,7 +405,7 @@ func Build(o Options) ([]Asset, error) {
 		assets = append(assets, a)
 		fmt.Fprintf(&sums, "%s  %s\n", a.SHA256, name)
 	}
-	if err := os.WriteFile(filepath.Join(o.Out, "SHA256SUMS"), []byte(sums.String()), 0o644); err != nil { //nolint:gosec // published with the assets
+	if err := os.WriteFile(filepath.Join(o.Out, "SHA256SUMS"), []byte(sums.String()), 0o644); err != nil {
 		return nil, err
 	}
 	if o.Figures != "" {
@@ -373,8 +422,8 @@ func Build(o Options) ([]Asset, error) {
 
 // onDisk reports whether the data disk image holds guestPath, a path as the Node sees it.
 func onDisk(image, guestPath string) bool {
-	rel := strings.TrimPrefix(guestPath, fixture.DataMount)
-	out, err := exec.Command("/sbin/debugfs", "-R", "stat "+path.Clean(rel), image).CombinedOutput() //nolint:gosec // arguments built here
+	rel := strings.TrimPrefix(guestPath, wire.DataMount)
+	out, err := exec.Command("/sbin/debugfs", "-R", "stat "+path.Clean(rel), image).CombinedOutput()
 	return err == nil && strings.Contains(string(out), "Type: regular")
 }
 

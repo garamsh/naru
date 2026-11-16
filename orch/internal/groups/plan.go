@@ -98,12 +98,12 @@ func planGroup(gs GroupState, o Observed, hosts []Host, pods *podPrefixes) []Act
 	}
 
 	for _, ms := range present {
-		if spec.Stateful && ms.Phase != PhaseFencedWaiting && ms.Fence.Deadline.Sub(o.Now) < spec.FenceTTL/2 {
+		if spec.Stateful && ms.Phase != PhaseFencedWaiting && ms.HasMachine && ms.Fence.Deadline.Sub(o.Now) < spec.FenceTTL/2 {
 			out = append(out, Action{Kind: ActionRenew, Group: spec.Name, Member: ms.Member, Host: ms.Host, Deadline: o.Now.Add(spec.FenceTTL), Reason: "stateful member's fence is unarmed or half spent"})
 		}
 	}
 	for _, ms := range keep {
-		if ms.Phase == PhasePending && ms.Machine.State != MachineRunning {
+		if ms.Phase == PhasePending && ms.HasMachine && ms.Machine.State != MachineRunning {
 			out = append(out, Action{Kind: ActionStart, Group: spec.Name, Member: ms.Member, Host: ms.Host, Reason: "machine is " + string(ms.Machine.State)})
 		}
 	}
@@ -127,6 +127,7 @@ func planGroup(gs GroupState, o Observed, hosts []Host, pods *podPrefixes) []Act
 		}
 	}
 
+	out = append(out, planRetries(gs, o, hosts, keep)...)
 	out = append(out, planCreates(gs, o, hosts, pods, present, keep, len(retire))...)
 
 	available := 0
@@ -145,6 +146,10 @@ func planGroup(gs GroupState, o Observed, hosts []Host, pods *podPrefixes) []Act
 	blocked := 0
 	for _, r := range retire {
 		act := Action{Kind: ActionDelete, Group: spec.Name, Member: r.Member, Host: r.Host, Reason: r.why}
+		if r.Member.retrying() && !r.HasMachine {
+			// Its create never made a machine, so there is nothing to delete: only the record to end.
+			act.Kind = ActionForget
+		}
 		switch {
 		case !r.isRunning():
 		case budget == 0:
@@ -172,6 +177,46 @@ type retiring struct {
 
 func (ms MemberState) isRunning() bool {
 	return ms.HostReady && ms.Machine.State == MachineRunning
+}
+
+// planRetries tries again, once its wait is over, each create the host refused. The member keeps
+// its record; it is placed again, so a host that keeps refusing is not the only one tried.
+func planRetries(gs GroupState, o Observed, hosts []Host, keep []MemberState) []Action {
+	spec := gs.Spec
+	var out []Action
+	for _, ms := range keep {
+		if !ms.Member.retrying() || ms.HasMachine || o.Now.Before(ms.RetryAt) {
+			continue
+		}
+		onHost := map[string]int{}
+		for _, other := range keep {
+			if other.ID != ms.ID {
+				onHost[other.Host]++
+			}
+		}
+		h, err := Place(spec, hosts, onHost)
+		if err != nil {
+			var pe *PlacementError
+			if errors.As(err, &pe) {
+				out = append(out, Action{Kind: ActionHold, Group: spec.Name, Reason: err.Error()})
+			}
+			continue
+		}
+		m := ms.Member
+		m.Host = h.ID
+		out = append(out, Action{
+			Kind: ActionCreate, Group: spec.Name, Member: m, Host: h.ID,
+			Spec:   MachineSpec{ID: m.MachineID, Template: spec.Template, PodPrefix: m.PodPrefix, Fenced: spec.Stateful},
+			Reason: fmt.Sprintf("tries again after %d refused create(s)", m.CreateFailures),
+		})
+		for i := range hosts {
+			if hosts[i].ID == h.ID {
+				hosts[i].Capacity.CPUs -= spec.Template.CPUs
+				hosts[i].Capacity.MemoryMiB -= spec.Template.MemoryMiB
+			}
+		}
+	}
+	return out
 }
 
 // planCreates places as many new members as the count and the surge allow, replacing what

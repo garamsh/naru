@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/garamsh/naru/host/internal/mvmd"
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/identity"
 )
 
 // Deps is what the server reads and acts through.
@@ -41,22 +43,30 @@ type Deps struct {
 	Log      *slog.Logger
 	// Metrics is the registry the host API's metrics are registered on, made once by the composition site.
 	Metrics prometheus.Registerer
+	// Revocations is the list the listener checks clients against; its age and last fetch error are
+	// exposed as metrics. Nil means no revocation is checked.
+	Revocations *identity.RevocationList
+	// LeaderTokenFile keeps the highest leader token orch has sent (ADR 0071). Empty keeps it in
+	// memory only.
+	LeaderTokenFile string
 }
 
 // Server is the host API.
 type Server struct {
 	deps     Deps
 	requests *prometheus.CounterVec
+	tokens   leaderTokens
 }
 
 // New returns a Server, whose metrics are registered on deps.Metrics.
 func New(deps Deps) *Server {
-	return &Server{deps: deps, requests: newMetrics(deps.Metrics, deps.Runtime, deps.Log)}
+	return &Server{deps: deps, requests: newMetrics(deps.Metrics, deps.Runtime, deps.Revocations, deps.Log), tokens: leaderTokens{path: deps.LeaderTokenFile}}
 }
 
 // Handler returns the routes behind the middleware: a panic is answered with 500, each request is
 // logged once, and the client's role is checked before any route runs. A request that is not a GET
-// needs the provisioner role, and a GET the reader's, which a provisioner has too.
+// needs the provisioner role, and a GET the reader's, which a provisioner has too. A change that
+// carries a leader token is refused when the token is lower than the highest seen.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/host", s.getHost)
@@ -81,7 +91,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	mux.HandleFunc("GET /v1/tunnel", s.getTunnel)
 	s.routeBootSets(mux)
-	return s.recovering(s.logged(s.authorised(mux)))
+	return s.recovering(s.logged(s.authorised(s.leaderToken(mux))))
 }
 
 // authorised answers 403 to a client whose role does not cover the method.
@@ -152,13 +162,14 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 // TLSConfig returns the configuration of the listener: TLS 1.3 only, the serving pair at
 // certFile and keyFile, and a client certificate required and verified against the client CA at
-// clientCAFile.
-func TLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
+// clientCAFile. When revocations is not nil, a certificate on the signer's list is refused at the
+// handshake, and so is every client while the list is older than its max age or was never had.
+func TLSConfig(certFile, keyFile, clientCAFile string, revocations *identity.RevocationList) (*tls.Config, error) {
 	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, err
 	}
-	ca, err := os.ReadFile(clientCAFile) //nolint:gosec // a path of the Node's own configuration
+	ca, err := os.ReadFile(clientCAFile)
 	if err != nil {
 		return nil, err
 	}
@@ -166,18 +177,43 @@ func TLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
 	if !pool.AppendCertsFromPEM(ca) {
 		return nil, errors.New(clientCAFile + " holds no certificate")
 	}
-	return &tls.Config{
+	conf := &tls.Config{
 		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{pair},
 		ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert, NextProtos: []string{"http/1.1"},
-	}, nil
+	}
+	if revocations != nil {
+		conf.VerifyConnection = revocations.VerifyConnection
+	}
+	return conf, nil
 }
 
-// Serve serves the API on ln until it is closed. A refused handshake is not logged: it would fill
-// the console for anyone who can reach the port.
-func (s *Server) Serve(ln net.Listener, conf *tls.Config) error {
+// DrainTimeout is how long Serve waits for the requests in flight after its context ends, before
+// it closes their connections. A create or a delete may take up to callTimeout, so a stop signal
+// that is followed by a kill leaves one that the drain could not finish.
+const DrainTimeout = 30 * time.Second
+
+// Serve serves the API on ln until ctx ends, and then drains: it closes ln, so a new connection is
+// refused, lets the requests in flight finish for up to DrainTimeout and returns nil. An error of
+// the listener before that is returned. A refused handshake is not logged: it would fill the
+// console for anyone who can reach the port.
+func (s *Server) Serve(ctx context.Context, ln net.Listener, conf *tls.Config) error {
 	srv := &http.Server{
 		Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, TLSConfig: conf,
 		ErrorLog: log.New(io.Discard, "", 0),
 	}
-	return srv.ServeTLS(ln, "", "")
+	done := make(chan error, 1)
+	go func() {
+		<-ctx.Done()
+		drain, cancel := context.WithTimeout(context.Background(), DrainTimeout)
+		defer cancel()
+		err := srv.Shutdown(drain)
+		if err != nil {
+			_ = srv.Close()
+		}
+		done <- err
+	}()
+	if err := srv.ServeTLS(ln, "", ""); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return <-done
 }

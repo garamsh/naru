@@ -7,10 +7,10 @@ type CreateRequest struct {
 	Name string `json:"name"`
 	// Image is repository@sha256:<64 hex digits>, which hostd has mvmd pull, or the bare digest of
 	// an image mvmd already has.
-	Image         string            `json:"image"`
+	Image         string            `json:"image,omitempty"`
 	CPU           uint32            `json:"cpu"`
 	Memory        uint64            `json:"memory"`
-	RootDiskBytes uint64            `json:"rootDiskBytes"`
+	RootDiskBytes uint64            `json:"rootDiskBytes,omitempty"`
 	Disks         []DiskSpec        `json:"disks,omitempty"`
 	NetworkPolicy Policy            `json:"networkPolicy"`
 	Env           map[string]string `json:"env,omitempty"`

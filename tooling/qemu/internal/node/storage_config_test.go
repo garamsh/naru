@@ -11,12 +11,12 @@ import (
 
 func TestConfig_StorageAndItsProbeAreInTheUserData(t *testing.T) {
 	c := cfg(1, 2, true, false)
-	c.Storage = []Storage{{Name: "vmdisks", Device: "/dev/sdc", MountPoint: "/var/lib/naru/mvmd/disks"}}
-	c.StorageProbe = "/var/lib/naru/mvmd/disks"
+	c.Storage = []Storage{{Name: "vmdisks", Device: "/dev/sdc", MountPoint: "/var/lib/naru/mvmd-storage"}}
+	c.StorageProbe = "/var/lib/naru/mvmd-storage"
 
 	n := parse(t, c)
 
-	assert.Equal(t, []storage{{Name: "vmdisks", Device: "/dev/sdc", MountPoint: "/var/lib/naru/mvmd/disks"}}, n.Spec.Storage)
+	assert.Equal(t, []storage{{Name: "vmdisks", Device: "/dev/sdc", MountPoint: "/var/lib/naru/mvmd-storage"}}, n.Spec.Storage)
 	assert.Contains(t, names(n), "storageprobe")
 }
 
@@ -45,8 +45,18 @@ func TestQemuArgs_AnExtraDiskIsADriveOnTheSCSIControllerAndNoneWithoutIt(t *test
 }
 
 func TestInitramfsList_InstallsMkfsXFSForStorageDisks(t *testing.T) {
-	list, err := os.ReadFile("../../../../image/host/initramfs/initramfs.list")
+	list, err := os.ReadFile("../../../../image/pkgs/initramfs-host/initramfs.list")
 	require.NoError(t, err)
 
 	assert.Regexp(t, `(?m)^file `+regexp.QuoteMeta("/bin/mkfs.xfs")+` @OUT@/mkfs\.xfs 0755 `, string(list))
+}
+
+func TestMvmdJSON_PutsTheRunDirectoriesOnTheStorageDiskMountedWhereInitLinksMvmdsState(t *testing.T) {
+	c := cfg(1, 2, true, false)
+	c.Storage = []Storage{{Name: "vmdisks", Device: "/dev/sdc", MountPoint: "/var/lib/naru/mvmd-storage"}}
+
+	m := mvmd(t, c)
+
+	assert.Equal(t, "/var/lib/naru/mvmd", m["state_dir"])
+	assert.Equal(t, "/var/lib/naru/mvmd-storage/machines", m["supervision"].(map[string]any)["dir"])
 }

@@ -9,6 +9,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 )
 
@@ -22,10 +23,6 @@ const (
 	supervisorCgroup = "/sys/fs/cgroup/naru/detached"
 	// mvmdConfig is where init writes mvmd's configuration, from the Node's naru.yaml.
 	mvmdConfig = "/run/mvmd/config.json"
-	// DataMount is where init mounts the data disk.
-	DataMount = fixture.DataMount
-	// MkfsPath is the mkfs.ext4 the image carries (ADR 0011), which mvmd's disk.mkfs names.
-	MkfsPath = "/bin/mkfs.ext4"
 )
 
 // Config says what one Node of a test cluster is configured with.
@@ -191,6 +188,11 @@ type service struct {
 	ControlPlane bool              `yaml:"controlPlane,omitempty"`
 }
 
+// storageProbeService is the naru-storageprobe service that reports on the file system mounted at dir.
+func storageProbeService(dir string) service {
+	return service{Name: "storageprobe", Binary: path.Join(fixture.GuestRoot, "bin/naru-storageprobe"), Args: []string{"-dir", dir}}
+}
+
 type route struct {
 	To  string `yaml:"to"`
 	Via string `yaml:"via"`
@@ -253,8 +255,8 @@ func (c Config) NaruYAML() ([]byte, error) {
 	n.Kind = "NodeConfig"
 	n.Metadata.Name = "naru-" + c.Name
 	n.Spec.ControlPlane = c.ControlPlane
-	n.Spec.DataDisk.Label = DataLabel
-	n.Spec.DataDisk.MountPoint = DataMount
+	n.Spec.DataDisk.Label = wire.DataLabel
+	n.Spec.DataDisk.MountPoint = wire.DataMount
 	n.Spec.Network.Forwarding = []string{"ipv4"}
 	for _, r := range c.Routes {
 		n.Spec.Network.Routes = append(n.Spec.Network.Routes, route(r))
@@ -270,7 +272,7 @@ func (c Config) NaruYAML() ([]byte, error) {
 		registry,
 		{
 			Name: "standin", Binary: "/bin/naru-standin",
-			Args: []string{"-socket", MvmdSocket, "-mount", DataMount, "-listen", c.IP() + ":" + StandinPort, "-peer", c.PeerIP() + ":" + StandinPort},
+			Args: []string{"-socket", MvmdSocket, "-mount", wire.DataMount, "-listen", c.IP() + ":" + StandinPort, "-peer", c.PeerIP() + ":" + StandinPort},
 		},
 		{Name: "control", Binary: "/bin/naru-standin", ControlPlane: true},
 	}
@@ -281,7 +283,7 @@ func (c Config) NaruYAML() ([]byte, error) {
 		n.Spec.Storage = append(n.Spec.Storage, storage(s))
 	}
 	if c.StorageProbe != "" {
-		n.Spec.Services = append(n.Spec.Services, service{Name: "storageprobe", Binary: path.Join(root, "bin/naru-storageprobe"), Args: []string{"-dir", c.StorageProbe}})
+		n.Spec.Services = append(n.Spec.Services, storageProbeService(c.StorageProbe))
 	}
 	if c.Probe {
 		n.Spec.Services = append(n.Spec.Services, service{
@@ -323,12 +325,21 @@ func (c Config) MvmdJSON() ([]byte, error) {
 	if c.RegistryCA != "" {
 		registry["ca_file"] = RegistryFilesDir + "/registry/ca.pem"
 	}
+	// supervision.dir is left out unless a storage disk is mounted at wire.MvmdStorageMount, so it
+	// is "machines" under state_dir on the data disk; with the disk, the run directories are on it,
+	// where init links disks/ and snapshots/ (ADR 0073).
+	supervision := map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": supervisorCgroup}
+	for _, s := range c.Storage {
+		if s.MountPoint == wire.MvmdStorageMount {
+			supervision["dir"] = wire.MvmdStorageMount + "/machines"
+		}
+	}
 	return json.MarshalIndent(map[string]any{
 		"registry":  registry,
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
-		"state_dir": DataMount + "/mvmd",
+		"state_dir": wire.DataMount + "/mvmd",
 		"driver":    "firecracker",
-		"disk":      map[string]any{"mkfs": MkfsPath},
+		"disk":      map[string]any{"mkfs": wire.MkfsPath},
 		"firecracker": map[string]any{
 			"binary": "/bin/firecracker", "binary_sha256": c.Inputs.FirecrackerSHA256,
 			"kernels": kernels, "default_kernel": g.DefaultKernel,
@@ -342,9 +353,7 @@ func (c Config) MvmdJSON() ([]byte, error) {
 			"output_bytes": 256 << 20, "name_set_bytes": 1 << 20,
 			"limit": "5m",
 		},
-		// supervision.dir is left out, so it is "machines" under state_dir on the data disk:
-		// the state directory and the run directories stay on one file system (mvmd ADR 0015).
-		"supervision":   map[string]any{"binary": "/bin/mvmd-supervisor", "cgroup": supervisorCgroup},
+		"supervision":   supervision,
 		"vmm_uid_range": map[string]any{"first": 100000, "count": 1000},
 		"network":       network,
 		"pull_timeout":  "4m",

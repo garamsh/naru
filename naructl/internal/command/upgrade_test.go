@@ -129,3 +129,16 @@ func TestUpgrade_NeedsABundleWithItsSumsOrStatusAndNotBoth(t *testing.T) {
 	}
 	assert.Empty(t, node.requests)
 }
+
+func TestUpgrade_ARefusalKeepsTheFieldsTheNodeNames(t *testing.T) {
+	dep := newDeployment(t)
+	apiAuthority(t, dep)
+	node := newFakeNode(t, dep)
+	node.upgradeRefusal = map[string]any{"error": "the bundle is not an upgrade", "fields": []string{"sha256", "bundle"}}
+	bundle, sums := bundleWithSums(t, "the bundle", "")
+
+	out, err := run(t, "upgrade", "--config", node.clientFile(t, dep, "admin"), "--bundle", bundle, "--sums", sums)
+
+	require.Error(t, err)
+	assert.Equal(t, "422 Unprocessable Entity: the bundle is not an upgrade (fields: sha256, bundle)", out)
+}

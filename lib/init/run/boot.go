@@ -27,6 +27,8 @@ type timedHost interface {
 	boot.Host
 	// RunTime keeps the clock in step with spec.time until ctx ends.
 	RunTime(ctx context.Context, log *slog.Logger)
+	// OnTimeStep has fn called after each synchronisation that stepped the clock.
+	OnTimeStep(fn func(timesync.Result))
 	// TimeStatus returns what the clock's last synchronisation did.
 	TimeStatus() timesync.Status
 	// RunNetwork keeps the DHCPv4 lease, when the network has one, until ctx ends.
@@ -49,6 +51,11 @@ type timeAPI interface {
 // refused.
 func bootAndRenew(host timedHost, issuer *pki.Issuer, services boot.Services, configs boot.Configs, api timeAPI, log *slog.Logger) (stop func(), booted *store.Stored) {
 	api.UseTime(host.TimeStatus)
+	// A certificate issued on a clock that is later stepped is judged against the new time.
+	host.OnTimeStep(func(res timesync.Result) {
+		log.Info("the clock was stepped; the certificates are checked against the new time", "sync", res)
+		issuer.ClockStepped()
+	})
 	stored, err := boot.Run(host, issuer, services, configs, api, log)
 	if err != nil {
 		// Stay up so the reason stays on the console, and start nothing more.

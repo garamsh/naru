@@ -4,8 +4,6 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,7 +12,6 @@ import (
 
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
-	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/signer"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
@@ -29,25 +26,14 @@ func readRevocationKey(keyFile string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read the revocation public key: %w", err)
 	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil, errors.New("the revocation public key is not PEM")
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse the revocation public key: %w", err)
-	}
-	key, ok := pub.(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("the revocation public key is not Ed25519")
-	}
-	return key, nil
+	return identity.ParseRevocationPublic(data)
 }
 
-// newAuthenticator checks callers against lib/identity's roles and the signer's revocation list,
-// which key verifies. A list that cannot be refreshed is used for maxAge and then refused.
-func newAuthenticator(sg *signer.Client, key ed25519.PublicKey, maxAge time.Duration, log *slog.Logger) auth.Authenticator {
-	return &auth.Revocations{Source: sg, Key: key, TTL: crlTTL, MaxAge: maxAge, Now: time.Now, Log: log}
+// newRevocations keeps the signer's revocation list, which key verifies, for every check orch
+// makes of a certificate: its callers' and the hosts'. A list that cannot be refreshed is used for
+// maxAge and then refused.
+func newRevocations(sg *signer.Client, key ed25519.PublicKey, maxAge time.Duration, log *slog.Logger) *identity.RevocationList {
+	return &identity.RevocationList{Source: sg, Key: key, TTL: crlTTL, MaxAge: maxAge, Now: time.Now, Log: log}
 }
 
 // newSealer seals snapshots to the recovery public key in path, the file naructl orch init wrote.

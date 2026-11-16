@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Apply carries out the actions in order and records an event for each, whether it worked or
@@ -51,14 +52,25 @@ func (e *Engine) apply(ctx context.Context, a Action) error {
 	case ActionCreate:
 		// The record comes first, so a crash after the host made the Machine leaves a
 		// member the next pass finds; a crash before leaves a member it finds gone.
+		//
+		// A create the host refuses keeps its record, with the failure counted and the next
+		// attempt put off, and the next attempt writes the same record: a series of failures
+		// is one record and not one per pass.
 		stored, err := e.store.PutMember(ctx, a.Member)
 		if err != nil {
 			return err
 		}
 		if err := e.hosts.Create(ctx, a.Host, a.Spec); err != nil {
-			stored.Phase = PhaseGone
+			stored.CreateFailures++
+			stored.RetryAt = e.clock.Now().Add(createBackoff(stored.CreateFailures))
 			_, perr := e.store.PutMember(ctx, stored)
 			return errors.Join(err, perr)
+		}
+		if stored.retrying() {
+			stored.CreateFailures, stored.RetryAt = 0, time.Time{}
+			if _, err := e.store.PutMember(ctx, stored); err != nil {
+				return err
+			}
 		}
 	case ActionDelete:
 		return e.hosts.Delete(ctx, a.Host, a.Member.MachineID)

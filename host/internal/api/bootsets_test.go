@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 // bootSetBody is a multipart body of the parts in order: each is a form name and its bytes.
@@ -31,7 +32,7 @@ func bootSetBody(t *testing.T, parts ...[2]string) (string, []byte) {
 
 func requestPart(t *testing.T, name, kernel, initramfs string) [2]string {
 	t.Helper()
-	b, err := json.Marshal(BootSetRequest{Name: name, KernelSHA256: sha256Of([]byte(kernel)), InitramfsSHA256: sha256Of([]byte(initramfs))})
+	b, err := json.Marshal(hostapi.BootSetRequest{Name: name, KernelSHA256: sha256Of([]byte(kernel)), InitramfsSHA256: sha256Of([]byte(initramfs))})
 	require.NoError(t, err)
 	return [2]string{"boot-set", string(b)}
 }
@@ -114,7 +115,7 @@ func TestBootSets_ABodyOutOfShapeIs400AndAnInvalidRequestIs422AndNoneKeepsASet(t
 	assert.Equal(t, 400, code, string(b))
 
 	empty := sha256Of(nil)
-	for name, r := range map[string]BootSetRequest{
+	for name, r := range map[string]hostapi.BootSetRequest{
 		"a name with a dot": {Name: "naru-node-v0.1", KernelSHA256: empty, InitramfsSHA256: empty},
 		"an uppercase name": {Name: "Naru", KernelSHA256: empty, InitramfsSHA256: empty},
 		"a short hash":      {Name: "ok", KernelSHA256: "abc", InitramfsSHA256: empty},

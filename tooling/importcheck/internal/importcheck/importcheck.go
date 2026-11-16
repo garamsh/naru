@@ -13,6 +13,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/mod/modfile"
+
+	"github.com/garamsh/naru/tooling/importcheck/internal/workspace"
 )
 
 // libUnit is the top-level folder whose modules every unit may import.
@@ -42,6 +46,11 @@ type Result struct {
 	// build-tagged and test files included.
 	Modules, Files int
 	Violations     []Violation
+	// Unlisted holds the folders of modules found by go.mod that go.work does not use, and Missing
+	// the folders go.work uses that hold no go.mod. Every other check covers the modules go.work
+	// lists, so a module in either set is covered by this check and not by the rest, or by the
+	// rest and not by this one.
+	Unlisted, Missing []string
 }
 
 type module struct {
@@ -53,7 +62,8 @@ type module struct {
 // Check reads every Go file of every module under root and reports the imports of a package that
 // belongs to a module of another unit, except where the imported module is in lib/. It reads
 // imports with go/parser, not `go list`, so a file excluded by a build tag or a test file is read as
-// any other. A root with no module is an error.
+// any other, and compares the modules it finds with the use list of the root's go.work. A root with
+// no module or no go.work is an error.
 func Check(root string) (Result, error) {
 	mods, err := findModules(root)
 	if err != nil {
@@ -63,6 +73,11 @@ func Check(root string) (Result, error) {
 		return Result{}, fmt.Errorf("no go.mod under %s", root)
 	}
 	res := Result{Modules: len(mods)}
+	work, err := workspace.Read(root)
+	if err != nil {
+		return Result{}, err
+	}
+	res.Unlisted, res.Missing = compare(mods, work.Use)
 	err = walk(root, func(rel string, d fs.DirEntry) error {
 		if d.IsDir() || !strings.HasSuffix(rel, ".go") {
 			return nil
@@ -102,6 +117,30 @@ func Check(root string) (Result, error) {
 	return res, nil
 }
 
+// compare returns the folders of mods that use does not list, and the folders of use that no module
+// of mods has.
+func compare(mods []*module, use []string) (unlisted, missing []string) {
+	found := map[string]bool{}
+	for _, m := range mods {
+		found[m.dir] = true
+	}
+	listed := map[string]bool{}
+	for _, u := range use {
+		listed[u] = true
+		if !found[u] {
+			missing = append(missing, u)
+		}
+	}
+	for _, m := range mods {
+		if !listed[m.dir] {
+			unlisted = append(unlisted, m.dir)
+		}
+	}
+	sort.Strings(unlisted)
+	sort.Strings(missing)
+	return unlisted, missing
+}
+
 func findModules(root string) ([]*module, error) {
 	var mods []*module
 	err := walk(root, func(rel string, d fs.DirEntry) error {
@@ -128,12 +167,11 @@ func modulePath(gomod string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
-			return strings.Trim(strings.TrimSpace(rest), `"`), nil
-		}
+	p := modfile.ModulePath(b)
+	if p == "" {
+		return "", fmt.Errorf("%s has no module line", gomod)
 	}
-	return "", fmt.Errorf("%s has no module line", gomod)
+	return p, nil
 }
 
 // owner returns the module whose folder is the nearest one above the file.

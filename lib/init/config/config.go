@@ -10,6 +10,8 @@ import (
 	"os"
 	"slices"
 	"strconv"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const (
@@ -82,7 +84,7 @@ type Spec struct {
 }
 
 // StorageRoot is the directory a storage disk is mounted under, as StorageRoot/<name>, unless it names a mount point.
-const StorageRoot = "/var/lib/naru/storage"
+const StorageRoot = wire.DataMount + "/storage"
 
 // StorageFormXFS is the one file system form a storage disk takes.
 const StorageFormXFS = "xfs"
@@ -110,7 +112,7 @@ func (s Storage) Mount() string {
 }
 
 // DefaultAPIListen is where the Node API listens when spec.api names no address.
-const DefaultAPIListen = "0.0.0.0:50000"
+const DefaultAPIListen = "0.0.0.0:" + wire.NodeAPIPort
 
 // API is how the Node serves its API (docs/architecture/adr/0017-the-node-api-is-served-by-init-over-mutual-tls-from-its-own-authority-and-naructl-is-its-client.md).
 type API struct {
@@ -125,6 +127,15 @@ type API struct {
 	// KeyFile is the absolute path of a PEM private key that the Node API reads when it starts, in
 	// place of Key. The file is not read when the configuration is parsed.
 	KeyFile string `yaml:"keyFile,omitempty"`
+	// RevocationPublicKey is the PKIX PEM of the key that signs the revocation list. With it the API
+	// refuses a client certificate on the list, and every client while no list newer than
+	// RevocationMaxAge can be had (docs/architecture/adr/0062-every-naru-tls-peer-is-checked-against-the-signed-revocation-list-by-one-verifier-in-lib-identity-and-fails-closed-when-the-list-is-older-than-its-max-age.md).
+	// Without it no revocation is checked. The list is read from the signer on this Node when
+	// spec.signer is set, and otherwise fetched from orch, at spec.host.orch.
+	RevocationPublicKey string `yaml:"revocationPublicKey,omitempty"`
+	// RevocationMaxAge is a Go duration: how long a list that cannot be refreshed is used. It is
+	// DefaultRevocationMaxAge when empty.
+	RevocationMaxAge string `yaml:"revocationMaxAge,omitempty"`
 }
 
 // ListenAddr returns the address the API listens on.

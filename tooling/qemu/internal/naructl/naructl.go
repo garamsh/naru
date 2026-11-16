@@ -1,7 +1,7 @@
 // Package naructl runs the naructl binary, which owns the layout of a gaon Node (ADR 0015): the
 // tests and naru-cluster have it write the cluster's CA, each Node's user-data and the test host's
 // client pair. It runs a binary and imports nothing of naructl, so that this module builds
-// with GOWORK=off and no replace (ADR 0014).
+// with GOWORK=off (ADR 0014).
 package naructl
 
 import (
@@ -24,7 +24,7 @@ type Tool struct {
 
 // Build builds naructl from the checkout at root into out, static, as a release does.
 func Build(root, out string) error {
-	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out, "./cmd/naructl") //nolint:gosec // fixed arguments
+	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out, "./cmd/naructl")
 	cmd.Dir = filepath.Join(root, "naructl")
 	cmd.Env = append(os.Environ(), "GOWORK=off", "CGO_ENABLED=0")
 	if b, err := cmd.CombinedOutput(); err != nil {
@@ -43,7 +43,7 @@ func (t Tool) output(args ...string) ([]byte, error) {
 	if t.Bin == "" {
 		return nil, fmt.Errorf("no naructl binary is named")
 	}
-	cmd := exec.Command(t.Bin, args...) //nolint:gosec // the binary the caller named
+	cmd := exec.Command(t.Bin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -128,13 +128,13 @@ func (t Topology) CheckNames(names []string) error {
 }
 
 // GenCA has naructl write the cluster's CA, ca.pem and ca.key, into dir.
-func (t Tool) GenCA(dir string) error { return t.run("gen", "ca", "--out", dir) }
+func (t Tool) GenCA(dir string) error { return t.run("gen", "ca", "--ca-dir", dir) }
 
 // GenToken has naructl write the bootstrap token of the Node of that name next to the CA in caDir,
 // if there is none. The control-plane Node's user-data lists the tokens there are when it is written,
 // so every Node's token is made before the first gen node.
 func (t Tool) GenToken(caDir, name string) error {
-	return t.run("gen", "token", "--ca", caDir, "--name", name)
+	return t.run("gen", "token", "--ca-dir", caDir, "--name", name)
 }
 
 // Client is the files of a client pair and the CA that signed it.
@@ -144,7 +144,7 @@ type Client struct {
 
 // GenClient has naructl issue a client pair with the CN cn from the CA in caDir, into out.
 func (t Tool) GenClient(caDir, cn, out string) (Client, error) {
-	if err := t.run("gen", "client", "--ca", caDir, "--cn", cn, "--out", out); err != nil {
+	if err := t.run("gen", "client", "--ca-dir", caDir, "--cn", cn, "--out", out); err != nil {
 		return Client{}, err
 	}
 	return Client{CA: filepath.Join(caDir, "ca.pem"), Cert: filepath.Join(out, "client.pem"), Key: filepath.Join(out, "client.key")}, nil
@@ -153,7 +153,7 @@ func (t Tool) GenClient(caDir, cn, out string) (Client, error) {
 // GenEtcdClient has naructl write the etcd client pair of gaon's snapshot writer from the CA in
 // caDir: ca.crt, tls.crt and tls.key in out.
 func (t Tool) GenEtcdClient(caDir, out string) error {
-	return t.run("gen", "etcd-client", "--ca", caDir, "--out", out)
+	return t.run("gen", "etcd-client", "--ca-dir", caDir, "--out", out)
 }
 
 // GenAPICA has naructl write the Node API's authority, api/ca.pem and api/ca.key, under dir. A Node's
@@ -190,7 +190,7 @@ func (t Tool) Run(args ...string) Result {
 	if t.Bin == "" {
 		return Result{Err: fmt.Errorf("no naructl binary is named")}
 	}
-	cmd := exec.Command(t.Bin, args...) //nolint:gosec // the binary the caller named
+	cmd := exec.Command(t.Bin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -221,6 +221,9 @@ type Node struct {
 	// HostRegion and HostLabels (key=value) are gen node's --host-region and --host-label.
 	HostRegion string
 	HostLabels []string
+	// Storage are <name>=<device or label> entries (gen node --storage), the first holding mvmd's
+	// disks, snapshots and run directories.
+	Storage []string
 	// Extra are further gen node flags, each as given on the command line ("--signer").
 	Extra []string
 	// Binaries maps a service's name to its executable's path on the Node.
@@ -233,7 +236,7 @@ type Node struct {
 // GenNode has naructl write the Node's user-data to n.Out, and its network-config to
 // n.NetworkConfig when that is set.
 func (t Tool) GenNode(n Node) error {
-	args := []string{"gen", "node", "--ca", n.CA, "--name", n.Name, "--address", n.Address,
+	args := []string{"gen", "node", "--ca-dir", n.CA, "--name", n.Name, "--address", n.Address,
 		"--api-server", n.APIServer, "--machine-prefix", n.MachinePrefix, "--guest", n.Guest,
 		"--firecracker-sha256", n.Firecracker, "--out", n.Out}
 	flag := func(name string, values ...string) {
@@ -264,6 +267,7 @@ func (t Tool) GenNode(n Node) error {
 	flag("time-server", n.TimeServers...)
 	flag("peer", n.Peers...)
 	flag("registry", n.Registries...)
+	flag("storage", n.Storage...)
 	if n.AWSRegion != "" {
 		flag("aws-region", n.AWSRegion)
 		flag("aws-trust-anchor", n.AWSTrustAnchor)
