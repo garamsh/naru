@@ -42,3 +42,9 @@ Drafted for garamsh/naru#176, part of goal garamsh/naru#197. It extends [ADR 005
 - A worker host locked out by an orch outage often enough that operators raise the max age to hours, which would say a pushed list, not a pulled one, is the design.
 - A host whose list is read from orch while orch's own certificate is the one being revoked and the revocation cannot reach the host, which would say a second source is needed.
 - Two services on one Node holding lists that disagree.
+
+## Erratum 2026-11-16: a host configured up front takes the key from its own configuration
+
+Decision 5 gives a key to a host that joined from a seed. A host configured up front (`gen node --host-region`) that enrolls with `spec.host.orch` is admitted without a new configuration, so it had no key and checked no revocation (decision 6). `gen node` takes `--host-revocation-public-key <file>`, which writes `spec.host.revocationPublicKey`; with `spec.host.orch` it fetches the list from orch as decision 2 says. Init refuses the key without `spec.signer` or `spec.host.orch`.
+
+Orch's `GET /v1/crl` answered the list as a JSON string of base64 instead of the signed list, which `lib/orchapi`'s `CRL` returns as read; a host fetching it from orch could not parse it. The route now writes the signer's bytes as they are.

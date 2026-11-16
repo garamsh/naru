@@ -264,7 +264,7 @@ func TestRevocationListIsServedWithoutACertificate(t *testing.T) {
 
 	list, err := d.anon.CRL(t.Context())
 	require.NoError(t, err, "no certificate")
-	require.NotEmpty(t, list)
+	require.True(t, json.Valid(list) && list[0] == '{', "the list as the signer signed it, not that list as a JSON string: %q", list)
 	_, err = d.anon.Drain(t.Context(), "host-a")
 	require.Equal(t, http.StatusUnauthorized, status(err), "control: the other routes still need one")
 }

@@ -285,7 +285,12 @@ func (h *handler) events(w http.ResponseWriter, r *http.Request, _ identity.Iden
 // needs it to check the ones it is offered (ADR 0062).
 func (h *handler) crl(w http.ResponseWriter, r *http.Request) {
 	out, err := h.Signer.CRL(r.Context())
-	reply(w, r, out, err)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(out)
 }
 
 func (h *handler) admit(w http.ResponseWriter, r *http.Request, who identity.Identity) {
