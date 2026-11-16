@@ -41,8 +41,9 @@ func TestRelease_AHostInstalledFromOneReleaseUpgradesInPlaceToTheNextAndKeepsIts
 	from, err := fixture.ReadRelease(fromDir, t.TempDir())
 	require.NoError(t, err)
 	// An operator who installed a release has that release's naructl, and the one of the release
-	// they upgrade to; each writes and reads what its release does.
-	fromTool := naructl.Tool{Bin: from.Naructl}
+	// they upgrade to; each writes and reads what its release does, and one from before cobra is
+	// driven with the flag spellings it was released with.
+	fromTool := naructl.ForRelease(from.Naructl, from.Version)
 	toBin, err := fixture.StageNaructl(toDir, t.TempDir())
 	require.NoError(t, err)
 	toTool := naructl.Tool{Bin: toBin}

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -20,6 +21,32 @@ import (
 type Tool struct {
 	// Bin is the path of the executable.
 	Bin string
+	// Legacy is set for the naructl of a release made before naructl moved to cobra (v0.1.0-dev.11
+	// and earlier; see ForRelease), which knows only the flag spellings it was released with: gen takes --ca for
+	// the CA directory of token, client, etcd-client and node, and --out for the directory gen ca
+	// writes. A later naructl keeps those as hidden aliases for one release only.
+	Legacy bool
+}
+
+// lastLegacyDev is the number of the last v0.1.0-dev.N release whose naructl knows only the flag
+// spellings from before cobra; dev.12 keeps them as hidden aliases until dev.13.
+const lastLegacyDev = 11
+
+// ForRelease is the Tool for the naructl at bin that the release of that version shipped: a release
+// of v0.1.0-dev.11 or earlier is driven with the spellings it was released with. Any other version,
+// including one that is not a v0.1.0-dev.N, is driven with the current ones.
+func ForRelease(bin, version string) Tool {
+	n, ok := strings.CutPrefix(version, "v0.1.0-dev.")
+	dev, err := strconv.Atoi(n)
+	return Tool{Bin: bin, Legacy: ok && err == nil && dev <= lastLegacyDev}
+}
+
+// caDirFlag is the flag that names the directory of the CA the gen command reads.
+func (t Tool) caDirFlag() string {
+	if t.Legacy {
+		return "--ca"
+	}
+	return "--ca-dir"
 }
 
 // Build builds naructl from the checkout at root into out, static, as a release does.
@@ -128,13 +155,19 @@ func (t Topology) CheckNames(names []string) error {
 }
 
 // GenCA has naructl write the cluster's CA, ca.pem and ca.key, into dir.
-func (t Tool) GenCA(dir string) error { return t.run("gen", "ca", "--ca-dir", dir) }
+func (t Tool) GenCA(dir string) error {
+	genCADirFlag := "--ca-dir"
+	if t.Legacy {
+		genCADirFlag = "--out"
+	}
+	return t.run("gen", "ca", genCADirFlag, dir)
+}
 
 // GenToken has naructl write the bootstrap token of the Node of that name next to the CA in caDir,
 // if there is none. The control-plane Node's user-data lists the tokens there are when it is written,
 // so every Node's token is made before the first gen node.
 func (t Tool) GenToken(caDir, name string) error {
-	return t.run("gen", "token", "--ca-dir", caDir, "--name", name)
+	return t.run("gen", "token", t.caDirFlag(), caDir, "--name", name)
 }
 
 // Client is the files of a client pair and the CA that signed it.
@@ -144,7 +177,7 @@ type Client struct {
 
 // GenClient has naructl issue a client pair with the CN cn from the CA in caDir, into out.
 func (t Tool) GenClient(caDir, cn, out string) (Client, error) {
-	if err := t.run("gen", "client", "--ca-dir", caDir, "--cn", cn, "--out", out); err != nil {
+	if err := t.run("gen", "client", t.caDirFlag(), caDir, "--cn", cn, "--out", out); err != nil {
 		return Client{}, err
 	}
 	return Client{CA: filepath.Join(caDir, "ca.pem"), Cert: filepath.Join(out, "client.pem"), Key: filepath.Join(out, "client.key")}, nil
@@ -153,7 +186,7 @@ func (t Tool) GenClient(caDir, cn, out string) (Client, error) {
 // GenEtcdClient has naructl write the etcd client pair of gaon's snapshot writer from the CA in
 // caDir: ca.crt, tls.crt and tls.key in out.
 func (t Tool) GenEtcdClient(caDir, out string) error {
-	return t.run("gen", "etcd-client", "--ca-dir", caDir, "--out", out)
+	return t.run("gen", "etcd-client", t.caDirFlag(), caDir, "--out", out)
 }
 
 // GenAPICA has naructl write the Node API's authority, api/ca.pem and api/ca.key, under dir. A Node's
@@ -236,7 +269,7 @@ type Node struct {
 // GenNode has naructl write the Node's user-data to n.Out, and its network-config to
 // n.NetworkConfig when that is set.
 func (t Tool) GenNode(n Node) error {
-	args := []string{"gen", "node", "--ca-dir", n.CA, "--name", n.Name, "--address", n.Address,
+	args := []string{"gen", "node", t.caDirFlag(), n.CA, "--name", n.Name, "--address", n.Address,
 		"--api-server", n.APIServer, "--machine-prefix", n.MachinePrefix, "--guest", n.Guest,
 		"--firecracker-sha256", n.Firecracker, "--out", n.Out}
 	flag := func(name string, values ...string) {

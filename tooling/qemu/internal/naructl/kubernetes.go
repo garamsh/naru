@@ -27,7 +27,7 @@ func (t Tool) KubernetesTopology() (Topology, error) {
 // the front-proxy authority, the ServiceAccount keys and admin.conf, which dials adminAddress
 // (host:port) when that is set.
 func (t Tool) GenKubernetes(caDir, endpoint, adminAddress string) error {
-	args := []string{"gen", "kubernetes", "--ca-dir", caDir, "--endpoint", endpoint}
+	args := []string{"gen", "kubernetes", t.caDirFlag(), caDir, "--endpoint", endpoint}
 	if adminAddress != "" {
 		args = append(args, "--admin-address", adminAddress)
 	}
@@ -53,7 +53,7 @@ type KubernetesNode struct {
 // GenKubernetesNode has naructl write the Node's user-data to n.Out, and its network-config to
 // n.NetworkConfig when that is set.
 func (t Tool) GenKubernetesNode(n KubernetesNode) error {
-	args := []string{"gen", "kubernetes-node", "--ca-dir", n.CA, "--name", n.Name, "--role", n.Role, "--address", n.Address,
+	args := []string{"gen", "kubernetes-node", t.caDirFlag(), n.CA, "--name", n.Name, "--role", n.Role, "--address", n.Address,
 		"--endpoint", n.Endpoint, "--pod-network", n.PodNetwork, "--pod-prefix", n.PodPrefix, "--out", n.Out}
 	flag := func(name string, values ...string) {
 		for _, v := range values {
