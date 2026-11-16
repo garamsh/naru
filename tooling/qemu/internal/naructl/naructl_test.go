@@ -56,3 +56,43 @@ func TestGenNode_AFailureCarriesNaructlsOutput(t *testing.T) {
 func TestTool_WithoutABinaryIsRefused(t *testing.T) {
 	assert.ErrorContains(t, naructl.Tool{}.GenCA(t.TempDir()), "no naructl binary")
 }
+
+func TestTool_LegacySpeaksTheFlagSpellingsOfAReleaseBeforeCobra(t *testing.T) {
+	cases := []struct {
+		name string
+		run  func(naructl.Tool) error
+		want string
+	}{
+		{"gen ca", func(tl naructl.Tool) error { return tl.GenCA("/ca") }, "gen ca --out /ca"},
+		{"gen token", func(tl naructl.Tool) error { return tl.GenToken("/ca", "n") }, "gen token --ca /ca --name n"},
+		{"gen client", func(tl naructl.Tool) error { _, err := tl.GenClient("/ca", "cn", "/o"); return err }, "gen client --ca /ca --cn cn --out /o"},
+		{"gen etcd-client", func(tl naructl.Tool) error { return tl.GenEtcdClient("/ca", "/o") }, "gen etcd-client --ca /ca --out /o"},
+		{"gen node", func(tl naructl.Tool) error { return tl.GenNode(naructl.Node{CA: "/ca", Name: "n"}) }, "gen node --ca /ca --name n"},
+		{"gen api-ca", func(tl naructl.Tool) error { return tl.GenAPICA("/ca") }, "gen api-ca --ca-dir /ca"},
+		{"gen api-client", func(tl naructl.Tool) error { return tl.GenAPIClient("/ca", "admin", "1.2.3.4:1", "/o") }, "gen api-client --ca-dir /ca --role admin"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			legacy, out := recorder(t)
+			legacy.Legacy = true
+			require.NoError(t, c.run(legacy))
+			b, err := os.ReadFile(out)
+			require.NoError(t, err)
+			assert.Contains(t, strings.ReplaceAll(strings.TrimSpace(string(b)), "\n", " "), c.want)
+		})
+	}
+}
+
+func TestTool_TheCheckoutsNaructlIsDrivenWithTheCurrentSpellings(t *testing.T) {
+	tool, out := recorder(t)
+
+	require.NoError(t, tool.GenCA("/ca"))
+	b, err := os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Equal(t, "gen ca --ca-dir /ca", strings.ReplaceAll(strings.TrimSpace(string(b)), "\n", " "))
+
+	require.NoError(t, tool.GenToken("/ca", "n"))
+	b, err = os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Equal(t, "gen token --ca-dir /ca --name n", strings.ReplaceAll(strings.TrimSpace(string(b)), "\n", " "))
+}
