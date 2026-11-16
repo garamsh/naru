@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
 	"github.com/garamsh/naru/lib/wire"
@@ -72,10 +73,12 @@ func loadHost(caDir, region string, labels list) (*layout.Host, error) {
 	return h, nil
 }
 
-// hostCall is a host API command: the flags every one takes, then dial and run.
+// hostCall is a host API command: the flags every one takes, then dial and run. A caller is either
+// a client file (--config) or a person the signer issued a certificate to (--identity), which a host
+// that joined from the install seed accepts (ADR 0080).
 type hostCall struct {
-	fs                           *pflag.FlagSet
-	config, endpoint, serverName *string
+	fs                                                     *pflag.FlagSet
+	config, endpoint, serverName, identity, passfn, hostCA *string
 }
 
 func newHostCall(fs *pflag.FlagSet) hostCall {
@@ -84,16 +87,61 @@ func newHostCall(fs *pflag.FlagSet) hostCall {
 		config:     fs.String("config", "", "the client file written by gen host-client"),
 		endpoint:   fs.String("endpoint", "", "the host's address, an IP address with or without a port (default the client file's first endpoint)"),
 		serverName: serverNameFlag(fs),
+		identity:   fs.String("identity", "", "in place of --config, the person file naructl operator person wrote from a certificate the signer issued; needs --passphrase-file, --host-ca and --endpoint"),
+		passfn:     fs.String("passphrase-file", "", "a file holding the passphrase of the person file"),
+		hostCA:     fs.String("host-ca", "", "with --identity, the host authority's certificate, PEM: naructl signer ca --authority host"),
 	}
 	return c
 }
 
-// check refuses a command given a number of arguments other than positional, or no --config.
+// check refuses a command given a number of arguments other than positional, or none of --config and
+// --identity, or both, or an --identity without what it dials with.
 func (c hostCall) check(args []string, n int) error {
-	return call{fs: c.fs, config: c.config}.check(args, n)
+	if err := positional(args, n); err != nil {
+		return err
+	}
+	set := setFlags(c.fs)
+	switch {
+	case set["config"] && set["identity"]:
+		return errors.New("--config and --identity are two ways to name the caller: give one")
+	case set["identity"]:
+		if err := require(c.fs, "passphrase-file", "host-ca", "endpoint"); err != nil {
+			return err
+		}
+	case set["config"]:
+		if err := needs(c.fs, "identity", "passphrase-file", "host-ca"); err != nil {
+			return err
+		}
+	default:
+		return errors.New("--config or --identity is required")
+	}
+	return nil
 }
 
 func (c hostCall) dial() (*hostapi.Client, error) {
+	if *c.identity != "" {
+		pass, err := passphrase(*c.passfn)
+		if err != nil {
+			return nil, err
+		}
+		data, err := os.ReadFile(*c.identity)
+		if err != nil {
+			return nil, fmt.Errorf("read the person file: %w", err)
+		}
+		p, err := identity.DecryptPerson(pass, data)
+		if err != nil {
+			return nil, err
+		}
+		ca, err := os.ReadFile(*c.hostCA)
+		if err != nil {
+			return nil, fmt.Errorf("read the host authority: %w", err)
+		}
+		f, err := client.PersonFile(p, string(ca), []string{*c.endpoint})
+		if err != nil {
+			return nil, err
+		}
+		return client.DialHost(f, *c.endpoint, *c.serverName)
+	}
 	f, err := client.LoadFile(*c.config)
 	if err != nil {
 		return nil, err
