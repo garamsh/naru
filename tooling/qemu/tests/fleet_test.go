@@ -67,6 +67,9 @@ type fleetOpts struct {
 	capture bool
 	// services are added to every Node.
 	services []node.ExtraService
+	// forward is guest ports of every Node's second NIC to forward from the test host besides orch's and the
+	// metrics', which fleet.forward answers with.
+	forward []string
 	// userData, when set, changes every Node's user-data before it first boots (ClusterSpec.EditUserData):
 	// the files the services need from the start.
 	userData func(c node.Config, file string) error
@@ -173,7 +176,7 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 			"--key-out", f.keys[i], "--csr-out", f.csrs[i]), "orch's request")
 	}
 
-	forward := append([]string{orchPort}, metricsPorts...)
+	forward := append(append([]string{orchPort}, metricsPorts...), o.forward...)
 	c := start(t, node.ClusterSpec{
 		N: o.controls + o.hosts, Gaon: true, NodeAPI: true, Host: true, Hosts: f.hosts(), Capture: o.capture,
 		Disable: []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"},

@@ -3,6 +3,7 @@
 package tests_test
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"net"
@@ -20,12 +21,16 @@ import (
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
+	"github.com/garamsh/naru/tooling/qemu/internal/route"
 	"github.com/garamsh/naru/tooling/qemu/internal/seed"
 )
 
 // The tests of the reset and of maintenance mode (ADR 0082). A reset is carried out at the next boot, and
 // QEMU runs with -no-reboot, so a host that reboots for one ends its QEMU process, which is what each test
 // waits on, and the Node is then started again on its disks, as a hypervisor does.
+
+// hostRoutePort is the port of node-1's second NIC where the route to the joined host's API listens.
+const hostRoutePort = "7481"
 
 var hostIDLine = regexp.MustCompile(`"hostId": "([^"]+)"`)
 
@@ -71,15 +76,23 @@ func TestNode_AResetOfTheStoreReturnsTheNodeToRevisionZeroAndAResetOfTheDataKeep
 }
 
 // joinedHost boots the host of Node 2 from the installation seed beside a control host, admits it and
-// waits until orch hears from it with the configuration orch built, as the join test does.
-func joinedHost(t *testing.T) (f *fleet, nd *node.Node, id string) {
+// waits until orch hears from it with the configuration orch built, as the join test does. A join ends in
+// a reboot (ADR 0058), so the host it returns is in its second boot, serving its API, and firstBoot is the
+// console of the boot before, which the second boot's console does not repeat.
+func joinedHost(t *testing.T) (f *fleet, nd *node.Node, id, firstBoot string) {
 	t.Helper()
 	certs, err := fixture.ServerCerts(net.ParseIP(nodeIP(1)))
 	require.NoError(t, err)
 	f = newFleet(t, fleetOpts{
 		controls:        1,
 		imageRepository: nodeIP(1) + ":" + joinRegistryPort + "/test/entry",
+		forward:         []string{hostRoutePort},
 		services: []node.ExtraService{{
+			// The joined host is on the Nodes' network only, which the test host does not reach: node-1
+			// routes the test host's connections to the host's API, and to nothing else.
+			Name: "naru55-hostroute", Binary: path.Join(fixture.GuestRoot, "bin/naru-mvmroute"),
+			Args: []string{"--listen", node.HostNICAddress + ":" + hostRoutePort, "--prefix", nodeIP(2) + "/32"},
+		}, {
 			Name: "naru55-joinregistry", Binary: path.Join(fixture.GuestRoot, "bin/naru-registry"),
 			Args: []string{"-listen", nodeIP(1) + ":" + joinRegistryPort, "-dir", path.Join(fixture.GuestRoot, "registry"),
 				"-cert", harnessRegistry + ".crt", "-key", harnessRegistry + ".key"},
@@ -113,7 +126,13 @@ func joinedHost(t *testing.T) (f *fleet, nd *node.Node, id string) {
 	p := f.pendingWith(node.QEMUNetwork(2, total).MAC)
 	id = f.admit(p.Code, node.HostRegion)
 	require.NoError(t, nd.WaitFor(t.Context(), bootTimeout, joinApplied), "the host applied its configuration")
-	awaitRestarting(t, nd, "orch hears from the host", func() bool {
+	firstBoot = nd.Console()
+	// orch may hear from the host in its first boot, before the reboot the join ends in, so the second
+	// boot is awaited by its own console: it runs the stored configuration, and then hostd serves.
+	awaitRestarting(t, nd, "orch hears from the host in its second boot", func() bool {
+		if !strings.Contains(nd.Console(), "running the stored configuration") || !strings.Contains(nd.Console(), "naru-hostd serving") {
+			return false
+		}
 		for _, h := range f.hostList(1) {
 			if h.ID == id {
 				return !h.LastSeen.IsZero()
@@ -121,25 +140,28 @@ func joinedHost(t *testing.T) (f *fleet, nd *node.Node, id string) {
 		}
 		return false
 	})
-	return f, nd, id
+	return f, nd, id, firstBoot
 }
 
-// orchHostClient is a host API client at addr that presents orch's certificate, which the host trusts and
-// which holds the provisioner role (ADR 0017), and that checks nothing of the host's certificate.
+// orchHostClient is a host API client at addr, the joined host's API reached through node-1's route, that
+// presents orch's certificate, which the host trusts and which holds the provisioner role (ADR 0017), and
+// that checks nothing of the host's certificate.
 func (f *fleet) orchHostClient(t *testing.T, addr string) *hostapi.Client {
 	t.Helper()
+	via := f.forward(1, hostRoutePort)
 	pair, err := tls.LoadX509KeyPair(filepath.Join(f.dir, orchName(1)+".crt"), f.keys[1])
 	require.NoError(t, err)
 	return hostapi.NewClient("https://"+addr, &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{
 		TLSClientConfig:   &tls.Config{Certificates: []tls.Certificate{pair}, InsecureSkipVerify: true},
 		DisableKeepAlives: true,
+		DialContext:       func(context.Context, string, string) (net.Conn, error) { return route.Dial(via, addr) },
 	}})
 }
 
 func TestFleet_AWipeOfTheDataDiskMakesTheHostFormatItAgainAtItsNextBoot(t *testing.T) {
-	f, nd, id := joinedHost(t)
+	f, nd, id, firstBoot := joinedHost(t)
 	formatted := func() int { return strings.Count(nd.Console(), "data disk formatted as ext4") }
-	require.Equal(t, 1, formatted(), "the control: the blank data disk was formatted at the first boot")
+	require.Equal(t, 1, strings.Count(firstBoot, "data disk formatted as ext4"), "the control: the blank data disk was formatted at the first boot")
 	api := nodeIP(2) + ":7443"
 
 	_, err := f.orchHostClient(t, api).Reset(t.Context(), hostapi.ResetRequest{Scope: hostapi.ResetAll, Confirm: id})
@@ -159,7 +181,7 @@ func TestFleet_AWipeOfTheDataDiskMakesTheHostFormatItAgainAtItsNextBoot(t *testi
 }
 
 func TestFleet_ARefusedHostIsReachableInMaintenanceByACertificateUnderOrchsAuthorityAndRefusedOnceItIsRevoked(t *testing.T) {
-	f, nd, id := joinedHost(t)
+	f, nd, id, _ := joinedHost(t)
 	api := nodeIP(2) + ":7443"
 	_, err := f.orchHostClient(t, api).Maintenance(t.Context())
 	require.Error(t, err, "the control: a host that booted is not in maintenance, and answers 404")
