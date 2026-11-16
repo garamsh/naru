@@ -45,6 +45,10 @@ type ClusterSpec struct {
 	// the agents' requests with it, and every Node's agent get its pair through a bootstrap token
 	// (ADR 0013, ADR 0016). Without it every pair of every Node is an operator's file.
 	BootPKI bool
+	// Late numbers the Nodes StartCluster does not start: their tokens are not in node-1's list, and the
+	// CA's directory stays until Stop, for naructl token create and Cluster.StartLate to use. They
+	// are workers, and the cluster has BootPKI (ADR 0081).
+	Late []int
 	// Disable names services left out of every Node's configuration; naructl refuses a name it
 	// does not know.
 	Disable []string
@@ -136,6 +140,12 @@ type Cluster struct {
 	Mcast string
 	// Forwards is, by Node name and guest port, the "127.0.0.1:port" of each ClusterSpec.Forward.
 	Forwards map[string]map[string]string
+	// CADir is the authority's directory, whose tokens/ the naructl token commands change; it is kept
+	// while Late Nodes are to start, and removed by Stop.
+	CADir string
+
+	spec ClusterSpec
+	gen  *gaonFiles
 }
 
 // HostRegion and HostLabels are what a cluster with Host configures node-1's spec.host with.
@@ -181,6 +191,9 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 	if spec.ControlPlanes > spec.N || spec.ControlPlanes > 1 && !spec.Gaon {
 		return nil, errors.New("ControlPlanes needs Gaon and no more Nodes than the cluster has")
 	}
+	if len(spec.Late) > 0 && (!spec.Gaon || !spec.BootPKI || slices.ContainsFunc(spec.Late, spec.controlPlane)) {
+		return nil, errors.New("Late needs Gaon and BootPKI, and is for workers: a Late Node joins with a token")
+	}
 	if spec.Host && !spec.Gaon {
 		return nil, errors.New("Host needs Gaon: the user-data with spec.host is naructl's")
 	}
@@ -220,57 +233,71 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 			}
 		}
 		// The CA's key stays on disk only while naructl needs it, whichever way StartCluster returns.
-		defer func() { _ = gen.dropCA() }()
+		if len(spec.Late) == 0 {
+			defer func() { _ = gen.dropCA() }()
+		} else {
+			c.CADir, c.spec, c.gen = gen.caDir, spec, gen
+		}
 	}
 	for i := 1; i <= spec.N; i++ {
-		name := fmt.Sprintf("node-%d", i)
-		cfg := Config{
-			Name: name, Index: i, Total: spec.N, ControlPlane: spec.controlPlane(i), Probe: i == spec.ProbeOn, Inputs: spec.Inputs, MemoryMiB: spec.MemoryMiB,
+		if spec.late(i) {
+			continue
 		}
-		if spec.HostMemoryMiB > 0 && spec.isHost(i) {
-			cfg.MemoryMiB = spec.HostMemoryMiB
-		}
-		if spec.HostCPUs > 0 && spec.isHost(i) {
-			cfg.CPUs = spec.HostCPUs
-		}
-		if !spec.Gaon {
-			ca, err := os.ReadFile(filepath.Join(spec.Inputs.Dir, "registry", "ca.pem"))
-			if err != nil {
-				return nil, fmt.Errorf("read the registry's authority: %w", err)
-			}
-			cfg.RegistryCA = string(ca)
-		}
-		if spec.Configure != nil {
-			spec.Configure(&cfg)
-		}
-		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase, SerialSocket: spec.SerialSocket, Capture: spec.Capture}
-		if gen != nil {
-			if spec.secondNIC(i) {
-				start.Config.HostPort = gen.ports[i] // a control-plane Node and a host have the second NIC
-				start.Config.ExtraForwards = gen.extraForwards[i]
-				if h := gen.hosts[i]; h != nil {
-					start.Config.HostAPIHostPort = h.port
-					start.Config.RouteHostPort = h.routePort
-				}
-				if i == 1 {
-					start.Config.APIHostPort = gen.apiPort
-					start.Config.HostReach = len(spec.TimeServers) > 0
-				}
-			}
-			var err error
-			if start.NaruYAML, start.NetworkConfig, err = gen.node(start.Config, spec); err != nil {
-				c.Stop()
-				return nil, fmt.Errorf("write the user-data of %s: %w", name, err)
-			}
-		}
-		n, err := Start(start)
-		if err != nil {
+		if err := c.startNode(spec, gen, i); err != nil {
 			c.Stop()
-			return nil, fmt.Errorf("start %s: %w", name, err)
+			return nil, err
 		}
-		c.Nodes = append(c.Nodes, n)
 	}
 	return c, nil
+}
+
+// startNode writes the user-data of Node i, when the cluster is gaon's, and starts it.
+func (c *Cluster) startNode(spec ClusterSpec, gen *gaonFiles, i int) error {
+	name := fmt.Sprintf("node-%d", i)
+	cfg := Config{
+		Name: name, Index: i, Total: spec.N, ControlPlane: spec.controlPlane(i), Probe: i == spec.ProbeOn, Inputs: spec.Inputs, MemoryMiB: spec.MemoryMiB,
+	}
+	if spec.HostMemoryMiB > 0 && spec.isHost(i) {
+		cfg.MemoryMiB = spec.HostMemoryMiB
+	}
+	if spec.HostCPUs > 0 && spec.isHost(i) {
+		cfg.CPUs = spec.HostCPUs
+	}
+	if !spec.Gaon {
+		ca, err := os.ReadFile(filepath.Join(spec.Inputs.Dir, "registry", "ca.pem"))
+		if err != nil {
+			return fmt.Errorf("read the registry's authority: %w", err)
+		}
+		cfg.RegistryCA = string(ca)
+	}
+	if spec.Configure != nil {
+		spec.Configure(&cfg)
+	}
+	start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: c.Mcast, RTCBase: spec.RTCBase, SerialSocket: spec.SerialSocket, Capture: spec.Capture}
+	if gen != nil {
+		if spec.secondNIC(i) {
+			start.Config.HostPort = gen.ports[i] // a control-plane Node and a host have the second NIC
+			start.Config.ExtraForwards = gen.extraForwards[i]
+			if h := gen.hosts[i]; h != nil {
+				start.Config.HostAPIHostPort = h.port
+				start.Config.RouteHostPort = h.routePort
+			}
+			if i == 1 {
+				start.Config.APIHostPort = gen.apiPort
+				start.Config.HostReach = len(spec.TimeServers) > 0
+			}
+		}
+		var err error
+		if start.NaruYAML, start.NetworkConfig, err = gen.node(start.Config, spec); err != nil {
+			return fmt.Errorf("write the user-data of %s: %w", name, err)
+		}
+	}
+	n, err := Start(start)
+	if err != nil {
+		return fmt.Errorf("start %s: %w", name, err)
+	}
+	c.Nodes = append(c.Nodes, n)
+	return nil
 }
 
 // ExtraService is a test's own service: a name and the guest path of a program the Inputs tree carries.
@@ -282,6 +309,9 @@ type ExtraService struct {
 
 // controlPlane reports whether Node i is a control-plane Node.
 func (spec ClusterSpec) controlPlane(i int) bool { return i <= max(spec.ControlPlanes, 1) }
+
+// late reports whether Node i is started by Cluster.StartLate.
+func (spec ClusterSpec) late(i int) bool { return slices.Contains(spec.Late, i) }
 
 // hostNodes is the numbers of the Nodes that run naru-hostd.
 func (spec ClusterSpec) hostNodes() []int {
@@ -306,10 +336,25 @@ func (spec ClusterSpec) secondNIC(i int) bool {
 // ha reports whether the control plane has several members.
 func (spec ClusterSpec) ha() bool { return spec.ControlPlanes > 1 }
 
-// Stop ends every Node.
+// StartLate starts Node i of ClusterSpec.Late: its user-data is written now, with the token the
+// store holds for it, so a token the test made or revoked since StartCluster decides whether it joins.
+func (c *Cluster) StartLate(i int) (*Node, error) {
+	if c.gen == nil || !c.spec.late(i) {
+		return nil, fmt.Errorf("node-%d is not a Late Node of this cluster", i)
+	}
+	if err := c.startNode(c.spec, c.gen, i); err != nil {
+		return nil, err
+	}
+	return c.Nodes[len(c.Nodes)-1], nil
+}
+
+// Stop ends every Node, and removes the CA's directory a cluster with Late Nodes kept.
 func (c *Cluster) Stop() {
 	for _, n := range c.Nodes {
 		n.Stop()
+	}
+	if c.gen != nil {
+		_ = c.gen.dropCA()
 	}
 }
 
@@ -397,8 +442,12 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 		}
 	}
 	if spec.BootPKI {
-		// Node 1's user-data, written first, lists the token of every Node.
+		// Node 1's user-data, written first, lists the token of every Node but the Late ones, whose
+		// token the test adds to the running Node.
 		for i := 1; i <= spec.N; i++ {
+			if spec.late(i) {
+				continue
+			}
 			if err := spec.Naructl.GenToken(g.caDir, fmt.Sprintf("node-%d", i)); err != nil {
 				return nil, err
 			}

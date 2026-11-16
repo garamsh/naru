@@ -249,6 +249,8 @@ type file struct {
 	Content string `yaml:"content"`
 	// Owner is the file's numeric owner; root's when nil.
 	Owner *fileOwner `yaml:"owner,omitempty"`
+	// Restart names the services init restarts when the file changes in an apply.
+	Restart []string `yaml:"restart,omitempty"`
 }
 
 // pkiSpec, pkiAuthority and pkiCertificate are spec.pki as docs/architecture/config.md names it.
@@ -552,12 +554,16 @@ func (n Node) UserData() ([]byte, error) {
 }
 
 // withoutDisabled drops the disabled services from the Node's list, and from the restart lists of
-// spec.pki, which init refuses to resolve for a service the Node does not run.
+// spec.pki and spec.files, which init refuses to resolve for a service the Node does not run.
 func (n Node) withoutDisabled(c *nodeConfig) {
 	if len(n.Disable) == 0 {
 		return
 	}
 	c.Spec.Services = slices.DeleteFunc(c.Spec.Services, func(s service) bool { return slices.Contains(n.Disable, s.Name) })
+	for i := range c.Spec.Files {
+		r := &c.Spec.Files[i].Restart
+		*r = slices.DeleteFunc(*r, func(s string) bool { return slices.Contains(n.Disable, s) })
+	}
 	if c.Spec.PKI != nil {
 		for i := range c.Spec.PKI.Certificates {
 			r := &c.Spec.PKI.Certificates[i].Restart
@@ -566,7 +572,8 @@ func (n Node) withoutDisabled(c *nodeConfig) {
 	}
 }
 
-// tokenFiles are the Node's token, and the list of every token on a control-plane Node, 0600.
+// tokenFiles are the Node's token, and the list of every token on a control-plane Node, 0600. The
+// list restarts the API server, so a patch to its content takes effect (ADR 0081).
 func (n Node) tokenFiles() []file {
 	p := n.Mode.plan(n.Name)
 	if !p.token {
@@ -574,7 +581,7 @@ func (n Node) tokenFiles() []file {
 	}
 	files := []file{{Path: BootstrapTokenFile, Mode: "0600", Content: n.Token + "\n"}}
 	if p.tokenList {
-		files = append(files, file{Path: BootstrapTokensFile, Mode: "0600", Content: strings.Join(n.Tokens, "\n") + "\n"})
+		files = append(files, file{Path: BootstrapTokensFile, Mode: "0600", Content: TokensContent(n.Tokens), Restart: []string{Gaon.APIServer}})
 	}
 	return files
 }

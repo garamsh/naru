@@ -114,6 +114,8 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 	fs.BoolVar(&k.LocalRegistry, "local-registry", false, "run the registry service from the data disk's inputs")
 	fs.StringVar(&k.RegistryCA, "registry-ca", "", "the path on the Node of the CA containerd trusts for the registry service (with --sandbox-image)")
 	fs.StringVar(&k.SandboxImage, "sandbox-image", "", "the image of a Pod's sandbox container, which containerd pulls")
+	fs.BoolVar(&k.BootstrapTokens, "bootstrap-tokens", false, "a control-plane Node accepts bootstrap tokens from <ca-dir>/tokens, which naructl token create adds to live")
+	tokenMode := fs.Bool("token", false, "a worker's kubelet presents the token <ca-dir>/tokens/<name> for its client certificate (naructl token create --name makes it)")
 	fs.StringVar(&out, "out", "", "the user-data file to write (0600: it carries keys; a file already there is replaced)")
 	fs.StringVar(&networkConfig, "network-config", "", "also write the NoCloud network-config to this file")
 	return func(args []string, stdout, stderr io.Writer) error {
@@ -133,6 +135,16 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 		var err error
 		if n.CA, err = pki.Load(caDir); err != nil {
 			return err
+		}
+		if k.BootstrapTokens && k.ControlPlane {
+			if k.Tokens, err = pki.ReadTokens(caDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		if *tokenMode {
+			if k.Token, err = pki.ReadToken(caDir, n.Name); err != nil {
+				return fmt.Errorf("the token of %s (run token create): %w", n.Name, err)
+			}
 		}
 		if k.ControlPlane {
 			if k.FrontProxy, err = pki.Load(filepath.Join(caDir, pki.FrontProxyDir)); err != nil {

@@ -147,8 +147,11 @@ type userData struct {
 			ProfileArn               string `yaml:"profileArn"`
 			RoleArn                  string `yaml:"roleArn"`
 		} `yaml:"aws"`
-		Files []struct{ Path, Mode, Content string }
-		PKI   *struct {
+		Files []struct {
+			Path, Mode, Content string
+			Restart             []string
+		}
+		PKI *struct {
 			Authorities []struct {
 				Name, Certificate, Key, CertificatePath string
 				KeyPath                                 string `yaml:"keyPath"`

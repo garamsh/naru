@@ -170,6 +170,16 @@ func (t Tool) GenToken(caDir, name string) error {
 	return t.run("gen", "token", t.caDirFlag(), caDir, "--name", name)
 }
 
+// TokenCreate and TokenRevoke have naructl add or revoke the bootstrap token of the Node of that name
+// on the running control-plane Node the client file config reaches, with a configuration patch.
+func (t Tool) TokenCreate(caDir, name, config string) error {
+	return t.run("token", "create", t.caDirFlag(), caDir, "--name", name, "--config", config)
+}
+
+func (t Tool) TokenRevoke(caDir, name, config string) error {
+	return t.run("token", "revoke", t.caDirFlag(), caDir, "--name", name, "--config", config)
+}
+
 // Client is the files of a client pair and the CA that signed it.
 type Client struct {
 	CA, Cert, Key string
