@@ -29,7 +29,6 @@ func addSignerFlags(fs *pflag.FlagSet) signerFlags {
 		endpoint:   fs.String("endpoint", "", "with --config, the Node that runs the signer: an IP address with or without a port (default the client file's first endpoint)"),
 		serverName: serverNameFlag(fs),
 	}
-	aliasString(fs, s.endpoint, "node", "endpoint")
 	return s
 }
 

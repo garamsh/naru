@@ -91,7 +91,6 @@ func newHostCall(fs *pflag.FlagSet) hostCall {
 		passfn:     fs.String("passphrase-file", "", "a file holding the passphrase of the person file"),
 		hostCA:     fs.String("host-ca", "", "with --identity, the host authority's certificate, PEM: naructl signer ca --authority host"),
 	}
-	aliasString(fs, c.endpoint, "host", "endpoint")
 	return c
 }
 
