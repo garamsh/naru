@@ -95,6 +95,8 @@ type ClusterSpec struct {
 	HostCPUs int
 	// RTCBase, when not empty, is every Node's -rtc base, so that the Nodes boot with a wrong clock.
 	RTCBase string
+	// ExtraDiskFirst attaches every Node's extra disk before its data disk.
+	ExtraDiskFirst bool
 	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
 	// Node trusts the registry service's authority for RegistryAddr through its configuration.
 	Registries []string
@@ -243,7 +245,7 @@ func StartCluster(spec ClusterSpec) (*Cluster, error) {
 		if spec.Configure != nil {
 			spec.Configure(&cfg)
 		}
-		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase, SerialSocket: spec.SerialSocket, Capture: spec.Capture}
+		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: mcast, RTCBase: spec.RTCBase, SerialSocket: spec.SerialSocket, Capture: spec.Capture, ExtraDiskFirst: spec.ExtraDiskFirst}
 		if gen != nil {
 			if spec.secondNIC(i) {
 				start.Config.HostPort = gen.ports[i] // a control-plane Node and a host have the second NIC
@@ -476,7 +478,11 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 		if i == 0 && s.MountPoint != "" && s.MountPoint != wire.MvmdStorageMount {
 			return nil, nil, fmt.Errorf("storage %q is mounted at %s; a Gaon Node mounts its first disk at %s", s.Name, s.MountPoint, wire.MvmdStorageMount)
 		}
-		a.Storage = append(a.Storage, s.Name+"="+s.Device)
+		value := s.Device
+		if s.Serial != "" {
+			value = "serial:" + s.Serial
+		}
+		a.Storage = append(a.Storage, s.Name+"="+value)
 	}
 	if spec.GenFlags != nil {
 		a.Extra = spec.GenFlags(c)
