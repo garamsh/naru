@@ -26,7 +26,7 @@ import (
 // The serial port of a Node is a console the guest pays for in time, whoever reads it (ADR 0036). This
 // test boots three control-plane Nodes whose serial ports are unix sockets nobody reads, as a Proxmox
 // `serial0: socket` is, and watches them for stallWindow after they have run for settle: every Node
-// answers a TLS handshake within maxStall each time it is tried, and the holder of the address never
+// answers every TLS handshake, none repeatedly slower than maxStall, and the holder of the address never
 // releases it.
 const (
 	// settle is how long the Nodes run before the window opens, which is long enough for several
@@ -35,16 +35,23 @@ const (
 	// stallWindow is the time the Nodes are probed, 5 times a second each, unless NARU_STALL_WINDOW
 	// gives another (a Go duration, such as 30m).
 	stallWindow = 120 * time.Second
-	// maxStall is the slowest handshake the Nodes may answer with, and it is what separates a stall
-	// from load. A guest the serial port holds does not run while the device takes a write, at 3 to
-	// 15 ms a KiB (ADR 0036), and the filler leaves 1 MiB kept: a re-print of all of it holds the
-	// guest 3 s at the least, and does it for every Node on every re-print. A Node whose re-print is
-	// the 16 KiB in 2 KiB pieces holds the guest 30 ms at the most per piece. Load on a shared
-	// development host is the other cause of a slow handshake, and under load averages of 15 to 75
-	// 1 to 6 of about 600 handshakes per Node took 1.0 to 2.1 s, and none longer, where at low load the
-	// slowest took 285 ms. 3 s is above the load measured and at the least a stall, so a stall fails
-	// the test and load does not. The 100 ms of the criterion is aurora's on Proxmox.
-	maxStall = 3 * time.Second
+	// maxStall and repeatStalls are what separates a stall from load, and the test fails a Node that
+	// answers repeatStalls handshakes slower than maxStall, or one that fails a handshake. A guest the
+	// serial port holds does not run while the device takes a write, at 3 to 15 ms a KiB (ADR 0036),
+	// and the filler leaves 1 MiB kept: a re-print of all of it holds the guest 3 s at the least,
+	// so a probe that is in flight when it starts or arrives during it waits 2.8 s at the least, and
+	// it does so on every re-print of the Node, which is every 30 s, so at least 3 times in the window.
+	// A Node whose re-print is the 16 KiB in 2 KiB pieces holds the guest 30 ms at the most per piece.
+	// Load on a shared development host is the other cause of a slow handshake: under load averages of
+	// 15 to 75, 1 to 6 of about 600 handshakes per Node took 1.0 to 2.1 s, and none longer, where at low
+	// load the slowest took 285 ms. 2.5 s is 0.4 s above that load and 0.3 s below the shortest stall,
+	// and a stall is told from a load spike beyond what was measured by its repeating: one handshake
+	// slower than 2.5 s is not enough, two are. Neither distribution was measured on the host the test
+	// runs on for this bound, the stall one by the calculation above and not by a run of init that
+	// re-prints all of the kept log; the run is deferred to the final check of #235. The 100 ms of the
+	// criterion is aurora's on Proxmox.
+	maxStall     = 2500 * time.Millisecond
+	repeatStalls = 2
 	// slowHandshake is the length past which a handshake is counted in the log, so that a run that
 	// passed on a loaded host shows how loaded it was. It fails nothing.
 	slowHandshake = time.Second
@@ -73,7 +80,7 @@ func buildLogFill(t *testing.T) string {
 	return path.Join(fixture.GuestRoot, "bin/naru105-logfill")
 }
 
-func TestControlPlane_ThreeNodesWhoseSerialSocketNobodyReadsAnswerWithinASecondAndTheHolderNeverReleasesTheAddress(t *testing.T) {
+func TestControlPlane_ThreeNodesWhoseSerialSocketNobodyReadsAnswerWithoutRepeatedStallsAndTheHolderNeverReleasesTheAddress(t *testing.T) {
 	fill := node.ExtraService{Name: "naru105-logfill", Binary: buildLogFill(t)}
 	c := start(t, node.ClusterSpec{N: 3, Gaon: true, BootPKI: true, ControlPlanes: 3, NodeAPI: true, SerialSocket: true, ExtraServices: []node.ExtraService{fill}})
 	eventually(t, "node-1 Node API", func() bool { return ctl(c.API.Admin, "version").Err == nil })
@@ -89,9 +96,11 @@ func TestControlPlane_ThreeNodesWhoseSerialSocketNobodyReadsAnswerWithinASecondA
 
 	var mu sync.Mutex
 	slow := map[string][]string{}
+	broken := map[string][]string{}
 	probed := map[string]int{}
 	slowest := map[string]time.Duration{}
 	lagged := map[string]int{}
+	laggedAt := map[string][]string{}
 	began := time.Now()
 	var wg sync.WaitGroup
 	for name, addr := range c.HostAddrs {
@@ -114,8 +123,11 @@ func TestControlPlane_ThreeNodesWhoseSerialSocketNobodyReadsAnswerWithinASecondA
 				slowest[name] = max(slowest[name], took)
 				if took > slowHandshake {
 					lagged[name]++
+					laggedAt[name] = append(laggedAt[name], at.Sub(began).Round(100*time.Millisecond).String()+" "+took.Round(10*time.Millisecond).String())
 				}
-				if err != nil || took > maxStall {
+				if err != nil {
+					broken[name] = append(broken[name], at.Sub(began).Round(time.Millisecond).String()+": "+err.Error())
+				} else if took > maxStall {
 					slow[name] = append(slow[name], at.Sub(began).Round(time.Millisecond).String()+" took "+took.Round(time.Millisecond).String())
 				}
 				mu.Unlock()
@@ -132,10 +144,12 @@ func TestControlPlane_ThreeNodesWhoseSerialSocketNobodyReadsAnswerWithinASecondA
 	sort.Strings(names)
 	for _, name := range names {
 		assert.Greater(t, probed[name], int(stall/time.Second)*4, name+" was probed through the window")
-		assert.Empty(t, slow[name], name+" answered slower than "+maxStall.String()+" at")
+		assert.Empty(t, broken[name], name+" failed a handshake at")
+		assert.Less(t, len(slow[name]), repeatStalls, name+" answered slower than "+maxStall.String()+" at "+strings.Join(slow[name], ", "))
 	}
 	for _, name := range names {
 		t.Logf("%s: %d handshakes in %s, slowest %s, %d slower than %s, %d slower than %s", name, probed[name], stall, slowest[name].Round(time.Millisecond), lagged[name], slowHandshake, len(slow[name]), maxStall)
+		t.Logf("%s: handshakes slower than %s, at offset and length: %s", name, slowHandshake, strings.Join(laggedAt[name], ", "))
 	}
 	assert.Equal(t, strings.Count(before, "released"), strings.Count(after, "released"), "node-1's vip released the address in the window:\n%s", after)
 
