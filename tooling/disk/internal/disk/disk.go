@@ -119,6 +119,28 @@ func makeESP(esp string, length int64, stamp time.Time, kernel io.Reader, kernel
 	return v.Close()
 }
 
+// copySparse copies src into dst from offset off and writes no block of zeros, so a hole of dst,
+// which must already be as long as the copy ends, stays one: the ESP is 1 GiB and nearly all zeros,
+// and writing it whole costs a build and a test seconds of disk time and a GiB each.
+func copySparse(dst *os.File, src io.Reader, off int64) error {
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := io.ReadFull(src, buf)
+		if len(bytes.TrimLeft(buf[:n], "\x00")) > 0 {
+			if _, werr := dst.WriteAt(buf[:n], off); werr != nil {
+				return werr
+			}
+		}
+		off += int64(n)
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
 // assemble lays the ESP into a disk whose first partition starts at 1 MiB, with a MiB after it
 // for the backup GPT, and writes the partition table with sgdisk.
 func assemble(s Spec, esp string, espBytes int64) error {
@@ -135,7 +157,7 @@ func assemble(s Spec, esp string, espBytes int64) error {
 		_ = out.Close()
 		return err
 	}
-	_, copyErr := io.Copy(io.NewOffsetWriter(out, mib), in)
+	copyErr := copySparse(out, in, mib)
 	err = errors.Join(copyErr, in.Close(), out.Close())
 	if err != nil {
 		return err
@@ -169,7 +191,11 @@ func verify(s Spec, kernel *os.File) error {
 		return err
 	}
 	defer func() { _ = os.Remove(esp.Name()) }()
-	if _, err := io.Copy(esp, io.NewSectionReader(f, mib, info.Size()-2*mib)); err != nil {
+	if err := esp.Truncate(info.Size() - 2*mib); err != nil {
+		_ = esp.Close()
+		return err
+	}
+	if err := copySparse(esp, io.NewSectionReader(f, mib, info.Size()-2*mib), 0); err != nil {
 		_ = esp.Close()
 		return err
 	}
