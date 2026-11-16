@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/garamsh/naru/host/internal/api"
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 )
@@ -122,10 +123,10 @@ func checkOwnCertificates(ctx context.Context, list *identity.RevocationList, fi
 	return nil
 }
 
-// refuseRevokedKey checks the host's own certificates every interval, and calls fail with the reason
+// refuseRevokedKey checks the host's own certificates, as files names them now, every interval, and calls fail with the reason
 // when one is revoked. A list that cannot be had is logged, and the check retried. It returns when
 // one is revoked and when ctx ends.
-func refuseRevokedKey(ctx context.Context, list *identity.RevocationList, interval time.Duration, log *slog.Logger, fail func(error), files ...string) {
+func refuseRevokedKey(ctx context.Context, list *identity.RevocationList, interval time.Duration, log *slog.Logger, fail func(error), files func() []string) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -134,7 +135,7 @@ func refuseRevokedKey(ctx context.Context, list *identity.RevocationList, interv
 			return
 		case <-t.C:
 		}
-		err := checkOwnCertificates(ctx, list, files...)
+		err := checkOwnCertificates(ctx, list, files()...)
 		switch {
 		case err == nil:
 		case errors.Is(err, identity.ErrRevoked):
@@ -144,4 +145,22 @@ func refuseRevokedKey(ctx context.Context, list *identity.RevocationList, interv
 			log.Warn("cannot check the host's own certificates against the revocation list yet", "err", err.Error())
 		}
 	}
+}
+
+// chooseServing picks the pair the host API serves at start (ADR 0077): the pair a rotation stored,
+// when there is one and it is not revoked, else the configuration's pair at certFile and keyFile.
+// It returns identity.ErrRevoked when the pair it falls to is revoked, so a host never serves with a
+// revoked pair. A list that cannot be had yet is no verdict, and the periodic check retries.
+func chooseServing(ctx context.Context, list *identity.RevocationList, log *slog.Logger, certFile, keyFile, stored string) (*api.Serving, error) {
+	if _, err := os.Stat(stored); err == nil {
+		err := checkOwnCertificates(ctx, list, stored)
+		if !errors.Is(err, identity.ErrRevoked) {
+			return api.NewServing(stored, stored, stored)
+		}
+		log.Warn("the stored serving pair is revoked, so the configuration's pair is tried", "err", err.Error())
+	}
+	if err := checkOwnCertificates(ctx, list, certFile); errors.Is(err, identity.ErrRevoked) {
+		return nil, err
+	}
+	return api.NewServing(certFile, keyFile, stored)
 }

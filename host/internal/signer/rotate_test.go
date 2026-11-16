@@ -1,7 +1,10 @@
 package signer_test
 
 import (
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"net"
 	"net/http"
 	"testing"
 
@@ -42,6 +45,22 @@ func TestReissueHost_IssuesANewCertificateAndRevokesNothing(t *testing.T) {
 
 	serials, _ := serialsOf(t, e, e.s)
 	assert.Empty(t, serials, "the old pair stays valid until the host holds the new one")
+}
+
+func TestReissueHost_NamesTheAddressTheRequestCarriesSoClientsThatConnectByItVerify(t *testing.T) {
+	e := newEnv(t)
+	op := e.issue(identity.RoleOperator, "alice")
+	e.hostCert("host-1")
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{IPAddresses: []net.IP{net.ParseIP("10.0.0.7")}}, newKey(t))
+	require.NoError(t, err)
+	status, body := e.rotate(op, "host-1", der)
+	require.Equal(t, http.StatusOK, status, string(body))
+	var issued identity.Issued
+	require.NoError(t, json.Unmarshal(body, &issued))
+	fresh := parseCert(t, issued.Certificate)
+	require.Len(t, fresh.IPAddresses, 1)
+	assert.Equal(t, "10.0.0.7", fresh.IPAddresses[0].String())
+	assert.Equal(t, []string{"host-1"}, fresh.DNSNames)
 }
 
 func TestRetireHost_RevokesEverySerialButTheKeptOneAndRetryingChangesNothing(t *testing.T) {

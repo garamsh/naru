@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -238,12 +240,35 @@ type fakeHost struct {
 	status int
 	got    map[string]string
 	order  *[]string
+
+	mu        sync.Mutex
+	presented *tls.Certificate
+}
+
+// serve makes the host present a certificate of the serial from the next handshake on, as a host
+// that took the pair does. The test server's own certificate is the CA that signs it.
+func (h *fakeHost) serve(t *testing.T, serial *big.Int) {
+	t.Helper()
+	ca := h.srv.TLS.Certificates[0]
+	parent, err := x509.ParseCertificate(ca.Certificate[0])
+	require.NoError(t, err)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: serial, Subject: pkix.Name{CommonName: "h-1"}, DNSNames: []string{"example.com"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}, parent, &key.PublicKey, ca.PrivateKey)
+	require.NoError(t, err)
+	h.mu.Lock()
+	h.presented = &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	h.mu.Unlock()
 }
 
 func startFakeHost(t *testing.T, order *[]string) *fakeHost {
 	t.Helper()
 	h := &fakeHost{status: http.StatusOK, order: order}
-	h.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*h.order = append(*h.order, r.Method+" "+r.URL.Path)
 		if h.status != http.StatusOK {
 			w.WriteHeader(h.status)
@@ -254,8 +279,18 @@ func startFakeHost(t *testing.T, order *[]string) *fakeHost {
 		b, _ := pem.Decode([]byte(h.got["certificate"]))
 		cert, err := x509.ParseCertificate(b.Bytes)
 		require.NoError(t, err)
+		h.serve(t, cert.SerialNumber)
 		_ = json.NewEncoder(w).Encode(map[string]string{"serial": cert.SerialNumber.Text(16)})
 	}))
+	h.srv.TLS = &tls.Config{GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.presented != nil {
+			return h.presented, nil
+		}
+		return &h.srv.TLS.Certificates[0], nil
+	}}
+	h.srv.StartTLS()
 	t.Cleanup(h.srv.Close)
 	pair := caOf(t)
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: h.srv.Certificate().Raw})

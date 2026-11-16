@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -274,7 +275,7 @@ func signerRotateHost(fs *pflag.FlagSet) runner {
 		if err != nil {
 			return err
 		}
-		csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: *hostID}}, key)
+		csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: *hostID}, IPAddresses: hc.addressIPs()}, key)
 		if err != nil {
 			return err
 		}
@@ -306,6 +307,10 @@ func signerRotateHost(fs *pflag.FlagSet) runner {
 			return fmt.Errorf("the host reports with serial %s, not the new %s, so the old pair is not revoked", served, issued.Serial)
 		}
 
+		if err := hc.waitServing(issued.Serial); err != nil {
+			return fmt.Errorf("the host reports with the new pair but its API does not present it, so the old pair is not revoked: %w", err)
+		}
+
 		signed, err = signAs(*admin, *pass, identity.ActionRetireHost, identity.RetireHostRequest{HostID: *hostID, Keep: issued.Serial})
 		if err != nil {
 			return err
@@ -324,7 +329,41 @@ func signerRotateHost(fs *pflag.FlagSet) runner {
 type hostPair struct {
 	hc   *http.Client
 	base string
+	addr string
+	conf *tls.Config
 }
+
+// servedSerial is the serial, in hexadecimal, of the certificate the host API presents on a new
+// connection.
+func (h hostPair) servedSerial() (string, error) {
+	d := &net.Dialer{Timeout: callTimeout}
+	c, err := tls.DialWithDialer(d, "tcp", h.addr, h.conf)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = c.Close() }()
+	return c.ConnectionState().PeerCertificates[0].SerialNumber.Text(16), nil
+}
+
+// waitServing waits for the host API to present the certificate of serial on a new connection: the
+// old serials are revoked only when new clients get the new pair.
+func (h hostPair) waitServing(serial string) error {
+	var last error
+	for deadline := time.Now().Add(servingWait); time.Now().Before(deadline); time.Sleep(time.Second) {
+		got, err := h.servedSerial()
+		if err == nil && got == serial {
+			return nil
+		}
+		if err == nil {
+			err = fmt.Errorf("it presents serial %s", got)
+		}
+		last = err
+	}
+	return last
+}
+
+// servingWait is how long rotate-host waits for the host API to present the new certificate.
+const servingWait = 30 * time.Second
 
 func loadHostClient(file, endpoint, serverName string) (hostPair, error) {
 	f, err := client.LoadFile(file)
@@ -346,8 +385,8 @@ func loadHostClient(file, endpoint, serverName string) (hostPair, error) {
 	if err != nil {
 		return hostPair{}, fmt.Errorf("the client file's certificate and key: %w", err)
 	}
-	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: serverName, Certificates: []tls.Certificate{pair}}}
-	return hostPair{hc: &http.Client{Transport: tr, Timeout: callTimeout}, base: "https://" + addr}, nil
+	conf := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: serverName, Certificates: []tls.Certificate{pair}}
+	return hostPair{hc: &http.Client{Transport: &http.Transport{TLSClientConfig: conf}, Timeout: callTimeout}, base: "https://" + addr, addr: addr, conf: conf}, nil
 }
 
 // install is PUT /v1/identity of the host API: it returns the serial the host reports with once the
@@ -424,4 +463,17 @@ func signerRegisterHost(fs *pflag.FlagSet) runner {
 		_, _ = fmt.Fprintf(stdout, "naructl: registered serial %s for %s; rotate-host revokes it\n", serial, *hostID)
 		return nil
 	}
+}
+
+// addressIPs is the host API's address when it is an IP, which the new serving certificate has to
+// name for the clients that connect by it.
+func (h hostPair) addressIPs() []net.IP {
+	host, _, err := net.SplitHostPort(h.addr)
+	if err != nil {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IP{ip}
+	}
+	return nil
 }

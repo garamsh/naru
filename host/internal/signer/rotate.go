@@ -34,7 +34,7 @@ func (s *Signer) ReissueHost(signed []byte) (identity.Issued, error) {
 	if len(cur.hosts[req.HostID]) == 0 {
 		return identity.Issued{}, fmt.Errorf("%w: %s; register the serial of an offline pair with register-host", ErrUnknownHost, req.HostID)
 	}
-	issued, err := issueLeaf(cur.host, s.now(), req.HostID, identity.RoleHost, csr.PublicKey, serverAndClient, &x509.CertificateRequest{DNSNames: []string{req.HostID}})
+	issued, err := issueLeaf(cur.host, s.now(), req.HostID, identity.RoleHost, csr.PublicKey, serverAndClient, &x509.CertificateRequest{DNSNames: []string{req.HostID}, IPAddresses: csr.IPAddresses})
 	if err != nil {
 		return identity.Issued{}, err
 	}

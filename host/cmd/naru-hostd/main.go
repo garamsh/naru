@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -90,11 +91,6 @@ func main() {
 		log.Error("cannot set up the revocation list", "err", err.Error())
 		os.Exit(1)
 	}
-	conf, err := api.TLSConfig(*cert, *key, *clients, revocations)
-	if err != nil {
-		log.Error("cannot load the serving pair or the client CA", "err", err.Error())
-		os.Exit(1)
-	}
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		log.Error("cannot listen", "addr", *listen, "err", err.Error())
@@ -112,15 +108,26 @@ func main() {
 	defer stop()
 
 	go prefetch(ctx, revocations, log)
-	ownFiles := []string{*cert, enroll.CertPathFor(*hostKey)}
-	if err := checkOwnCertificates(ctx, revocations, ownFiles...); errors.Is(err, identity.ErrRevoked) {
+	storedServing := filepath.Join(filepath.Dir(*hostKey), "serving.pem")
+	serving, err := chooseServing(ctx, revocations, log, *cert, *key, storedServing)
+	if err != nil {
+		log.Error("refusing to serve with a revoked key", "err", err.Error())
+		os.Exit(1)
+	}
+	conf, err := api.TLSConfig(serving, *clients, revocations)
+	if err != nil {
+		log.Error("cannot load the client CA", "err", err.Error())
+		os.Exit(1)
+	}
+	ownFiles := func() []string { return []string{serving.File(), enroll.CertPathFor(*hostKey)} }
+	if err := checkOwnCertificates(ctx, revocations, ownFiles()...); errors.Is(err, identity.ErrRevoked) {
 		log.Error("refusing to serve with a revoked key", "err", err.Error())
 		os.Exit(1)
 	}
 	go refuseRevokedKey(ctx, revocations, ownCertificateInterval, log, func(err error) {
 		log.Error("refusing to serve with a revoked key", "err", err.Error())
 		os.Exit(1)
-	}, ownFiles...)
+	}, ownFiles)
 
 	r := &fence.Renewer{Runtime: rt, Length: *length, Interval: *interval, Retry: 5 * time.Second, Log: log}
 	go r.Run(ctx)
@@ -151,7 +158,7 @@ func main() {
 	}
 
 	reg := metrics.New()
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair})
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving})
 	if *metricsAddr != "" {
 		go func() {
 			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {

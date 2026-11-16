@@ -137,10 +137,20 @@ func TestFleet_RotatingARunningHostDeliversTheNewPairBeforeTheOldIsRevoked(t *te
 	require.NoError(t, r.Err, r.Stderr)
 }
 
-// A host whose configuration carries a revoked key refuses it (ADR 0077): the pair gen node wrote is
-// registered by its serial, the rotation revokes it, and naru-hostd stops serving with it, while it runs
-// and again after it restarts from the configuration that still carries it.
-func TestFleet_RotatingAHostRevokesAnOfflinePairRegisteredBySerialAndTheHostRefusesItAfterARestart(t *testing.T) {
+// servedSerial is the serial, in hex, of the certificate naru-hostd at addr presents.
+func servedSerial(t *testing.T, addr string) string {
+	t.Helper()
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr, &tls.Config{InsecureSkipVerify: true})
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	return conn.ConnectionState().PeerCertificates[0].SerialNumber.Text(16)
+}
+
+// The whole cycle of the pair gen node wrote (ADR 0077): it is registered by its serial, the rotation
+// delivers a new serving pair to the running host and only then revokes the old one, the host keeps
+// serving and is reachable throughout, and after a restart from the configuration that still carries the
+// revoked pair it serves the pair it stored and does not say it refuses.
+func TestFleet_RotatingAHostRevokesAnOfflinePairRegisteredBySerialAndTheHostServesTheNewPairAfterARestart(t *testing.T) {
 	f := newFleet(t, fleetOpts{controls: 1, hosts: 1})
 	f.startOrch()
 	h := f.hosts()[0]
@@ -152,27 +162,32 @@ func TestFleet_RotatingAHostRevokesAnOfflinePairRegisteredBySerialAndTheHostRefu
 
 	servingCrt, cn := servedCertificate(t, api.Addr, f.dir, "serving")
 	require.Equal(t, id, cn, "the pair gen node wrote names the host orch knows")
+	oldSerial := serialOfFile(t, servingCrt)
 	f.must(nrun("signer", "register-host", "--admin", f.root.file, "--passphrase-file", f.pass, "--host-id", id,
 		"--cert", servingCrt, "--config", f.c.API.Admin), "register the offline pair by its serial")
 
-	f.must(nrun("signer", "rotate-host", "--admin", f.root.file, "--passphrase-file", f.pass, "--host-id", id,
+	out := f.must(nrun("signer", "rotate-host", "--admin", f.root.file, "--passphrase-file", f.pass, "--host-id", id,
 		"--host-client", api.Provisioner, "--config", f.c.API.Admin), "rotate the host's pair")
 
-	refuses := func() bool {
-		conn, err := net.DialTimeout("tcp", api.Addr, 5*time.Second)
-		if err == nil {
-			_ = conn.Close()
-		}
-		return err != nil
-	}
-	eventually(t, "the host stops serving with the revoked pair of its configuration", refuses)
+	newSerial := servedSerial(t, api.Addr)
+	assert.NotEqual(t, oldSerial, newSerial, "the host serves the new pair")
+	assert.Contains(t, out, newSerial, "naructl reports the serial the host reports with")
+	r := hctl(api.Provisioner, []string{"microvm", "list"})
+	require.NoError(t, r.Err, "the host stays reachable with the new pair: "+r.Stderr)
 
-	// Restarted from the same configuration, which still carries the revoked pair, it refuses at start.
+	// Restarted from the configuration that still carries the revoked pair, it serves the stored one.
 	const refusal = "refusing to serve with a revoked key"
 	was := strings.Count(f.node(h).Console(), refusal)
 	f.edit(h, func(string) error { return nil })
-	eventually(t, "the restarted host says it refuses a revoked key", func() bool {
-		return strings.Count(f.node(h).Console(), refusal) > was
+	eventually(t, "the restarted host serves the pair the rotation stored", func() bool {
+		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", api.Addr, &tls.Config{InsecureSkipVerify: true})
+		if err != nil {
+			return false
+		}
+		defer func() { _ = conn.Close() }()
+		return conn.ConnectionState().PeerCertificates[0].SerialNumber.Text(16) == newSerial
 	})
-	assert.True(t, refuses(), "the restarted host does not serve with the revoked pair")
+	assert.Equal(t, was, strings.Count(f.node(h).Console(), refusal), "it did not refuse: the pair it holds is not revoked")
+	r = hctl(api.Provisioner, []string{"microvm", "list"})
+	require.NoError(t, r.Err, r.Stderr)
 }

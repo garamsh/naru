@@ -31,7 +31,7 @@ type identityAnswer struct {
 	Serial string `json:"serial"`
 }
 
-// putIdentity replaces the pair the host reports to orch with (ADR 0077). Orch has to accept the new
+// putIdentity replaces the pair the host reports to orch with and the pair it serves with (ADR 0077). Orch has to accept the new
 // pair before it replaces anything, so a 200 means the host is already reporting with it, and
 // anything else leaves the old pair in use. A host that is not enrolled with an orch answers 409.
 func (s *Server) putIdentity(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +47,13 @@ func (s *Server) putIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serial, err := s.deps.Identity.Rotate(r.Context(), []byte(req.Certificate), []byte(req.Key))
+	if err == nil && s.deps.Serving != nil {
+		if err = s.deps.Serving.Replace([]byte(req.Certificate), []byte(req.Key)); err != nil {
+			s.deps.Log.Error("the host reports with the new pair but cannot serve it", "err", err.Error())
+			writeJSON(w, http.StatusInternalServerError, hostapi.ErrorBody{Error: "the host reports to orch with the new pair but could not store it to serve with, so the old pair is not to be revoked"})
+			return
+		}
+	}
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, identityAnswer{Serial: serial})

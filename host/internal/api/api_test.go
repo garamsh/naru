@@ -160,7 +160,9 @@ func startEnvRevoking(t *testing.T, gateway netip.Addr, networks bool, revocatio
 		require.NoError(t, os.WriteFile(p, b, 0o600))
 		return p
 	}
-	conf, err := TLSConfig(write("tls.crt", crt), write("tls.key", key), write("ca.crt", ca.pem), revocations)
+	serving, err := NewServing(write("tls.crt", crt), write("tls.key", key), filepath.Join(dir, "serving.pem"))
+	require.NoError(t, err)
+	conf, err := TLSConfig(serving, write("ca.crt", ca.pem), revocations)
 	require.NoError(t, err)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
