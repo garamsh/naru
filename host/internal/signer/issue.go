@@ -96,7 +96,7 @@ func (s *Signer) IssueHost(req identity.HostRequest) (identity.Issued, error) {
 	if err != nil {
 		return identity.Issued{}, err
 	}
-	if err := s.record(issued.Serial, identity.RoleHost); err != nil {
+	if err := s.recordHost(adm.HostID, issued.Serial); err != nil {
 		return identity.Issued{}, err
 	}
 	s.log.Info("issued a host certificate", "host_id", adm.HostID, "serial", issued.Serial, "key_sha256", adm.HostKeySHA256,
@@ -160,6 +160,19 @@ func (s *Signer) record(serial string, role identity.Role) error {
 	defer s.mu.Unlock()
 	next := s.auth.withIssued(serial, role)
 	if err := writeFile(filepath.Join(s.dir, issuedFile), next.marshalIssued()); err != nil {
+		return err
+	}
+	s.auth = next
+	return nil
+}
+
+// recordHost notes the serial of a host's certificate under its host ID, and as issued to role host,
+// before the certificate is handed out.
+func (s *Signer) recordHost(hostID, serial string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.auth.withHost(hostID, serial)
+	if err := commitFiles(s.dir, []stagedFile{{issuedFile, next.marshalIssued()}, {hostsFile, next.marshalHosts()}}); err != nil {
 		return err
 	}
 	s.auth = next

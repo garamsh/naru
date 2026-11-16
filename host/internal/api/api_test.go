@@ -149,7 +149,7 @@ func startEnv(t *testing.T, gateway netip.Addr, networks bool) *env {
 }
 
 // startEnvRevoking is startEnv for a listener that checks its clients against revocations.
-func startEnvRevoking(t *testing.T, gateway netip.Addr, networks bool, revocations *identity.RevocationList) *env {
+func startEnvRevoking(t *testing.T, gateway netip.Addr, networks bool, revocations *identity.RevocationList, with ...func(*Deps)) *env {
 	t.Helper()
 	dir := t.TempDir()
 	ca := newAuthority(t, "clients")
@@ -160,7 +160,9 @@ func startEnvRevoking(t *testing.T, gateway netip.Addr, networks bool, revocatio
 		require.NoError(t, os.WriteFile(p, b, 0o600))
 		return p
 	}
-	conf, err := TLSConfig(write("tls.crt", crt), write("tls.key", key), write("ca.crt", ca.pem), revocations)
+	serving, err := NewServing(write("tls.crt", crt), write("tls.key", key), filepath.Join(dir, "serving.pem"))
+	require.NoError(t, err)
+	conf, err := TLSConfig(serving, write("ca.crt", ca.pem), revocations)
 	require.NoError(t, err)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -175,6 +177,9 @@ func startEnvRevoking(t *testing.T, gateway netip.Addr, networks bool, revocatio
 	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics, Revocations: revocations, LeaderTokenFile: filepath.Join(dir, "leader-token")}
 	if networks {
 		deps.Networks = e.nets
+	}
+	for _, f := range with {
+		f(&deps)
 	}
 	srv := New(deps)
 	ctx, stop := context.WithCancel(context.Background())

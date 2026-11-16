@@ -49,6 +49,11 @@ type Deps struct {
 	// LeaderTokenFile keeps the highest leader token orch has sent (ADR 0071). Empty keeps it in
 	// memory only.
 	LeaderTokenFile string
+	// Identity is the pair the host reports to orch with. Nil means the host has no orch to enroll
+	// with, and PUT /v1/identity answers 409.
+	Identity Identity
+	// Serving is the pair the API presents; PUT /v1/identity replaces it with the same pair. Nil leaves it alone.
+	Serving *Serving
 }
 
 // Server is the host API.
@@ -90,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/peers", s.putPeers)
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	mux.HandleFunc("GET /v1/tunnel", s.getTunnel)
+	mux.HandleFunc("PUT /v1/identity", s.putIdentity)
 	s.routeBootSets(mux)
 	return s.recovering(s.logged(s.authorised(s.leaderToken(mux))))
 }
@@ -161,14 +167,10 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 // TLSConfig returns the configuration of the listener: TLS 1.3 only, the serving pair at
-// certFile and keyFile, and a client certificate required and verified against the client CA at
+// serving, and a client certificate required and verified against the client CA at
 // clientCAFile. When revocations is not nil, a certificate on the signer's list is refused at the
 // handshake, and so is every client while the list is older than its max age or was never had.
-func TLSConfig(certFile, keyFile, clientCAFile string, revocations *identity.RevocationList) (*tls.Config, error) {
-	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, err
-	}
+func TLSConfig(serving *Serving, clientCAFile string, revocations *identity.RevocationList) (*tls.Config, error) {
 	ca, err := os.ReadFile(clientCAFile)
 	if err != nil {
 		return nil, err
@@ -178,7 +180,7 @@ func TLSConfig(certFile, keyFile, clientCAFile string, revocations *identity.Rev
 		return nil, errors.New(clientCAFile + " holds no certificate")
 	}
 	conf := &tls.Config{
-		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{pair},
+		MinVersion: tls.VersionTLS13, GetCertificate: serving.GetCertificate,
 		ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert, NextProtos: []string{"http/1.1"},
 	}
 	if revocations != nil {
