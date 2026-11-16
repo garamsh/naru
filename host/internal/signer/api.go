@@ -35,6 +35,8 @@ func (s *Signer) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/orch", handleSigned(s, s.IssueOrch))
 	mux.HandleFunc("POST /v1/operator", handleSigned(s, s.IssueOperator))
 	mux.HandleFunc("POST /v1/revoke", handleSigned(s, s.Revoke))
+	mux.HandleFunc("POST /v1/rotate-host", handleSigned(s, s.RotateHost))
+	mux.HandleFunc("POST /v1/register-host", handleSigned(s, func(signed []byte) (struct{}, error) { return struct{}{}, s.RegisterHost(signed) }))
 	mux.HandleFunc("POST /v1/reissue-root", handleSigned(s, s.ReissueRoot))
 	mux.HandleFunc("POST /v1/crl", handleSigned(s, s.PushCRL))
 	mux.HandleFunc("GET /v1/crl", s.handle(func(*http.Request) (any, error) { return s.CRL() }))
@@ -114,7 +116,7 @@ func (s *Signer) wrap(next http.Handler) http.Handler {
 // never reaches it: the mux answers 404.
 func statusOf(err error) int {
 	switch {
-	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced):
+	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost):
 		return http.StatusConflict
 	case errors.Is(err, ErrBadRequest), errors.Is(err, identity.ErrFormat):
 		return http.StatusBadRequest

@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/garamsh/naru/lib/atomicfile"
@@ -23,6 +24,7 @@ import (
 
 // The files of the signer's directory, each mode 0600.
 const (
+	hostsFile        = "hosts.json" // optional: host ID to the serials of its certificates
 	hostCAFile       = "host-ca"
 	operatorCAFile   = "operator-ca"
 	orchCAFile       = "orch-ca"
@@ -55,6 +57,8 @@ type authorities struct {
 	// issued is the role of every serial the signer issued, by serial in lower-case hex. A
 	// revoke reads it to keep root's serials root's.
 	issued map[string]string
+	// hosts lists the certificate serials of every host by host ID, which a rotation revokes.
+	hosts map[string][]string
 }
 
 func newAuthority(cn string, now time.Time) (authority, error) {
@@ -189,6 +193,7 @@ func (a *authorities) save(dir string, extra ...stagedFile) error {
 		stagedFile{revocationFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: revDER})},
 		stagedFile{recoveryPubFile, pub},
 		stagedFile{issuedFile, a.marshalIssued()},
+		stagedFile{hostsFile, a.marshalHosts()},
 		stagedFile{crlFile, a.crlSigned})
 	return commitFiles(dir, append(files, extra...))
 }
@@ -196,6 +201,22 @@ func (a *authorities) save(dir string, extra ...stagedFile) error {
 func (a *authorities) marshalIssued() []byte {
 	b, _ := json.Marshal(a.issued) // a map of strings always marshals
 	return b
+}
+
+func (a *authorities) marshalHosts() []byte {
+	b, _ := json.Marshal(a.hosts) // a map of string slices always marshals
+	return b
+}
+
+// withHost returns a copy of a that also records serial, issued to role host, under hostID.
+func (a *authorities) withHost(hostID, serial string) *authorities {
+	next := a.withIssued(serial, identity.RoleHost)
+	next.hosts = maps.Clone(a.hosts)
+	if next.hosts == nil {
+		next.hosts = map[string][]string{}
+	}
+	next.hosts[hostID] = append(slices.Clone(next.hosts[hostID]), serial)
+	return next
 }
 
 // withIssued returns a copy of a that also records serial as issued to role.
@@ -277,6 +298,13 @@ func loadAuthorities(dir string) (*authorities, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read %s: %w", issuedFile, err)
 	}
+	if data, err := os.ReadFile(filepath.Join(dir, hostsFile)); err == nil {
+		if err := json.Unmarshal(data, &a.hosts); err != nil {
+			return nil, fmt.Errorf("%w: %s: %w", errCorrupt, hostsFile, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read %s: %w", hostsFile, err)
+	}
 	if err := a.check(); err != nil {
 		return nil, err
 	}
@@ -333,6 +361,7 @@ type bundleFile struct {
 	Recovery   identity.RecoveryPublic `json:"recovery"`
 	CRL        []byte                  `json:"crl"`
 	Issued     map[string]string       `json:"issued,omitempty"`
+	Hosts      map[string][]string     `json:"hosts,omitempty"`
 }
 
 type bundleAuthority struct {
@@ -358,7 +387,7 @@ func (a *authorities) marshalBundle() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal revocation key: %w", err)
 	}
-	b.Revocation, b.Recovery, b.CRL, b.Issued = revDER, a.recovery, a.crlSigned, a.issued
+	b.Revocation, b.Recovery, b.CRL, b.Issued, b.Hosts = revDER, a.recovery, a.crlSigned, a.issued, a.hosts
 	return json.Marshal(b)
 }
 
@@ -371,7 +400,7 @@ func parseBundle(plain []byte) (*authorities, error) {
 	if b.Version != bundleVersion {
 		return nil, fmt.Errorf("%w: bundle version %d", errCorrupt, b.Version)
 	}
-	a := &authorities{recovery: b.Recovery, crlSigned: b.CRL, issued: b.Issued}
+	a := &authorities{recovery: b.Recovery, crlSigned: b.CRL, issued: b.Issued, hosts: b.Hosts}
 	var err error
 	for _, p := range []struct {
 		from bundleAuthority
