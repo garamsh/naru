@@ -188,11 +188,13 @@ type AWS struct {
 	RoleArn        string `yaml:"roleArn"`
 }
 
-// StorageDisk is an extra disk: its name, and the label or the device path that finds it, exactly one.
+// StorageDisk is an extra disk: its name, and the label, the device path or the serial number that
+// finds it, exactly one.
 type StorageDisk struct {
 	Name   string `yaml:"name"`
 	Label  string `yaml:"label,omitempty"`
 	Device string `yaml:"device,omitempty"`
+	Serial string `yaml:"serial,omitempty"`
 }
 
 type service struct {
@@ -240,6 +242,7 @@ type storage struct {
 	Name       string `yaml:"name"`
 	Label      string `yaml:"label,omitempty"`
 	Device     string `yaml:"device,omitempty"`
+	Serial     string `yaml:"serial,omitempty"`
 	MountPoint string `yaml:"mountPoint,omitempty"`
 }
 
@@ -403,15 +406,15 @@ func (n Node) checkGaon() error {
 }
 
 // checkStorage reports the first extra disk init would refuse: a name that is not a DNS label of at
-// most 12 characters (the XFS label) or is repeated, or an empty label and device.
+// most 12 characters (the XFS label) or is repeated, or no label, device and serial.
 func (n Node) checkStorage() error {
 	seen := map[string]bool{}
 	for _, d := range n.Storage {
 		switch {
 		case !dnsLabel.MatchString(d.Name) || len(d.Name) > 12:
 			return fmt.Errorf("the storage name %q is not a DNS label of at most 12 characters", d.Name)
-		case d.Label == "" && d.Device == "":
-			return fmt.Errorf("storage %q has no label or device", d.Name)
+		case d.Label == "" && d.Device == "" && d.Serial == "":
+			return fmt.Errorf("storage %q has no label, device or serial", d.Name)
 		case seen[d.Name]:
 			return fmt.Errorf("storage %q is given twice", d.Name)
 		}
@@ -534,7 +537,7 @@ func (n Node) UserData() ([]byte, error) {
 		c.Spec.AWS = &awsSpec{Region: a.Region, TrustAnchorArn: a.TrustAnchorArn, ProfileArn: a.ProfileArn, RoleArn: a.RoleArn, Certificate: cert, Key: key}
 	}
 	for i, d := range n.Storage {
-		e := storage{Name: d.Name, Label: d.Label, Device: d.Device}
+		e := storage{Name: d.Name, Label: d.Label, Device: d.Device, Serial: d.Serial}
 		if i == 0 {
 			e.MountPoint = wire.MvmdStorageMount
 		}

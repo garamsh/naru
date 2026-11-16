@@ -24,10 +24,12 @@ func TestParse_AcceptsSpecStorage(t *testing.T) {
 	cfg, err := config.Parse([]byte(storageDoc(
 		"{name: vmdisks, label: vmdisks}",
 		"{name: scratch, device: /dev/sdc, form: xfs, mountPoint: /var/lib/naru/mvmd/disks}",
+		"{name: bulk, serial: S3RIAL-01}",
 	)))
 
 	require.NoError(t, err)
-	require.Len(t, cfg.Spec.Storage, 2)
+	require.Len(t, cfg.Spec.Storage, 3)
+	assert.Equal(t, "S3RIAL-01", cfg.Spec.Storage[2].Serial)
 	assert.Equal(t, "/var/lib/naru/storage/vmdisks", cfg.Spec.Storage[0].Mount())
 	assert.Equal(t, "/var/lib/naru/mvmd/disks", cfg.Spec.Storage[1].Mount())
 }
@@ -49,8 +51,10 @@ func TestParse_RefusesSpecStorageAndNamesTheField(t *testing.T) {
 		{"a name longer than an XFS label", storageDoc("{name: thirteen-char, label: x}"), "spec.storage[0].name"},
 		{"a name with a slash", storageDoc("{name: a/b, label: x}"), "spec.storage[0].name"},
 		{"a name twice", storageDoc("{name: a, label: x}", "{name: a, label: y, mountPoint: /mnt/y}"), "spec.storage[1].name"},
-		{"neither label nor device", storageDoc("{name: a}"), "spec.storage[0]"},
+		{"none of label, device and serial", storageDoc("{name: a}"), "spec.storage[0]"},
 		{"both label and device", storageDoc("{name: a, label: x, device: /dev/sdb}"), "spec.storage[0]"},
+		{"both serial and label", storageDoc("{name: a, label: x, serial: S1}"), "spec.storage[0]"},
+		{"both serial and device", storageDoc("{name: a, device: /dev/sdb, serial: S1}"), "spec.storage[0]"},
 		{"a relative device", storageDoc("{name: a, device: sdb}"), "spec.storage[0].device"},
 		{"a form other than xfs", storageDoc("{name: a, label: x, form: ext4}"), "spec.storage[0].form"},
 		{"a relative mount point", storageDoc("{name: a, label: x, mountPoint: disks}"), "spec.storage[0].mountPoint"},

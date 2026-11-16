@@ -14,6 +14,7 @@ type storedDisk struct {
 	Name       string
 	Label      string
 	Device     string
+	Serial     string
 	MountPoint string `yaml:"mountPoint"`
 }
 
@@ -33,8 +34,8 @@ func TestGenNode_StorageIsWrittenAndTheFirstDiskIsMountedWhereMvmdKeepsItsDisksS
 	path := dep.node(t, "node-1", "--storage", "vmdisks=vmdisks", "--storage", "scratch=extra")
 
 	assert.Equal(t, []storedDisk{
-		{"vmdisks", "vmdisks", "", "/var/lib/naru/mvmd-storage"},
-		{"scratch", "extra", "", ""},
+		{"vmdisks", "vmdisks", "", "", "/var/lib/naru/mvmd-storage"},
+		{"scratch", "extra", "", "", ""},
 	}, storage(t, path))
 	validate(t, path) // naru-init accepts spec.storage
 }
@@ -44,10 +45,32 @@ func TestGenNode_AValueStartingWithDevIsTheDeviceAndAnyOtherIsTheLabel(t *testin
 	path := dep.node(t, "node-1", "--storage", "vmdisks=/dev/sdc", "--storage", "scratch=extra")
 
 	assert.Equal(t, []storedDisk{
-		{"vmdisks", "", "/dev/sdc", "/var/lib/naru/mvmd-storage"},
-		{"scratch", "extra", "", ""},
+		{"vmdisks", "", "/dev/sdc", "", "/var/lib/naru/mvmd-storage"},
+		{"scratch", "extra", "", "", ""},
 	}, storage(t, path))
 	validate(t, path) // naru-init accepts a device entry
+}
+
+func TestGenNode_AValueStartingWithSerialIsTheDiskSerialNumber(t *testing.T) {
+	dep := newDeployment(t)
+	path := dep.node(t, "node-1", "--storage", "vmdisks=serial:S3RIAL-01", "--storage", "scratch=extra")
+
+	assert.Equal(t, []storedDisk{
+		{"vmdisks", "", "", "S3RIAL-01", "/var/lib/naru/mvmd-storage"},
+		{"scratch", "extra", "", "", ""},
+	}, storage(t, path))
+	validate(t, path) // naru-init accepts a serial entry
+}
+
+func TestGenNode_AStorageSerialWithoutANumberIsRefused(t *testing.T) {
+	dep := newDeployment(t)
+
+	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24",
+		"--api-server", "192.168.0.10", "--machine-prefix", "10.200.1.0/24", "--guest", dep.guest,
+		"--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "n.yaml"), "--storage", "vmdisks=serial:")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error()+out, "names no serial number")
 }
 
 func TestGenNode_WithoutStorageTheUserDataCarriesNone(t *testing.T) {
@@ -67,8 +90,8 @@ func TestGenNode_RefusesStorageInitWouldRefuse(t *testing.T) {
 		storage []string
 		reason  string
 	}{
-		{"not <name>=<value>", []string{"vmdisks"}, "is not <name>=<label or /dev/path>"},
-		{"no label", []string{"vmdisks="}, "has no label or device"},
+		{"not <name>=<value>", []string{"vmdisks"}, "is not <name>=<label, /dev/path or serial:NUMBER>"},
+		{"no label", []string{"vmdisks="}, "has no label, device or serial"},
 		{"a name too long for an XFS label", []string{"averylongname1=x"}, "at most 12"},
 		{"a name that is no DNS label", []string{"Vm_Disks=x"}, "DNS label"},
 		{"a name twice", []string{"a=x", "a=y"}, "given twice"},

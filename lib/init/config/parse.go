@@ -206,10 +206,10 @@ func (v *validation) storage(storage []Storage, data DataDisk) {
 		}
 		names[s.Name] = true
 		switch {
-		case s.Device == "" && s.Label == "":
-			v.fail(field, "must name the disk by device or by label")
-		case s.Device != "" && s.Label != "":
-			v.fail(field, "names the disk by both device and label; give one")
+		case s.Device == "" && s.Label == "" && s.Serial == "":
+			v.fail(field, "must name the disk by device, by label or by serial")
+		case (s.Device != "" && s.Label != "") || (s.Serial != "" && (s.Device != "" || s.Label != "")):
+			v.fail(field, "names the disk in more than one way among device, label and serial; give one")
 		case s.Device != "" && !isCleanAbs(s.Device):
 			v.fail(field+".device", "must be a clean absolute path, got %q", s.Device)
 		case len(s.Label) > maxPartLabelLen:

@@ -89,9 +89,9 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	default:
 		return fmt.Errorf("storage %q: %w", s.Name, err)
 	}
-	// An entry given by device finds its XFS by the label init gave it, so an XFS at the device
-	// is another disk's.
-	if s.Device != "" && sb.Label != s.Name {
+	// An entry given by device or by serial finds its XFS by the label init gave it, so an XFS
+	// there is another disk's.
+	if s.Label == "" && sb.Label != s.Name {
 		return fmt.Errorf("storage %q: %s holds an XFS file system labelled %q, not %q; it is left alone", s.Name, dev, sb.Label, s.Name)
 	}
 
@@ -213,11 +213,11 @@ func zeros(r io.ReaderAt, off int64) (bool, error) {
 }
 
 // findStorage returns the device of s, waiting up to diskWait for it to appear. A label matches a
-// GPT partition name or the label of an XFS file system. An entry given by device is found first
-// as the XFS that init labelled with its name, wherever the kernel put it, and only when there is
-// none is the device taken, for a blank disk.
+// GPT partition name or the label of an XFS file system. An entry given by device or by serial is
+// found first as the XFS that init labelled with its name, wherever the kernel put it, and only
+// when there is none is the device taken, or the one disk of that serial, for a blank disk.
 func (h *Host) findStorage(s config.Storage) (string, error) {
-	if s.Device == "" {
+	if s.Label != "" {
 		return h.wait(func() (string, error) { return h.scanStorage(s.Label, true) })
 	}
 	return h.wait(func() (string, error) {
@@ -225,11 +225,57 @@ func (h *Host) findStorage(s config.Storage) (string, error) {
 		if err == nil || !errors.Is(err, errNoDisk) {
 			return dev, err
 		}
+		if s.Serial != "" {
+			return h.scanSerial(s.Serial)
+		}
 		if _, err := os.Stat(s.Device); err != nil {
 			return "", fmt.Errorf("%s: %w", s.Device, errNoDisk)
 		}
 		return s.Device, nil
 	})
+}
+
+// scanSerial returns the one whole disk in /sys/class/block whose serial number is serial. No such
+// disk is errNoDisk, so that the disk is waited for; two are an error, since init cannot tell which
+// is meant and formats neither.
+func (h *Host) scanSerial(serial string) (string, error) {
+	entries, err := os.ReadDir(h.sysClassBlock)
+	if err != nil {
+		return "", err
+	}
+	var found []string
+	for _, e := range entries {
+		if diskHasSerial(filepath.Join(h.sysClassBlock, e.Name()), serial) {
+			found = append(found, filepath.Join(h.devDir, e.Name()))
+		}
+	}
+	switch len(found) {
+	case 0:
+		return "", fmt.Errorf("serial %q: %w", serial, errNoDisk)
+	case 1:
+		return found[0], nil
+	}
+	return "", fmt.Errorf("serial %q is the serial of %d disks (%s); none is used", serial, len(found), strings.Join(found, ", "))
+}
+
+// diskHasSerial reports whether the block device at sys (a directory of /sys/class/block) has the
+// serial number serial, as a virtio-blk disk gives it in serial, or a SCSI disk in the payload of
+// its VPD page 0x80 or as its wwid.
+func diskHasSerial(sys, serial string) bool {
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join(sys, name))
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+	clean := func(s string) string { return strings.Trim(s, " \t\r\n\x00") }
+	if clean(read("serial")) == serial || clean(read("device/wwid")) == serial {
+		return true
+	}
+	// A VPD page has a four-byte header before the serial number.
+	page := read("device/vpd_pg80")
+	return len(page) > 4 && clean(page[4:]) == serial
 }
 
 // scanStorage returns the first device in /sys/class/block that holds an XFS file system labelled
