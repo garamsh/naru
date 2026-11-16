@@ -135,6 +135,14 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 		if n.CA, err = pki.Load(caDir); err != nil {
 			return err
 		}
+		// A Node API authority in the directory gives the Node spec.api, as gen node does.
+		if _, serr := os.Stat(filepath.Join(caDir, pki.APIDir)); serr == nil {
+			if n.API, err = pki.Load(filepath.Join(caDir, pki.APIDir)); err != nil {
+				return fmt.Errorf("the Node API authority: %w", err)
+			}
+		} else if !errors.Is(serr, os.ErrNotExist) {
+			return serr
+		}
 		if k.BootstrapTokens && k.ControlPlane {
 			if k.Tokens, err = pki.ReadTokens(caDir); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
@@ -237,5 +245,17 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 		}
 		_, _ = fmt.Fprintln(stdout)
 		return nil
+	}
+}
+
+// kubernetesBootstrapRBAC prints the manifest that lets a bootstrap token's holder have a kubelet's
+// client certificate issued, for the administrator to apply once to a cluster that takes tokens.
+func kubernetesBootstrapRBAC(fs *pflag.FlagSet) runner {
+	return func(args []string, stdout, stderr io.Writer) error {
+		if err := positional(args, 0); err != nil {
+			return err
+		}
+		_, err := io.WriteString(stdout, layout.BootstrapRBAC)
+		return err
 	}
 }

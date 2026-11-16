@@ -80,7 +80,8 @@ type KubePeer struct {
 // KubeNode says what makes a Node a Kubernetes Node (ADR 0031). Of Node's fields, Name, Address and
 // the network-config fields, APIServer (the address the API server is dialled at), CA (the cluster's
 // authority: only a control-plane Node carries its key), TimeServers, Registries, Binaries and
-// Disable apply; the Machine, token and Mode fields do not.
+// Disable apply, and API when it is set, which has init serve the Node API; the Machine, token and
+// Mode fields do not.
 type KubeNode struct {
 	// ControlPlane makes the Node run etcd and the control-plane programs besides the kubelet.
 	ControlPlane bool
@@ -267,6 +268,9 @@ func (n Node) kubeUserData() ([]byte, error) {
 	}
 	c.Spec.Files = files
 	c.Spec.PKI = n.kubePKI()
+	if c.Spec.API, err = n.specAPI(); err != nil {
+		return nil, fmt.Errorf("issue the Node API's serving pair: %w", err)
+	}
 	if len(n.TimeServers) > 0 {
 		c.Spec.Time = &timeSpec{Servers: n.TimeServers}
 	}

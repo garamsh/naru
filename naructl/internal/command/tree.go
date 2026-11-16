@@ -177,6 +177,7 @@ func genCommands() *cobra.Command {
 		leaf("node", "write a Node's user data", genNode),
 		leaf("kubernetes", "write the front-proxy authority, the ServiceAccount keys and admin.conf", genKubernetes),
 		leaf("kubernetes-node", "write a Kubernetes Node's user data", genKubernetesNode),
+		leaf("kubernetes-bootstrap-rbac", "print the RBAC manifest a cluster that takes bootstrap tokens needs", kubernetesBootstrapRBAC),
 	)
 }
 
