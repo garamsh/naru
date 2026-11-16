@@ -24,7 +24,6 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 	"github.com/garamsh/naru/tooling/qemu/internal/release"
-	"github.com/garamsh/naru/tooling/qemu/internal/seed"
 )
 
 // Criterion "host: the boot set added through naructl host boot-set add, and a Node microVM from it
@@ -131,7 +130,6 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 			CA: ca, Name: name, Role: "control-plane", Address: guess.String() + "/24", Endpoint: guess.String(),
 			PodNetwork: node.KubePodNetwork, PodPrefix: node.KubePodPrefix(1), Out: user,
 		}))
-		require.NoError(t, seed.AddNodeAPI(user, ca, net.IP(guess.AsSlice()), net.ParseIP("127.0.0.1")))
 		create(user)
 		if addr = addressOf(); addr == guess {
 			break
