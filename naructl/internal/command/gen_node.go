@@ -46,7 +46,6 @@ func genNode(fs *pflag.FlagSet) runner {
 
 func (f *nodeFlags) declare(fs *pflag.FlagSet) {
 	fs.StringVar(&f.caDir, "ca-dir", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
-	aliasString(fs, &f.caDir, "ca", "ca-dir")
 	fs.StringVar(&f.n.Name, "name", "", "the Node's name, such as node-1")
 	fs.BoolVar(&f.controlPlane, "control-plane", false, "the Node runs etcd and gaon's control plane, issues its certificates at boot and signs its agents' requests")
 	fs.StringVar(&f.address, "address", "", "the Node's address and prefix, such as 192.168.0.40/24")
