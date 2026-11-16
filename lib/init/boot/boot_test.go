@@ -84,7 +84,10 @@ type recorder struct {
 	savedNetwork  bool
 	saved         []store.Stored
 	mounted       config.DataDisk
-	started       []string
+	// dataMounted is whether the data disk is mounted; the store reads that the recorder's
+	// LoadAnchor and LoadNetwork refuse as an unmounted disk does.
+	dataMounted bool
+	started     []string
 
 	calls     []string
 	forwarded []config.Family
@@ -144,11 +147,12 @@ func (r *recorder) ClearDataDisk() error {
 func (r *recorder) WipeDataDisk(d config.DataDisk) error {
 	r.calls = append(r.calls, "wipe")
 	r.wiped = &d
+	r.dataMounted = false
 	return r.wipeErr
 }
 
 func (r *recorder) LoadAnchor() ([]byte, error) {
-	if !r.hasAnchor {
+	if !r.dataMounted || !r.hasAnchor {
 		return nil, store.ErrNotFound
 	}
 	return r.anchor, nil
@@ -204,6 +208,7 @@ func (r *recorder) FormatBlankDataDisk(d config.DataDisk, _ *slog.Logger) error 
 func (r *recorder) MountDataDisk(d config.DataDisk) error {
 	r.calls = append(r.calls, "mount")
 	r.mounted = d
+	r.dataMounted = r.diskErr == nil
 	return r.diskErr
 }
 
@@ -284,7 +289,7 @@ func (r *recorder) Load() (store.Stored, error) {
 }
 
 func (r *recorder) LoadNetwork() ([]byte, error) {
-	if !r.hasNetwork {
+	if !r.dataMounted || !r.hasNetwork {
 		return nil, store.ErrNotFound
 	}
 	return r.storedNetwork, nil
@@ -470,7 +475,7 @@ func TestRun_RefusesAnInvalidConfigurationAndStartsNothing(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "spec.services[0].binary")
-	assert.Equal(t, []string{"read"}, r.calls, "no network is brought up, no disk mounted and no service started")
+	assert.Equal(t, []string{"read", "mount"}, r.calls, "no network is brought up and no service started; the mount is maintenance mode's, to read the stored anchor")
 }
 
 func TestRun_RefusesAMalformedNetworkConfigAndStartsNothing(t *testing.T) {
@@ -481,7 +486,7 @@ func TestRun_RefusesAMalformedNetworkConfigAndStartsNothing(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "network-config")
-	assert.Equal(t, []string{"read"}, r.calls, "nothing is applied: the network and the files wait for both documents to be valid")
+	assert.Equal(t, []string{"read", "mount"}, r.calls, "nothing is applied: the network and the files wait for both documents to be valid; the mount is maintenance mode's")
 }
 
 func TestRun_StartsNothingWhenAStepBeforeTheServicesFails(t *testing.T) {
@@ -490,9 +495,9 @@ func TestRun_StartsNothingWhenAStepBeforeTheServicesFails(t *testing.T) {
 		r    *recorder
 		want []string
 	}{
-		"configuration cannot be read": {&recorder{raw: validConfig, readErr: boom}, []string{"read"}},
-		"network cannot be applied":    {&recorder{raw: validConfig, networkErr: boom}, []string{"read", "network"}},
-		"data disk is refused":         {&recorder{raw: validConfig, diskErr: boom}, []string{"read", "network", "mount"}},
+		"configuration cannot be read": {&recorder{raw: validConfig, readErr: boom}, []string{"read", "mount"}},
+		"network cannot be applied":    {&recorder{raw: validConfig, networkErr: boom}, []string{"read", "network", "mount"}},
+		"data disk is refused":         {&recorder{raw: validConfig, diskErr: boom}, []string{"read", "network", "mount", "mount"}},
 		"forwarding cannot be set":     {&recorder{raw: validConfig, forwardErr: boom}, []string{"read", "network", "mount", "load", "api", "forward"}},
 		"files cannot be written":      {&recorder{raw: validConfig, filesErr: boom}, []string{"read", "network", "mount", "load", "api", "forward", "files"}},
 		"cgroups cannot be prepared":   {&recorder{raw: validConfig, prepareErr: boom}, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "prepare"}},
@@ -601,7 +606,7 @@ func TestRun_FormatsTheBlankDataDiskOnlyWhenTheConfigurationAsksAndBeforeMountin
 	boom := errors.New("boom")
 	r = &recorder{raw: asks, formatErr: boom}
 	assert.ErrorIs(t, run(r), boom)
-	assert.Equal(t, []string{"read", "network", "format"}, r.calls, "a disk that cannot be formatted is not mounted and nothing starts")
+	assert.Equal(t, []string{"read", "network", "format", "mount"}, r.calls, "a disk that cannot be formatted is not mounted by the boot, only by maintenance mode, and nothing starts")
 }
 
 // withExtension adds a spec.extensions entry to validConfig.
