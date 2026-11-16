@@ -128,6 +128,7 @@ func main() {
 		startReconciler(ctx, netMgr, rt, log)
 	}
 
+	var hostPair api.Identity
 	if *orchURL != "" {
 		id := *hostID
 		if id == "" {
@@ -141,6 +142,7 @@ func main() {
 			addr = *listen
 		}
 		agent := enroll.New(enroll.Config{OrchURL: *orchURL, CASHA256: *orchCA, EnrollKeyFile: *enrollKey, KeyFile: *hostKey, HostID: id, Address: addr, Out: os.Stdout, Log: log})
+		hostPair = agent
 		go func() {
 			if err := agent.Run(ctx); err != nil && ctx.Err() == nil {
 				log.Error("enrollment with orch ended", "err", err.Error())
@@ -149,7 +151,7 @@ func main() {
 	}
 
 	reg := metrics.New()
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile})
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair})
 	if *metricsAddr != "" {
 		go func() {
 			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {

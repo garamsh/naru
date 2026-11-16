@@ -25,8 +25,9 @@ const (
 	ActionIssueOrch     = "issue-orch"
 	ActionIssueOperator = "issue-operator"
 	ActionRevoke        = "revoke"
-	ActionRotateHost    = "rotate-host"
+	ActionReissueHost   = "reissue-host"
 	ActionRegisterHost  = "register-host"
+	ActionRetireHost    = "retire-host"
 	ActionBundle        = "bundle"
 	ActionRestore       = "restore"
 	ActionReplicate     = "replicate"
@@ -53,11 +54,18 @@ type RevokeRequest struct {
 	Serial string `json:"serial"`
 }
 
-// RotateHostRequest is the body of ActionRotateHost: the host whose certificate is replaced and the
-// certificate request of its new key, DER.
-type RotateHostRequest struct {
+// ReissueHostRequest is the body of ActionReissueHost: the host that is given a further certificate,
+// for the key in the certificate request, DER. The certificates it already holds stay valid.
+type ReissueHostRequest struct {
 	HostID string `json:"hostID"`
 	CSR    []byte `json:"csr"`
+}
+
+// RetireHostRequest is the body of ActionRetireHost: the host and the serial, in hexadecimal, of the
+// certificate it keeps. The signer revokes every other serial it holds for the host.
+type RetireHostRequest struct {
+	HostID string `json:"hostID"`
+	Keep   string `json:"keep"`
 }
 
 // RegisterHostRequest is the body of ActionRegisterHost: a host and the serial, in hexadecimal, of

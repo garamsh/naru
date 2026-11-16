@@ -219,6 +219,14 @@ func (a *authorities) withHost(hostID, serial string) *authorities {
 	return next
 }
 
+// withHosts returns a copy of a whose serials for hostID are serials.
+func (a *authorities) withHosts(hostID string, serials []string) *authorities {
+	next := *a
+	next.hosts = maps.Clone(a.hosts)
+	next.hosts[hostID] = serials
+	return &next
+}
+
 // withIssued returns a copy of a that also records serial as issued to role.
 func (a *authorities) withIssued(serial string, role identity.Role) *authorities {
 	next := *a

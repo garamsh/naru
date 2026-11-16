@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/garamsh/naru/lib/atomicfile"
@@ -74,6 +75,10 @@ func CertPathFor(keyFile string) string {
 // Agent enrolls the host and then keeps reporting to orch.
 type Agent struct {
 	c Config
+
+	// mu guards cl, the client heartbeats go out on: a rotation replaces it.
+	mu sync.Mutex
+	cl *orchapi.Client
 }
 
 // New returns an agent with the defaults filled in.
@@ -93,7 +98,7 @@ func New(c Config) *Agent {
 	if c.CertFile == "" {
 		c.CertFile = CertPathFor(c.KeyFile)
 	}
-	return &Agent{c}
+	return &Agent{c: c}
 }
 
 // Run enrolls when the host holds no certificate for its key, then heartbeats until ctx ends. It
@@ -342,14 +347,82 @@ func (a *Agent) heartbeat(ctx context.Context, cert *tls.Certificate) error {
 	if err != nil {
 		return err
 	}
+	a.setClient(cl)
 	for {
-		if err := cl.Heartbeat(ctx); err != nil && ctx.Err() == nil {
+		if err := a.current().Heartbeat(ctx); err != nil && ctx.Err() == nil {
 			a.c.Log.Warn("heartbeat failed", "err", err.Error())
 		}
 		if !sleep(ctx, a.c.HeartbeatEvery) {
 			return nil
 		}
 	}
+}
+
+func (a *Agent) current() *orchapi.Client {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cl
+}
+
+func (a *Agent) setClient(cl *orchapi.Client) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cl = cl
+}
+
+var (
+	// ErrNotEnrolled is returned by Rotate on an agent that holds no certificate it reports with yet.
+	ErrNotEnrolled = errors.New("the host has not enrolled, so it holds no pair to replace")
+	// ErrBadPair is returned by Rotate for a certificate and key that cannot be the host's.
+	ErrBadPair = errors.New("not a usable pair for this host")
+	// ErrOrchRefused is returned by Rotate when orch does not accept the new pair.
+	ErrOrchRefused = errors.New("orch did not accept the new pair")
+)
+
+// Rotate replaces the pair the host reports to orch with, from the PEM of a certificate and a PKCS #8
+// key (ADR 0077). It checks that they are a pair, that the certificate is this host's (its CN is the
+// host ID) and not expired, and has the new pair heartbeat to orch before anything on disk changes:
+// an orch that refuses it leaves the old pair in place and in use. It then writes the key and the
+// certificate beside it, each atomically, and reports with the new pair from the next heartbeat on.
+// It returns the serial of the certificate, in hexadecimal.
+func (a *Agent) Rotate(ctx context.Context, certPEM, keyPEM []byte) (string, error) {
+	if a.current() == nil {
+		return "", ErrNotEnrolled
+	}
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrBadPair, err)
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrBadPair, err)
+	}
+	if _, ok := pair.PrivateKey.(*ecdsa.PrivateKey); !ok {
+		return "", fmt.Errorf("%w: the key is not an ECDSA key", ErrBadPair)
+	}
+	if leaf.Subject.CommonName != a.c.HostID {
+		return "", fmt.Errorf("%w: the certificate is for %q, not for %q", ErrBadPair, leaf.Subject.CommonName, a.c.HostID)
+	}
+	if !a.c.Now().Before(leaf.NotAfter) {
+		return "", fmt.Errorf("%w: the certificate has expired", ErrBadPair)
+	}
+	pair.Leaf = leaf
+	cl, err := a.client(&pair)
+	if err != nil {
+		return "", err
+	}
+	if err := cl.Heartbeat(ctx); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrOrchRefused, err)
+	}
+	if err := writeFileAtomic(a.c.KeyFile, keyPEM, 0o600, ""); err != nil {
+		return "", err
+	}
+	if err := writeFileAtomic(a.c.CertFile, certPEM, 0o644, certificatePrefix); err != nil {
+		return "", err
+	}
+	a.setClient(cl)
+	a.c.Log.Info("the host's pair was replaced", "serial", leaf.SerialNumber.Text(16))
+	return leaf.SerialNumber.Text(16), nil
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {

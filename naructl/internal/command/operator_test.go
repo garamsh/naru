@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/naructl/internal/client"
 )
 
 // fakeSigner serves one unix socket the way naru-signer does and records what it was asked.
@@ -30,6 +32,8 @@ type fakeSigner struct {
 	got    map[string]json.RawMessage
 	who    map[string]identity.Identity
 	status int
+	// onCall, when set, is told each path the fake answers.
+	onCall func(path string)
 	// authorities is what GET /v1/ca answers, which needs no signature.
 	authorities identity.Authorities
 }
@@ -40,7 +44,7 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 	l, err := net.Listen("unix", f.socket)
 	require.NoError(t, err)
 	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/revoke": identity.ActionRevoke,
-		"/v1/rotate-host": identity.ActionRotateHost, "/v1/register-host": identity.ActionRegisterHost}
+		"/v1/reissue-host": identity.ActionReissueHost, "/v1/register-host": identity.ActionRegisterHost, "/v1/retire-host": identity.ActionRetireHost}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/ca" {
 			_ = json.NewEncoder(w).Encode(f.authorities)
@@ -53,16 +57,19 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 			return
 		}
 		f.got[r.URL.Path], f.who[r.URL.Path] = body, who
+		if f.onCall != nil {
+			f.onCall(r.URL.Path)
+		}
 		if f.status != http.StatusOK {
 			http.Error(w, "refused by the fake", f.status)
 			return
 		}
-		if r.URL.Path == "/v1/revoke" || r.URL.Path == "/v1/register-host" {
+		if r.URL.Path == "/v1/revoke" || r.URL.Path == "/v1/register-host" || r.URL.Path == "/v1/retire-host" {
 			_, _ = w.Write([]byte("crl"))
 			return
 		}
-		if r.URL.Path == "/v1/rotate-host" {
-			var rot identity.RotateHostRequest
+		if r.URL.Path == "/v1/reissue-host" {
+			var rot identity.ReissueHostRequest
 			_ = json.Unmarshal(body, &rot)
 			csr, _ := x509.ParseCertificateRequest(rot.CSR)
 			cert := issueFrom(t, caOf(t), rot.HostID, identity.RoleHost, csr.PublicKey)
@@ -223,45 +230,99 @@ func TestOperatorRevoke_SendsTheSerialSignedByTheAdmin(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestSignerRotateHost_WritesTheNewPairOnlyWhenTheSignerIssuesIt(t *testing.T) {
+// fakeHost is a host API that takes PUT /v1/identity: it records the pair it was given, and answers
+// the serial of that certificate unless status says otherwise.
+type fakeHost struct {
+	srv    *httptest.Server
+	file   string
+	status int
+	got    map[string]string
+	order  *[]string
+}
+
+func startFakeHost(t *testing.T, order *[]string) *fakeHost {
+	t.Helper()
+	h := &fakeHost{status: http.StatusOK, order: order}
+	h.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*h.order = append(*h.order, r.Method+" "+r.URL.Path)
+		if h.status != http.StatusOK {
+			w.WriteHeader(h.status)
+			_, _ = w.Write([]byte(`{"error":"the host refused"}`))
+			return
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&h.got))
+		b, _ := pem.Decode([]byte(h.got["certificate"]))
+		cert, err := x509.ParseCertificate(b.Bytes)
+		require.NoError(t, err)
+		_ = json.NewEncoder(w).Encode(map[string]string{"serial": cert.SerialNumber.Text(16)})
+	}))
+	t.Cleanup(h.srv.Close)
+	pair := caOf(t)
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: h.srv.Certificate().Raw})
+	keyDER, err := x509.MarshalPKCS8PrivateKey(pair.key)
+	require.NoError(t, err)
+	f := client.File{
+		Endpoints: []string{h.srv.Listener.Addr().String()}, CA: string(ca),
+		Certificate: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pair.cert.Raw})),
+		Key:         string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})),
+	}
+	h.file = filepath.Join(t.TempDir(), "host.yaml")
+	require.NoError(t, f.Write(h.file))
+	return h
+}
+
+func TestSignerRotateHost_DeliversThePairBeforeTheSignerRevokesAnything(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(caOf(t).cert)
 	f := startFakeSigner(t, pool)
+	var order []string
+	f.onCall = func(path string) { order = append(order, "signer "+path) }
+	h := startFakeHost(t, &order)
 	admin, pass := adminFile(t, identity.RoleOperator, "pw")
-	dir := t.TempDir()
-	keyOut, certOut := filepath.Join(dir, "host.key"), filepath.Join(dir, "host.crt")
 
-	f.status = http.StatusConflict
-	_, err := run(t, "signer", "rotate-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-1", "--key-out", keyOut, "--cert-out", certOut, "--socket", f.socket)
-	require.Error(t, err)
-	assert.NoFileExists(t, keyOut, "a refused rotation writes no key")
-	assert.NoFileExists(t, certOut)
-
-	f.status = http.StatusOK
-	text, err := run(t, "signer", "rotate-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-1", "--key-out", keyOut, "--cert-out", certOut, "--socket", f.socket)
+	text, err := run(t, "signer", "rotate-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-1", "--host-client", h.file, "--host-server-name", "example.com", "--socket", f.socket)
 	require.NoError(t, err, text)
-	var req identity.RotateHostRequest
-	require.NoError(t, json.Unmarshal(f.got["/v1/rotate-host"], &req))
+	assert.Equal(t, []string{"signer /v1/reissue-host", "PUT /v1/identity", "signer /v1/retire-host"}, order, "the host holds the new pair before the old serials are revoked")
+	var req identity.ReissueHostRequest
+	require.NoError(t, json.Unmarshal(f.got["/v1/reissue-host"], &req))
 	assert.Equal(t, "h-1", req.HostID)
-	assert.Equal(t, identity.RoleOperator, f.who["/v1/rotate-host"].Role)
+	assert.Equal(t, identity.RoleOperator, f.who["/v1/reissue-host"].Role)
 
-	info, err := os.Stat(keyOut)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-	keyPEM, err := os.ReadFile(keyOut)
-	require.NoError(t, err)
-	kb, _ := pem.Decode(keyPEM)
+	kb, _ := pem.Decode([]byte(h.got["key"]))
 	require.NotNil(t, kb)
 	key, err := x509.ParsePKCS8PrivateKey(kb.Bytes)
 	require.NoError(t, err)
-	certPEM, err := os.ReadFile(certOut)
-	require.NoError(t, err)
-	cb, _ := pem.Decode(certPEM)
+	cb, _ := pem.Decode([]byte(h.got["certificate"]))
 	require.NotNil(t, cb)
 	cert, err := x509.ParseCertificate(cb.Bytes)
 	require.NoError(t, err)
-	assert.True(t, key.(*ecdsa.PrivateKey).PublicKey.Equal(cert.PublicKey), "the certificate is for the key written beside it")
-	assert.Contains(t, text, "old serial is revoked")
+	assert.True(t, key.(*ecdsa.PrivateKey).PublicKey.Equal(cert.PublicKey), "the certificate sent is for the key sent with it")
+	var retire identity.RetireHostRequest
+	require.NoError(t, json.Unmarshal(f.got["/v1/retire-host"], &retire))
+	assert.Equal(t, cert.SerialNumber.Text(16), retire.Keep, "the serial that is kept is the delivered one")
+	assert.Contains(t, text, "old serials are revoked")
+}
+
+func TestSignerRotateHost_RevokesNothingWhenTheSignerOrTheHostRefuses(t *testing.T) {
+	pool := x509.NewCertPool()
+	pool.AddCert(caOf(t).cert)
+	f := startFakeSigner(t, pool)
+	var order []string
+	h := startFakeHost(t, &order)
+	admin, pass := adminFile(t, identity.RoleOperator, "pw")
+	args := []string{"signer", "rotate-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-1", "--host-client", h.file, "--host-server-name", "example.com", "--socket", f.socket}
+
+	f.status = http.StatusConflict
+	_, err := run(t, args...)
+	require.Error(t, err)
+	assert.Empty(t, order, "a refused issue sends nothing to the host")
+	assert.NotContains(t, f.got, "/v1/retire-host")
+
+	f.status = http.StatusOK
+	h.status = http.StatusBadGateway
+	_, err = run(t, args...)
+	require.ErrorContains(t, err, "old pair is still valid and in use")
+	assert.NotContains(t, f.got, "/v1/retire-host", "a host that did not take the pair leaves the old serials unrevoked")
 }
 
 func TestSignerRegisterHost_SendsTheSerialOfTheCertificateAndRefusesAnotherHostsOne(t *testing.T) {

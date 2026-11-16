@@ -49,6 +49,9 @@ type Deps struct {
 	// LeaderTokenFile keeps the highest leader token orch has sent (ADR 0071). Empty keeps it in
 	// memory only.
 	LeaderTokenFile string
+	// Identity is the pair the host reports to orch with. Nil means the host has no orch to enroll
+	// with, and PUT /v1/identity answers 409.
+	Identity Identity
 }
 
 // Server is the host API.
@@ -90,6 +93,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/peers", s.putPeers)
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	mux.HandleFunc("GET /v1/tunnel", s.getTunnel)
+	mux.HandleFunc("PUT /v1/identity", s.putIdentity)
 	s.routeBootSets(mux)
 	return s.recovering(s.logged(s.authorised(s.leaderToken(mux))))
 }

@@ -1,16 +1,19 @@
 package command
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +25,8 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/wire"
+	"github.com/garamsh/naru/naructl/internal/client"
 )
 
 // signerRequestHeader carries a signed request on the GET that has no body.
@@ -240,21 +245,29 @@ func signerReissueRoot(fs *pflag.FlagSet) runner {
 	}
 }
 
-// signerRotateHost makes a new key for a host, has the signer issue a host certificate for it and
-// put the serials it holds for the host on the revocation list, and writes the new pair. Nothing is
-// written when the signer refuses.
+// signerRotateHost rotates one host's pair in the order that never strands the host (ADR 0077): the
+// signer issues a new certificate for a key made here, the host API installs the pair and answers
+// once the host reports to orch with it, and only then does the signer revoke the host's older
+// serials. A failure before the last step leaves the old pair valid and in use; the new serial stays
+// with the signer and is revoked by the next rotation. The new key is sent to the host and written
+// nowhere else.
 func signerRotateHost(fs *pflag.FlagSet) runner {
 	admin := fs.String("admin", "", "root's or an operator's encrypted person file")
 	pass := fs.String("passphrase-file", "", "file holding the person file's passphrase")
 	hostID := fs.String("host-id", "", "the host whose pair is replaced")
-	keyOut := fs.String("key-out", "", "the file the new private key is written to (0600), PKCS #8 PEM")
-	certOut := fs.String("cert-out", "", "the file the new certificate is written to, PEM")
+	hostClient := fs.String("host-client", "", "the host API client file written by gen host-client, of the provisioner role")
+	endpoint := fs.String("host", "", "the host's address, an IP address with or without a port (default the client file's first endpoint)")
+	serverName := fs.String("host-server-name", "", "the name to verify the host's certificate against instead of its address: the host ID h-<id> of a host that joined from the install seed")
 	sg := addSignerFlags(fs)
 	return func(_ []string, stdout, _ io.Writer) error {
 		if err := sg.check(fs); err != nil {
 			return err
 		}
-		if err := require(fs, "admin", "passphrase-file", "host-id", "key-out", "cert-out"); err != nil {
+		if err := require(fs, "admin", "passphrase-file", "host-id", "host-client"); err != nil {
+			return err
+		}
+		hc, err := loadHostClient(*hostClient, *endpoint, *serverName)
+		if err != nil {
 			return err
 		}
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -269,11 +282,11 @@ func signerRotateHost(fs *pflag.FlagSet) runner {
 		if err != nil {
 			return err
 		}
-		signed, err := signAs(*admin, *pass, identity.ActionRotateHost, identity.RotateHostRequest{HostID: *hostID, CSR: csr})
+		signed, err := signAs(*admin, *pass, identity.ActionReissueHost, identity.ReissueHostRequest{HostID: *hostID, CSR: csr})
 		if err != nil {
 			return err
 		}
-		body, err := signerCall(sg, http.MethodPost, "/v1/rotate-host", signed)
+		body, err := signerCall(sg, http.MethodPost, "/v1/reissue-host", signed)
 		if err != nil {
 			return err
 		}
@@ -284,18 +297,94 @@ func signerRotateHost(fs *pflag.FlagSet) runner {
 		if _, err := x509.ParseCertificate(issued.Certificate); err != nil {
 			return fmt.Errorf("the signer's certificate: %w", err)
 		}
-		// The old serial is revoked by now: the key is written first and never over a file, so a
-		// certificate nobody holds the key of is never the only thing left.
-		if err := writeNew(*keyOut, pem.EncodeToMemory(&pem.Block{Type: keyBlock, Bytes: keyDER}), 0o600); err != nil {
+
+		served, err := hc.install(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issued.Certificate}), pem.EncodeToMemory(&pem.Block{Type: keyBlock, Bytes: keyDER}))
+		if err != nil {
+			return fmt.Errorf("the host did not take the new pair, so its old pair is still valid and in use (the new serial %s is revoked by the next rotation): %w", issued.Serial, err)
+		}
+		if served != issued.Serial {
+			return fmt.Errorf("the host reports with serial %s, not the new %s, so the old pair is not revoked", served, issued.Serial)
+		}
+
+		signed, err = signAs(*admin, *pass, identity.ActionRetireHost, identity.RetireHostRequest{HostID: *hostID, Keep: issued.Serial})
+		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(*certOut, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issued.Certificate}), 0o644); err != nil {
-			return err
+		if _, err := signerCall(sg, http.MethodPost, "/v1/retire-host", signed); err != nil {
+			return fmt.Errorf("the host reports with the new pair, serial %s, but its old serials are not revoked yet; run rotate-host again: %w", issued.Serial, err)
 		}
-		_, _ = fmt.Fprintf(stdout, "naructl: rotated %s: the old serial is revoked; wrote the new key %s (0600) and certificate %s, serial %s, valid until %s\n",
-			*hostID, *keyOut, *certOut, issued.Serial, issued.NotAfter.Format(time.RFC3339))
+		_, _ = fmt.Fprintf(stdout, "naructl: rotated %s: it reports to orch with the new pair, serial %s, valid until %s, and its old serials are revoked\n",
+			*hostID, issued.Serial, issued.NotAfter.Format(time.RFC3339))
 		return nil
 	}
+}
+
+// hostPair is a client of one host API for the one call a rotation makes. It is built here and not
+// from the hostapi client, which has no call for the host's pair.
+type hostPair struct {
+	hc   *http.Client
+	base string
+}
+
+func loadHostClient(file, endpoint, serverName string) (hostPair, error) {
+	f, err := client.LoadFile(file)
+	if err != nil {
+		return hostPair{}, err
+	}
+	if endpoint == "" {
+		endpoint = f.Endpoints[0]
+	}
+	addr, err := client.AddressPort(endpoint, wire.HostAPIPort)
+	if err != nil {
+		return hostPair{}, err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM([]byte(f.CA)) {
+		return hostPair{}, errors.New("the client file's ca is not a PEM certificate")
+	}
+	pair, err := tls.X509KeyPair([]byte(f.Certificate), []byte(f.Key))
+	if err != nil {
+		return hostPair{}, fmt.Errorf("the client file's certificate and key: %w", err)
+	}
+	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: serverName, Certificates: []tls.Certificate{pair}}}
+	return hostPair{hc: &http.Client{Transport: tr, Timeout: callTimeout}, base: "https://" + addr}, nil
+}
+
+// install is PUT /v1/identity of the host API: it returns the serial the host reports with once the
+// call has answered.
+func (h hostPair) install(certPEM, keyPEM []byte) (string, error) {
+	body, err := json.Marshal(map[string]string{"certificate": string(certPEM), "key": string(keyPEM)})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequest(http.MethodPut, h.base+"/v1/identity", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.hc.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("the host API at %s: %w", h.base, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(answer, &e)
+		return "", fmt.Errorf("the host API answered %d: %s", resp.StatusCode, e.Error)
+	}
+	var out struct {
+		Serial string `json:"serial"`
+	}
+	if err := json.Unmarshal(answer, &out); err != nil {
+		return "", fmt.Errorf("the host API's answer: %w", err)
+	}
+	return out.Serial, nil
 }
 
 // signerRegisterHost records the serial of a certificate another authority issued to a host, such as
