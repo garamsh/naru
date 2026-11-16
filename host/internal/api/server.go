@@ -49,6 +49,15 @@ type Deps struct {
 	// LeaderTokenFile keeps the highest leader token orch has sent (ADR 0071). Empty keeps it in
 	// memory only.
 	LeaderTokenFile string
+	// HostID is what a reset must confirm; ResetMarker is the file a reset leaves for init and
+	// Reboot restarts the host so that init carries it out (ADR 0082). Any unset means the host
+	// was started without a reset: the call is 501.
+	HostID      string
+	ResetMarker string
+	Reboot      func() error
+	// ConfigPair returns the certificate chain the configuration's pair holds, which serves again
+	// after a reset clears the data disk. Nil means the check of that pair is not made.
+	ConfigPair func() ([]*x509.Certificate, error)
 }
 
 // Server is the host API.
@@ -91,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	mux.HandleFunc("GET /v1/tunnel", s.getTunnel)
 	s.routeBootSets(mux)
+	s.routeReset(mux)
 	return s.recovering(s.logged(s.authorised(s.leaderToken(mux))))
 }
 
@@ -177,14 +187,7 @@ func TLSConfig(certFile, keyFile, clientCAFile string, revocations *identity.Rev
 	if !pool.AppendCertsFromPEM(ca) {
 		return nil, errors.New(clientCAFile + " holds no certificate")
 	}
-	conf := &tls.Config{
-		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{pair},
-		ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert, NextProtos: []string{"http/1.1"},
-	}
-	if revocations != nil {
-		conf.VerifyConnection = revocations.VerifyConnection
-	}
-	return conf, nil
+	return ServerTLS(pair, pool, revocations), nil
 }
 
 // DrainTimeout is how long Serve waits for the requests in flight after its context ends, before
@@ -197,8 +200,13 @@ const DrainTimeout = 30 * time.Second
 // the listener before that is returned. A refused handshake is not logged: it would fill the
 // console for anyone who can reach the port.
 func (s *Server) Serve(ctx context.Context, ln net.Listener, conf *tls.Config) error {
+	return s.ServeHandler(ctx, ln, conf, s.Handler())
+}
+
+// ServeHandler is Serve for the routes h, such as MaintenanceHandler's.
+func (s *Server) ServeHandler(ctx context.Context, ln net.Listener, conf *tls.Config, h http.Handler) error {
 	srv := &http.Server{
-		Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, TLSConfig: conf,
+		Handler: h, ReadHeaderTimeout: 10 * time.Second, TLSConfig: conf,
 		ErrorLog: log.New(io.Discard, "", 0),
 	}
 	done := make(chan error, 1)
