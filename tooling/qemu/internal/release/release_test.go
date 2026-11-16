@@ -406,7 +406,15 @@ func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
 "guest_initrd":{"path":"/g","sha256":"`+d+`"},"converter_initrd":{"path":"/c","sha256":"`+d+`"}}`), 0o600))
 	cluster := filepath.Join(t.TempDir(), "naru-cluster")
 	require.NoError(t, os.WriteFile(cluster, []byte("naru-cluster binary"), 0o600))
-	return release.Options{Root: repoRoot(t), ImageDir: imageDir, DiskDir: diskDir, GuestDir: guestDir, Out: t.TempDir(), Version: "v9", Naructl: tool(t).Bin, NaruCluster: cluster}
+	comps, downloads := fakeComponents(t)
+	require.NoError(t, os.WriteFile(filepath.Join(downloads, "lgplpkg-2.tar.gz"), []byte("lgpl tarball"), 0o600))
+	archive := filepath.Join(t.TempDir(), "source.tar")
+	require.NoError(t, os.WriteFile(archive, []byte("git archive"), 0o600))
+	return release.Options{
+		Root: repoRoot(t), ImageDir: imageDir, DiskDir: diskDir, GuestDir: guestDir, Out: t.TempDir(), Version: "v9", Naructl: tool(t).Bin, NaruCluster: cluster,
+		Epoch: 1794355200, Components: comps, Downloads: []string{downloads}, SourceArchive: archive,
+		Fetch: func(url, _ string) error { return fmt.Errorf("a test fetched %s", url) },
+	}
 }
 
 func TestBuild_WritesTheInputsAssetListsItInSHA256SUMSAndCarriesWhatWasStaged(t *testing.T) {
@@ -512,7 +520,7 @@ func TestBuild_NamesTheHostArtifactsNaruHostAndLeavesTheOldNamesOut(t *testing.T
 	assert.NoFileExists(t, filepath.Join(o.Out, "naru-v9.qcow2"))
 	entries, err := os.ReadDir(o.Out)
 	require.NoError(t, err)
-	assert.Len(t, entries, 15, "the assets and SHA256SUMS")
+	assert.Len(t, entries, 17, "the assets and SHA256SUMS")
 }
 
 func TestBuild_ShipsTheUpgradeBundleListedInSHA256SUMS(t *testing.T) {
@@ -581,7 +589,7 @@ func TestBuild_ShipsTheNodeBootSetAsKernelInitramfsAndAManifestThatNamesTheirDig
 	for _, name := range []string{"naru-node-kernel-v9", "naru-node-initramfs-v9", "naru-node-v9.json"} {
 		assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists "+name)
 	}
-	assert.Len(t, assets, 14, "the nine assets of before, the three of the boot set and the two of the extension, which SHA256SUMS makes 15 files")
+	assert.Len(t, assets, 16, "the nine assets of before, the three of the boot set, the two of the extension, the SBOM and the sources, which SHA256SUMS makes 17 files")
 }
 
 func TestBuild_ShipsTheOrchExtensionAndItsDescriptionListedInSHA256SUMS(t *testing.T) {
