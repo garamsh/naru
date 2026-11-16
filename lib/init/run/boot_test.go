@@ -87,6 +87,8 @@ func (n *node) SetAsidePair(config.KeptPair) (bool, error)        { return false
 func (n *node) PrepareStorage(config.Storage, *slog.Logger) error { return nil }
 func (n *node) MountExtensions([]config.Extension) error          { return nil }
 func (n *node) SealRoot() error                                   { return nil }
+func (n *node) ClearDataDisk() error                              { return nil }
+func (n *node) WipeDataDisk(config.DataDisk) error                { return nil }
 func (n *node) SyncTime([]string) (timesync.Result, error) {
 	return timesync.Result{}, nil
 }

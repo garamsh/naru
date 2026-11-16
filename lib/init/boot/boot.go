@@ -58,6 +58,12 @@ type Host interface {
 	// SealRoot remounts the root file system read-only. Every mount point
 	// the machine needs exists by then.
 	SealRoot() error
+	// ClearDataDisk removes everything on the mounted data disk except the stored configuration:
+	// the reset of scope data (ADR 0082).
+	ClearDataDisk() error
+	// WipeDataDisk unmounts the data disk and blanks it, so that the format of a blank disk finds it
+	// blank: the reset of scope all (ADR 0082).
+	WipeDataDisk(config.DataDisk) error
 }
 
 // Issuer issues the certificates of spec.pki.
@@ -79,6 +85,15 @@ type Configs interface {
 	LoadNetwork() ([]byte, error)
 	// SaveNetwork stores the network-config of the seed the Node booted from.
 	SaveNetwork([]byte) error
+	// Discard removes the stored configuration, which is the reset of scope store (ADR 0082).
+	Discard() error
+	// TakeReset reads the reset naru-hostd asked for and removes the request. It returns false when
+	// there was none.
+	TakeReset() (scope string, found bool, err error)
+	// LoadAnchor returns the maintenance anchor stored beside the configuration, and
+	// store.ErrNotFound when none was stored. SaveAnchor stores it.
+	LoadAnchor() ([]byte, error)
+	SaveAnchor([]byte) error
 }
 
 // Services runs the services.
@@ -104,6 +119,17 @@ type API interface {
 // Nor is a route the kernel refuses, nor a storage disk that is missing or cannot be prepared: each is logged too.
 // On success it returns the effective configuration and its revision.
 func Run(host Host, issuer Issuer, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
+	h := &watchedHost{Host: host}
+	svc := &watchedServices{Services: services}
+	stored, err := run(h, issuer, svc, configs, api, log)
+	if err != nil {
+		maintain(h, svc, configs, err, log)
+	}
+	return stored, err
+}
+
+// run is the sequence itself; Run enters maintenance mode when it refuses.
+func run(host Host, issuer Issuer, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
 	var (
 		effective store.Stored
 		applied   netcfg.Applied
@@ -166,6 +192,7 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 			return store.Stored{}, fmt.Errorf("start %s: %w", svc.Name, err)
 		}
 	}
+	saveAnchor(configs, cfg.Spec, log)
 	return effective, nil
 }
 
@@ -194,7 +221,7 @@ func bootSeeded(host Host, configs Configs, userData, networkConfig []byte, log 
 			return store.Stored{}, netcfg.Applied{}, err
 		}
 	}
-	if err := host.MountDataDisk(base.Spec.DataDisk); err != nil {
+	if err := mountData(host, configs, base.Spec.DataDisk, log); err != nil {
 		return store.Stored{}, netcfg.Applied{}, err
 	}
 	effective := choose(configs, store.Digest(userData), base, log)
@@ -212,7 +239,7 @@ func bootSeeded(host Host, configs Configs, userData, networkConfig []byte, log 
 // it last booted with a seed before init stored it, is refused: no network is guessed.
 func bootStored(host Host, configs Configs, noSeed error, log *slog.Logger) (store.Stored, netcfg.Applied, error) {
 	disk := config.DataDisk{Label: wire.DataLabel, MountPoint: wire.DataMount}
-	if err := host.MountDataDisk(disk); err != nil {
+	if err := mountData(host, configs, disk, log); err != nil {
 		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("%w, and the data disk %q that holds the stored configuration cannot be mounted: %w", noSeed, disk.Label, err)
 	}
 	stored, err := configs.Load()

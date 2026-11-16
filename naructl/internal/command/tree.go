@@ -79,6 +79,7 @@ func newRoot() *cobra.Command {
 		),
 		leaf("reboot", "stop the Node's services and reboot it", reboot),
 		leaf("upgrade", "send a host upgrade bundle, or print the boot slot and how the last upgrade ended", upgradeCmd),
+		leaf("reset", "remove the host's stored configuration or data by scope and reboot it", hostReset),
 		hostCommands(),
 		parent("microvm", "create, read and stop the microVMs a host runs",
 			leaf("create", "create a microVM, from an image or in the OS form", microvmCreate),

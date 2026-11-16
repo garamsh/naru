@@ -59,7 +59,7 @@ func bootAndRenew(host timedHost, issuer *pki.Issuer, services boot.Services, co
 	stored, err := boot.Run(host, issuer, services, configs, api, log)
 	if err != nil {
 		// Stay up so the reason stays on the console, and start nothing more.
-		log.Error("boot refused; no further service will start", "err", err)
+		log.Error("boot refused; no service of the configuration will start", "err", err)
 	} else {
 		booted = &stored
 	}

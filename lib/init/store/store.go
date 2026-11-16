@@ -6,6 +6,7 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -28,6 +29,21 @@ const FileName = "store.yaml"
 // NetworkFileName is the network-config of the seed the store was last taken from, in the same
 // directory.
 const NetworkFileName = "network-config"
+
+// ResetFileName is the file naru-hostd writes to ask the next boot for a reset (ADR 0082), in the
+// same directory: the base name of wire.ResetMarker.
+const ResetFileName = "reset.json"
+
+// AnchorFileName is the maintenance anchor, in the same directory: what init keeps of the trust
+// a refused host's maintenance mode is served under (ADR 0082).
+const AnchorFileName = "maintenance.json"
+
+// The scopes of a reset (ADR 0082). They are the strings of lib/hostapi's reset call.
+const (
+	ScopeStore = "store"
+	ScopeData  = "data"
+	ScopeAll   = "all"
+)
 
 // ErrNotFound is returned by Load when the directory holds no store.
 var ErrNotFound = errors.New("no stored configuration")
@@ -120,6 +136,64 @@ func (s *Store) SaveNetwork(networkConfig []byte) error {
 // LoadNetwork returns the network-config SaveNetwork wrote, and ErrNotFound when none was written.
 func (s *Store) LoadNetwork() ([]byte, error) {
 	data, err := os.ReadFile(filepath.Join(s.dir, NetworkFileName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrUnreadable, err)
+	}
+	return data, nil
+}
+
+// Discard removes the stored configuration, so that the next boot runs its base as revision 0, and
+// leaves the network-config and everything else beside it. It is not an error when there is none.
+func (s *Store) Discard() error {
+	err := os.Remove(filepath.Join(s.dir, FileName))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// TakeReset reads the reset the host asked for and removes the request before anything is done,
+// so that a boot that fails half way is not asked again. It returns false when there is none. A
+// request that is not a reset of a known scope is removed and returned as an error.
+func (s *Store) TakeReset() (scope string, found bool, err error) {
+	path := filepath.Join(s.dir, ResetFileName)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if err := os.Remove(path); err != nil {
+		return "", false, err
+	}
+	var req struct {
+		Scope string `json:"scope"`
+	}
+	if err := json.Unmarshal(data, &req); err != nil {
+		return "", true, fmt.Errorf("%s: %w", ResetFileName, err)
+	}
+	switch req.Scope {
+	case ScopeStore, ScopeData, ScopeAll:
+		return req.Scope, true, nil
+	}
+	return "", true, fmt.Errorf("%s: unknown scope %q", ResetFileName, req.Scope)
+}
+
+// SaveAnchor writes the maintenance anchor beside the store with atomicfile.Write.
+func (s *Store) SaveAnchor(anchor []byte) error {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	return atomicfile.Write(filepath.Join(s.dir, AnchorFileName), anchor, 0o600)
+}
+
+// LoadAnchor returns what SaveAnchor wrote, and ErrNotFound when none was written.
+func (s *Store) LoadAnchor() ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(s.dir, AnchorFileName))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, ErrNotFound
 	}

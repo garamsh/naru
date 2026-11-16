@@ -23,6 +23,7 @@ import (
 	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/metrics"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 func main() {
@@ -53,6 +54,9 @@ func main() {
 		tokenFile   = flag.String("leader-token-file", "/var/lib/naru/hostd/leader-token", "where the highest leader token orch has sent is kept, so a restart does not forget it")
 		revFile     = flag.String("revocation-file", "/var/lib/naru/hostd/crl.json", "where the last verified list is kept, so a restart within the max age needs no fetch first")
 		revSeed     = flag.String("revocation-seed", "", "a signed list delivered with the host's configuration, taken when it is newer than the kept one")
+		maintenance = flag.Bool("maintenance", false, "serve only the maintenance report and the reset, for a host whose boot init refused (ADR 0082); needs --orch-url, --orch-ca-sha256 and --revocation-public-key")
+		maintReason = flag.String("maintenance-reason", "", "why the boot was refused, as init says it, reported by GET /v1/maintenance")
+		resetMarker = flag.String("reset-marker", wire.ResetMarker, "the file a reset leaves for init, which carries it out at the next boot")
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 
 		management = flag.String("management-prefix", "", "prefix of the management plane; set, it turns the virtual networks on")
@@ -68,6 +72,20 @@ func main() {
 
 	if *join {
 		os.Exit(runJoin(log, joinOptions{orchURL: *orchURL, orchCA: *orchCA, enrollKey: *joinKey, hostKey: *hostKey, config: *joinConf}))
+	}
+
+	if *maintenance {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+		defer stop()
+		err := runMaintenance(ctx, maintenanceOptions{
+			listen: *listen, orchURL: *orchURL, orchCA: *orchCA, hostKey: *hostKey, hostID: *hostID, reason: *maintReason, resetMarker: *resetMarker, reboot: rebootInit,
+			revocation: revocationConfig{keyFile: *revKey, maxAge: *revMaxAge, orchURL: *orchURL, orchCA: *orchCA, file: *revFile},
+		}, log)
+		if err != nil && ctx.Err() == nil {
+			log.Error("maintenance mode stopped", "err", err.Error())
+			os.Exit(1)
+		}
+		return
 	}
 
 	var nets api.Networks
@@ -158,7 +176,13 @@ func main() {
 	}
 
 	reg := metrics.New()
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving})
+	resetID, err := hostIdentity(*hostID, *hostKey)
+	if err != nil {
+		log.Warn("cannot tell the host's ID; the reset call is off", "err", err.Error())
+	}
+	// A reset of the data disk deletes serving.pem, so the pair that serves after it is the configuration's.
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
+		HostID: resetID, ResetMarker: *resetMarker, Reboot: rebootInit, CheckPair: pairAfterReset(revocations, *cert)})
 	if *metricsAddr != "" {
 		go func() {
 			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {
