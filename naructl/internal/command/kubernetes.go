@@ -21,7 +21,6 @@ import (
 // ServiceAccount keys and the administrator's kubeconfig (ADR 0031). Files already there are kept.
 func genKubernetes(fs *pflag.FlagSet) runner {
 	caDir := fs.String("ca-dir", "", "directory of ca.pem and ca.key, which receives the rest")
-	aliasString(fs, caDir, "ca", "ca-dir")
 	endpoint := fs.String("endpoint", "", "the address of the API server")
 	adminAddress := fs.String("admin-address", "", "the host:port admin.conf dials, when it is not the endpoint on the API port (a forward)")
 	return func(args []string, stdout, stderr io.Writer) error {

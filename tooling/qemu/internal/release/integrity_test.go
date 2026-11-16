@@ -250,9 +250,13 @@ func TestWriteSources_RefusesACopyleftComponentThatIsNotATarball(t *testing.T) {
 
 func TestCompare_AcceptsEqualSumsAndToleratesTheAssetsThatDifferByDesign(t *testing.T) {
 	a := "aa  naru-host-v9.qcow2\n11  naru-data-v9.qcow2\n21  naru-node-1.test.yaml\n"
-	b := "aa  naru-host-v9.qcow2\n22  naru-data-v9.qcow2\n23  naru-node-1.test.yaml\n"
+	b := "aa  naru-host-v9.qcow2\n22  naru-data-v9.qcow2\n21  naru-node-1.test.yaml\n"
+	c := "aa  naru-host-v9.qcow2\n22  naru-data-v9.qcow2\n23  naru-node-1.test.yaml\n"
 
 	assert.NoError(t, release.Compare([]byte(a), []byte(b)))
+	err := release.Compare([]byte(a), []byte(c))
+	require.Error(t, err, "the test user-data is reproducible, so a difference in it is one")
+	assert.Contains(t, err.Error(), "naru-node-1.test.yaml")
 }
 
 func TestCompare_NamesTheAssetThatDiffersAndTheOnesOnlyOneSideHas(t *testing.T) {

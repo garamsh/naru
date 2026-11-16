@@ -39,3 +39,29 @@ func TestQemuArgs_VirtioDisksAreAttachedInTheOrderTheSpecGives(t *testing.T) {
 	assert.Equal(t, []string{extra, data}, swapped)
 	assert.Empty(t, scsi, "the default layout keeps both disks on the SCSI controller")
 }
+
+func TestQemuArgs_TheExtraDiskCarriesItsSerialNumberAndTheDataDiskDoesNot(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		virtio bool
+		extra  string
+		data   string
+	}{
+		{"virtio-blk", true, "virtio-blk-pci,drive=extra,serial=S3RIAL-01", "virtio-blk-pci,drive=data"},
+		{"scsi-hd", false, "scsi-hd,bus=scsihw0.0,drive=extra,serial=S3RIAL-01", "scsi-hd,bus=scsihw0.0,drive=data"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			boot := dir + "/naru.img"
+			require.NoError(t, os.WriteFile(boot, nil, 0o644))
+			spec := Spec{Config: cfg(1, 2, true, false), Disk: boot, Dir: dir, Mcast: "230.78.0.1:5000"}
+			spec.Config.ExtraDisk, spec.Config.VirtioDisks, spec.Config.ExtraDiskSerial = 512<<20, tt.virtio, "S3RIAL-01"
+
+			args, err := qemuArgs(spec, "naru15-node-1", "cidata.img", "data.img", "console.log")
+
+			require.NoError(t, err)
+			assert.Contains(t, args, tt.extra)
+			assert.Contains(t, args, tt.data)
+		})
+	}
+}

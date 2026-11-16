@@ -83,6 +83,9 @@ type Config struct {
 	// VirtioDisks attaches the data disk and the extra disk as virtio-blk disks, which the kernel
 	// names /dev/vda and /dev/vdb in the order they are attached, so that a test knows which is which.
 	VirtioDisks bool
+	// ExtraDiskSerial, when not empty, is the serial number the extra disk has, which a Storage
+	// entry can name it by.
+	ExtraDiskSerial string
 	// Storage is spec.storage, and StorageProbe the directory a naru-storageprobe service reports
 	// on, when not empty.
 	Storage      []Storage
@@ -90,7 +93,7 @@ type Config struct {
 }
 
 // Storage is a spec.storage entry.
-type Storage struct{ Name, Device, MountPoint string }
+type Storage struct{ Name, Device, Serial, MountPoint string }
 
 // Route is a spec.network.routes entry: a prefix and the address that reaches it.
 type Route struct{ To, Via string }
@@ -200,7 +203,8 @@ type route struct {
 
 type storage struct {
 	Name       string `yaml:"name"`
-	Device     string `yaml:"device"`
+	Device     string `yaml:"device,omitempty"`
+	Serial     string `yaml:"serial,omitempty"`
 	MountPoint string `yaml:"mountPoint,omitempty"`
 }
 
