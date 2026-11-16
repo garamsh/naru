@@ -3,6 +3,7 @@ package layout
 import (
 	"errors"
 	"slices"
+	"strings"
 
 	"github.com/garamsh/naru/lib/layout/pki"
 )
@@ -145,4 +146,14 @@ func (m Mode) LoadTokens(caDir, name string) (token string, tokens []string, err
 		}
 	}
 	return token, tokens, nil
+}
+
+// TokensContent is the content of the control-plane Node's list of tokens, BootstrapTokensFile: one
+// token per line, as gaon's API server reads them. Init writes it from spec.files, and a patch to the
+// file's content is how a token is added or revoked on a running Node (ADR 0081).
+func TokensContent(tokens []string) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+	return strings.Join(tokens, "\n") + "\n"
 }

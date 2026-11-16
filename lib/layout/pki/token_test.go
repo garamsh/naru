@@ -64,3 +64,16 @@ func TestReadTokens_ListsEveryNodesTokenInTheOrderOfTheNames(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 }
+
+func TestRemoveToken_DeletesTheNodesTokenAndRefusesOneThatIsNotThereOrANameThatIsNotALabel(t *testing.T) {
+	dir := t.TempDir()
+	_, err := pki.EnsureToken(dir, "node-1")
+	require.NoError(t, err)
+
+	require.NoError(t, pki.RemoveToken(dir, "node-1"))
+
+	_, err = pki.ReadToken(dir, "node-1")
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	assert.ErrorIs(t, pki.RemoveToken(dir, "node-1"), os.ErrNotExist)
+	assert.Error(t, pki.RemoveToken(dir, "../x"))
+}

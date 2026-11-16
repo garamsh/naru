@@ -67,6 +67,10 @@ func newRoot() *cobra.Command {
 		leaf("logs <service>", "print a service's kept log, and with -f each new line", logs),
 		parent("get", "read the Node's configuration", leaf("config", "print the Node's configuration and its status as YAML", getConfig)),
 		leaf("apply", "merge a patch into the Node's configuration", apply),
+		parent("token", "add or revoke a Node's bootstrap token on the control-plane Node, live",
+			leaf("create", "make a Node's token and add it to the control-plane Node's list", tokenCommand(true)),
+			leaf("revoke", "delete a Node's token and remove it from the control-plane Node's list", tokenCommand(false)),
+		),
 		leaf("reboot", "stop the Node's services and reboot it", reboot),
 		leaf("upgrade", "send a host upgrade bundle, or print the boot slot and how the last upgrade ended", upgradeCmd),
 		hostCommands(),
@@ -173,6 +177,7 @@ func genCommands() *cobra.Command {
 		leaf("node", "write a Node's user data", genNode),
 		leaf("kubernetes", "write the front-proxy authority, the ServiceAccount keys and admin.conf", genKubernetes),
 		leaf("kubernetes-node", "write a Kubernetes Node's user data", genKubernetesNode),
+		leaf("kubernetes-bootstrap-rbac", "print the RBAC manifest a cluster that takes bootstrap tokens needs", kubernetesBootstrapRBAC),
 	)
 }
 

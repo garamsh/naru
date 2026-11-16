@@ -48,6 +48,9 @@ type KubernetesNode struct {
 	Binaries                 map[string]string
 	Disable                  []string
 	Out, NetworkConfig       string
+	// BootstrapTokens has a control-plane Node accept bootstrap tokens, and Token has a worker present
+	// the one <ca-dir>/tokens/<name> holds (gen kubernetes-node --bootstrap-tokens, --token).
+	BootstrapTokens, Token bool
 }
 
 // GenKubernetesNode has naructl write the Node's user-data to n.Out, and its network-config to
@@ -62,6 +65,12 @@ func (t Tool) GenKubernetesNode(n KubernetesNode) error {
 	}
 	if n.LocalRegistry {
 		args = append(args, "--local-registry")
+	}
+	if n.BootstrapTokens {
+		args = append(args, "--bootstrap-tokens")
+	}
+	if n.Token {
+		args = append(args, "--token")
 	}
 	flag("registry-ca", n.RegistryCA)
 	flag("sandbox-image", n.SandboxImage)
@@ -88,4 +97,20 @@ func (t Tool) GenKubernetesNode(n KubernetesNode) error {
 	}
 	flag("disable", n.Disable...)
 	return t.run(args...)
+}
+
+// KubeTokenCreate and KubeTokenRevoke have naructl add or revoke a Kubernetes Node's bootstrap token
+// on the running control-plane Node the client file config reaches.
+func (t Tool) KubeTokenCreate(caDir, name, config string) error {
+	return t.run("token", "create", "--kubernetes", t.caDirFlag(), caDir, "--name", name, "--config", config)
+}
+
+func (t Tool) KubeTokenRevoke(caDir, name, config string) error {
+	return t.run("token", "revoke", "--kubernetes", t.caDirFlag(), caDir, "--name", name, "--config", config)
+}
+
+// KubeBootstrapRBAC is the manifest a cluster that takes bootstrap tokens needs, for kubectl apply.
+func (t Tool) KubeBootstrapRBAC() (string, error) {
+	b, err := t.output("gen", "kubernetes-bootstrap-rbac")
+	return string(b), err
 }

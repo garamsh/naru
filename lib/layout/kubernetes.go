@@ -32,6 +32,14 @@ const (
 	CNIBinDir  = "/opt/cni/bin"
 	// CertsDir is where containerd reads the trust of a registry.
 	CertsDir = "/run/containerd/certs.d"
+	// KubeBootstrapTokensFile is the control-plane Node's list of bootstrap tokens, which the API
+	// server reads with --token-auth-file, and KubeBootstrapKubeconfig the kubeconfig a worker's
+	// kubelet presents its token with. The kubelet keeps the kubeconfig it is issued, and its
+	// certificates, on the data disk (ADR 0081).
+	KubeBootstrapTokensFile = KubeDir + "/bootstrap-tokens.csv"
+	KubeBootstrapKubeconfig = KubeDir + "/bootstrap-kubelet.conf"
+	// BootstrapGroup is the group every bootstrap token authenticates as a member of.
+	BootstrapGroup = "system:bootstrappers"
 	// DelegatedCgroup is the cgroup init keeps for the kubelet's pod cgroups (config.DelegatedName).
 	DelegatedCgroup = "/naru/kubernetes"
 
@@ -72,7 +80,8 @@ type KubePeer struct {
 // KubeNode says what makes a Node a Kubernetes Node (ADR 0031). Of Node's fields, Name, Address and
 // the network-config fields, APIServer (the address the API server is dialled at), CA (the cluster's
 // authority: only a control-plane Node carries its key), TimeServers, Registries, Binaries and
-// Disable apply; the Machine, token and Mode fields do not.
+// Disable apply, and API when it is set, which has init serve the Node API; the Machine, token and
+// Mode fields do not.
 type KubeNode struct {
 	// ControlPlane makes the Node run etcd and the control-plane programs besides the kubelet.
 	ControlPlane bool
@@ -90,7 +99,69 @@ type KubeNode struct {
 	RegistryCA    string
 	// SandboxImage is the image of a Pod's sandbox container.
 	SandboxImage string
+	// BootstrapTokens makes a control-plane Node accept bootstrap tokens, Tokens being the ones it
+	// accepts when its user-data is written, and sign the kubelets' certificate requests with the
+	// authority's key. A patch to the list is how a token is added or revoked (ADR 0081).
+	BootstrapTokens bool
+	Tokens          []string
+	// Token is a worker's bootstrap token: its kubelet presents it for a client certificate in place
+	// of the pair naructl would issue.
+	Token string
 }
+
+// KubeTokensContent is the content of KubeBootstrapTokensFile: a line of the API server's static
+// token file for each token, which authenticates as system:bootstrap:<id> in BootstrapGroup.
+func KubeTokensContent(tokens []string) string {
+	var b strings.Builder
+	for _, t := range tokens {
+		id, _, _ := strings.Cut(t, ".")
+		fmt.Fprintf(&b, "%s,system:bootstrap:%s,%s,%q\n", t, id, id, BootstrapGroup)
+	}
+	return b.String()
+}
+
+// BootstrapRBAC is the manifest that lets a bootstrap token's holder ask for a client certificate and
+// have the controller manager approve it, and a Node renew the one it holds. The administrator
+// applies it once to a cluster that takes tokens.
+const BootstrapRBAC = `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naru:kubelet-bootstrap
+subjects:
+- kind: Group
+  name: system:bootstrappers
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: system:node-bootstrapper
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naru:approve-node-client
+subjects:
+- kind: Group
+  name: system:bootstrappers
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: system:certificates.k8s.io:certificatesigningrequests:nodeclient
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naru:renew-node-client
+subjects:
+- kind: Group
+  name: system:nodes
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: system:certificates.k8s.io:certificatesigningrequests:selfnodeclient
+  apiGroup: rbac.authorization.k8s.io
+`
 
 var (
 	apiserverKubelet = pairSpec{"apiserver-kubelet-client", "kube-apiserver-kubelet-client"}
@@ -127,10 +198,21 @@ func (n Node) checkKube() error {
 		return fmt.Errorf("the Pod network %s overlaps the Service range %s or the Node's network %s", k.PodNetwork, ServiceCIDR, n.Address.Masked())
 	case k.ControlPlane && (k.FrontProxy == nil || len(k.ServiceAccountKey) == 0 || len(k.ServiceAccountPub) == 0):
 		return errors.New("a control-plane Node needs the front-proxy authority and the ServiceAccount keys")
+	case k.BootstrapTokens && !k.ControlPlane, k.Token != "" && k.ControlPlane:
+		return errors.New("a control-plane Node accepts bootstrap tokens and a worker presents one")
+	case !k.BootstrapTokens && len(k.Tokens) > 0:
+		return errors.New("tokens are for a control-plane Node that accepts bootstrap tokens")
+	case k.Token != "" && !pki.ValidToken(k.Token):
+		return errors.New("the bootstrap token is not <id>.<secret>, [a-z0-9]{6}.[a-z0-9]{16}")
 	case k.RegistryCA != "" && !path.IsAbs(k.RegistryCA):
 		return fmt.Errorf("the registry CA path %q is not absolute", k.RegistryCA)
 	case k.RegistryCA != "" && k.SandboxImage == "":
 		return errors.New("a registry CA is for the sandbox image, which is not set")
+	}
+	for _, t := range k.Tokens {
+		if !pki.ValidToken(t) {
+			return errors.New("a token in the list is not <id>.<secret>, [a-z0-9]{6}.[a-z0-9]{16}")
+		}
 	}
 	for i, p := range k.Peers {
 		switch {
@@ -186,6 +268,9 @@ func (n Node) kubeUserData() ([]byte, error) {
 	}
 	c.Spec.Files = files
 	c.Spec.PKI = n.kubePKI()
+	if c.Spec.API, err = n.specAPI(); err != nil {
+		return nil, fmt.Errorf("issue the Node API's serving pair: %w", err)
+	}
 	if len(n.TimeServers) > 0 {
 		c.Spec.Time = &timeSpec{Servers: n.TimeServers}
 	}
@@ -244,7 +329,7 @@ func (n Node) kubeServices() []service {
 		{
 			Name: "kubelet", Binary: n.binary("kubelet", "/bin/kubelet"), Env: n.kubeEnv(),
 			Args: []string{
-				"--config=" + kubePath("kubelet.yaml"), "--kubeconfig=" + kubePath("kubelet.conf"), "--hostname-override=" + n.Name,
+				"--config=" + kubePath("kubelet.yaml"), "--kubeconfig=" + n.kubeletKubeconfig(), "--hostname-override=" + n.Name,
 				"--node-ip=" + n.Address.Addr().String(), "--root-dir=" + KubeletRoot,
 			},
 		},
@@ -255,6 +340,16 @@ func (n Node) kubeServices() []service {
 	}
 	if !k.LocalRegistry {
 		list = slices.DeleteFunc(list, func(s service) bool { return s.Name == "registry" })
+	}
+	for i := range list {
+		switch {
+		case list[i].Name == "kube-apiserver" && k.BootstrapTokens:
+			list[i].Args = append(list[i].Args, "--token-auth-file="+KubeBootstrapTokensFile)
+		case list[i].Name == "kube-controller-manager" && k.BootstrapTokens:
+			list[i].Args = append(list[i].Args, "--cluster-signing-cert-file="+ca, "--cluster-signing-key-file="+pkiPath("ca.key"))
+		case list[i].Name == "kubelet" && k.Token != "":
+			list[i].Args = append(list[i].Args, "--bootstrap-kubeconfig="+KubeBootstrapKubeconfig, "--cert-dir="+KubeletRoot+"/pki")
+		}
 	}
 	for i := range list {
 		list[i].ControlPlane = Kubernetes.OnlyControlPlane(list[i].Name)
@@ -283,6 +378,9 @@ func (n Node) kubePKI() *pkiSpec {
 	spec := &pkiSpec{Authorities: []pkiAuthority{{
 		Name: "cluster", Certificate: string(n.CA.CertPEM), Key: string(n.CA.KeyPEM), CertificatePath: pkiPath("ca.crt"),
 	}}}
+	if k.BootstrapTokens {
+		spec.Authorities[0].KeyPath = pkiPath("ca.key")
+	}
 	add := func(c ...pkiCertificate) { spec.Certificates = append(spec.Certificates, c...) }
 	spec.Authorities = append(spec.Authorities,
 		pkiAuthority{Name: "etcd", Certificate: string(n.CA.CertPEM), Key: string(n.CA.KeyPEM), CertificatePath: gaonPath("ca.pem")},
@@ -349,6 +447,37 @@ current-context: default
 `, net.JoinHostPort(n.APIServer.String(), wire.KubeAPIPort), pkiPath("ca.crt"), user, pkiPath(pair+".crt"), pkiPath(pair+".key"), user)
 }
 
+// kubeletKubeconfig is the kubeconfig the kubelet dials with. A kubelet given a token makes it, on the
+// data disk, from its bootstrap kubeconfig; any other has the one the Node's user-data carries.
+func (n Node) kubeletKubeconfig() string {
+	if n.kube().Token != "" {
+		return KubeletRoot + "/kubelet.conf"
+	}
+	return kubePath("kubelet.conf")
+}
+
+// bootstrapKubeconfig is the kubeconfig a kubelet presents its token with.
+func (n Node) bootstrapKubeconfig() string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: naru
+  cluster:
+    server: https://%s
+    certificate-authority: %s
+users:
+- name: kubelet-bootstrap
+  user:
+    token: %s
+contexts:
+- name: default
+  context:
+    cluster: naru
+    user: kubelet-bootstrap
+current-context: default
+`, net.JoinHostPort(n.APIServer.String(), wire.KubeAPIPort), pkiPath("ca.crt"), n.kube().Token)
+}
+
 // kubeFiles are what init writes for the Kubernetes programs: their configuration, on a worker its
 // pairs, and on a control-plane Node the ServiceAccount keys, which are not issued at boot.
 func (n Node) kubeFiles() ([]file, error) {
@@ -397,7 +526,6 @@ func (n Node) kubeFiles() ([]file, error) {
 		{Path: kubePath("containerd.toml"), Mode: "0644", Content: n.containerdConfig()},
 		{Path: CNIConfDir + "/10-naru.conflist", Mode: "0644", Content: string(cni) + "\n"},
 		{Path: kubePath("kubelet.yaml"), Mode: "0644", Content: string(kubelet)},
-		{Path: kubePath("kubelet.conf"), Mode: "0644", Content: n.kubeconfig("system:node:"+n.Name, "kubelet-client")},
 		{Path: kubePath("kube-proxy.yaml"), Mode: "0644", Content: string(proxy)},
 		{Path: kubePath("kube-proxy.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-proxy", "kube-proxy")},
 		// The kubelet's user-namespace mappings read /etc/passwd and /etc/group, which the image links here.
@@ -413,6 +541,11 @@ func (n Node) kubeFiles() ([]file, error) {
 			Content: fmt.Sprintf("server = \"https://%s\"\n\n[host.\"https://%s\"]\n  capabilities = [\"pull\", \"resolve\"]\n  ca = \"%s\"\n", host, host, k.RegistryCA),
 		})
 	}
+	if k.Token != "" {
+		files = append(files, file{Path: KubeBootstrapKubeconfig, Mode: "0600", Content: n.bootstrapKubeconfig()})
+	} else {
+		files = append(files, file{Path: kubePath("kubelet.conf"), Mode: "0644", Content: n.kubeconfig("system:node:"+n.Name, "kubelet-client")})
+	}
 	if !k.ControlPlane {
 		pairs, err := n.workerPairFiles()
 		if err != nil {
@@ -427,6 +560,9 @@ func (n Node) kubeFiles() ([]file, error) {
 			file{Path: kubePath("controller-manager.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-controller-manager", "controller-manager")},
 			file{Path: kubePath("scheduler.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-scheduler", "scheduler")},
 		)
+		if k.BootstrapTokens {
+			files = append(files, file{Path: KubeBootstrapTokensFile, Mode: "0600", Content: KubeTokensContent(k.Tokens), Restart: []string{Kubernetes.APIServer}})
+		}
 	}
 	return files, nil
 }
@@ -445,6 +581,9 @@ func (n Node) workerPairFiles() ([]file, error) {
 		{"kubelet", func() (pki.Pair, error) { return n.CA.Server(n.Name, ip, net.IPv4(127, 0, 0, 1)) }},
 		{"kube-proxy", func() (pki.Pair, error) { return n.CA.Client("system:kube-proxy") }},
 	} {
+		if p.name == "kubelet-client" && n.kube().Token != "" {
+			continue
+		}
 		pair, err := p.pair()
 		if err != nil {
 			return nil, fmt.Errorf("issue %s: %w", p.name, err)
