@@ -186,9 +186,10 @@ type Options struct {
 	Figures string
 	// Epoch is SOURCE_DATE_EPOCH: the only time in the SBOM and the sources tar.
 	Epoch int64
-	// Binaries are the directories whose Go binaries the SBOM states the modules of; Naructl and
-	// NaruCluster are stated too.
-	Binaries []string
+	// Binaries are the directories whose Go binaries the SBOM states the modules of, and Archives
+	// the gzip-compressed cpio archives (the initramfs) whose Go binaries it states too; Naructl and
+	// NaruCluster are stated as well.
+	Binaries, Archives []string
 	// Downloads are the directories that hold the verified upstream tarballs make image fetched; a
 	// tarball the sources tar needs and they lack is fetched from its pin's URL.
 	Downloads []string
@@ -376,7 +377,7 @@ func Build(o Options) ([]Asset, error) {
 	}
 
 	// The SBOM and the sources are written last: they state what the other assets were built from.
-	bins, err := ReadGoBinaries(o.Binaries, []string{o.Naructl, o.NaruCluster})
+	bins, err := ReadGoBinaries(o.Binaries, []string{o.Naructl, o.NaruCluster}, o.Archives)
 	if err != nil {
 		return nil, err
 	}

@@ -2,14 +2,19 @@ package release_test
 
 import (
 	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,7 +106,7 @@ func TestReadComponents_EveryPinOfTheRepositoryStatesALicense(t *testing.T) {
 
 func TestSBOM_IsSPDXWithEveryComponentAndTheModulesOfEveryGoBinaryAndNoTimeButTheEpoch(t *testing.T) {
 	comps, _ := fakeComponents(t)
-	bins, err := release.ReadGoBinaries(nil, []string{tool(t).Bin, "/nonexistent-is-skipped-not-read"})
+	bins, err := release.ReadGoBinaries(nil, []string{tool(t).Bin}, nil)
 	require.NoError(t, err)
 	require.Len(t, bins, 1, "naructl is a Go binary")
 
@@ -321,4 +326,113 @@ func TestWriteSources_FetchesEveryTarballWhenADownloadsDirectoryDoesNotExist(t *
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"https://example.test/gplpkg-1.tar.xz", "https://example.test/lgplpkg-2.tar.gz"}, calls)
+}
+
+// newc writes a gzip-compressed newc cpio archive of the given regular files, in the order given.
+func newc(t *testing.T, members [][2]string) string {
+	t.Helper()
+	var b bytes.Buffer
+	entry := func(name string, mode int, data []byte) {
+		fmt.Fprintf(&b, "070701%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x", 1, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(name)+1, 0)
+		b.WriteString(name + "\x00")
+		for b.Len()%4 != 0 {
+			b.WriteByte(0)
+		}
+		b.Write(data)
+		for b.Len()%4 != 0 {
+			b.WriteByte(0)
+		}
+	}
+	for _, m := range members {
+		data, err := os.ReadFile(m[1])
+		require.NoError(t, err)
+		entry(m[0], 0o100755, data)
+	}
+	entry("TRAILER!!!", 0, nil)
+	p := filepath.Join(t.TempDir(), "initramfs.cpio.gz")
+	var z bytes.Buffer
+	zw := gzip.NewWriter(&z)
+	_, err := zw.Write(b.Bytes())
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	require.NoError(t, os.WriteFile(p, z.Bytes(), 0o600))
+	return p
+}
+
+func TestReadGoBinaries_ReadsTheGoBinariesOfAnInitramfsAndNamesInitByItsProgram(t *testing.T) {
+	text := filepath.Join(t.TempDir(), "notgo")
+	require.NoError(t, os.WriteFile(text, []byte("#!/bin/sh\n"), 0o600))
+	archive := newc(t, [][2]string{{"init", tool(t).Bin}, {"bin/script", text}, {"bin/naructl2", tool(t).Bin}})
+
+	bins, err := release.ReadGoBinaries(nil, nil, []string{archive})
+
+	require.NoError(t, err)
+	require.Len(t, bins, 2, "the script is not a Go binary")
+	assert.Equal(t, "naructl", bins[0].Name, "/init is named by the program it was built from")
+	assert.Equal(t, "naructl2", bins[1].Name)
+	assert.NotEmpty(t, bins[0].Modules)
+}
+
+func TestReadGoBinaries_FailsOnAFileItCannotReadInsteadOfSkippingIt(t *testing.T) {
+	_, err := release.ReadGoBinaries(nil, []string{"/nonexistent-naructl"}, nil)
+	require.Error(t, err, "a missing file")
+	_, err = release.ReadGoBinaries([]string{"/nonexistent-dir"}, nil, nil)
+	require.Error(t, err, "a missing directory")
+	_, err = release.ReadGoBinaries(nil, nil, []string{"/nonexistent.cpio.gz"})
+	require.Error(t, err, "a missing archive")
+}
+
+func TestBuild_TheSBOMNamesTheGoBinariesOfTheInitramfsArchives(t *testing.T) {
+	o := fakeBuildInputs(t, strings.Repeat("7", 64))
+	o.Archives = []string{newc(t, [][2]string{{"bin/helper", tool(t).Bin}})}
+
+	_, err := release.Build(o)
+
+	require.NoError(t, err)
+	b, err := os.ReadFile(filepath.Join(o.Out, release.SBOMName(o.Version)))
+	require.NoError(t, err)
+	assert.True(t, strings.Contains(string(b), `"SPDXRef-Bin-2-helper"`), "naructl as an asset is the first binary, the one in the archive the second")
+}
+
+func TestWriteSources_RefusesTwoPinsWhoseTarballsHaveTheSameName(t *testing.T) {
+	comps, dl := fakeComponents(t)
+	comps[1].URL = "https://other.test/gplpkg-1.tar.xz"
+	comps[1].SHA256 = sumOf([]byte("gpl tarball"))
+	archive := filepath.Join(t.TempDir(), "source.tar")
+	require.NoError(t, os.WriteFile(archive, []byte("git archive"), 0o600))
+
+	err := release.WriteSources(filepath.Join(t.TempDir(), "s.tar"), epoch, comps, []string{dl}, archive, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gplpkg and lgplpkg both have the source tarball gplpkg-1.tar.xz")
+}
+
+func TestNewHTTPFetch_RetriesAfterAFailureAndGivesUpOnAStalledServer(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits == 1 {
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("tarball"))
+	}))
+	dest := filepath.Join(t.TempDir(), "t")
+
+	require.NoError(t, release.NewHTTPFetch(time.Second, 3, time.Millisecond)(srv.URL, dest))
+	got, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Equal(t, "tarball", string(got))
+	assert.Equal(t, 2, hits)
+	srv.Close()
+
+	stall := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-stall }))
+	defer slow.Close()
+	defer close(stall)
+	start := time.Now()
+	err = release.NewHTTPFetch(50*time.Millisecond, 2, time.Millisecond)(slow.URL, filepath.Join(t.TempDir(), "x"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "after 2 tries")
+	assert.Less(t, time.Since(start), 5*time.Second)
 }

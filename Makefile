@@ -247,9 +247,11 @@ RECREATE ?=
 in-builder-release: in-builder-disk
 	rm -rf $(RELEASE)
 	mkdir -p $(BUILD)/naructl
+	rm -rf $(PKGROOT)/naru
+	$(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/naru.tar
 	cd naructl && $(GOBUILD) -o $(abspath $(BUILD))/naructl/naructl ./cmd/naructl
 	cd tooling/qemu && $(GOBUILD) -o $(abspath $(BUILD))/naructl/naru-cluster ./cmd/naru-cluster
-	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -naru-cluster $(BUILD)/naructl/naru-cluster -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env -epoch $$(. $(CURDIR)/image/build.env && echo $$SOURCE_DATE_EPOCH) -binaries $(BUILD)/initramfs/bin,$(BUILD)/node-initramfs/bin -source-archive $(SOURCE_ARCHIVE) $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
+	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -naru-cluster $(BUILD)/naructl/naru-cluster -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env -epoch $$(. $(CURDIR)/image/build.env && echo $$SOURCE_DATE_EPOCH) -binaries $(IMAGE)/gaon,$(IMAGE)/etcd,$(IMAGE)/k8s,$(IMAGE)/regtools,$(PKGROOT)/naru/usr/bin -archives $(IMAGE)/initramfs.cpio.gz,$(IMAGE)/node-initrd.cpio.gz -source-archive $(SOURCE_ARCHIVE) $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
 
 # test-qemu boots Nodes of the image under QEMU, as the user, and reads their consoles. It needs
 # /dev/kvm with nested virtualization and the host's mkfs.ext4 (for the data disk), and fails,

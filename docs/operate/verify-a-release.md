@@ -33,7 +33,7 @@ It proves the asset was built by the release workflow of the repository, from th
 
 ## The SBOM and the sources
 
-`naru-sbom-<tag>.spdx.json` lists every package of the image and every Go module of the programs the release ships, with licences. `naru-sources-<tag>.tar` holds the upstream tarball of every GPL-, LGPL- and AGPL-licensed package (`sources/`) and `naru-source.tar`, the source of this repository at the built commit. Both are listed in `SHA256SUMS`, so steps 1 and 2 cover them.
+`naru-sbom-<tag>.spdx.json` lists every pinned package of the image with its licence and every Go module of the Go programs the release ships (Firecracker, which mvmd downloads, is not in it). `naru-sources-<tag>.tar` holds the upstream tarball of every GPL-, LGPL- and AGPL-licensed package (`sources/`) and `naru-source.tar`, the source of this repository at the built commit. Both are listed in `SHA256SUMS`, so steps 1 and 2 cover them.
 
 ## One tag, one release
 

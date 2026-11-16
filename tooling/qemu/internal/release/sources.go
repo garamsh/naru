@@ -22,8 +22,31 @@ const SourceArchiveMember = "naru-source.tar"
 // Fetch downloads url into dest. The default is an HTTP GET; a test replaces it.
 type Fetch func(url, dest string) error
 
+// NewHTTPFetch returns a Fetch that GETs the URL with a deadline of timeout for each of attempts
+// tries, waiting wait times the number of failed tries between them. A stalled mirror costs
+// attempts*timeout, not the job's timeout; the SHA-256 check stays with the caller.
+func NewHTTPFetch(timeout time.Duration, attempts int, wait time.Duration) Fetch {
+	client := &http.Client{Timeout: timeout}
+	return func(url, dest string) error {
+		var err error
+		for i := 1; i <= attempts; i++ {
+			if err = getOnce(client, url, dest); err == nil {
+				return nil
+			}
+			if i < attempts {
+				time.Sleep(time.Duration(i) * wait)
+			}
+		}
+		return fmt.Errorf("after %d tries: %w", attempts, err)
+	}
+}
+
 func httpFetch(url, dest string) error {
-	r, err := http.Get(url) //nolint:gosec // the URL is a pin of this repository
+	return NewHTTPFetch(15*time.Minute, 3, 5*time.Second)(url, dest)
+}
+
+func getOnce(client *http.Client, url, dest string) error {
+	r, err := client.Get(url) //nolint:gosec // the URL is a pin of this repository
 	if err != nil {
 		return err
 	}
@@ -89,6 +112,7 @@ func WriteSources(out string, epoch int64, comps []Component, downloads []string
 	}
 	defer func() { _ = os.RemoveAll(work) }()
 	members := map[string]string{SourceArchiveMember: sourceArchive}
+	owner := map[string]string{}
 	for _, c := range comps {
 		if !c.Copyleft() {
 			continue
@@ -100,7 +124,12 @@ func WriteSources(out string, epoch int64, comps []Component, downloads []string
 		if err != nil {
 			return err
 		}
-		members["sources/"+c.TarballName()] = p
+		m := "sources/" + c.TarballName()
+		if o, dup := owner[m]; dup {
+			return fmt.Errorf("%s and %s both have the source tarball %s; the sources tar holds one member of each name", o, c.Name, c.TarballName())
+		}
+		owner[m] = c.Name
+		members[m] = p
 	}
 	names := make([]string, 0, len(members))
 	for n := range members {

@@ -41,9 +41,10 @@ func run() error {
 	flag.StringVar(&o.PrevManifest, "prev-manifest", "", "the manifest.json of the previous release's upgrade bundle, to refuse a kernel its Nodes cannot take (ADR 0037)")
 	flag.BoolVar(&o.RequiresRecreation, "requires-recreation", false, "allow a kernel the previous release's Nodes cannot take: the notes tell them to be recreated")
 	flag.StringVar(&o.Figures, "notes-figures", "", "a file to write the release notes' figures to (ESP_BYTES, LARGEST_UPGRADE_KERNEL_BYTES); not in -out, whose files are all assets")
-	var epoch, binaries, downloads string
+	var epoch, binaries, archives, downloads string
 	flag.StringVar(&epoch, "epoch", "", "SOURCE_DATE_EPOCH: the only time in the SBOM and the sources tar")
 	flag.StringVar(&binaries, "binaries", "", "comma-separated directories whose Go binaries the SBOM states the modules of")
+	flag.StringVar(&archives, "archives", "", "comma-separated gzip-compressed cpio archives (the initramfs) whose Go binaries the SBOM states the modules of")
 	flag.StringVar(&downloads, "downloads", "", "comma-separated directories that hold the verified upstream tarballs make image fetched")
 	flag.StringVar(&o.SourceArchive, "source-archive", "", "the git archive (a tar) of the commit being built")
 	flag.Parse()
@@ -51,7 +52,7 @@ func run() error {
 	if o.Epoch, err = strconv.ParseInt(epoch, 10, 64); err != nil {
 		return fmt.Errorf("-epoch %q is not a number of seconds: %w", epoch, err)
 	}
-	o.Binaries, o.Downloads = split(binaries), split(downloads)
+	o.Binaries, o.Archives, o.Downloads = split(binaries), split(archives), split(downloads)
 	if o.SourceArchive == "" {
 		return fmt.Errorf("-source-archive is required (make source-archive)")
 	}
