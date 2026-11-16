@@ -235,7 +235,7 @@ judge-serial:
 # set a host takes with `naructl host boot-set add`, ADR 0046), naru-data-<version>.qcow2 (the one data
 # disk both Nodes attach), naru-guest-<version>.json,
 # naru-inputs-<version>.json (what naru-cluster reads besides the disks), naructl-<version>-linux-amd64
-# (the operator's tool, which also writes the test user-data below from a CA that lives only for the
+# (the operator's tool, which also writes the test user-data below from a CA derived from the version (ADR 0078) that lives only for the
 # run), naru-cluster-<version>-linux-amd64 (the harness's command, a static binary, ADR 0074), naru-node-1.test.yaml and naru-node-2.test.yaml (test-only user-data for Proxmox: they carry
 # gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. $(BUILD)/release-figures.env,
 # outside $(RELEASE) because every file there is an asset, holds the ESP size and the largest in-place
