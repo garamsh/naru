@@ -95,10 +95,13 @@ func testToken(version, name string) string {
 	return string(out)
 }
 
-// derivedKey is the P-256 key the version fixes.
-func derivedKey(version string) (*ecdsa.PrivateKey, error) {
+// derivedKey is the P-256 key of the test CA that the version fixes.
+func derivedKey(version string) (*ecdsa.PrivateKey, error) { return derivedKeyOf(version, "ca-key") }
+
+// derivedKeyOf is the P-256 key the version and the label fix.
+func derivedKeyOf(version, label string) (*ecdsa.PrivateKey, error) {
 	n := elliptic.P256().Params().N
-	d := new(big.Int).SetBytes(derive(version, "ca-key"))
+	d := new(big.Int).SetBytes(derive(version, label))
 	d.Mod(d, new(big.Int).Sub(n, big.NewInt(1))).Add(d, big.NewInt(1))
 	return ecdsa.ParseRawPrivateKey(elliptic.P256(), d.FillBytes(make([]byte, 32)))
 }

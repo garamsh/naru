@@ -264,6 +264,11 @@ func Build(o Options) ([]Asset, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stage the inputs: %w", err)
 	}
+	// Stage made the registry's authority from fresh randomness; the user-data names its
+	// certificate, so the disk carries the derived one instead (ADR 0078).
+	if err := writeRegistryCerts(filepath.Join(inputs.Dir, "registry"), o.Version, o.Epoch); err != nil {
+		return nil, err
+	}
 	if err := fixTimes(inputs.Dir); err != nil {
 		return nil, err
 	}

@@ -30,3 +30,7 @@ Drafted for garamsh/naru#239, part of goal garamsh/naru#235. It changes [image.m
 
 - A release's test CA is used for something that held value, which would say the derivation hands an attacker a key the asset's reader did not have to read.
 - `naructl` changes the layout of a CA directory and the release's derived one is not noticed to be stale.
+
+## Note, 2026-11-17: the registry's authority is derived too
+
+Found by `make image-repro` on garamsh/naru#235: two builds of one commit differed in the two user-data files again, in the certificate of `naru test registry CA`, which `spec.registries` names through `ca=`. `fixture.Stage` makes the registry directory's authority and leaf (`ServerCerts`) from fresh randomness and the build's clock, and decision 2 held only for the test CA. The release now writes `ca.pem`, `cert.pem` and `key.pem` of the staged `inputs/registry` itself (`internal/release/registrypki.go`), over what `Stage` wrote and before the data disk is built, so that the disk's registry and the user-data's `ca=` stay one authority: the keys and serials are HMAC-SHA-256 outputs keyed by the version, both certificates are valid from `SOURCE_DATE_EPOCH` less an hour for ten years, and the signatures are RFC 6979's, as in decision 1. The decision is unchanged; the list of what derives from the version was incomplete. The data disk is still left out of a comparison (decision 3).
