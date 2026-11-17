@@ -118,19 +118,14 @@ func TestNetworksAPIAndTheLeaderTellTheHostsTheirNetworks(t *testing.T) {
 	zero.Count = 0
 	_, err = o.op.ApplyGroup(t.Context(), zero)
 	require.NoError(t, err)
+	// The group is deleted once the engine has stored every member as gone, which the group's
+	// view, computed from what the hosts report, can show before.
+	var del error
 	require.Eventually(t, func() bool {
-		gr, err := o.op.Group(t.Context(), "web")
-		if err != nil {
-			return false
-		}
-		for _, m := range gr.Members {
-			if m.Phase != orchapi.PhaseGone {
-				return false
-			}
-		}
-		return true
+		del = o.op.DeleteGroup(t.Context(), "web")
+		return status(del) != 409
 	}, 30*time.Second, 100*time.Millisecond)
-	require.NoError(t, o.op.DeleteGroup(t.Context(), "web"))
+	require.NoError(t, del)
 	require.NoError(t, o.op.DeleteNetwork(t.Context(), "lab"))
 	require.Equal(t, 404, status(o.op.DeleteNetwork(t.Context(), "lab")))
 }

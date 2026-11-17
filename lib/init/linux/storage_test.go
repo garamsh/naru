@@ -287,6 +287,100 @@ func TestHost_PrepareStorageLeavesAnXFSLabelledWithAnotherNameAloneAtTheGivenDev
 	assert.True(t, bytes.Equal(before, after), "the disk is untouched")
 }
 
+// withSerial gives the device of the rig, a /sys/class/block entry, the file attrs name, as
+// /sys/block/<dev> has for a virtio-blk disk (serial) or a SCSI disk (device/vpd_pg80, device/wwid).
+func withSerial(t *testing.T, r *storageRig, dev string, attrs map[string]string) {
+	t.Helper()
+	entry := filepath.Join(r.host.sysClassBlock, dev)
+	require.NoError(t, os.Remove(entry))
+	for name, content := range attrs {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(entry, name)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(entry, name), []byte(content), 0o644))
+	}
+}
+
+func TestHost_PrepareStorageFindsAnEntryGivenBySerialAndFormatsItWhenBlank(t *testing.T) {
+	data := ext4test.Image(t, "naru-data", "", nil)
+	r := newStorageRig(t, map[string]string{"vda": data, "vdb": disk(t, 64<<20, nil)})
+	withSerial(t, r, "vda", map[string]string{"serial": "DATA-0\n"})
+	withSerial(t, r, "vdb", map[string]string{"serial": "S3RIAL-01\n"})
+
+	require.NoError(t, r.prepare(config.Storage{Name: "vmdisks", Serial: "S3RIAL-01"}))
+
+	require.Len(t, r.mkfs, 1)
+	assert.Equal(t, []string{mkfsXFS, "-m", "reflink=1,crc=1", "-L", "vmdisks", filepath.Join(r.host.devDir, "vdb")}, r.mkfs[0])
+	assert.Equal(t, filepath.Join(r.host.devDir, "vdb"), (*r.mounts)[0].source)
+}
+
+func TestHost_PrepareStorageFindsAnEntryGivenBySerialByItsLabelAtTheNextBootWhateverTheOrder(t *testing.T) {
+	r := newStorageRig(t, map[string]string{
+		"vda": ext4test.Image(t, "naru-data", "", nil),
+		"vdb": disk(t, 64<<20, xfsSuperblock("vmdisks", 64<<20/4096)),
+	})
+	// The serial is on the disk that is now vdb as before, but the entry is found by its label.
+	withSerial(t, r, "vdb", map[string]string{"serial": "S3RIAL-01"})
+
+	require.NoError(t, r.prepare(config.Storage{Name: "vmdisks", Serial: "S3RIAL-01"}))
+
+	assert.Empty(t, r.mkfs)
+	assert.Equal(t, filepath.Join(r.host.devDir, "vdb"), (*r.mounts)[0].source)
+}
+
+func TestHost_PrepareStorageReadsASCSIDisksSerialFromItsVPDPageOrWWID(t *testing.T) {
+	for name, attrs := range map[string]map[string]string{
+		"vpd page": {"device/vpd_pg80": "\x00\x80\x00\x09S3RIAL-01"},
+		"wwid":     {"device/wwid": "S3RIAL-01\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newStorageRig(t, map[string]string{"sdb": disk(t, 64<<20, nil)})
+			withSerial(t, r, "sdb", attrs)
+
+			require.NoError(t, r.prepare(config.Storage{Name: "vmdisks", Serial: "S3RIAL-01"}))
+
+			assert.Len(t, r.mkfs, 1)
+		})
+	}
+}
+
+func TestHost_PrepareStorageFormatsNothingWhenNoDiskOrTwoDisksHaveTheSerial(t *testing.T) {
+	t.Run("none", func(t *testing.T) {
+		r := newStorageRig(t, map[string]string{"vdb": disk(t, 64<<20, nil)})
+		withSerial(t, r, "vdb", map[string]string{"serial": "OTHER"})
+		r.host.diskWait = 0
+
+		err := r.prepare(config.Storage{Name: "vmdisks", Serial: "S3RIAL-01"})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "S3RIAL-01")
+		assert.Empty(t, r.mkfs)
+		assert.Empty(t, *r.mounts)
+	})
+	t.Run("two", func(t *testing.T) {
+		r := newStorageRig(t, map[string]string{"vdb": disk(t, 64<<20, nil), "vdc": disk(t, 64<<20, nil)})
+		withSerial(t, r, "vdb", map[string]string{"serial": "S3RIAL-01"})
+		withSerial(t, r, "vdc", map[string]string{"serial": "S3RIAL-01"})
+
+		err := r.prepare(config.Storage{Name: "vmdisks", Serial: "S3RIAL-01"})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "2 disks")
+		assert.Empty(t, r.mkfs)
+		assert.Empty(t, *r.mounts)
+	})
+}
+
+func TestHost_PrepareStorageLeavesAnXFSLabelledWithAnotherNameAloneAtTheSerial(t *testing.T) {
+	r := newStorageRig(t, map[string]string{"vdb": disk(t, 64<<20, xfsSuperblock("elsewhere", 64<<20/4096))})
+	withSerial(t, r, "vdb", map[string]string{"serial": "S3RIAL-01"})
+
+	err := r.prepare(config.Storage{Name: "vmdisks", Serial: "S3RIAL-01"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `labelled "elsewhere"`)
+	assert.Empty(t, r.mkfs)
+	assert.Empty(t, *r.mounts)
+}
+
 // diskWithByteAt returns a blank 4 MiB disk with one non-zero byte at off.
 func diskWithByteAt(t *testing.T, off int64) string {
 	t.Helper()

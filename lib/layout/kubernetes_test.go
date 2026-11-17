@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,8 +36,10 @@ type kubeSpec struct {
 			ControlPlane bool     `yaml:"controlPlane"`
 		} `yaml:"services"`
 		Files []struct {
-			Path    string `yaml:"path"`
-			Content string `yaml:"content"`
+			Path    string   `yaml:"path"`
+			Content string   `yaml:"content"`
+			Mode    string   `yaml:"mode"`
+			Restart []string `yaml:"restart"`
 		} `yaml:"files"`
 		PKI struct {
 			Authorities []struct {
@@ -268,4 +271,98 @@ func TestKubernetesUserData_UsesNoMvmdFieldsAndRefusesBadDescriptions(t *testing
 			assert.Contains(t, err.Error(), c.want)
 		})
 	}
+}
+
+func argsOf(s kubeSpec, service string) string {
+	for _, sv := range s.Spec.Services {
+		if sv.Name == service {
+			return strings.Join(sv.Args, " ")
+		}
+	}
+	return ""
+}
+
+func TestKubernetesUserData_ControlPlaneThatAcceptsTokensCarriesTheListAndRestartsTheAPIServerOnIt(t *testing.T) {
+	n := kubeNode(t, true, func(n *layout.Node) {
+		n.Kube.BootstrapTokens = true
+		n.Kube.Tokens = []string{"abcdef.0123456789abcdef"}
+	})
+
+	s := kubeUserData(t, n)
+
+	assert.Contains(t, argsOf(s, "kube-apiserver"), "--token-auth-file=/run/kubernetes/bootstrap-tokens.csv")
+	assert.Contains(t, argsOf(s, "kube-controller-manager"), "--cluster-signing-key-file=/run/kubernetes/pki/ca.key")
+	found := false
+	for _, f := range s.Spec.Files {
+		if f.Path == layout.KubeBootstrapTokensFile {
+			found = true
+			assert.Equal(t, "abcdef.0123456789abcdef,system:bootstrap:abcdef,abcdef,\"system:bootstrappers\"\n", f.Content)
+			assert.Equal(t, []string{"kube-apiserver"}, f.Restart)
+		}
+	}
+	assert.True(t, found, "the list is a file")
+
+	plain := kubeUserData(t, kubeNode(t, true, nil))
+	assert.NotContains(t, argsOf(plain, "kube-apiserver"), "--token-auth-file", "control: a Node not given tokens takes none")
+}
+
+func TestKubernetesUserData_WorkerWithATokenPresentsItInPlaceOfAnIssuedKubeletClientPair(t *testing.T) {
+	n := kubeNode(t, false, func(n *layout.Node) { n.Kube.Token = "abcdef.0123456789abcdef" })
+
+	s := kubeUserData(t, n)
+
+	assert.Contains(t, argsOf(s, "kubelet"), "--bootstrap-kubeconfig=/run/kubernetes/bootstrap-kubelet.conf")
+	paths := map[string]string{}
+	for _, f := range s.Spec.Files {
+		paths[f.Path] = f.Content
+	}
+	assert.Contains(t, paths["/run/kubernetes/bootstrap-kubelet.conf"], "token: abcdef.0123456789abcdef")
+	assert.NotContains(t, paths, "/run/kubernetes/pki/kubelet-client.crt")
+	assert.Contains(t, paths, "/run/kubernetes/pki/kubelet.crt", "the serving pair is still issued")
+}
+
+func TestKubernetesUserData_TokensAreRefusedOnTheWrongRole(t *testing.T) {
+	for name, change := range map[string]func(*layout.Node){
+		"a worker accepting tokens":       func(n *layout.Node) { n.Kube.BootstrapTokens = true },
+		"a control-plane Node presenting": func(n *layout.Node) { n.Kube.Token = "abcdef.0123456789abcdef" },
+	} {
+		cp := name[0:3] != "a w"
+		_, err := kubeNode(t, cp, change).UserData()
+		assert.Error(t, err, name)
+	}
+}
+
+func TestKubeTokensContent_EmptyListIsAnEmptyFileTheAPIServerAcceptsAndEveryTokenIsALine(t *testing.T) {
+	// k8s.io/apiserver v0.37.1 tokenfile.NewCSV reads records until io.EOF, so an empty file is an
+	// empty token map and no error (ADR 0081).
+	assert.Equal(t, "", layout.KubeTokensContent(nil))
+	assert.Equal(t, 2, strings.Count(layout.KubeTokensContent([]string{"abcdef.0123456789abcdef", "fedcba.fedcba9876543210"}), "\n"))
+}
+
+func TestKubernetesUserData_ControlPlaneThatAcceptsTokensWithNoneStillCarriesTheEmptyPrivateFileSoTheFirstTokenIsAPatch(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, func(n *layout.Node) { n.Kube.BootstrapTokens = true }))
+
+	assert.Contains(t, argsOf(s, "kube-apiserver"), "--token-auth-file="+layout.KubeBootstrapTokensFile)
+	var got []string
+	for _, f := range s.Spec.Files {
+		if f.Path == layout.KubeBootstrapTokensFile {
+			got = append(got, f.Mode+"|"+f.Content)
+		}
+	}
+	assert.Equal(t, []string{"0600|"}, got)
+}
+
+func TestKubernetesUserData_WorkerWithATokenKeepsItsKubeProxyPairAndKubeconfig(t *testing.T) {
+	// kube-proxy authenticates as system:kube-proxy, which system:node-proxier is bound to in
+	// k8s.io/kubernetes plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go, so the issued
+	// pair is kept; the token replaces only the kubelet's client pair (ADR 0081).
+	s := kubeUserData(t, kubeNode(t, false, func(n *layout.Node) { n.Kube.Token = "abcdef.0123456789abcdef" }))
+
+	paths := map[string]string{}
+	for _, f := range s.Spec.Files {
+		paths[f.Path] = f.Content
+	}
+	assert.Contains(t, paths, "/run/kubernetes/pki/kube-proxy.crt")
+	assert.Contains(t, paths, "/run/kubernetes/pki/kube-proxy.key")
+	assert.Contains(t, paths["/run/kubernetes/kube-proxy.conf"], "client-certificate")
 }

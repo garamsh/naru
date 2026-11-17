@@ -30,6 +30,12 @@ Those three are root's. reissue-root is the recovery key's, for an operator who 
 it signs on this machine a once-only request for a new root certificate for the request --csr names,
 and the signer revokes the old root. Its --recovery-key and --passphrase-file are local files.
 
+rotate-host makes a new key for --host-id, has the signer issue a host certificate for it, installs the pair on
+the host through its API (--host-client, a provisioner's client file) and, once the host reports to orch with it,
+has the signer revoke every older serial it holds for the host. A failure before that leaves the old pair valid
+and in use; the new key is sent to the host and written nowhere else. register-host records the serial of the certificate --cert, one gen node wrote offline, for a host
+the signer did not admit, so that rotate-host can revoke it. Both are root's or an operator's.
+
 Each takes exactly one of --socket, the one naru-signer serves on this host, and --config, an admin's client
 file for a Node's API, which forwards to the signer of --endpoint. The signer checks every request's signature
 itself, so the client file alone does not authorise anything.`
@@ -67,8 +73,13 @@ func newRoot() *cobra.Command {
 		leaf("logs <service>", "print a service's kept log, and with -f each new line", logs),
 		parent("get", "read the Node's configuration", leaf("config", "print the Node's configuration and its status as YAML", getConfig)),
 		leaf("apply", "merge a patch into the Node's configuration", apply),
+		parent("token", "add or revoke a Node's bootstrap token on the control-plane Node, live",
+			leaf("create", "make a Node's token and add it to the control-plane Node's list", tokenCommand(true)),
+			leaf("revoke", "delete a Node's token and remove it from the control-plane Node's list", tokenCommand(false)),
+		),
 		leaf("reboot", "stop the Node's services and reboot it", reboot),
 		leaf("upgrade", "send a host upgrade bundle, or print the boot slot and how the last upgrade ended", upgradeCmd),
+		leaf("reset", "remove the host's stored configuration or data by scope and reboot it", hostReset),
 		hostCommands(),
 		parent("microvm", "create, read and stop the microVMs a host runs",
 			leaf("create", "create a microVM, from an image or in the OS form", microvmCreate),
@@ -116,6 +127,8 @@ func newRoot() *cobra.Command {
 			leaf("ca", "print the signer's authorities", signerCA("orch", "operator", "host")),
 			leaf("authorise-replica", "sign root's authorisation for a signer replica", signerAuthoriseReplica),
 			leaf("bundle", "write the authorities sealed to the recovery key", signerBundle),
+			leaf("rotate-host", "replace a host's key pair through the signer: install the new pair on the host, then revoke the old serials", signerRotateHost),
+			leaf("register-host", "record the serial of a host's offline certificate so rotate-host can revoke it", signerRegisterHost),
 			leaf("reissue-root", "sign a request for a new root certificate with the recovery key", signerReissueRoot),
 			leaf("restore", "fill a blank signer from a bundle", signerRestore)), signerLong, ""),
 		parent("extension", "store, list and remove system extension images on a Node",
@@ -173,6 +186,7 @@ func genCommands() *cobra.Command {
 		leaf("node", "write a Node's user data", genNode),
 		leaf("kubernetes", "write the front-proxy authority, the ServiceAccount keys and admin.conf", genKubernetes),
 		leaf("kubernetes-node", "write a Kubernetes Node's user data", genKubernetesNode),
+		leaf("kubernetes-bootstrap-rbac", "print the RBAC manifest a cluster that takes bootstrap tokens needs", kubernetesBootstrapRBAC),
 	)
 }
 

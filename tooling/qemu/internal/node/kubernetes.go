@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
@@ -33,6 +34,11 @@ type KubeSpec struct {
 	Naructl   naructl.Tool
 	// Disable names services left out of every Node's configuration.
 	Disable []string
+	// Late numbers the workers (3 and up) StartLate starts, not StartKubernetes. A cluster with them
+	// has the control-plane Node accept bootstrap tokens and serve a Node API (APIAdmin), through
+	// which `naructl token create --kubernetes` adds a Late worker's token live (ADR 0081); the
+	// authority's directory stays until Stop.
+	Late []int
 }
 
 // KubeCluster is the two Nodes and the administrator's kubeconfig, which dials the control-plane
@@ -43,6 +49,13 @@ type KubeCluster struct {
 	Kubeconfig string
 	// Image is the reference of the test image, which a Pod runs and the sandbox is.
 	Image string
+	// CADir is the authority's directory, whose tokens/ the token commands change, and APIAdmin the
+	// client file of node-1's Node API; both are set with KubeSpec.Late.
+	CADir, APIAdmin string
+
+	spec                             KubeSpec
+	caDir, apiServer, sandbox, mcast string
+	total, hostPort                  int
 }
 
 // KubePodPrefix is the Pod prefix of Node index: 10.64.<index>.0/24, in KubePodNetwork.
@@ -54,7 +67,12 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 	if spec.Inputs.Image.Digest == "" {
 		return nil, errors.New("a Kubernetes cluster needs the test image, which its Pods run")
 	}
-	const total = 2
+	for _, i := range spec.Late {
+		if i < 3 {
+			return nil, errors.New("Late numbers workers after node-2")
+		}
+	}
+	total := 2 + len(spec.Late)
 	port, err := freePort()
 	if err != nil {
 		return nil, fmt.Errorf("pick a host port for the API server: %w", err)
@@ -65,13 +83,35 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 	}
 	// The CA's directory goes once the Nodes' user-data is written: it holds the authority's key, the
 	// ServiceAccount key and admin.conf. The administrator keeps a copy of admin.conf.
-	defer func() { _ = os.RemoveAll(caDir) }()
+	if len(spec.Late) == 0 {
+		defer func() { _ = os.RemoveAll(caDir) }()
+	}
 	if err := spec.Naructl.GenCA(caDir); err != nil {
 		return nil, err
 	}
 	apiServer := QEMUNetwork(1, total).IP
 	if err := spec.Naructl.GenKubernetes(caDir, apiServer, "127.0.0.1:"+strconv.Itoa(port)); err != nil {
 		return nil, err
+	}
+	var apiPort int
+	var apiAdmin string
+	if len(spec.Late) > 0 {
+		// The Node API's authority makes every Node's user-data carry spec.api; node-1's is reached
+		// through a forward.
+		if apiPort, err = freePort(); err != nil {
+			return nil, fmt.Errorf("pick a host port for the Node API: %w", err)
+		}
+		if err := spec.Naructl.GenAPICA(caDir); err != nil {
+			return nil, err
+		}
+		dir := filepath.Join(spec.Dir, "api-client")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+		apiAdmin = filepath.Join(dir, "admin.yaml")
+		if err := spec.Naructl.GenAPIClient(caDir, "admin", "127.0.0.1:"+strconv.Itoa(apiPort), apiAdmin); err != nil {
+			return nil, err
+		}
 	}
 	admin, err := os.ReadFile(filepath.Join(caDir, "admin.conf"))
 	if err != nil {
@@ -80,6 +120,10 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 	c := &KubeCluster{
 		Kubeconfig: filepath.Join(spec.Dir, "admin.conf"),
 		Image:      spec.Inputs.Image.Repository + "@" + spec.Inputs.Image.Digest,
+		spec:       spec, caDir: caDir, apiServer: apiServer, total: total, hostPort: port, APIAdmin: apiAdmin,
+	}
+	if len(spec.Late) > 0 {
+		c.CADir = caDir
 	}
 	// The sandbox runs the image's command with no arguments, which would serve the microVM probe on
 	// the port the test's server listens on.
@@ -90,25 +134,50 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 	if err := os.WriteFile(c.Kubeconfig, admin, 0o600); err != nil {
 		return nil, err
 	}
-	mcast := fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000))
+	c.sandbox, c.mcast = sandbox, fmt.Sprintf("230.78.0.1:%d", 20000+rand.IntN(40000))
 	for i := 1; i <= total; i++ {
-		cfg := Config{Name: fmt.Sprintf("node-%d", i), Index: i, Total: total, ControlPlane: i == 1, Inputs: spec.Inputs, MemoryMiB: KubeNodeMemoryMiB}
-		if i == 1 {
-			cfg.HostPort = port // only the control-plane Node has the second NIC
+		if slices.Contains(spec.Late, i) {
+			continue
 		}
-		start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, cfg.Name), Mcast: mcast}
-		if start.NaruYAML, start.NetworkConfig, err = kubeNode(cfg, caDir, apiServer, sandbox, spec); err != nil {
+		if err := c.startNode(i, apiPort); err != nil {
 			c.Stop()
-			return nil, fmt.Errorf("write the user-data of %s: %w", cfg.Name, err)
+			return nil, err
 		}
-		n, err := Start(start)
-		if err != nil {
-			c.Stop()
-			return nil, fmt.Errorf("start %s: %w", cfg.Name, err)
-		}
-		c.Nodes = append(c.Nodes, n)
 	}
 	return c, nil
+}
+
+// startNode writes the user-data of Node i and starts it. apiPort is the host port forwarded to node-1's
+// Node API, when the cluster has one.
+func (c *KubeCluster) startNode(i, apiPort int) error {
+	cfg := Config{Name: fmt.Sprintf("node-%d", i), Index: i, Total: c.total, ControlPlane: i == 1, Inputs: c.spec.Inputs, MemoryMiB: KubeNodeMemoryMiB}
+	if i == 1 {
+		cfg.HostPort = c.hostPort // only the control-plane Node has the second NIC
+		cfg.APIHostPort = apiPort
+	}
+	start := Spec{Config: cfg, Disk: c.spec.Disk, Dir: filepath.Join(c.spec.Dir, cfg.Name), Mcast: c.mcast}
+	var err error
+	if start.NaruYAML, start.NetworkConfig, err = kubeNode(cfg, c.caDir, c.apiServer, c.sandbox, c.spec); err != nil {
+		return fmt.Errorf("write the user-data of %s: %w", cfg.Name, err)
+	}
+	n, err := Start(start)
+	if err != nil {
+		return fmt.Errorf("start %s: %w", cfg.Name, err)
+	}
+	c.Nodes = append(c.Nodes, n)
+	return nil
+}
+
+// StartLate starts Late worker i, which presents the token <CADir>/tokens/node-<i> holds, which the
+// test made with `naructl token create --kubernetes` before.
+func (c *KubeCluster) StartLate(i int) (*Node, error) {
+	if c.CADir == "" || !slices.Contains(c.spec.Late, i) {
+		return nil, fmt.Errorf("node-%d is not a Late worker of this cluster", i)
+	}
+	if err := c.startNode(i, 0); err != nil {
+		return nil, err
+	}
+	return c.Nodes[len(c.Nodes)-1], nil
 }
 
 // kubeNode has naructl write the user-data and network-config of the Node c names.
@@ -119,7 +188,6 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, nil, err
 	}
-	other := 3 - c.Index // the other Node of the two
 	role := "worker"
 	if c.ControlPlane {
 		role = "control-plane"
@@ -127,12 +195,19 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	k := naructl.KubernetesNode{
 		CA: caDir, Name: c.Name, Role: role, Address: n.IP + "/" + strconv.Itoa(ones), Endpoint: apiServer,
 		PodNetwork: KubePodNetwork, PodPrefix: KubePodPrefix(c.Index),
-		Peers: []string{QEMUNetwork(other, 2).IP + "=" + KubePodPrefix(other)},
-		MAC:   n.MAC, Gateway: n.Gateway, Nameservers: n.Nameservers, Search: n.Search,
+		MAC: n.MAC, Gateway: n.Gateway, Nameservers: n.Nameservers, Search: n.Search,
 		LocalRegistry: true, RegistryCA: path.Join(fixture.GuestRoot, "registry", "ca.pem"), SandboxImage: sandbox,
 		Disable: spec.Disable,
 		Out:     filepath.Join(dir, "naru.yaml"), NetworkConfig: filepath.Join(dir, "network-config"),
 	}
+	for j := 1; j <= c.Total; j++ {
+		if j != c.Index {
+			k.Peers = append(k.Peers, QEMUNetwork(j, c.Total).IP+"="+KubePodPrefix(j))
+		}
+	}
+	late := len(spec.Late) > 0
+	k.BootstrapTokens = late && c.ControlPlane
+	k.Token = slices.Contains(spec.Late, c.Index)
 	if c.hostNIC() {
 		k.ExtraNIC = c.HostMAC() + "=" + HostNICPrefix
 	}
@@ -146,8 +221,11 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	return userData, networkConfig, err
 }
 
-// Stop ends every Node.
+// Stop ends every Node, and removes the authority's directory a cluster with Late workers kept.
 func (c *KubeCluster) Stop() {
+	if c.CADir != "" {
+		defer func() { _ = os.RemoveAll(c.CADir) }()
+	}
 	for _, n := range c.Nodes {
 		n.Stop()
 	}

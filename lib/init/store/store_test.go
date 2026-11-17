@@ -10,6 +10,7 @@ import (
 
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/store"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const doc = `apiVersion: naru.garam.sh/v1alpha1
@@ -170,4 +171,66 @@ func TestStore_LoadNetworkReturnsWhatSaveNetworkWroteAndNotFoundBefore(t *testin
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Len(t, entries, 1, "no temporary file is left")
+}
+
+func TestDiscard_RemovesTheStoreAndKeepsTheNetworkConfig(t *testing.T) {
+	dir := t.TempDir()
+	s := store.New(dir)
+	cfg, err := config.Parse([]byte(doc))
+	require.NoError(t, err)
+	require.NoError(t, s.Save(store.Stored{Revision: 3, BaseSha256: "x", Config: cfg}))
+	require.NoError(t, s.SaveNetwork([]byte("net")))
+
+	require.NoError(t, s.Discard())
+
+	_, err = s.Load()
+	assert.ErrorIs(t, err, store.ErrNotFound)
+	net, err := s.LoadNetwork()
+	require.NoError(t, err)
+	assert.Equal(t, "net", string(net))
+	assert.NoError(t, s.Discard(), "discarding what is not there is not an error")
+}
+
+func TestTakeReset_ReadsTheRequestAndRemovesItFirst(t *testing.T) {
+	dir := t.TempDir()
+	s := store.New(dir)
+	_, found, err := s.TakeReset()
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	for _, scope := range []string{store.ScopeStore, store.ScopeData, store.ScopeAll} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, store.ResetFileName), []byte(`{"scope":"`+scope+`"}`), 0o600))
+		got, found, err := s.TakeReset()
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, scope, got)
+		assert.NoFileExists(t, filepath.Join(dir, store.ResetFileName), "the request is gone before it is acted on")
+	}
+}
+
+func TestTakeReset_RefusesARequestItDoesNotKnowAndRemovesIt(t *testing.T) {
+	for name, body := range map[string]string{"scope": `{"scope":"everything"}`, "empty": `{}`, "not json": `x`} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, store.ResetFileName), []byte(body), 0o600))
+			_, found, err := store.New(dir).TakeReset()
+			assert.Error(t, err)
+			assert.True(t, found)
+			assert.NoFileExists(t, filepath.Join(dir, store.ResetFileName))
+		})
+	}
+}
+
+func TestAnchor_RoundTripsAndIsNotFoundBeforeItIsSaved(t *testing.T) {
+	s := store.New(t.TempDir())
+	_, err := s.LoadAnchor()
+	assert.ErrorIs(t, err, store.ErrNotFound)
+	require.NoError(t, s.SaveAnchor([]byte(`{"a":1}`)))
+	got, err := s.LoadAnchor()
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"a":1}`, string(got))
+}
+
+func TestResetFileName_IsTheBaseOfThePathHostdWrites(t *testing.T) {
+	assert.Equal(t, wire.ResetMarker, filepath.Join(store.Dir, store.ResetFileName))
 }

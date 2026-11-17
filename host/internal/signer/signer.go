@@ -23,6 +23,8 @@ var (
 	ErrInitialised = errors.New("signer already holds authorities")
 	// ErrForbidden is returned when a caller's role does not allow the call.
 	ErrForbidden = errors.New("the caller's role does not allow this")
+	// ErrUnknownHost is returned when a rotation names a host for which the signer holds no certificate serial.
+	ErrUnknownHost = errors.New("the signer holds no certificate for this host")
 	// ErrBadRequest is returned when a request is well signed but names something the signer cannot do.
 	ErrBadRequest = errors.New("bad request")
 )

@@ -208,6 +208,12 @@ func TestTwoConcurrentRestoresGiveOneSuccessAndOneConflict(t *testing.T) {
 	src := takeSource(t)
 	c := src.waiting(t)
 	root := c.Client(t, 0, &src.root)
+	operator := c.CA.Issue(t, "alice", identity.RoleOperator)
+	// The member fetches its revocation list on a request's first check, and a request that finds
+	// that fetch under way is refused with 503. An operator's refused restore has it fetched before
+	// the two calls start.
+	require.Equal(t, http.StatusForbidden, status(c.Client(t, 0, &operator).Restore(t.Context(), bytes.NewReader(src.plain), sumHex(src.plain))), "an operator")
+
 	held := newGated(src.plain)
 	first := make(chan error, 1)
 	go func() { first <- root.Restore(t.Context(), held, sumHex(src.plain)) }()
@@ -217,23 +223,27 @@ func TestTwoConcurrentRestoresGiveOneSuccessAndOneConflict(t *testing.T) {
 		t.Fatal("the first restore never began")
 	}
 
-	// The first call holds the restore with half of its body read. A second, whole call is refused
-	// while it has not finished; with the claim not exclusive it would restore beside it.
-	err := root.Restore(t.Context(), bytes.NewReader(src.plain), sumHex(src.plain))
-	require.Equal(t, http.StatusConflict, status(err))
-	select {
-	case err := <-first:
-		t.Fatalf("the first restore ended before its body did: %v", err)
-	default:
+	// The gate shows that the client sent half of the first body, not that the member took the
+	// first call's claim, and under load the whole second call can get there first. Either order
+	// gives one success and one conflict: a call that comes while the claim is held is refused, and
+	// with the claim not exclusive both would succeed.
+	whole := root.Restore(t.Context(), bytes.NewReader(src.plain), sumHex(src.plain))
+	if status(whole) == http.StatusConflict {
+		select {
+		case err := <-first:
+			t.Fatalf("the first restore ended before its body did: %v", err)
+		default:
+		}
 	}
 
 	close(held.release)
+	var err error
 	select {
-	case err := <-first:
-		require.NoError(t, err)
+	case err = <-first:
 	case <-time.After(60 * time.Second):
 		t.Fatal("the restore did not finish")
 	}
+	require.ElementsMatch(t, []int{0, http.StatusConflict}, []int{status(whole), status(err)}, "second: %v, first: %v", whole, err)
 	groups, err := root.Groups(t.Context())
 	require.NoError(t, err)
 	require.Len(t, groups, 1, "the one restore brought the snapshot back")

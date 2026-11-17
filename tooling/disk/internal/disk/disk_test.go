@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,7 +25,25 @@ const (
 	mib      = 1 << 20
 )
 
-func spec(t *testing.T, dir string) disk.Spec {
+// scratch is a temporary directory that is also removed shortly before the test binary's own deadline.
+// A test that runs out of time ends in a panic that runs no cleanup, and what a test builds here is
+// a disk of 1 GiB or more, which a timeout would otherwise leave behind.
+func scratch(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if deadline, ok := t.Deadline(); ok {
+		removal := time.AfterFunc(time.Until(deadline)-5*time.Second, func() { _ = os.RemoveAll(dir) })
+		t.Cleanup(func() { removal.Stop() })
+	}
+	return dir
+}
+
+func spec(t *testing.T) disk.Spec {
+	t.Helper()
+	return specIn(t, scratch(t))
+}
+
+func specIn(t *testing.T, dir string) disk.Spec {
 	t.Helper()
 	kernel := filepath.Join(dir, "bzImage")
 	require.NoError(t, os.WriteFile(kernel, bytes.Repeat([]byte("kernel"), 300000), 0o644))
@@ -32,6 +51,39 @@ func spec(t *testing.T, dir string) disk.Spec {
 		Kernel: kernel, Out: filepath.Join(dir, "naru.img"),
 		Stamp: time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC), DiskGUID: diskGUID, ESPGUID: espGUID,
 	}
+}
+
+// The disk of the default spec is built once for the tests that only read it. sgdisk ends with sync(2),
+// which waits for every dirty page of the machine, so on a machine others write to each Build costs
+// minutes, and a test per disk is what took the package past go test's timeout. Tests that change
+// the spec, or that need a second disk to compare, build their own.
+var shared struct {
+	once sync.Once
+	dir  string
+	spec disk.Spec
+	err  error
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if shared.dir != "" {
+		_ = os.RemoveAll(shared.dir)
+	}
+	os.Exit(code)
+}
+
+func builtDefault(t *testing.T) disk.Spec {
+	t.Helper()
+	shared.once.Do(func() {
+		shared.dir, shared.err = os.MkdirTemp("", "naru-disk-test-")
+		if shared.err != nil {
+			return
+		}
+		shared.spec = specIn(t, shared.dir)
+		shared.err = disk.Build(shared.spec)
+	})
+	require.NoError(t, shared.err)
+	return shared.spec
 }
 
 func digest(t *testing.T, path string) [32]byte {
@@ -51,19 +103,29 @@ func esp(t *testing.T, s disk.Spec) string {
 	info, err := f.Stat()
 	require.NoError(t, err)
 	start := int64(disk.StartSector) * 512
-	out := filepath.Join(t.TempDir(), "esp.img")
+	out := filepath.Join(scratch(t), "esp.img")
 	dst, err := os.Create(out)
 	require.NoError(t, err)
-	_, err = io.Copy(dst, io.NewSectionReader(f, start, info.Size()-start-mib))
-	require.NoError(t, err)
+	// The partition is 1 GiB and nearly all zeros: a copy that writes the zeros costs the test
+	// a GiB of disk, which under load took it past the timeout and left a GiB behind when killed.
+	length := info.Size() - start - mib
+	require.NoError(t, dst.Truncate(length))
+	section := io.NewSectionReader(f, start, length)
+	chunk := make([]byte, 64<<10)
+	for at := int64(0); at < length; at += int64(len(chunk)) {
+		n, err := io.ReadFull(section, chunk)
+		require.NoError(t, err)
+		if len(bytes.TrimLeft(chunk[:n], "\x00")) > 0 {
+			_, err = dst.WriteAt(chunk[:n], at)
+			require.NoError(t, err)
+		}
+	}
 	require.NoError(t, dst.Close())
 	return out
 }
 
 func TestBuild_WritesAGPTDiskWithOneEFISystemPartition(t *testing.T) {
-	s := spec(t, t.TempDir())
-
-	require.NoError(t, disk.Build(s))
+	s := builtDefault(t)
 
 	out, err := exec.Command("/sbin/sgdisk", "--print", "--info=1", s.Out).CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -77,34 +139,31 @@ func TestBuild_WritesAGPTDiskWithOneEFISystemPartition(t *testing.T) {
 }
 
 func TestBuild_TwoBuildsInTwoDirectoriesGiveTheSameDisk(t *testing.T) {
-	a, b := spec(t, t.TempDir()), spec(t, t.TempDir())
+	a, b := builtDefault(t), spec(t)
 
-	require.NoError(t, disk.Build(a))
 	require.NoError(t, disk.Build(b))
 
 	assert.Equal(t, digest(t, a.Out), digest(t, b.Out))
 }
 
 func TestBuild_ADifferentGUIDGivesADifferentDisk(t *testing.T) {
-	a, b := spec(t, t.TempDir()), spec(t, t.TempDir())
+	a, b := builtDefault(t), spec(t)
 	b.DiskGUID = "3F6A1B52-0C9E-4D7A-9B21-6E5D8A4C7F11"
 
-	require.NoError(t, disk.Build(a))
 	require.NoError(t, disk.Build(b))
 
 	assert.NotEqual(t, digest(t, a.Out), digest(t, b.Out))
 }
 
 func TestBuild_FailsWhenTheKernelIsMissing(t *testing.T) {
-	s := spec(t, t.TempDir())
+	s := spec(t)
 	s.Kernel = filepath.Join(t.TempDir(), "absent")
 
 	assert.Error(t, disk.Build(s))
 }
 
 func TestBuild_TheESPHoldsTheDefaultSlotAndNoTrialSlot(t *testing.T) {
-	s := spec(t, t.TempDir())
-	require.NoError(t, disk.Build(s))
+	s := builtDefault(t)
 	v, err := fat.Open(esp(t, s), s.Stamp)
 	require.NoError(t, err)
 	defer func() { _ = v.Close() }()
@@ -137,7 +196,7 @@ func TestBuild_TheESPHasRoomForATrialKernelTwiceTheSizeOfTheBuiltOne(t *testing.
 	// The ESP is 1 GiB here, whatever the kernel's size, so the room tested is the headroom and
 	// not the minimum of the old layout, which held one more kernel of the same size.
 	const kernelBytes = 33 * mib
-	s := spec(t, t.TempDir())
+	s := spec(t)
 	require.NoError(t, os.WriteFile(s.Kernel, bytes.Repeat([]byte("k"), kernelBytes), 0o644))
 	require.NoError(t, disk.Build(s))
 	out, err := exec.Command("/sbin/sgdisk", "--info=1", s.Out).CombinedOutput()

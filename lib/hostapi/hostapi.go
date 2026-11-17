@@ -58,8 +58,10 @@ type MvmdInfo struct {
 	Kernels []Kernel `json:"kernels"`
 }
 
-// Host is the body of GET /v1/host.
+// Host is the body of GET /v1/host. HostID is the ID a reset confirms (ADR 0082); a host started
+// without a reset leaves it empty.
 type Host struct {
+	HostID   string            `json:"hostId,omitempty"`
 	Region   string            `json:"region"`
 	Labels   map[string]string `json:"labels"`
 	Capacity Resources         `json:"capacity"`

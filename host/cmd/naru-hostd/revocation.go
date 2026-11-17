@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"time"
 
+	"github.com/garamsh/naru/host/internal/api"
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 )
@@ -74,4 +77,90 @@ func prefetch(ctx context.Context, list *identity.RevocationList, log *slog.Logg
 	}
 	st := list.Status()
 	log.Info("revocation list", "seq", st.Seq, "fetched", st.FetchedAt.Format(time.RFC3339))
+}
+
+// ownCertificateInterval is how often a running hostd checks its own certificates again.
+const ownCertificateInterval = time.Minute
+
+// checkOwnCertificates returns identity.ErrRevoked, naming the file and the serial, when a
+// certificate in any of files is on list: a host whose seed or stored configuration carries a key
+// the signer revoked must not serve with it. A file that is not there is skipped, a nil list
+// revokes nothing, and a list that cannot be had is not a verdict (the error is returned plain, for
+// the caller to retry).
+func checkOwnCertificates(ctx context.Context, list *identity.RevocationList, files ...string) error {
+	if list == nil {
+		return nil
+	}
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read %s: %w", file, err)
+		}
+		var chain []*x509.Certificate
+		for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
+			if block.Type != "CERTIFICATE" {
+				continue
+			}
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", file, err)
+			}
+			chain = append(chain, cert)
+		}
+		if len(chain) == 0 {
+			continue
+		}
+		if err := list.Check(ctx, [][]*x509.Certificate{chain}); err != nil {
+			if errors.Is(err, identity.ErrRevoked) {
+				return fmt.Errorf("the certificate in %s (subject %s) is on the revocation list, so its key is not used: %w", file, chain[0].Subject.CommonName, err)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// refuseRevokedKey checks the host's own certificates, as files names them now, every interval, and calls fail with the reason
+// when one is revoked. A list that cannot be had is logged, and the check retried. It returns when
+// one is revoked and when ctx ends.
+func refuseRevokedKey(ctx context.Context, list *identity.RevocationList, interval time.Duration, log *slog.Logger, fail func(error), files func() []string) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		err := checkOwnCertificates(ctx, list, files()...)
+		switch {
+		case err == nil:
+		case errors.Is(err, identity.ErrRevoked):
+			fail(err)
+			return
+		case ctx.Err() == nil:
+			log.Warn("cannot check the host's own certificates against the revocation list yet", "err", err.Error())
+		}
+	}
+}
+
+// chooseServing picks the pair the host API serves at start (ADR 0077): the pair a rotation stored,
+// when there is one and it is not revoked, else the configuration's pair at certFile and keyFile.
+// It returns identity.ErrRevoked when the pair it falls to is revoked, so a host never serves with a
+// revoked pair. A list that cannot be had yet is no verdict, and the periodic check retries.
+func chooseServing(ctx context.Context, list *identity.RevocationList, log *slog.Logger, certFile, keyFile, stored string) (*api.Serving, error) {
+	if _, err := os.Stat(stored); err == nil {
+		err := checkOwnCertificates(ctx, list, stored)
+		if !errors.Is(err, identity.ErrRevoked) {
+			return api.NewServing(stored, stored, stored)
+		}
+		log.Warn("the stored serving pair is revoked, so the configuration's pair is tried", "err", err.Error())
+	}
+	if err := checkOwnCertificates(ctx, list, certFile); errors.Is(err, identity.ErrRevoked) {
+		return nil, err
+	}
+	return api.NewServing(certFile, keyFile, stored)
 }

@@ -51,6 +51,9 @@ type fakeOrch struct {
 	config []byte
 	// heartCN is the subject of the last heartbeat's client certificate.
 	heartCN string
+	// heartSerial is the serial of the last heartbeat's client certificate, and refuse the serial the
+	// heartbeat refuses, as orch does one that is revoked.
+	heartSerial, refuse int64
 }
 
 func newFakeOrch(t *testing.T, secret string) *fakeOrch {
@@ -127,9 +130,14 @@ func (f *fakeOrch) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if serial := r.TLS.PeerCertificates[0].SerialNumber.Int64(); serial == f.refuse {
+		f.json(w, http.StatusForbidden, orchapi.Error{Message: "the certificate is revoked"})
+		return
+	}
 	f.hearts++
 	f.heartCN = r.TLS.PeerCertificates[0].Subject.CommonName
-	f.mu.Unlock()
+	f.heartSerial = r.TLS.PeerCertificates[0].SerialNumber.Int64()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -335,4 +343,98 @@ func TestJoinFailsWhenOrchAdmitsTheHostWithoutAConfiguration(t *testing.T) {
 	}
 	_, err := os.Stat(filepath.Join(dir, "join", "config.yaml"))
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// pairFor issues a certificate from the fake orch's authority, for cn and a fresh key, and returns it
+// and the key as PEM.
+func (f *fakeOrch) pairFor(cn string, serial int64) (certPEM, keyPEM []byte) {
+	f.t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(f.t, err)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: cn}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, f.ca, &key.PublicKey, f.caKey)
+	require.NoError(f.t, err)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	require.NoError(f.t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+}
+
+func enrolled(t *testing.T) (*fakeOrch, *enroll.Agent, string, func()) {
+	t.Helper()
+	f := newFakeOrch(t, "naru-ek-secret")
+	dir := t.TempDir()
+	a := agent(t, f, dir, &lockedBuffer{})
+	stop := runAgent(t, a)
+	require.Eventually(t, func() bool { e, _, _ := f.counts(); return e == 1 }, 5*time.Second, 20*time.Millisecond)
+	f.admit()
+	require.Eventually(t, func() bool { _, hearts, _ := f.counts(); return hearts >= 2 }, 5*time.Second, 20*time.Millisecond)
+	return f, a, dir, stop
+}
+
+func TestRotateHeartbeatsWithTheNewPairAndKeepsItAcrossARestart(t *testing.T) {
+	f, a, dir, stop := enrolled(t)
+	cert, key := f.pairFor("host-a", 11)
+
+	serial, err := a.Rotate(t.Context(), cert, key)
+	require.NoError(t, err)
+	require.Equal(t, "b", serial)
+	require.Eventually(t, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.heartSerial == 11 }, 5*time.Second, 20*time.Millisecond, "the host reports with the new pair")
+	gotKey, _ := os.ReadFile(filepath.Join(dir, "host.key"))
+	gotCert, _ := os.ReadFile(filepath.Join(dir, "host.crt"))
+	require.Equal(t, key, gotKey)
+	require.Equal(t, cert, gotCert)
+	st, err := os.Stat(filepath.Join(dir, "host.key"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), st.Mode().Perm())
+
+	// Orch revokes the old serial: the host keeps reporting, and a restart still finds the new pair.
+	f.mu.Lock()
+	f.refuse = 10
+	f.mu.Unlock()
+	stop()
+	stop2 := runAgent(t, agent(t, f, dir, &lockedBuffer{}))
+	defer stop2()
+	require.Eventually(t, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.heartSerial == 11 && f.enrolls == 1 }, 5*time.Second, 20*time.Millisecond)
+}
+
+func TestRotateLeavesTheOldPairInUseWhenOrchRefusesTheNewOne(t *testing.T) {
+	f, a, dir, stop := enrolled(t)
+	defer stop()
+	oldCert, _ := os.ReadFile(filepath.Join(dir, "host.crt"))
+	cert, key := f.pairFor("host-a", 12)
+	f.mu.Lock()
+	f.refuse = 12
+	f.mu.Unlock()
+
+	_, err := a.Rotate(t.Context(), cert, key)
+	require.ErrorIs(t, err, enroll.ErrOrchRefused)
+	gotCert, _ := os.ReadFile(filepath.Join(dir, "host.crt"))
+	require.Equal(t, oldCert, gotCert, "nothing was written")
+	_, hearts, _ := f.counts()
+	require.Eventually(t, func() bool { _, h, _ := f.counts(); return h > hearts }, 5*time.Second, 20*time.Millisecond, "the old pair still reports")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.EqualValues(t, 10, f.heartSerial)
+}
+
+func TestRotateRefusesAPairThatIsNotThisHosts(t *testing.T) {
+	f, a, _, stop := enrolled(t)
+	defer stop()
+	other, otherKey := f.pairFor("host-b", 13)
+	_, err := a.Rotate(t.Context(), other, otherKey)
+	require.ErrorIs(t, err, enroll.ErrBadPair)
+	require.ErrorContains(t, err, "host-b")
+
+	cert, _ := f.pairFor("host-a", 14)
+	_, key := f.pairFor("host-a", 15)
+	_, err = a.Rotate(t.Context(), cert, key)
+	require.ErrorIs(t, err, enroll.ErrBadPair, "a key that is not the certificate's")
+}
+
+func TestRotateRefusesBeforeTheHostHasEnrolled(t *testing.T) {
+	f := newFakeOrch(t, "naru-ek-secret")
+	a := agent(t, f, t.TempDir(), &lockedBuffer{})
+	cert, key := f.pairFor("host-a", 11)
+	_, err := a.Rotate(t.Context(), cert, key)
+	require.ErrorIs(t, err, enroll.ErrNotEnrolled)
 }

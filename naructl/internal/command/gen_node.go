@@ -46,7 +46,6 @@ func genNode(fs *pflag.FlagSet) runner {
 
 func (f *nodeFlags) declare(fs *pflag.FlagSet) {
 	fs.StringVar(&f.caDir, "ca-dir", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
-	aliasString(fs, &f.caDir, "ca", "ca-dir")
 	fs.StringVar(&f.n.Name, "name", "", "the Node's name, such as node-1")
 	fs.BoolVar(&f.controlPlane, "control-plane", false, "the Node runs etcd and gaon's control plane, issues its certificates at boot and signs its agents' requests")
 	fs.StringVar(&f.address, "address", "", "the Node's address and prefix, such as 192.168.0.40/24")
@@ -104,7 +103,7 @@ func (f *nodeFlags) declare(fs *pflag.FlagSet) {
 	fs.StringVar(&f.machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.Var(&f.peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
 	fs.Var(&f.noMasquerade, "no-masquerade", "an IPv4 prefix in canonical form, repeatable: a Machine's traffic to it keeps its source address (mvmd's network.no_masquerade) and the Node gets no route to it, such as the Machine prefixes of the hosts a WireGuard tunnel reaches")
-	fs.Var(&f.storage, "storage", "<name>=<label or /dev/path>, an extra disk the Node offers as XFS, found by its partition or file system label, or by its device when the value starts with /dev/ (a blank disk has no label), repeatable: the first holds mvmd's disks, snapshots and Machine run directories, on XFS with reflinks, and the others are mounted under /var/lib/naru/storage")
+	fs.Var(&f.storage, "storage", "<name>=<label, /dev/path or serial:NUMBER>, an extra disk the Node offers as XFS, found by its partition or file system label, by its device when the value starts with /dev/, or by its disk serial number when it starts with serial: (a blank disk has no label, and the kernel's device names change between boots, so a blank disk is best named by serial; init formats it at the first boot and finds it by the XFS label after), repeatable: the first holds mvmd's disks, snapshots and Machine run directories, on XFS with reflinks, and the others are mounted under /var/lib/naru/storage")
 	fs.StringVar(&f.guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
 	fs.StringVar(&f.n.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
 	fs.BoolVar(&f.pairsAsFiles, "pairs-as-files", false, "the Node carries operator-issued pairs as files, with no bootstrap token: on a control-plane Node every pair, and no signing key")

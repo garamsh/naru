@@ -1,10 +1,13 @@
 package client
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/layout/pki"
 	"github.com/garamsh/naru/lib/wire"
 )
@@ -40,6 +43,33 @@ func IssueHost(authority *pki.CA, role, cn string, endpoints []string) (File, er
 		return File{}, err
 	}
 	f.Certificate, f.Key = string(pair.CertPEM), string(pair.KeyPEM)
+	return f, nil
+}
+
+// PersonFile returns a client file for a person the signer issued a certificate to: the person's
+// pair, hostCA as the authority the host's certificate is verified against, and the endpoints, each
+// an IP address with a port or without. A host that joined from the install seed takes the pair's
+// role from its certificate's unit (ADR 0080).
+func PersonFile(p identity.Person, hostCA string, endpoints []string) (File, error) {
+	if len(endpoints) == 0 {
+		return File{}, errors.New("a client file needs at least one endpoint")
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(p.Key)
+	if err != nil {
+		return File{}, fmt.Errorf("the person's key: %w", err)
+	}
+	f := File{
+		CA:          hostCA,
+		Certificate: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: p.Cert.Raw})),
+		Key:         string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
+	}
+	for _, e := range endpoints {
+		hostPort, err := AddressPort(e, wire.HostAPIPort)
+		if err != nil {
+			return File{}, err
+		}
+		f.Endpoints = append(f.Endpoints, hostPort)
+	}
 	return f, nil
 }
 

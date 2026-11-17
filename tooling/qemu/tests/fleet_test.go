@@ -67,6 +67,9 @@ type fleetOpts struct {
 	capture bool
 	// services are added to every Node.
 	services []node.ExtraService
+	// forward is guest ports of every Node's second NIC to forward from the test host besides orch's and the
+	// metrics', which fleet.forward answers with.
+	forward []string
 	// userData, when set, changes every Node's user-data before it first boots (ClusterSpec.EditUserData):
 	// the files the services need from the start.
 	userData func(c node.Config, file string) error
@@ -173,7 +176,7 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 			"--key-out", f.keys[i], "--csr-out", f.csrs[i]), "orch's request")
 	}
 
-	forward := append([]string{orchPort}, metricsPorts...)
+	forward := append(append([]string{orchPort}, metricsPorts...), o.forward...)
 	c := start(t, node.ClusterSpec{
 		N: o.controls + o.hosts, Gaon: true, NodeAPI: true, Host: true, Hosts: f.hosts(), Capture: o.capture,
 		Disable: []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"},
@@ -450,8 +453,9 @@ var (
 )
 
 // hostClientCA is the file of naru-hostd's trust of its clients: the host authority's certificate, then
-// the authority orch's certificate chains to, which gen node's --host-client-ca writes when that
-// authority exists at generation. The signer's root is made after the Nodes' first boot, so enroll sets it.
+// the authorities orch trusts its callers by (spec.orch.ca), which is what orch gives a host that joined
+// from a seed as its client trust: orch's own, and the operator authority the signer's people are
+// issued under (ADR 0080). The signer's root is made after the Nodes' first boot, so enroll sets it.
 const hostClientCA = "/run/naru-hostd/client-ca.crt"
 
 // enroll has host Node i enroll with the enrollment key: its spec.host.orch carries orch's address, the
@@ -463,7 +467,7 @@ func (f *fleet) enroll(i int, key string) string {
 	hostCA, err := os.ReadFile(f.c.HostCA)
 	require.NoError(f.t, err)
 	f.edit(i, func(file string) error {
-		if err := seed.SetFile(file, hostClientCA, strings.TrimSuffix(string(hostCA), "\n")+"\n"+f.orchCA); err != nil {
+		if err := seed.SetFile(file, hostClientCA, strings.TrimSuffix(string(hostCA), "\n")+"\n"+f.orchTrust); err != nil {
 			return err
 		}
 		if err := seed.Set(file, f.revPub, "spec", "host", "revocationPublicKey"); err != nil {

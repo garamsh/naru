@@ -1,9 +1,9 @@
 #!/bin/bash
 # Compares the SHA256SUMS of two builds of one commit and fails unless every reproducible asset has
-# the same digest in both (docs/architecture/image.md §The builder). Two kinds of asset differ
-# between any two builds by design and are left out, and the output names each:
-#   naru-data-*.qcow2       the data disk holds a TLS authority generated anew for every build;
-#   naru-node-*.test.yaml   the test user-data holds a CA and bootstrap tokens generated per build.
+# the same digest in both (docs/architecture/image.md §The builder). One kind of asset differs
+# between any two builds by design and is left out, and the output names it:
+#   naru-data-*.qcow2       the data disk holds a TLS authority generated anew for every build.
+# The test user-data is reproducible: its CA and tokens derive from the version.
 # With the package directories of the two builds (image/pkgs/build.sh's output, one OCI tar per
 # package) it also fails unless every package has the same manifest digest in both; a reference
 # SHA256SUMS comes from a machine whose packages are not at hand, so they are then not compared.
@@ -21,7 +21,7 @@ for f in "$1" "$2"; do
   fi
 done
 
-skip='^(naru-data-.*\.qcow2|naru-node-[0-9]+\.test\.yaml)$'
+skip='^naru-data-.*\.qcow2$'
 # name, digest: the sums sorted by name, with and without the assets that differ by design.
 listing() { awk '{ print $2, $1 }' "$1" | sort; }
 a=$(listing "$1" | awk -v skip="$skip" '$1 !~ skip')

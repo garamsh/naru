@@ -95,8 +95,7 @@ var (
 )
 
 // TestDocs_EveryNaructlInvocationNamesACommandAndFlagsItHas reads each document under docs/ and
-// checks that the naructl commands it shows exist and take the flags it gives them, none of them a
-// deprecated spelling.
+// checks that the naructl commands it shows exist and take the flags it gives them.
 func TestDocs_EveryNaructlInvocationNamesACommandAndFlagsItHas(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "docs")
 	if _, err := os.Stat(root); err != nil {
@@ -151,9 +150,7 @@ func checkInvocation(t *testing.T, path, inv string) int {
 		if f == nil {
 			f = cmd.InheritedFlags().Lookup(name)
 		}
-		if assert.NotNil(t, f, "%s: %q has no --%s (%s)", path, cmd.CommandPath(), name, inv) {
-			assert.False(t, f.Hidden, "%s: --%s of %q is a deprecated spelling (%s)", path, name, cmd.CommandPath(), inv)
-		}
+		assert.NotNil(t, f, "%s: %q has no --%s (%s)", path, cmd.CommandPath(), name, inv)
 	}
 	return 1
 }

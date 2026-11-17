@@ -84,7 +84,10 @@ type recorder struct {
 	savedNetwork  bool
 	saved         []store.Stored
 	mounted       config.DataDisk
-	started       []string
+	// dataMounted is whether the data disk is mounted; the store reads that the recorder's
+	// LoadAnchor and LoadNetwork refuse as an unmounted disk does.
+	dataMounted bool
+	started     []string
 
 	calls     []string
 	forwarded []config.Family
@@ -103,6 +106,61 @@ type recorder struct {
 	registriesErr error
 	storage       []config.Storage
 	extensions    []config.Extension
+
+	// resetScope is the reset waiting, when resetWaiting. discarded, cleared and wiped record what
+	// was done of it.
+	resetScope   string
+	resetWaiting bool
+	resetErr     error
+	discarded    bool
+	cleared      bool
+	wiped        *config.DataDisk
+	clearErr     error
+	wipeErr      error
+	// anchor is the stored maintenance anchor, when hasAnchor; anchorSaved is what SaveAnchor was given.
+	anchor      []byte
+	hasAnchor   bool
+	anchorSaved []byte
+	appliedAll  []netcfg.Config
+	wrote       []config.File
+	startedSvc  []config.Service
+}
+
+func (r *recorder) Discard() error {
+	r.calls = append(r.calls, "discard")
+	r.discarded = true
+	return nil
+}
+
+func (r *recorder) TakeReset() (string, bool, error) {
+	scope, ok := r.resetScope, r.resetWaiting
+	r.resetWaiting = false
+	return scope, ok, r.resetErr
+}
+
+func (r *recorder) ClearDataDisk() error {
+	r.calls = append(r.calls, "clear")
+	r.cleared = true
+	return r.clearErr
+}
+
+func (r *recorder) WipeDataDisk(d config.DataDisk) error {
+	r.calls = append(r.calls, "wipe")
+	r.wiped = &d
+	r.dataMounted = false
+	return r.wipeErr
+}
+
+func (r *recorder) LoadAnchor() ([]byte, error) {
+	if !r.dataMounted || !r.hasAnchor {
+		return nil, store.ErrNotFound
+	}
+	return r.anchor, nil
+}
+
+func (r *recorder) SaveAnchor(b []byte) error {
+	r.anchorSaved = b
+	return nil
 }
 
 func (r *recorder) MountExtensions(e []config.Extension) error {
@@ -121,6 +179,7 @@ func (r *recorder) ReadSeed() ([]byte, []byte, error) {
 func (r *recorder) ApplyNetwork(c netcfg.Config, _ *slog.Logger) (netcfg.Applied, error) {
 	r.calls = append(r.calls, "network")
 	r.applied = c
+	r.appliedAll = append(r.appliedAll, c)
 	if r.leased != nil {
 		return *r.leased, r.networkErr
 	}
@@ -136,6 +195,7 @@ func (r *recorder) ApplyNetwork(c netcfg.Config, _ *slog.Logger) (netcfg.Applied
 func (r *recorder) WriteFiles(f []config.File) error {
 	r.calls = append(r.calls, "files")
 	r.written = f
+	r.wrote = append(r.wrote, f...)
 	return r.filesErr
 }
 
@@ -148,6 +208,7 @@ func (r *recorder) FormatBlankDataDisk(d config.DataDisk, _ *slog.Logger) error 
 func (r *recorder) MountDataDisk(d config.DataDisk) error {
 	r.calls = append(r.calls, "mount")
 	r.mounted = d
+	r.dataMounted = r.diskErr == nil
 	return r.diskErr
 }
 
@@ -206,6 +267,7 @@ func (r *recorder) Prepare() error {
 func (r *recorder) Start(s config.Service) error {
 	r.calls = append(r.calls, "start "+s.Name)
 	r.started = append(r.started, s.Name)
+	r.startedSvc = append(r.startedSvc, s)
 	return r.startErr
 }
 
@@ -227,7 +289,7 @@ func (r *recorder) Load() (store.Stored, error) {
 }
 
 func (r *recorder) LoadNetwork() ([]byte, error) {
-	if !r.hasNetwork {
+	if !r.dataMounted || !r.hasNetwork {
 		return nil, store.ErrNotFound
 	}
 	return r.storedNetwork, nil
@@ -413,7 +475,7 @@ func TestRun_RefusesAnInvalidConfigurationAndStartsNothing(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "spec.services[0].binary")
-	assert.Equal(t, []string{"read"}, r.calls, "no network is brought up, no disk mounted and no service started")
+	assert.Equal(t, []string{"read", "mount"}, r.calls, "no network is brought up and no service started; the mount is maintenance mode's, to read the stored anchor")
 }
 
 func TestRun_RefusesAMalformedNetworkConfigAndStartsNothing(t *testing.T) {
@@ -424,7 +486,7 @@ func TestRun_RefusesAMalformedNetworkConfigAndStartsNothing(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "network-config")
-	assert.Equal(t, []string{"read"}, r.calls, "nothing is applied: the network and the files wait for both documents to be valid")
+	assert.Equal(t, []string{"read", "mount"}, r.calls, "nothing is applied: the network and the files wait for both documents to be valid; the mount is maintenance mode's")
 }
 
 func TestRun_StartsNothingWhenAStepBeforeTheServicesFails(t *testing.T) {
@@ -433,9 +495,9 @@ func TestRun_StartsNothingWhenAStepBeforeTheServicesFails(t *testing.T) {
 		r    *recorder
 		want []string
 	}{
-		"configuration cannot be read": {&recorder{raw: validConfig, readErr: boom}, []string{"read"}},
-		"network cannot be applied":    {&recorder{raw: validConfig, networkErr: boom}, []string{"read", "network"}},
-		"data disk is refused":         {&recorder{raw: validConfig, diskErr: boom}, []string{"read", "network", "mount"}},
+		"configuration cannot be read": {&recorder{raw: validConfig, readErr: boom}, []string{"read", "mount"}},
+		"network cannot be applied":    {&recorder{raw: validConfig, networkErr: boom}, []string{"read", "network", "mount"}},
+		"data disk is refused":         {&recorder{raw: validConfig, diskErr: boom}, []string{"read", "network", "mount", "mount"}},
 		"forwarding cannot be set":     {&recorder{raw: validConfig, forwardErr: boom}, []string{"read", "network", "mount", "load", "api", "forward"}},
 		"files cannot be written":      {&recorder{raw: validConfig, filesErr: boom}, []string{"read", "network", "mount", "load", "api", "forward", "files"}},
 		"cgroups cannot be prepared":   {&recorder{raw: validConfig, prepareErr: boom}, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "prepare"}},
@@ -544,7 +606,7 @@ func TestRun_FormatsTheBlankDataDiskOnlyWhenTheConfigurationAsksAndBeforeMountin
 	boom := errors.New("boom")
 	r = &recorder{raw: asks, formatErr: boom}
 	assert.ErrorIs(t, run(r), boom)
-	assert.Equal(t, []string{"read", "network", "format"}, r.calls, "a disk that cannot be formatted is not mounted and nothing starts")
+	assert.Equal(t, []string{"read", "network", "format", "mount"}, r.calls, "a disk that cannot be formatted is not mounted by the boot, only by maintenance mode, and nothing starts")
 }
 
 // withExtension adds a spec.extensions entry to validConfig.

@@ -80,6 +80,9 @@ type Node struct {
 	argv  func(console string) []string
 	dir   string
 	extra string
+	// cidata is the file the NoCloud drive is at the next boot: the seed the Node started from, until
+	// ReplaceUserData gives it a volume of its own.
+	cidata string
 	// extraFirst attaches the extra disk before the data disk at the next boot.
 	extraFirst bool
 	// noSeed leaves the NoCloud drive out at the next boot.
@@ -107,7 +110,7 @@ func Start(spec Spec) (*Node, error) {
 		return nil, err
 	}
 	name := "naru15-" + spec.Config.Name
-	n := &Node{Name: spec.Config.Name, dir: spec.Dir}
+	n := &Node{Name: spec.Config.Name, dir: spec.Dir, cidata: cidata}
 	if size := spec.Config.ExtraDisk; size > 0 {
 		n.extra = filepath.Join(spec.Dir, "extra.img")
 		if err := os.WriteFile(n.extra, nil, 0o644); err != nil {
@@ -125,7 +128,7 @@ func Start(spec Spec) (*Node, error) {
 		s := spec
 		s.ExtraDiskFirst = n.extraFirst
 		s.NoSeed = n.noSeed
-		args, _ := qemuArgs(s, name, cidata, dataDisk, console)
+		args, _ := qemuArgs(s, name, n.cidata, dataDisk, console)
 		return args
 	}
 	if err := n.launch(); err != nil {
@@ -244,9 +247,15 @@ func (n *Node) Reboot() error {
 
 // ReplaceUserData writes a new NoCloud drive with the user-data and network-config, which the Node's
 // next boot reads: an operator who edits spec in the hypervisor's console and restarts the machine.
-// The instance ID is the same, so the data disk is kept.
+// The instance ID is the same, so the data disk is kept. A Node that started from an installation seed
+// boots from the new drive too, not from the seed.
 func (n *Node) ReplaceUserData(userData, networkConfig []byte) error {
-	return BuildCidata(filepath.Join(n.dir, "cidata.img"), "naru15-"+n.Name, userData, networkConfig)
+	file := filepath.Join(n.dir, "cidata.img")
+	if err := BuildCidata(file, "naru15-"+n.Name, userData, networkConfig); err != nil {
+		return err
+	}
+	n.cidata = file
+	return nil
 }
 
 // ResetData stops the Node, replaces its data disk with a new one that carries only the inputs tree
@@ -367,10 +376,14 @@ func SerialSocketPath(dir string) string {
 // without the race its SCSI scan has.
 func dataAndExtraDisks(spec Spec, dataDisk string) []string {
 	device := func(id string) []string {
-		if spec.Config.VirtioDisks {
-			return []string{"-device", "virtio-blk-pci,drive=" + id}
+		serial := ""
+		if id == "extra" && spec.Config.ExtraDiskSerial != "" {
+			serial = ",serial=" + spec.Config.ExtraDiskSerial
 		}
-		return []string{"-device", "scsi-hd,bus=scsihw0.0,drive=" + id}
+		if spec.Config.VirtioDisks {
+			return []string{"-device", "virtio-blk-pci,drive=" + id + serial}
+		}
+		return []string{"-device", "scsi-hd,bus=scsihw0.0,drive=" + id + serial}
 	}
 	data := append([]string{"-drive", "if=none,id=data,format=raw,file=" + dataDisk}, device("data")...)
 	if spec.Config.ExtraDisk <= 0 {
