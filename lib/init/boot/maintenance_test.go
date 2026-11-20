@@ -182,3 +182,12 @@ func TestRun_ABootThatSucceedsStoresTheAnchorOfItsOrch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, none.anchorSaved)
 }
+
+func TestReason_IsTheRefusalOnOneLineCutToItsBound(t *testing.T) {
+	short := boot.Reason(errors.New("mount the system extensions:\n\textension \"naru-orch\":  no entry"))
+	long := boot.Reason(errors.New(strings.Repeat("word ", 200)))
+
+	assert.Equal(t, `mount the system extensions: extension "naru-orch": no entry`, short)
+	assert.Len(t, long, 300)
+	assert.True(t, strings.HasSuffix(long, "..."))
+}

@@ -237,7 +237,67 @@ func TestNode_UpgradeToAKernelThatRefusesIsRolledBackByTheNodeToTheVersionBefore
 	assert.Equal(t, "default", after.Slot)
 	assert.NotEqual(t, before.BootID, after.BootID, "the trial and the boot after it are new boots")
 	assert.Contains(t, after.Outcome, want+" -> "+refusing+", rolled back")
-	assert.NotEmpty(t, after.Reason, "the outcome says why")
+	assert.Contains(t, after.Reason, "the boot sequence refused: ", "the outcome says why, in init's words")
 	assert.Contains(t, nd.Console(), "upgrade rolled back")
 	assert.Equal(t, stored, storeOf(t, nd), "the data disk is as it was")
+}
+
+// startUpgradeNodeMounting is startUpgradeNode for a Node whose spec.extensions names the
+// extension the data disk stores, which is built for the version the Node runs: the entry of a
+// control host before its upgrade (ADR 0055).
+func startUpgradeNodeMounting(t *testing.T) (*node.Node, string) {
+	t.Helper()
+	nd, admin := startUpgradeNode(t)
+	ext := inputs.Extension
+	patch := "spec:\n  extensions:\n    - {name: naru-orch, sha256: " + ext.SHA256 + "}\n"
+	r := ctl(admin, "apply", "-f", patchFile(t, patch), "--mode", "staged")
+	require.NoError(t, r.Err, r.refusal())
+	require.NoError(t, nd.Reboot())
+	eventually(t, "the Node mounts the extension at its boot", func() bool {
+		row := extensionRows(t, admin)[ext.SHA256]
+		return row != nil && row[len(row)-1] == "/usr/lib/naru/extensions/naru-orch"
+	})
+	return nd, admin
+}
+
+func TestNode_UpgradeIsRefusedByNaructlWhenAnExtensionEntryHasNoImageForTheBundlesVersion(t *testing.T) {
+	want := os.Getenv("NARU_VERSION")
+	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
+	nd, admin := startUpgradeNodeMounting(t)
+	before, err := statusOf(tool, admin)
+	require.NoError(t, err)
+	bundle, sums := bundleFor(t, "next", want+"-next")
+
+	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
+
+	require.Error(t, r.Err)
+	assert.Contains(t, r.refusal(), "naru-orch", "the refusal names the extension")
+	assert.Contains(t, r.refusal(), "ADR 0055", "and the steps")
+	after, err := statusOf(tool, admin)
+	require.NoError(t, err)
+	assert.Equal(t, before.BootID, after.BootID, "the Node was not rebooted")
+	assert.Contains(t, after.Outcome, "none has ended", "and no upgrade started")
+	assert.NotContains(t, nd.Console(), "upgrade staged")
+}
+
+func TestNode_ATrialBootThatRefusesForAnExtensionIsRolledBackWithInitsReasonInLastUpgrade(t *testing.T) {
+	want := os.Getenv("NARU_VERSION")
+	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
+	nd, admin := startUpgradeNodeMounting(t)
+	// The manifest names the version the Node runs, whose extension is stored and named, so
+	// naructl sends it; the kernel is the next one, whose init has no image for its own version.
+	bundle, sums := bundleOf(t, filepath.Join(os.Getenv("NARU_UPGRADE_DIR"), "next", "bzImage"), want)
+
+	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
+
+	require.NoError(t, r.Err, r.refusal())
+	awaitRestarting(t, nd, "the Node is back on its old version and says the upgrade rolled back", func() bool {
+		s, err := statusOf(tool, admin)
+		return err == nil && strings.Contains(s.Outcome, "rolled back")
+	})
+	after, err := statusOf(tool, admin)
+	require.NoError(t, err)
+	assert.Equal(t, want, after.Version)
+	assert.Contains(t, after.Reason, "the boot sequence refused: mount the system extensions", "naructl upgrade --status prints init's refusal")
+	assert.Contains(t, after.Reason, `extension "naru-orch": no entry is built for naru `+want+"-next")
 }

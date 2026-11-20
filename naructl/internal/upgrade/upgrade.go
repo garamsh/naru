@@ -5,13 +5,16 @@
 package upgrade
 
 import (
+	"archive/tar"
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -66,4 +69,65 @@ func Check(path, want string) error {
 		return fmt.Errorf("%s has the SHA-256 %s, and the sums file says %s", path, got, want)
 	}
 	return nil
+}
+
+// BundleVersion returns the version the manifest of the bundle at path names. A bundle holds the
+// kernel and then manifest.json (ADR 0020); the Node checks the whole of it, and this only reads
+// the version out.
+func BundleVersion(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			return "", fmt.Errorf("%s holds no manifest.json: %w", path, err)
+		}
+		if h.Name != "manifest.json" {
+			continue
+		}
+		var m struct {
+			Version string `json:"version"`
+		}
+		if err := json.NewDecoder(io.LimitReader(tr, maxManifest)).Decode(&m); err != nil {
+			return "", fmt.Errorf("%s: manifest.json: %w", path, err)
+		}
+		if m.Version == "" {
+			return "", fmt.Errorf("%s: manifest.json names no version", path)
+		}
+		return m.Version, nil
+	}
+}
+
+// maxManifest bounds the manifest, which is a few hundred bytes.
+const maxManifest = 64 << 10
+
+// Entry is a spec.extensions entry, and Image a stored extension image with the naru version its
+// manifest says it was built for.
+type (
+	Entry struct{ Name, SHA256 string }
+	Image struct{ Name, SHA256, Version string }
+)
+
+// MissingExtensions returns the names of the extensions entries lists for which no entry names a
+// stored image built for version: a Node booting version refuses the boot for each (ADR 0055).
+func MissingExtensions(entries []Entry, stored []Image, version string) []string {
+	have := map[string]bool{}
+	for _, e := range entries {
+		for _, img := range stored {
+			if img.SHA256 == e.SHA256 && img.Name == e.Name && img.Version == version {
+				have[e.Name] = true
+			}
+		}
+	}
+	var missing []string
+	for _, e := range entries {
+		if !have[e.Name] && !slices.Contains(missing, e.Name) {
+			missing = append(missing, e.Name)
+		}
+	}
+	return missing
 }

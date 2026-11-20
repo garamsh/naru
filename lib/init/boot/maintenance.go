@@ -20,7 +20,7 @@ const maintenanceKeyFile = "/run/naru-hostd/maintenance-revocation.pub"
 // hostdBinary is naru-hostd's path in the image, the one config's derived services use.
 const hostdBinary = "/bin/naru-hostd"
 
-// reasonMax bounds the refusal's reason as it is passed to naru-hostd.
+// reasonMax bounds the refusal's reason as naru-hostd and a rolled-back upgrade carry it.
 const reasonMax = 300
 
 // Anchor is what a refused host's maintenance mode trusts (ADR 0082): orch's URL, the SHA-256 of
@@ -187,7 +187,7 @@ func maintain(host *watchedHost, services *watchedServices, configs Configs, ref
 		Binary: hostdBinary,
 		Args: []string{
 			"--maintenance",
-			"--maintenance-reason=" + reason(refusal),
+			"--maintenance-reason=" + Reason(refusal),
 			"--orch-url=" + anchor.OrchURL,
 			"--orch-ca-sha256=" + anchor.OrchCASHA256,
 			"--revocation-public-key=" + maintenanceKeyFile,
@@ -247,8 +247,9 @@ func (h *watchedHost) bringUpNetwork(configs Configs, log *slog.Logger) error {
 	return nil
 }
 
-// reason is the refusal on one line, cut to reasonMax bytes.
-func reason(err error) string {
+// Reason is the refusal on one line, cut to reasonMax bytes: what naru-hostd and a rolled-back
+// upgrade's outcome carry of it.
+func Reason(err error) string {
 	s := strings.Join(strings.Fields(err.Error()), " ")
 	if len(s) > reasonMax {
 		s = s[:reasonMax-3] + "..."

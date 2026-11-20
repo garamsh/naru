@@ -16,6 +16,7 @@ import (
 
 	"github.com/garamsh/naru/lib/init/api"
 	"github.com/garamsh/naru/lib/init/apply"
+	"github.com/garamsh/naru/lib/init/boot"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/console"
 	"github.com/garamsh/naru/lib/init/extension"
@@ -105,7 +106,7 @@ func Main() {
 	})
 	metricsCtx, stopMetrics := context.WithCancel(context.Background())
 	var engine *apply.Engine
-	stopRenewing, booted := bootAndRenew(bootHost{host, extensions}, issuer, services, configs, server, log)
+	stopRenewing, booted, refusal := bootAndRenew(bootHost{host, extensions}, issuer, services, configs, server, log)
 	if booted != nil {
 		engine = newEngine(*booted, configs, services, host, issuer, server)
 		server.Attach(engine)
@@ -119,7 +120,11 @@ func Main() {
 	// A trial boot of an upgrade is judged, and a default boot settles an upgrade left unfinished.
 	judging, stopJudging := context.WithCancel(context.Background())
 	if upgrades.Slot() == upgrade.SlotTrial {
-		go upgrades.Watch(judging, booted != nil, services, reboot)
+		reason := ""
+		if refusal != nil {
+			reason = boot.Reason(refusal)
+		}
+		go upgrades.Watch(judging, reason, services, reboot)
 	} else {
 		upgrades.Reconcile()
 	}
