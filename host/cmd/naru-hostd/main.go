@@ -12,7 +12,6 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -126,8 +125,7 @@ func main() {
 	defer stop()
 
 	go prefetch(ctx, revocations, log)
-	storedServing := filepath.Join(filepath.Dir(*hostKey), "serving.pem")
-	serving, err := chooseServing(ctx, revocations, log, *cert, *key, storedServing)
+	serving, err := chooseServing(ctx, revocations, log, *cert, *key, storedServingPath(*hostKey))
 	if err != nil {
 		log.Error("refusing to serve with a revoked key", "err", err.Error())
 		os.Exit(1)
