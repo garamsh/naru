@@ -1,0 +1,56 @@
+# ADR 0083: a control-plane Node applies pinned cluster add-ons from its image with an init service and every Node imports their images, so CoreDNS and a local-volume provisioner run by default
+
+> Status: accepted
+> Date: 2026-11-21
+
+Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
+
+Drafted for garamsh/naru#264, part of goal garamsh/naru#262. It adds to [ADR 0031](./0031-a-node-runs-kubernetes-as-init-services-containerd-and-runc-are-static-and-pods-get-routed-prefixes-from-one-pod-network.md), which leaves the cluster with no DNS and no StorageClass, and to [ADR 0027](./0027-a-node-offers-an-extra-disk-as-xfs-storage-for-mvmds-disks-formatted-when-blank-mounted-hardened-and-grown-at-boot.md), whose storage disk it offers to Pods. The facts about the current layout are those of `lib/layout/kubernetes.go` at the base commit of this change, and CoreDNS v1.15.0 was read from `github.com/coredns/coredns` releases on 2026-11-21.
+
+## Context
+
+- **A naru Kubernetes cluster forms and then offers a Pod nothing.** The kubelet's configuration has no `clusterDNS` and no `clusterDomain`, so a Pod resolves nothing a Service names; no StorageClass exists, so no PersistentVolumeClaim binds. aurora's workloads need both (goal #262).
+- **Nothing applies an object after the cluster forms.** Init starts the services of `lib/layout`'s topology and the control-plane Node's API server answers; no program of the image creates a Kubernetes object.
+- **The image takes nothing from the internet at run time.** Everything is built from pinned source ([ADR 0063](./0063-the-image-is-built-inside-one-digest-pinned-builder-container-whose-toolchains-are-pinned-and-the-stage-2-direction-is-a-musl-toolchain-with-buildkit-built-packages.md), [ADR 0075](./0075-the-images-packages-are-built-by-buildkit-from-one-bake-graph-against-a-musl-toolchain-built-from-source-and-assembled-by-tooling-disk.md), [ADR 0076](./0076-a-tag-publishes-once-and-a-release-is-signed-attested-and-carries-an-sbom-and-the-corresponding-source.md)). A Node has no shell and no libc, and a Pod's image has to come from somewhere a Node reaches without a registry on the network.
+- **The storage disk is mounted `nodev,nosuid,noexec` and is a plain XFS file system** ([ADR 0027](./0027-a-node-offers-an-extra-disk-as-xfs-storage-for-mvmds-disks-formatted-when-blank-mounted-hardened-and-grown-at-boot.md)), with no project quota.
+- **System extensions are not yet a default delivery path.** [ADR 0055](./0055-orch-and-the-signer-are-delivered-as-a-system-extension-a-squashfs-image-init-mounts-read-only.md) delivers one through the Node API and `spec.extensions`; a cluster that must work from its configuration alone cannot depend on it.
+
+## Decision
+
+1. **A cluster add-on is a set of Kubernetes objects and the images they run, both carried by the image and the release.** The objects are manifests under `/usr/lib/naru/addons/` of the Node's initramfs; each image is an OCI archive beside them, built by its own package of the bake graph from a pinned source commit ([ADR 0075](./0075-the-images-packages-are-built-by-buildkit-from-one-bake-graph-against-a-musl-toolchain-built-from-source-and-assembled-by-tooling-disk.md)) with the image's licences and sources in the SBOM and the sources tarball like any other package. A manifest names its image by digest, which the build writes into it, so the same release has the same objects. An upstream image is not pulled by digest, because it would sit outside the pinned source, the SBOM and the corresponding source.
+2. **An init service on every control-plane Node applies the manifests.** The service `addons` runs the `kubectl` of the pinned Kubernetes build with server-side apply under the field manager `naru-addons`, against the Node's own API server, with a client pair init issues from `spec.pki` as it issues the kubelet's. It restarts on failure and stops once the apply succeeded, so it retries until the API server answers; init starts it at every boot, and the apply is idempotent, so a Node that boots a newer release converges the cluster's add-ons to that release's manifests. A cluster that already runs the add-on's objects takes them over: the apply forces field ownership of the fields the manifest sets and leaves the rest.
+3. **Every Node imports the add-on images into containerd.** An init service `addon-images` on every Node, ordered after containerd, imports the archives into containerd's `k8s.io` namespace by digest and marks them so the kubelet's image garbage collection keeps them. A Pod's `imagePullPolicy` is `IfNotPresent`, so nothing is pulled from a network.
+4. **The kubelet gives Pods the cluster DNS.** `lib/layout` writes `clusterDNS` as the tenth address of the service CIDR (`10.96.0.10`) and `clusterDomain` as `cluster.local`, on every Node, control plane or worker.
+5. **Cluster DNS is CoreDNS, built from its pinned source commit.** A Deployment of two replicas in `kube-system` and a Service `kube-dns` at the address of item 4, with the `kubernetes` plugin for the cluster domain and the `forward` plugin to the Node's resolver for any other name. CoreDNS has a ServiceAccount whose RBAC is its own. It is the upstream's program with the plugins the Corefile names, nothing naru-specific.
+6. **PersistentVolumes are local volumes made on a Node's storage disk by a provisioner naru owns.** The provisioner is `naru-volumes`, a Go program of the node unit (`node/cmd/naru-volumes`) that runs as a DaemonSet on every Node that has a `spec.storage` disk and uses the external provisioner library of kubernetes-sigs. For a claim of the StorageClass `naru-local`, it creates a directory on the Node's first storage disk and a PersistentVolume of type `local` with node affinity to that Node. The class binds at the first consumer, so the scheduler picks the Node before the volume exists, and its reclaim policy is `Delete`, which removes the directory. The class is the cluster's default. A claim a Node without a storage disk would receive stays pending, which is the true state of that cluster.
+7. **The provisioner is not a CSI driver and not a helper-pod provisioner.** A volume is a directory the provisioner makes directly. No helper Pod needs a shell the image has not, and no CSI sidecar set grows the RAM a Node holds in its initramfs.
+8. **Capacity of a volume is not enforced in this change.** The storage disk has no project quota ([ADR 0027](./0027-a-node-offers-an-extra-disk-as-xfs-storage-for-mvmds-disks-formatted-when-blank-mounted-hardened-and-grown-at-boot.md)); a claim's size is recorded and not a limit. Enforcing it is the mount's work (`prjquota`), which a later decision makes, and the provisioner then sets the quota it creates.
+9. **The release names the add-ons.** The release's SBOM lists each add-on's source and its image's digest; `make image-repro` still leaves only the data disk out.
+
+## Rejected alternatives
+
+- **`naructl` applies the objects.** The operator then runs a command for a default, and a Node that joins a cluster another operator built has none. It cannot be "by default".
+- **Orch applies them.** Orch manages hosts and has no Kubernetes knowledge or credentials; giving it both makes it a second control plane for one cluster.
+- **Static Pods for CoreDNS and the provisioner.** The kubelet starts them without an API server, but a static Pod has no ServiceAccount token, so neither can read Services or create a PersistentVolume.
+- **A small naru applier built on client-go instead of `kubectl`.** It would be owned code to maintain for what `kubectl apply --server-side` already does, at the same binary size; the pinned `kubectl` comes from the Kubernetes source the image builds already.
+- **Upstream images pulled by digest.** The mechanism is simpler to describe, but the images sit outside the pinned-source rule, and a Node would fetch them from a registry at its first boot.
+- **A registry service on each Node serving the archives.** It is self-healing against garbage collection, but it adds a server to own and a port to protect; item 3's mark gives the same result with no new program.
+- **System extensions as the carrier.** They are the final form for payloads the Node does not need at every boot ([ADR 0055](./0055-orch-and-the-signer-are-delivered-as-a-system-extension-a-squashfs-image-init-mounts-read-only.md)), but delivering one by default is init's work, which this change does not take.
+- **rancher's local-path provisioner.** Its helper Pods run a shell script, which the image has no shell to support, and it does not enforce capacity either.
+- **kubernetes-sigs static provisioner.** It discovers one volume per mounted disk, so one storage disk would be one volume.
+- **A CSI driver.** It is the long-term form when quota, expansion or snapshots are needed, and it costs a controller, a node plugin and sidecars on every cluster before any of them is needed; item 8 says when to move.
+
+## Consequences
+
+- **A cluster has DNS and a default StorageClass at its first boot**, and a cluster built with an earlier release gets both at the boot that installs this one. Pods that were already running keep their old `resolv.conf` until they are recreated.
+- **The Node's initramfs grows** by `kubectl`, the CoreDNS and `naru-volumes` images and their archives. A Node's RAM and the ESP's trial slot ([ADR 0037](./0037-the-esp-has-room-for-a-trial-kernel-twice-the-size-of-the-one-it-was-built-with-and-a-release-refuses-a-kernel-the-previous-image-cannot-take.md)) carry the growth; the change's pull request measures it.
+- **A volume is tied to its Node.** A Pod that uses one is scheduled where it is, and the data is lost with the Node or its storage disk; an operator that wants replication provides it above this.
+- **An add-on that a later release drops is not removed** from a cluster, because the apply does not prune.
+- **A changed add-on is a new release.** The manifests and their digests are part of the image, so an add-on's change goes through the release and the Node upgrade ([ADR 0025](./0025-an-upgrade-is-a-bundle-posted-to-v1-upgrade-which-init-writes-to-the-trial-slot-and-the-trial-boot-promotes-when-healthy-and-rolls-back-when-not.md)).
+
+## Signs the decision was wrong
+
+- **The initramfs growth breaks a Node's memory or the ESP's size.** Then the add-ons move to a system extension that is delivered by default.
+- **Garbage collection removes an imported image despite the mark.** Then item 3 becomes a loopback registry service.
+- **A workload needs quota, expansion or snapshots of its volumes.** Then item 6 becomes a CSI driver and the StorageClass changes with it.
+- **Two control-plane Nodes' apply races produce a conflict `--force-conflicts` hides.** Then the apply is led by one Node.
