@@ -15,11 +15,6 @@ require (
 )
 
 require (
-	golang.org/x/net v0.62.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-)
-
-require (
 	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000 // indirect
 	github.com/garamsh/naru/lib/wire v0.0.0-00010101000000-000000000000
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
@@ -39,3 +34,5 @@ replace github.com/garamsh/naru/lib/orchapi => ../lib/orchapi
 replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile
 
 replace github.com/garamsh/naru/lib/wire => ../lib/wire
+
+replace github.com/garamsh/naru/lib/init => ../lib/init
