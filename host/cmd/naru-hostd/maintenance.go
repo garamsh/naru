@@ -132,14 +132,18 @@ func fetchAuthority(ctx context.Context, orchURL, fingerprint string) (*x509.Cer
 	return nil, errors.New("orch's chain holds no certificate with the pinned fingerprint")
 }
 
+// storedServingPath is where a rotation stores the serving pair: beside the host's key.
+func storedServingPath(hostKey string) string {
+	return filepath.Join(filepath.Dir(hostKey), "serving.pem")
+}
+
 // servingPair is the pair maintenance serves under, picked by the rule the host API uses at start
 // (ADR 0077): the pair a rotation stored beside the host's key, when it is not revoked, else the
 // host's enrolled pair beside its key, which chains to the authority the operators' client files
 // trust; identity.ErrRevoked when that pair is revoked. A host that never enrolled has none, so it
 // serves a self-signed pair that no operator can verify: such a host is not reachable.
 func servingPair(ctx context.Context, list *identity.RevocationList, hostKey string, log *slog.Logger) (func(*tls.ClientHelloInfo) (*tls.Certificate, error), error) {
-	stored := filepath.Join(filepath.Dir(hostKey), "serving.pem")
-	serving, err := chooseServing(ctx, list, log, enroll.CertPathFor(hostKey), hostKey, stored)
+	serving, err := chooseServing(ctx, list, log, enroll.CertPathFor(hostKey), hostKey, storedServingPath(hostKey))
 	if err == nil {
 		return serving.GetCertificate, nil
 	}
