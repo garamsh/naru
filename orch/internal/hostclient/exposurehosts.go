@@ -95,8 +95,9 @@ func probeAll[T any](ctx context.Context, admitted []orchapi.Host, f func(ctx co
 // no backend and its host no place for an address on its network.
 func live(m hostapi.MicroVM) bool { return machineState(m.State) == groups.MachineRunning }
 
-// List returns the admitted hosts that answered, with their LAN interface and the networks they
-// run a live microVM on.
+// List returns the admitted hosts with their LAN interface and the networks they run a live
+// microVM on; a host that did not answer is returned Silent, so the reconciler can tell a slow
+// holder from a gone one.
 func (h *ExposureHosts) List(ctx context.Context) ([]exposures.Host, error) {
 	admitted, err := h.inv.Hosts(ctx)
 	if err != nil {
@@ -106,11 +107,11 @@ func (h *ExposureHosts) List(ctx context.Context) ([]exposures.Host, error) {
 		c := h.dial(a.ID, a.Address)
 		info, err := c.Host(ctx)
 		if err != nil {
-			return exposures.Host{}, false
+			return exposures.Host{ID: a.ID, Silent: true}, true
 		}
 		vms, err := c.MicroVMs(ctx)
 		if err != nil {
-			return exposures.Host{}, false
+			return exposures.Host{ID: a.ID, Silent: true}, true
 		}
 		seen := map[string]bool{}
 		var nets []string

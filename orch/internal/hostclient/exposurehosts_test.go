@@ -104,7 +104,11 @@ func TestAHostThatDoesNotAnswerHoldsBackNoOtherProbe(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the probe waited on the hung host")
 	}
-	require.Len(t, hosts, 2, "h2 and h3 answered, h1 is left out")
-	require.Equal(t, "h2", hosts[0].ID)
-	require.Equal(t, "h3", hosts[1].ID)
+	require.Len(t, hosts, 3, "h1 is listed, not dropped")
+	require.Equal(t, "h1", hosts[0].ID)
+	require.True(t, hosts[0].Silent, "as one that did not answer")
+	require.Equal(t, "h2", hosts[1].ID)
+	require.False(t, hosts[1].Silent)
+	require.Equal(t, "h3", hosts[2].ID)
+	require.False(t, hosts[2].Silent)
 }

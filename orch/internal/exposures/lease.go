@@ -28,14 +28,22 @@ const (
 	// computed, so the deadline stored is never earlier than the end of the host's lease; and one
 	// host that does not answer delays no other exposure's renewal for longer than this.
 	CallTimeout = 2 * time.Second
+	// SilentGrace is how long a host that was admitted but did not answer the listing keeps the
+	// addresses it holds: they are renewed on it as before, so a host that is slow but healthy does
+	// not lose them and take them back. Past it the host is taken for gone and they move after the
+	// lease and Skew.
+	SilentGrace = 2 * LeaseSeconds * time.Second
 )
 
 // Host is an admitted host the reconciler may lease an address to. LAN is the interface it
 // announces on; a host with none is no candidate. Networks are the networks it runs a microVM on.
+// Silent is an admitted host that did not answer this pass: it is no candidate for a new address,
+// and keeps the ones it holds for SilentGrace.
 type Host struct {
 	ID       string
 	LAN      string
 	Networks []string
+	Silent   bool
 }
 
 // Lease is what a host is told to hold.
@@ -49,7 +57,8 @@ type Lease struct {
 
 // Hosts is the host API as the reconciler needs it.
 type Hosts interface {
-	// List returns the hosts that answered, with their LAN interface and networks.
+	// List returns the admitted hosts, with their LAN interface and networks; one that did not
+	// answer is returned Silent.
 	List(ctx context.Context) ([]Host, error)
 	// Put takes the lease on the address on the host, or renews it.
 	Put(ctx context.Context, hostID, address string, l Lease) error
@@ -84,6 +93,11 @@ type Reconciler struct {
 	clock    Clock
 	interval time.Duration
 	log      *slog.Logger
+
+	// silentSince is when each host now silent was first found so, in this reconciler's memory: a
+	// new leader starts the grace again.
+	mu          sync.Mutex
+	silentSince map[string]time.Time
 }
 
 // NewReconciler returns a Reconciler.
@@ -91,7 +105,7 @@ func NewReconciler(c Config) *Reconciler {
 	if c.Interval <= 0 {
 		c.Interval = DefaultInterval
 	}
-	return &Reconciler{hosts: c.Hosts, store: c.Exposures, networks: c.Networks, clock: c.Clock, interval: c.Interval, log: c.Log}
+	return &Reconciler{hosts: c.Hosts, store: c.Exposures, networks: c.Networks, clock: c.Clock, interval: c.Interval, log: c.Log, silentSince: map[string]time.Time{}}
 }
 
 // Run reconciles every interval until ctx ends, and returns ctx's error.
@@ -112,11 +126,11 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 // Choose returns the host that should hold the address among the candidates, by rendezvous
 // hashing, so a lost host moves only its own addresses and a returned host takes back only its own.
-// A candidate is a host with a LAN interface that runs a microVM on the network.
+// A candidate is a host that answered, with a LAN interface, that runs a microVM on the network.
 func Choose(address, network string, hosts []Host) (string, bool) {
 	best, bestScore := "", uint64(0)
 	for _, h := range hosts {
-		if h.LAN == "" || !slices.Contains(h.Networks, network) {
+		if h.Silent || h.LAN == "" || !slices.Contains(h.Networks, network) {
 			continue
 		}
 		sum := sha256.Sum256([]byte(address + "\x00" + h.ID))
@@ -141,6 +155,14 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list hosts: %w", err)
 	}
+	hosts = r.settle(hosts)
+	// The exposures are read before the networks: a network made in between is seen, while an
+	// exposure made in between waits for the next pass, so no exposure is taken for one whose
+	// network is gone because its network was made after the networks were read.
+	recs, err := r.store.ListExposures(ctx)
+	if err != nil {
+		return fmt.Errorf("list exposures: %w", err)
+	}
 	nets, err := r.networks.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list networks: %w", err)
@@ -148,10 +170,6 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	live := map[string]bool{}
 	for _, n := range nets {
 		live[n.Name] = true
-	}
-	recs, err := r.store.ListExposures(ctx)
-	if err != nil {
-		return fmt.Errorf("list exposures: %w", err)
 	}
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].ID < hosts[j].ID })
 	var errs []error
@@ -201,6 +219,40 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// settle drops the hosts that have been silent longer than SilentGrace, and says so, and forgets
+// the hosts that answered again.
+func (r *Reconciler) settle(hosts []Host) []Host {
+	now := r.clock.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	since := map[string]time.Time{}
+	out := hosts[:0:0]
+	for _, h := range hosts {
+		if !h.Silent {
+			out = append(out, h)
+			continue
+		}
+		t, ok := r.silentSince[h.ID]
+		if !ok {
+			t = now
+			r.log.Warn("host did not answer; it keeps its addresses for now", "host", h.ID, "grace", SilentGrace.String())
+		}
+		since[h.ID] = t
+		if now.Sub(t) > SilentGrace {
+			r.log.Warn("host dropped: silent past the grace", "host", h.ID)
+			continue
+		}
+		out = append(out, h)
+	}
+	r.silentSince = since
+	return out
+}
+
+// silent reports whether the host is in the list and did not answer.
+func silent(hosts []Host, id string) bool {
+	return slices.ContainsFunc(hosts, func(h Host) bool { return h.ID == id && h.Silent })
+}
+
 // vacated reports whether the host that holds the exposure's address no longer does: it answered
 // that it removed it, or its lease and Skew have passed.
 func (r *Reconciler) vacated(ctx context.Context, hosts []Host, rec Record, now time.Time) bool {
@@ -224,6 +276,9 @@ func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, re
 		return r.store.DeleteExposure(ctx, rec)
 	}
 	want, ok := Choose(rec.Address, rec.Network, hosts)
+	if rec.Host != "" && silent(hosts, rec.Host) {
+		want, ok = rec.Host, true // slow, not known gone: renewed where it is, and not moved and moved back
+	}
 	next := rec
 	if rec.Host != "" && rec.Host != want {
 		if !r.vacated(ctx, hosts, rec, start) {

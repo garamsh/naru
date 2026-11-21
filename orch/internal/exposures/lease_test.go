@@ -87,6 +87,16 @@ func (f *fakeHosts) lose(id string) {
 	}
 }
 
+func (f *fakeHosts) silence(id string, silent bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.hosts {
+		if f.hosts[i].ID == id {
+			f.hosts[i].Silent = silent
+		}
+	}
+}
+
 func (f *fakeHosts) holders(address string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -410,4 +420,75 @@ type failingNetworks struct{ exposurestest.Networks }
 
 func (failingNetworks) List(context.Context) ([]orchapi.Network, error) {
 	return nil, errors.New("etcd down")
+}
+
+func TestASlowHolderKeepsItsAddressRenewedAndOnlyASilenceBeyondTheGraceMovesIt(t *testing.T) {
+	s, st := fixture(t)
+	e, err := s.ApplyExposure(t.Context(), "ccm", "a", "web", spec("a", "10.1.0.5"))
+	require.NoError(t, err)
+	h := newHosts(lanHosts("h1", "h2", "h3")...)
+	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
+	r := reconciler(st, h, clk)
+	require.NoError(t, r.Reconcile(t.Context()))
+	holder := h.holders(e.Address)[0]
+	start := clk.Now()
+
+	// The holder answers nothing to the listing for longer than a lease and its skew.
+	h.silence(holder, true)
+	for clk.Now().Sub(start) < exposures.SilentGrace {
+		clk.Advance(5 * time.Second)
+		require.NoError(t, r.Reconcile(t.Context()))
+		got, _ := st.GetExposure(t.Context(), "a", "web")
+		require.Equal(t, holder, got.Host, "at +%s the slow holder still holds it", clk.Now().Sub(start))
+		require.Equal(t, clk.Now().Add(lease), got.LeaseUntil, "and it was renewed there")
+		require.Equal(t, []string{holder}, h.holders(e.Address), "no other host announces it")
+	}
+
+	// Past the grace it is taken for gone, and the address moves once its last lease and the skew pass.
+	clk.Advance(5 * time.Second)
+	require.NoError(t, r.Reconcile(t.Context()))
+	got, _ := st.GetExposure(t.Context(), "a", "web")
+	require.Equal(t, holder, got.Host, "its last lease may still run")
+	clk.Advance(lease + exposures.Skew)
+	require.NoError(t, r.Reconcile(t.Context()))
+	got, _ = st.GetExposure(t.Context(), "a", "web")
+	require.NotEqual(t, holder, got.Host, "control: a holder silent past the grace does lose it")
+
+	// A holder that answers again is forgotten as silent: its next silence starts a new grace.
+	h.silence(holder, false)
+	require.NoError(t, r.Reconcile(t.Context()))
+}
+
+// lateNetworks answers the list it held and then runs after, as a network made just after the read.
+type lateNetworks struct {
+	exposures.Networks
+	after func()
+}
+
+func (l lateNetworks) List(ctx context.Context) ([]orchapi.Network, error) {
+	out, err := l.Networks.List(ctx)
+	l.after()
+	return out, err
+}
+
+func TestAnExposureOfANetworkMadeDuringAPassIsNotTakenForOneWhoseNetworkIsGone(t *testing.T) {
+	_, st := fixture(t)
+	ctx := t.Context()
+	h := newHosts(lanHosts("h1")...)
+	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
+	made := false
+	nets := lateNetworks{Networks: exposurestest.Networks{{Name: "a", Prefix: "10.1.0.0/24"}}, after: func() {
+		if made {
+			return
+		}
+		made = true
+		pool, err := st.GetPool(ctx, "lan")
+		require.NoError(t, err)
+		rec := exposures.Record{Exposure: orchapi.Exposure{ID: "web", Network: "c", Pool: "lan", Address: "192.168.0.85", Phase: orchapi.ExposurePending}}
+		require.NoError(t, st.CreateExposure(ctx, rec, pool, 64))
+	}}
+	require.NoError(t, reconcilerOn(st, h, clk, nets).Reconcile(ctx))
+	got, err := st.GetExposure(ctx, "c", "web")
+	require.NoError(t, err, "the exposure made after the lists were read is left for the next pass")
+	require.NotEqual(t, exposures.PhaseReleasing, got.Phase)
 }
