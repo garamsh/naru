@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"syscall"
+	"time"
 
 	"github.com/vishvananda/netlink"
 )
@@ -40,18 +42,95 @@ func hostAddr(a netip.Addr) *netlink.Addr {
 	return &netlink.Addr{IPNet: &net.IPNet{IP: a.AsSlice(), Mask: net.CIDRMask(32, 32)}}
 }
 
-// Add gives the interface the address.
-func (l *LAN) Add(a netip.Addr) error {
+// Add gives the interface the address for valid, which the kernel enforces: it removes the address
+// when the time passes, whether or not hostd runs.
+func (l *LAN) Add(a netip.Addr, valid time.Duration) error {
 	link, err := l.link()
 	if err != nil {
 		return err
 	}
-	x := hostAddr(a)
-	x.Label = l.label
-	if err := netlink.AddrReplace(link, x); err != nil {
+	if err := l.check(a, false); err != nil {
 		return err
 	}
+	x := hostAddr(a)
+	x.Label = l.label
+	secs := max(int((valid+time.Second-1)/time.Second), 1)
+	x.ValidLft, x.PreferedLft = secs, secs
+	return netlink.AddrReplace(link, x)
+}
+
+// Check refuses an address the host must not take for a lease.
+func (l *LAN) Check(a netip.Addr) error { return l.check(a, true) }
+
+func (l *LAN) check(a netip.Addr, gateways bool) error {
+	have, err := netlink.AddrList(nil, netlink.FAMILY_V4)
+	if err != nil {
+		return err
+	}
+	var held []hostAddress
+	for _, x := range have {
+		p, ok := netip.AddrFromSlice(x.IP)
+		if !ok {
+			continue
+		}
+		ones, _ := x.Mask.Size()
+		h := hostAddress{Prefix: netip.PrefixFrom(p.Unmap(), ones), Ours: x.Label == l.label && ones == 32}
+		if link, err := netlink.LinkByIndex(x.LinkIndex); err == nil {
+			h.OnLAN = link.Attrs().Name == l.name
+		}
+		held = append(held, h)
+	}
+	var gw []netip.Addr
+	if gateways {
+		routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+		if err != nil {
+			return err
+		}
+		for _, r := range routes {
+			if r.Dst == nil || r.Dst.IP.IsUnspecified() {
+				if g, ok := netip.AddrFromSlice(r.Gw); ok {
+					gw = append(gw, g.Unmap())
+				}
+			}
+		}
+	}
+	return refuseHostAddress(a, held, gw)
+}
+
+// hostAddress is an address of the host: its prefix, whether it is on the LAN interface, and whether
+// a lease put it there.
+type hostAddress struct {
+	Prefix netip.Prefix
+	OnLAN  bool
+	Ours   bool
+}
+
+// refuseHostAddress is Check on what the host holds: an address of the host that no lease put there,
+// the network and broadcast addresses of the LAN interface's networks, and the gateways.
+func refuseHostAddress(a netip.Addr, held []hostAddress, gateways []netip.Addr) error {
+	for _, h := range held {
+		switch {
+		case h.Ours:
+			continue
+		case h.Prefix.Addr() == a:
+			return fmt.Errorf("%w: %s is an address of the host", ErrHostAddress, a)
+		case h.OnLAN && h.Prefix.Bits() < 31 && h.Prefix.Contains(a) && (a == h.Prefix.Masked().Addr() || a == lastAddr(h.Prefix)):
+			return fmt.Errorf("%w: %s is the network or broadcast address of %s", ErrHostAddress, a, h.Prefix.Masked())
+		}
+	}
+	if slices.Contains(gateways, a) {
+		return fmt.Errorf("%w: %s is a default gateway", ErrHostAddress, a)
+	}
 	return nil
+}
+
+// lastAddr is the broadcast address of the prefix.
+func lastAddr(p netip.Prefix) netip.Addr {
+	b := p.Masked().Addr().As4()
+	for i := p.Bits(); i < 32; i++ {
+		b[i/8] |= 1 << (7 - i%8)
+	}
+	return netip.AddrFrom4(b)
 }
 
 // Remove takes the address off the interface.
