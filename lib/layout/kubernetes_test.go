@@ -34,6 +34,8 @@ type kubeSpec struct {
 			Name         string   `yaml:"name"`
 			Args         []string `yaml:"args"`
 			ControlPlane bool     `yaml:"controlPlane"`
+			Binary       string   `yaml:"binary"`
+			Restart      string   `yaml:"restartPolicy"`
 		} `yaml:"services"`
 		Files []struct {
 			Path    string   `yaml:"path"`
@@ -116,7 +118,7 @@ func TestKubernetesUserData_WorkerRunsTheKubeletAndTheProxyAndNoControlPlane(t *
 			running = append(running, sv.Name)
 		}
 	}
-	assert.Equal(t, []string{"containerd", "kubelet", "kube-proxy"}, running, "what a worker runs")
+	assert.Equal(t, []string{"containerd", "addon-image-coredns", "addon-pin-coredns", "kubelet", "kube-proxy"}, running, "what a worker runs")
 }
 
 func TestKubernetesUserData_ControlPlaneRunsEveryServiceInTheTopologysOrder(t *testing.T) {
@@ -365,4 +367,92 @@ func TestKubernetesUserData_WorkerWithATokenKeepsItsKubeProxyPairAndKubeconfig(t
 	assert.Contains(t, paths, "/run/kubernetes/pki/kube-proxy.crt")
 	assert.Contains(t, paths, "/run/kubernetes/pki/kube-proxy.key")
 	assert.Contains(t, paths["/run/kubernetes/kube-proxy.conf"], "client-certificate")
+}
+
+func serviceByName(t *testing.T, s kubeSpec, name string) (args []string, binary, restart string) {
+	t.Helper()
+	for _, sv := range s.Spec.Services {
+		if sv.Name == name {
+			return sv.Args, sv.Binary, sv.Restart
+		}
+	}
+	require.Failf(t, "no such service", "%s is not in %v", name, serviceNames(s))
+	return nil, "", ""
+}
+
+func fileContent(t *testing.T, s kubeSpec, path string) string {
+	t.Helper()
+	for _, f := range s.Spec.Files {
+		if f.Path == path {
+			return f.Content
+		}
+	}
+	require.Failf(t, "no such file", "%s", path)
+	return ""
+}
+
+func TestKubernetesUserData_KubeletGivesPodsTheClusterDNSAtTheAddressOfTheKubeDNSService(t *testing.T) {
+	for _, controlPlane := range []bool{true, false} {
+		s := kubeUserData(t, kubeNode(t, controlPlane, nil))
+
+		var kubelet struct {
+			ClusterDNS    []string `yaml:"clusterDNS"`
+			ClusterDomain string   `yaml:"clusterDomain"`
+		}
+		require.NoError(t, yaml.Unmarshal([]byte(fileContent(t, s, layout.KubeDir+"/kubelet.yaml")), &kubelet))
+		assert.Equal(t, []string{"10.96.0.10"}, kubelet.ClusterDNS, "control-plane %v", controlPlane)
+		assert.Equal(t, layout.ClusterDomain, kubelet.ClusterDomain)
+	}
+}
+
+func TestKubernetesUserData_ControlPlaneAppliesTheEnabledAddonsWithItsOwnPairAndRunsUntilItSucceeds(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, nil))
+
+	args, binary, restart := serviceByName(t, s, "addons")
+	assert.Equal(t, "/bin/kubectl", binary)
+	assert.Equal(t, "on-failure", restart)
+	assert.Contains(t, args, "--server-side")
+	assert.Contains(t, args, "--field-manager=naru-addons")
+	assert.Contains(t, args, layout.AddonsDir+"/manifests/dns.yaml")
+	var found bool
+	for _, c := range s.Spec.PKI.Certificates {
+		if c.Name == "addons" {
+			found = true
+			assert.Equal(t, "system:masters", c.Organization)
+			assert.Equal(t, "client", c.Usage)
+			assert.Equal(t, []string{"addons"}, c.Restart)
+		}
+	}
+	assert.True(t, found, "init issues the add-ons' pair")
+}
+
+func TestKubernetesUserData_DisabledDNSIsNeitherAppliedNorGivenAPairButItsImageIsStillImported(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, func(n *layout.Node) { n.Kube.DisabledAddons = []string{"dns"} }))
+
+	assert.NotContains(t, serviceNames(s), "addons", "no add-on is left to apply")
+	for _, c := range s.Spec.PKI.Certificates {
+		assert.NotEqual(t, "addons", c.Name)
+	}
+	assert.Contains(t, serviceNames(s), "addon-image-coredns")
+}
+
+func TestKubernetesUserData_EveryNodeImportsTheAddonImagesAndPinsThemUntilThatSucceeds(t *testing.T) {
+	for _, controlPlane := range []bool{true, false} {
+		s := kubeUserData(t, kubeNode(t, controlPlane, nil))
+
+		args, binary, restart := serviceByName(t, s, "addon-image-coredns")
+		assert.Equal(t, "/bin/ctr", binary)
+		assert.Equal(t, "on-failure", restart)
+		assert.Equal(t, layout.AddonsDir+"/images/coredns.tar", args[len(args)-1])
+		pin, _, restart := serviceByName(t, s, "addon-pin-coredns")
+		assert.Equal(t, "on-failure", restart)
+		assert.Contains(t, pin, "io.cri-containerd.pinned=pinned")
+	}
+}
+
+func TestKubernetesUserData_RefusesAnUnknownAddonToDisable(t *testing.T) {
+	_, err := kubeNode(t, true, func(n *layout.Node) { n.Kube.DisabledAddons = []string{"nope"} }).UserData()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dns")
 }

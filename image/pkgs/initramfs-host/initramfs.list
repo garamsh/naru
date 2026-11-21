@@ -62,6 +62,8 @@ file /bin/kube-controller-manager @OUT@/kube-controller-manager 0755 0 0
 file /bin/kube-scheduler @OUT@/kube-scheduler 0755 0 0
 file /bin/kubelet @OUT@/kubelet 0755 0 0
 file /bin/kube-proxy @OUT@/kube-proxy 0755 0 0
+file /bin/kubectl @OUT@/kubectl 0755 0 0
+file /bin/ctr @OUT@/ctr 0755 0 0
 file /bin/containerd @OUT@/containerd 0755 0 0
 file /bin/containerd-shim-runc-v2 @OUT@/containerd-shim-runc-v2 0755 0 0
 file /bin/runc @OUT@/runc 0755 0 0
@@ -71,3 +73,12 @@ file /bin/umount @OUT@/umount 0755 0 0
 file /opt/cni/bin/bridge @OUT@/bridge 0755 0 0
 file /opt/cni/bin/host-local @OUT@/host-local 0755 0 0
 file /opt/cni/bin/loopback @OUT@/loopback 0755 0 0
+# The cluster add-ons (ADR 0083): the images every Node imports and the manifests a control-plane Node applies.
+dir /usr 0755 0 0
+dir /usr/lib 0755 0 0
+dir /usr/lib/naru 0755 0 0
+dir /usr/lib/naru/addons 0755 0 0
+dir /usr/lib/naru/addons/images 0755 0 0
+dir /usr/lib/naru/addons/manifests 0755 0 0
+file /usr/lib/naru/addons/images/coredns.tar @OUT@/addons/images/coredns.tar 0644 0 0
+file /usr/lib/naru/addons/manifests/dns.yaml @OUT@/addons/manifests/dns.yaml 0644 0 0

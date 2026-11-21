@@ -26,10 +26,13 @@ func (t Tool) KubernetesTopology() (Topology, error) {
 // GenKubernetes has naructl write the rest of a Kubernetes cluster's files beside the CA in caDir:
 // the front-proxy authority, the ServiceAccount keys and admin.conf, which dials adminAddress
 // (host:port) when that is set.
-func (t Tool) GenKubernetes(caDir, endpoint, adminAddress string) error {
+func (t Tool) GenKubernetes(caDir, endpoint, adminAddress string, disableAddons ...string) error {
 	args := []string{"gen", "kubernetes", t.caDirFlag(), caDir, "--endpoint", endpoint}
 	if adminAddress != "" {
 		args = append(args, "--admin-address", adminAddress)
+	}
+	for _, name := range disableAddons {
+		args = append(args, "--disable-addon", name)
 	}
 	return t.run(args...)
 }

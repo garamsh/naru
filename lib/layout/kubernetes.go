@@ -52,19 +52,39 @@ const (
 	ServiceCIDR = "10.96.0.0/16"
 	// ClusterDomain is the domain of the cluster's DNS names, which the API server's certificate names.
 	ClusterDomain = "cluster.local"
+	// ClusterDNS is the address the kubelet gives Pods as their nameserver: the tenth address of the
+	// Service range, where the DNS add-on's Service is (ADR 0083).
+	ClusterDNS = "10.96.0.10"
+
+	// AddonsDir holds what the image carries of the cluster add-ons: each add-on's manifests, applied
+	// by a control-plane Node, and the images, imported by every Node (ADR 0083).
+	AddonsDir = "/usr/lib/naru/addons"
+	// AddonManager is the field manager and label value of the objects the add-ons apply.
+	AddonManager = "naru-addons"
 )
+
+// Addons are the cluster add-ons by name: each has the manifests AddonsDir/manifests/<name>.yaml and
+// a node setting (KubeNode.DisabledAddons) that turns it off.
+var Addons = []string{"dns"}
+
+// addonImages are the images the add-ons run, each the archive AddonsDir/images/<name>.tar naming the
+// image <ref> that the manifests reference by digest.
+var addonImages = []struct{ name, ref string }{{"coredns", "naru.local/coredns:release"}}
 
 // Kubernetes is the Topology of a Kubernetes Node: the services in the order init starts them.
 var Kubernetes = Topology{
 	Services: []Service{
 		{Name: "registry"},
 		{Name: "containerd"},
+		{Name: "addon-image-coredns"},
+		{Name: "addon-pin-coredns"},
 		{Name: "etcd", ControlPlane: true},
 		{Name: "kube-apiserver", ControlPlane: true},
 		{Name: "kube-controller-manager", ControlPlane: true},
 		{Name: "kube-scheduler", ControlPlane: true},
 		{Name: "kubelet"},
 		{Name: "kube-proxy"},
+		{Name: "addons", ControlPlane: true},
 	},
 	APIServer: "kube-apiserver",
 	Agent:     "kubelet",
@@ -107,6 +127,9 @@ type KubeNode struct {
 	// Token is a worker's bootstrap token: its kubelet presents it for a client certificate in place
 	// of the pair naructl would issue.
 	Token string
+	// DisabledAddons are the names of the add-ons (Addons) the cluster does not run: the control-plane
+	// Node neither applies nor removes their objects, which the cluster's owner keeps (ADR 0083).
+	DisabledAddons []string
 }
 
 // KubeTokensContent is the content of KubeBootstrapTokensFile: a line of the API server's static
@@ -204,6 +227,8 @@ func (n Node) checkKube() error {
 		return errors.New("tokens are for a control-plane Node that accepts bootstrap tokens")
 	case k.Token != "" && !pki.ValidToken(k.Token):
 		return errors.New("the bootstrap token is not <id>.<secret>, [a-z0-9]{6}.[a-z0-9]{16}")
+	case !validAddons(k.DisabledAddons):
+		return fmt.Errorf("an add-on to disable is not one of %s", strings.Join(Addons, ", "))
 	case k.RegistryCA != "" && !path.IsAbs(k.RegistryCA):
 		return fmt.Errorf("the registry CA path %q is not absolute", k.RegistryCA)
 	case k.RegistryCA != "" && k.SandboxImage == "":
@@ -240,6 +265,16 @@ func (n Node) checkKube() error {
 		}
 	}
 	return nil
+}
+
+// validAddons reports whether every name is an add-on.
+func validAddons(names []string) bool {
+	return !slices.ContainsFunc(names, func(name string) bool { return !slices.Contains(Addons, name) })
+}
+
+// enabledAddons are the add-ons the Node's cluster runs, in the order of Addons.
+func (n Node) enabledAddons() []string {
+	return slices.DeleteFunc(slices.Clone(Addons), func(name string) bool { return slices.Contains(n.kube().DisabledAddons, name) })
 }
 
 // kubeUserData is the user-data of a Kubernetes Node.
@@ -290,6 +325,8 @@ func (n Node) kubeServices() []service {
 	list := []service{
 		{Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")), Args: []string{"-listen", RegistryAddr, "-dir", path.Join(InputsDir, "registry")}},
 		{Name: "containerd", Binary: n.binary("containerd", "/bin/containerd"), Args: []string{"--config", kubePath("containerd.toml")}, Env: n.kubeEnv()},
+		{Name: "addon-image-coredns", Binary: n.binary("addon-image-coredns", "/bin/ctr"), RestartPolicy: restartOnFailure, Args: ctrArgs("import", "--digests", path.Join(AddonsDir, "images", "coredns.tar"))},
+		{Name: "addon-pin-coredns", Binary: n.binary("addon-pin-coredns", "/bin/ctr"), RestartPolicy: restartOnFailure, Args: ctrArgs("label", addonImages[0].ref, "io.cri-containerd.pinned=pinned")},
 		{Name: "etcd", Binary: n.binary("etcd", "/bin/etcd"), Args: n.etcdArgs()},
 		{
 			Name: "kube-apiserver", Binary: n.binary("kube-apiserver", "/bin/kube-apiserver"),
@@ -341,6 +378,16 @@ func (n Node) kubeServices() []service {
 	if !k.LocalRegistry {
 		list = slices.DeleteFunc(list, func(s service) bool { return s.Name == "registry" })
 	}
+	if enabled := n.enabledAddons(); k.ControlPlane && len(enabled) > 0 {
+		args := []string{
+			"apply", "--kubeconfig=" + kubePath("addons.conf"), "--cache-dir=" + kubePath("addons-cache"),
+			"--server-side", "--force-conflicts", "--field-manager=" + AddonManager,
+		}
+		for _, name := range enabled {
+			args = append(args, "-f", path.Join(AddonsDir, "manifests", name+".yaml"))
+		}
+		list = append(list, service{Name: "addons", Binary: n.binary("addons", "/bin/kubectl"), Args: args, RestartPolicy: restartOnFailure})
+	}
 	for i := range list {
 		switch {
 		case list[i].Name == "kube-apiserver" && k.BootstrapTokens:
@@ -355,6 +402,15 @@ func (n Node) kubeServices() []service {
 		list[i].ControlPlane = Kubernetes.OnlyControlPlane(list[i].Name)
 	}
 	return list
+}
+
+// restartOnFailure is the restart policy of a service that runs until it succeeds.
+const restartOnFailure = "on-failure"
+
+// ctrArgs are the arguments of ctr, containerd's client, for an add-on image: against the Node's
+// containerd and the namespace the CRI reads.
+func ctrArgs(command ...string) []string {
+	return append([]string{"--address", ContainerdSocket, "--namespace", "k8s.io", "images"}, command...)
 }
 
 // kubePKI is a control-plane Node's spec.pki: the cluster's authority, whose key lets init issue each
@@ -402,6 +458,13 @@ func (n Node) kubePKI() *pkiSpec {
 		cluster(pairSpec{"controller-manager", "system:kube-controller-manager"}, "client", "kube-controller-manager"),
 		cluster(pairSpec{"scheduler", "system:kube-scheduler"}, "client", "kube-scheduler"),
 	)
+	// The add-ons' pair is the cluster's administrator, as the API server's kubelet client is: the
+	// add-ons create cluster roles and bindings. It is not renewed under a running apply.
+	if len(n.enabledAddons()) > 0 {
+		addons := cluster(pairSpec{"addons", "naru:addons"}, "client", "addons")
+		addons.Organization = "system:masters"
+		add(addons)
+	}
 	node := cluster(pairSpec{"kubelet-client", "system:node:" + n.Name}, "client", "kubelet")
 	node.Organization = "system:nodes"
 	serving := cluster(pairSpec{"kubelet", n.Name}, "server", "kubelet")
@@ -503,6 +566,8 @@ func (n Node) kubeFiles() ([]file, error) {
 		"authorization":            map[string]any{"mode": "Webhook"},
 		"cgroupDriver":             "cgroupfs",
 		"cgroupRoot":               DelegatedCgroup,
+		"clusterDNS":               []string{ClusterDNS},
+		"clusterDomain":            ClusterDomain,
 		"containerRuntimeEndpoint": "unix://" + ContainerdSocket,
 		"failSwapOn":               false,
 		"podLogsDir":               KubeletRoot + "/pod-logs",
@@ -560,6 +625,9 @@ func (n Node) kubeFiles() ([]file, error) {
 			file{Path: kubePath("controller-manager.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-controller-manager", "controller-manager")},
 			file{Path: kubePath("scheduler.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-scheduler", "scheduler")},
 		)
+		if len(n.enabledAddons()) > 0 {
+			files = append(files, file{Path: kubePath("addons.conf"), Mode: "0644", Content: n.kubeconfig("naru:addons", "addons")})
+		}
 		if k.BootstrapTokens {
 			files = append(files, file{Path: KubeBootstrapTokensFile, Mode: "0600", Content: KubeTokensContent(k.Tokens), Restart: []string{Kubernetes.APIServer}})
 		}

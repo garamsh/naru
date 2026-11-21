@@ -29,7 +29,7 @@ group "upgrade" {
 
 group "default" {
   targets = ["builder", "toolchain", "util-linux", "e2fsprogs", "liburcu", "libinih", "xfsprogs", "libmnl", "libnftnl", "jansson", "nftables", "cacert",
-    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes",
+    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes", "coredns",
     "libseccomp", "containerd", "rolesanywhere",
     "mvmd", "guest-initrds",
     "kernel-host", "kernel-node", "kernel-guest-naru",
@@ -184,6 +184,12 @@ target "kubernetes" {
   output   = ["type=oci,dest=${OUT}/kubernetes.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
+target "coredns" {
+  inherits = ["_package"]
+  context  = "coredns"
+  output   = ["type=oci,dest=${OUT}/coredns.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
 target "libseccomp" {
   inherits = ["_ctoolchain"]
   context  = "libseccomp"
@@ -273,6 +279,7 @@ target "_initramfs" {
     kubernetes     = "target:kubernetes"
     containerd     = "target:containerd"
     cni            = "target:cni"
+    coredns        = "target:coredns"
     cacert         = "target:cacert"
   }
 }
