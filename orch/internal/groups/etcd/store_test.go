@@ -139,6 +139,35 @@ func TestEventsGoToTheInventoryLogAndARepeatedHoldIsWrittenOnce(t *testing.T) {
 	require.NotEmpty(t, evs[2].Cursor)
 }
 
+func TestABootSetFailureIsLoggedUnderItsTypeAndARepeatOnTheSameHostIsWrittenOnce(t *testing.T) {
+	_, inv := newStore(t)
+	e := groupsetcd.NewEvents(inv)
+	t0 := time.Unix(1000, 0).UTC()
+	fail := func(at time.Duration, host, msg string) groups.Event {
+		return groups.Event{Time: t0.Add(at), Kind: groups.EventBootSetFailed, Host: host, Message: msg}
+	}
+	for _, ev := range []groups.Event{
+		fail(0, "h1", "boot set naru-node-v1: signature check failed"),
+		fail(10*time.Second, "h1", "boot set naru-node-v1: signature check failed"),
+		fail(20*time.Second, "h2", "boot set naru-node-v1: signature check failed"),
+		fail(30*time.Second, "h1", "boot set naru-node-v1: checksum check failed"),
+		fail(11*time.Minute, "h1", "boot set naru-node-v1: signature check failed"),
+		{Time: t0.Add(12 * time.Minute), Kind: groups.EventBootSetAdded, Host: "h1", Message: "boot set naru-node-v1"},
+		{Time: t0.Add(13 * time.Minute), Kind: groups.EventBootSetAdded, Host: "h1", Message: "boot set naru-node-v1"},
+	} {
+		require.NoError(t, e.Record(t.Context(), ev))
+	}
+	evs, err := inv.ListEvents(t.Context(), "")
+	require.NoError(t, err)
+	var got []string
+	for _, ev := range evs {
+		got = append(got, ev.Type+" "+ev.Subject)
+	}
+	require.Equal(t, []string{
+		"bootset.failed h1", "bootset.failed h2", "bootset.failed h1", "bootset.failed h1", "bootset.added h1", "bootset.added h1",
+	}, got, "the same reason on the same host within ten minutes is one event; another reason or host is its own")
+}
+
 func podMember(id, network, prefix string) groups.Member {
 	return groups.Member{ID: id, Group: "web", Network: network, PodPrefix: prefix, Phase: groups.PhasePending}
 }

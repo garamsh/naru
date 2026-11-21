@@ -19,6 +19,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
 	"github.com/garamsh/naru/orch/internal/groups"
+	"github.com/garamsh/naru/orch/internal/groups/release"
 	"github.com/garamsh/naru/orch/internal/hostclient"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/member"
@@ -63,6 +64,10 @@ func main() {
 		houseEvery  = flag.Duration("housekeeping-interval", housekeepEvery, "the pause between the leader's etcd housekeeping passes")
 		etcdQuota   = flag.Int64("etcd-quota-bytes", 0, "the etcd backend quota; 0 derives it from the size of the data disk")
 		etcdKeep    = flag.String("etcd-compaction-retention", "", "how much history etcd keeps, as a duration; empty keeps "+member.CompactionRetention)
+		bsStore     = flag.String("boot-set-store", "", "https URL or directory of the release assets the Node boot sets are added from; empty adds none")
+		bsRoot      = flag.String("boot-set-trust-root", "", "the Sigstore trusted_root.json that verifies a release; defaults to the public-good root built in")
+		bsIdentity  = flag.String("boot-set-identity", "", "the certificate identity a release is signed by; a trailing * is a prefix; required with --boot-set-store")
+		bsIssuer    = flag.String("boot-set-issuer", release.DefaultIssuer, "the OIDC issuer of the certificate a release is signed with")
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 	)
 	flag.Parse()
@@ -73,6 +78,7 @@ func main() {
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
 		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, departAfter: *departAfter, houseEvery: *houseEvery, quota: *etcdQuota, keep: *etcdKeep, metricsAddr: *metricsAddr,
+		bootSets: release.Config{Location: *bsStore, TrustRoot: *bsRoot, Identity: *bsIdentity, Issuer: *bsIssuer},
 	}); err != nil {
 		log.Error("naru-orchd stopped", "err", err.Error())
 		os.Exit(1)
@@ -91,6 +97,7 @@ type runFlags struct {
 	metricsAddr                                               string
 	join                                                      string
 	restore                                                   bool
+	bootSets                                                  release.Config
 }
 
 func run(log *slog.Logger, f runFlags) error {
@@ -121,6 +128,10 @@ func run(log *slog.Logger, f runFlags) error {
 	if err != nil {
 		return err
 	}
+	bootSets, err := newBootSets(f.bootSets)
+	if err != nil {
+		return err
+	}
 	var reg *prometheus.Registry
 	var registerer prometheus.Registerer
 	if f.metricsAddr != "" {
@@ -142,7 +153,9 @@ func run(log *slog.Logger, f runFlags) error {
 		GroupInterval: f.groupEach, NetworkInterval: f.netEach, Restore: f.restore,
 	}, orchd.Deps{
 		Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
-		NewHosts: func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP, revocations) },
+		NewHosts:        func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP, revocations) },
+		BootSets:        bootSets,
+		NewBootSetHosts: func(inv inventory.Service) groups.BootSetHosts { return hostclient.New(inv, hostHTTP, revocations) },
 		NewNetworkHosts: func(inv inventory.Service) netrec.Hosts {
 			return hostclient.NewNetHosts(inv, hostclient.DialNetAPI(hostHTTP, revocations))
 		},
@@ -160,4 +173,13 @@ func run(log *slog.Logger, f runFlags) error {
 	log.Info("naru-orchd serving", "member", f.name, "api", o.Addr())
 	<-ctx.Done()
 	return o.Stop()
+}
+
+// newBootSets is the store the boot sets are added from, or nil when none is set. A store with no
+// identity to verify its releases against is an error at start and not a store that trusts them.
+func newBootSets(c release.Config) (groups.ReleaseStore, error) {
+	if c.Location == "" {
+		return nil, nil
+	}
+	return release.New(c)
 }
