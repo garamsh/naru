@@ -187,19 +187,17 @@ func checkExposure(base, c Config, e Exposure) error {
 		}
 	}
 	for _, b := range e.Backends {
-		if !isMember(c, *n, b) {
+		if !isAttached(c, *n, b) {
 			return fmt.Errorf("%w: %s", ErrBackend, b)
 		}
 	}
 	return nil
 }
 
-// isMember reports whether a is an address of the network's membership: inside its prefix, one of
-// its remote members, or the address of a member attached here.
-func isMember(c Config, n Network, a netip.Addr) bool {
-	if n.Prefix.Contains(a) || slices.ContainsFunc(n.Remote, func(p netip.Prefix) bool { return p.Contains(a) }) {
-		return true
-	}
+// isAttached reports whether a is the address of a microVM attached to the network on this host. A
+// backend on another host is refused: the host has no source for a flow to it that both ends accept
+// (ADR 0085 item 6).
+func isAttached(c Config, n Network, a netip.Addr) bool {
 	return slices.ContainsFunc(c.Members, func(x Member) bool { return x.Network == n.Name && x.Address == a })
 }
 
