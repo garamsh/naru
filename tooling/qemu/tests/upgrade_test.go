@@ -276,8 +276,9 @@ func startUpgradeNodeNaming(t *testing.T, entry string) (*node.Node, string) {
 	require.NoError(t, r.Err, r.refusal())
 	require.NoError(t, nd.Reboot())
 	eventually(t, "the Node mounts the extension at its boot", func() bool {
-		row := extensionRows(t, admin)[ext.SHA256]
-		return row != nil && row[len(row)-1] == "/usr/lib/naru/extensions/naru-orch"
+		rows, err := extensionTable(admin)
+		row := rows[ext.SHA256]
+		return err == nil && row != nil && row[len(row)-1] == "/usr/lib/naru/extensions/naru-orch"
 	})
 	return nd, admin
 }
@@ -339,9 +340,9 @@ func TestNode_UpgradeCarriesTheExtensionAnUnpinnedEntryNamesAndOrchAnswersFromIt
 		return err == nil && s.Version == next && s.Slot == "default" && strings.Contains(s.Outcome, "promoted")
 	})
 	eventually(t, "the Node mounts the extension the bundle carried and has removed the old one", func() bool {
-		rows := extensionRows(t, admin)
+		rows, err := extensionTable(admin)
 		_, oldStored := rows[old]
-		return rows[newSHA] != nil && rows[newSHA][len(rows[newSHA])-1] == "/usr/lib/naru/extensions/naru-orch" && !oldStored
+		return err == nil && rows[newSHA] != nil && rows[newSHA][len(rows[newSHA])-1] == "/usr/lib/naru/extensions/naru-orch" && !oldStored
 	})
 	awaitOrch(t, f)
 }
@@ -366,9 +367,9 @@ func TestNode_ARefusedUpgradeThatCarriedAnExtensionRollsBackToTheOldExtensionAnd
 		return err == nil && s.Version == want && s.Slot == "default" && strings.Contains(s.Outcome, "rolled back")
 	})
 	eventually(t, "the old extension is mounted and the refused version's is gone", func() bool {
-		rows := extensionRows(t, admin)
+		rows, err := extensionTable(admin)
 		_, refusedStored := rows[refusedSHA]
-		return rows[old] != nil && rows[old][len(rows[old])-1] == "/usr/lib/naru/extensions/naru-orch" && !refusedStored
+		return err == nil && rows[old] != nil && rows[old][len(rows[old])-1] == "/usr/lib/naru/extensions/naru-orch" && !refusedStored
 	})
 }
 
@@ -390,9 +391,9 @@ func TestNode_ARefusedUpgradeThatCarriedAnExtensionLeavesOrchAnsweringFromTheOld
 		return err == nil && s.Version == want && s.Slot == "default" && strings.Contains(s.Outcome, "rolled back")
 	})
 	eventually(t, "the old extension is mounted and the refused version's is gone", func() bool {
-		rows := extensionRows(t, admin)
+		rows, err := extensionTable(admin)
 		_, refusedStored := rows[refusedSHA]
-		return rows[old] != nil && rows[old][len(rows[old])-1] == "/usr/lib/naru/extensions/naru-orch" && !refusedStored
+		return err == nil && rows[old] != nil && rows[old][len(rows[old])-1] == "/usr/lib/naru/extensions/naru-orch" && !refusedStored
 	})
 	awaitOrch(t, f)
 }
