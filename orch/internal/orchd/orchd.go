@@ -82,6 +82,10 @@ type Deps struct {
 	// NewNetworkHosts returns the network reconciler's view of the hosts. With it the leader runs
 	// the network reconciler beside the groups engine; without it no host is told its networks.
 	NewNetworkHosts func(inv inventory.Service) netrec.Hosts
+	// BootSets, with NewBootSetHosts, turns on the adding of the boot sets the groups' node
+	// versions need to the hosts that lack them. The leader runs it beside the groups engine.
+	BootSets        groups.ReleaseStore
+	NewBootSetHosts func(inv inventory.Service) groups.BootSetHosts
 	// Reconciler replaces the groups engine, for a test of the leader seam.
 	Reconciler Reconciler
 	Clock      inventory.Clock
@@ -241,6 +245,12 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	}
 	if d.NewNetworkHosts != nil {
 		reconcilers = append(reconcilers, netrec.New(netrec.Config{Hosts: d.NewNetworkHosts(svc), Networks: networkStore, Interval: c.NetworkInterval, Log: d.Log}))
+	}
+	if d.BootSets != nil && d.NewBootSetHosts != nil {
+		reconcilers = append(reconcilers, groups.NewBootSets(groups.BootSetConfig{
+			Hosts: d.NewBootSetHosts(svc), Store: groupsetcd.New(leaderKV), Releases: d.BootSets, Clock: groupClock{d.Clock},
+			Events: groupsetcd.NewEvents(leaderInv), Interval: c.GroupInterval, Log: d.Log,
+		}))
 	}
 	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
 

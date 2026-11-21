@@ -21,7 +21,10 @@ require (
 
 require go.yaml.in/yaml/v3 v3.0.5
 
-require golang.org/x/sync v0.24.0 // indirect
+require (
+	github.com/sigstore/sigstore-go v1.3.0
+	golang.org/x/sync v0.24.0 // indirect
+)
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
