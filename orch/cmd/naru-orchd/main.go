@@ -59,15 +59,18 @@ func main() {
 		hostCA      = flag.String("host-ca", "", "the authority that issued the hosts' API certificates; defaults to --ca")
 		groupEach   = flag.Duration("group-interval", groups.DefaultInterval, "the pause between the groups engine's passes")
 		netEach     = flag.Duration("network-interval", netrec.DefaultInterval, "the pause between the network reconciler's passes")
+		departAfter = flag.Duration("depart-after", member.DepartAfter, "how long the leader sees a member unreachable before it removes the member so that it rejoins empty")
+		houseEvery  = flag.Duration("housekeeping-interval", housekeepEvery, "the pause between the leader's etcd housekeeping passes")
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	slog.SetDefault(log)
 	if err := run(log, runFlags{
 		name: *name, dataDir: *dataDir, peerURL: *peerURL, clientURL: *clientURL, initial: *initial, state: *state, join: *join, restore: *restore,
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
-		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, metricsAddr: *metricsAddr,
+		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, departAfter: *departAfter, houseEvery: *houseEvery, metricsAddr: *metricsAddr,
 	}); err != nil {
 		log.Error("naru-orchd stopped", "err", err.Error())
 		os.Exit(1)
@@ -78,6 +81,7 @@ type runFlags struct {
 	name, dataDir, peerURL, clientURL, initial, state, listen string
 	cert, key, ca, sock, snapDir, revoke, recovery            string
 	snapEvery, maxAge, crlEvery, groupEach, netEach           time.Duration
+	departAfter, houseEvery                                   time.Duration
 	hostCert, hostKey, hostCA                                 string
 	snapKeep                                                  int
 	metricsAddr                                               string
@@ -136,7 +140,7 @@ func run(log *slog.Logger, f runFlags) error {
 	if err != nil {
 		return err
 	}
-	go housekeep(ctx, log, o, f.dataDir)
+	go housekeep(ctx, log, o, f.dataDir, f.departAfter, f.houseEvery)
 	if reg != nil {
 		go serveMetrics(ctx, log, f.metricsAddr, reg)
 	}

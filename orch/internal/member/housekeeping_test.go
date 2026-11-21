@@ -1,6 +1,9 @@
 package member_test
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/garamsh/naru/orch/internal/member"
@@ -116,6 +120,76 @@ func TestHousekeeper_RemovesAMemberThatStaysOutOnlyAfterTheDepartureTimeAndOnlyO
 	list, err = cl.MemberList(t.Context())
 	require.NoError(t, err)
 	assert.Len(t, list.Members, 2, "a member out for the departure time is removed")
+}
+
+// fakeCluster answers MemberList with its members and Status for those whose client URL is not in down;
+// it records the members removed.
+type fakeCluster struct {
+	member.Cluster
+	members []*etcdserverpb.Member
+	down    map[string]bool
+	removed []uint64
+}
+
+func (f *fakeCluster) MemberList(context.Context, ...clientv3.OpOption) (*clientv3.MemberListResponse, error) {
+	return &clientv3.MemberListResponse{Members: f.members}, nil
+}
+
+func (f *fakeCluster) Status(_ context.Context, endpoint string) (*clientv3.StatusResponse, error) {
+	if f.down[endpoint] {
+		return nil, errors.New("connection refused")
+	}
+	return &clientv3.StatusResponse{DbSize: 1 << 20, DbSizeInUse: 1 << 20}, nil
+}
+
+func (f *fakeCluster) MemberRemove(_ context.Context, id uint64) (*clientv3.MemberRemoveResponse, error) {
+	f.removed = append(f.removed, id)
+	return &clientv3.MemberRemoveResponse{}, nil
+}
+
+func (f *fakeCluster) AlarmList(context.Context) (*clientv3.AlarmResponse, error) {
+	return &clientv3.AlarmResponse{}, nil
+}
+
+func fakeMembers(n int, down ...int) *fakeCluster {
+	f := &fakeCluster{down: map[string]bool{}}
+	for i := range n {
+		url := fmt.Sprintf("https://10.0.0.%d:2379", i+1)
+		f.members = append(f.members, &etcdserverpb.Member{ID: uint64(i + 1), Name: fmt.Sprintf("m%d", i+1), ClientURLs: []string{url}})
+	}
+	for _, d := range down {
+		f.down[f.members[d].ClientURLs[0]] = true
+	}
+	return f
+}
+
+func TestHousekeeper_RemovesAMemberOnlyFromThreeOrMoreAndOnlyWhenNoOtherMemberIsOut(t *testing.T) {
+	tests := []struct {
+		name    string
+		members int
+		down    []int
+		removed []uint64
+	}{
+		{"one of three is out", 3, []int{2}, []uint64{3}},
+		{"one of five is out", 5, []int{4}, []uint64{5}},
+		{"one of two is out: the cluster is too small to spare it", 2, []int{1}, nil},
+		{"two of three are out", 3, []int{1, 2}, nil},
+		{"two of five are out, the quorum still holds but another member does not answer", 5, []int{3, 4}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cl := fakeMembers(tt.members, tt.down...)
+			now := time.Now()
+			h := &member.Housekeeper{Client: cl, Quota: member.MaxQuota, Departure: time.Hour, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
+			require.NoError(t, h.Pass(t.Context()))
+			require.Empty(t, cl.removed, "nothing is removed before the departure time")
+
+			now = now.Add(2 * time.Hour)
+			require.NoError(t, h.Pass(t.Context()))
+
+			assert.Equal(t, tt.removed, cl.removed)
+		})
+	}
 }
 
 func TestDiscardIfRemoved_DeletesTheMemberOnlyOfAClusterThatNoLongerHasIt(t *testing.T) {

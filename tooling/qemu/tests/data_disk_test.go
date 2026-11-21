@@ -15,8 +15,8 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
-// dataDiskGrownSize is the size the data disk is enlarged to, from the 2 GiB the harness gives it.
-const dataDiskGrownSize = 3 << 30
+// dataDiskGrownSize is the size the data disk is enlarged to, from the 8 GiB the harness gives it.
+const dataDiskGrownSize = 10 << 30
 
 // TestNode_ADataDiskGrownBetweenBootsHasItsFileSystemGrownAtTheNextBoot enlarges a Node's data disk
 // while it is off, as an operator enlarges the volume of a control host, and checks that init grows

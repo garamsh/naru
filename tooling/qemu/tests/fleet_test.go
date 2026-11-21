@@ -79,6 +79,9 @@ type fleetOpts struct {
 	// orchExtra, when set, gives control Node i's spec.orch fields besides the ones this file sets: the
 	// seam for what orch's restore adds.
 	orchExtra func(i int) map[string]any
+	// orchJoin makes control Nodes 2 and up join Node 1's orch with spec.orch.join in place of a static
+	// initial cluster, as an image does for a cluster that grows, so each runs naru-orchd with --join.
+	orchJoin bool
 }
 
 type fleet struct {
@@ -328,6 +331,11 @@ func (f *fleet) orchSpec(i int, members []int, state string, crt string) map[str
 		"initialCluster": cluster, "initialClusterState": state, "listen": "0.0.0.0:" + orchPort,
 		"sans": []string{"127.0.0.1", nodeIP(i), node.HostNICAddress}, "certificate": crt + f.orchCA, "ca": f.orchTrust,
 		"revocationPublicKey": f.revPub, "recoveryPublicKey": string(recPub), "hostCA": strings.TrimSuffix(string(hostCA), "\n") + "\n" + f.hostAuthority,
+	}
+	if f.opts.orchJoin && i > 1 {
+		delete(spec, "initialCluster")
+		spec["initialClusterState"] = "existing"
+		spec["join"] = "https://" + nodeIP(1) + ":" + orchClientPort
 	}
 	if f.opts.orchExtra != nil {
 		for k, v := range f.opts.orchExtra(i) {

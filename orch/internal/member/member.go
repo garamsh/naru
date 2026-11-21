@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -166,6 +167,7 @@ func DiscardIfRemoved(ctx context.Context, c Config) error {
 	if err := os.RemoveAll(filepath.Join(c.DataDir, "member")); err != nil {
 		return fmt.Errorf("discard the member the cluster removed: %w", err)
 	}
+	slog.Warn("discarded the member directory of a member the cluster removed; it joins afresh", "member", c.Name)
 	return nil
 }
 

@@ -61,6 +61,8 @@ type Host struct {
 	grow          growFunc
 	// growExt4 grows the ext4 file system mounted at dir to blocks blocks; growExt4FS when nil.
 	growExt4 func(dir string, blocks uint64) error
+	// Log receives what the Host reports on its own, as init's console logger; slog's default when nil.
+	Log *slog.Logger
 
 	seedMountPoint string
 	resolvConf     string
@@ -170,20 +172,24 @@ func (h *Host) MountDataDisk(d config.DataDisk) error {
 // device, so an operator who enlarged the disk has the space at the next boot. The file system is
 // intact and mounted whatever happens here, so a failure is logged and does not stop the boot.
 func (h *Host) growDataDisk(dev, mnt string) {
+	log := h.Log
+	if log == nil {
+		log = slog.Default()
+	}
 	f, err := os.Open(dev)
 	if err != nil {
-		slog.Warn("data disk not grown", "device", dev, "err", err.Error())
+		log.Warn("data disk not grown", "device", dev, "err", err.Error())
 		return
 	}
 	defer f.Close()
 	sb, err := ext4.ReadSuperblock(f)
 	if err != nil {
-		slog.Warn("data disk not grown", "device", dev, "err", err.Error())
+		log.Warn("data disk not grown", "device", dev, "err", err.Error())
 		return
 	}
 	size, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
-		slog.Warn("data disk not grown", "device", dev, "err", err.Error())
+		log.Warn("data disk not grown", "device", dev, "err", err.Error())
 		return
 	}
 	blocks, grow := sb.NewBlocks(size)
@@ -195,10 +201,10 @@ func (h *Host) growDataDisk(dev, mnt string) {
 		resize = growExt4FS
 	}
 	if err := resize(mnt, blocks); err != nil {
-		slog.Warn("data disk not grown", "device", dev, "from", sb.Blocks, "to", blocks, "err", err.Error())
+		log.Warn("data disk not grown", "device", dev, "from", sb.Blocks, "to", blocks, "err", err.Error())
 		return
 	}
-	slog.Info("data disk file system grown", "device", dev, "from", sb.Blocks, "to", blocks, "blockSize", sb.BlockSize)
+	log.Info("data disk file system grown", "device", dev, "from", sb.Blocks, "to", blocks, "blockSize", sb.BlockSize)
 }
 
 // growExt4FS is EXT4_IOC_RESIZE_FS on the mount point, the call resize2fs makes for a mounted file

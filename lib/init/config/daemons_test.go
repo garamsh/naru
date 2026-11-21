@@ -456,6 +456,28 @@ func TestParse_OrchRestoreGivesOrchdItsRestoreFlagAndNothingElseDoes(t *testing.
 	require.Error(t, err, "restore is a boolean")
 }
 
+func TestParse_OrchDepartAfterAndHousekeepingIntervalGiveOrchdItsFlagsAndAreDurations(t *testing.T) {
+	plain, err := config.Parse([]byte(daemonsDoc(t)))
+	require.NoError(t, err)
+	for _, f := range []string{"--depart-after=", "--housekeeping-interval="} {
+		assert.NotContains(t, strings.Join(service(t, plain, "naru-orchd").Args, " "), f, "orch's own defaults apply unless asked for")
+	}
+
+	doc := strings.Replace(daemonsDoc(t), "  orch:\n    peerURL", "  orch:\n    departAfter: 20s\n    housekeepingInterval: 5s\n    peerURL", 1)
+	cfg, err := config.Parse([]byte(doc))
+	require.NoError(t, err)
+	assert.Contains(t, service(t, cfg, "naru-orchd").Args, "--depart-after=20s")
+	assert.Contains(t, service(t, cfg, "naru-orchd").Args, "--housekeeping-interval=5s")
+
+	for _, bad := range []string{"departAfter: soon", "departAfter: -5s", "housekeepingInterval: 0s"} {
+		_, err = config.Parse([]byte(strings.Replace(doc, "departAfter: 20s", bad, 1)))
+		if strings.HasPrefix(bad, "housekeeping") {
+			_, err = config.Parse([]byte(strings.Replace(doc, "housekeepingInterval: 5s", bad, 1)))
+		}
+		require.Error(t, err, bad)
+	}
+}
+
 // joining is the daemons document with orch joining a running member instead of starting a cluster.
 func joining(t *testing.T, extra string) string {
 	t.Helper()

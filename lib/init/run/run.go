@@ -74,6 +74,7 @@ func Main() {
 	go reaper.Run(context.Background())
 
 	host := linux.NewHost(diskWait, reaper)
+	host.Log = log
 	extensions := extension.NewManager(extension.NewStore(extension.Dir, extensionProbeDir, extension.MaxBytes, linux.Loop{}), linux.Loop{}, config.ExtensionsRoot, version(), log)
 	cgroups := linux.NewCgroupTree(cgroupRoot)
 	services := service.NewManager(cgroups, linux.NewLauncher(reaper, con), service.SystemClock{}, log)

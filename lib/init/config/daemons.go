@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/garamsh/naru/lib/wire"
 )
@@ -97,6 +98,12 @@ type Orch struct {
 	// Restore starts the member with --restore: with an empty data directory it waits for root to
 	// PUT an etcd snapshot to /v1/restore instead of starting a new cluster.
 	Restore bool `yaml:"restore,omitempty"`
+	// DepartAfter is how long the leader sees a member unreachable before it removes it (a Go
+	// duration); orch's own 30m when empty (ADR 0088).
+	DepartAfter string `yaml:"departAfter,omitempty"`
+	// HousekeepingInterval is the pause between the leader's etcd housekeeping passes (a Go
+	// duration); orch's own 1m when empty.
+	HousekeepingInterval string `yaml:"housekeepingInterval,omitempty"`
 }
 
 // SignerSection is the signer this Node runs (spec.signer).
@@ -274,6 +281,14 @@ func (v *validation) orch(cfg NodeConfig) {
 		v.orchJoin(o)
 	} else {
 		v.orchCluster(o, name)
+	}
+	for field, d := range map[string]string{"spec.orch.departAfter": o.DepartAfter, "spec.orch.housekeepingInterval": o.HousekeepingInterval} {
+		if d == "" {
+			continue
+		}
+		if p, err := time.ParseDuration(d); err != nil || p <= 0 {
+			v.fail(field, "must be a positive duration such as 30m, got %q", d)
+		}
 	}
 	if _, err := netip.ParseAddrPort(o.listen()); err != nil {
 		v.fail("spec.orch.listen", "must be an IP address and a port, got %q", o.Listen)
@@ -587,6 +602,12 @@ func orchService(o Orch, node string, m *Metrics) (Service, []File) {
 	}
 	if o.Restore {
 		args = append(args, "--restore")
+	}
+	if o.DepartAfter != "" {
+		args = append(args, "--depart-after="+o.DepartAfter)
+	}
+	if o.HousekeepingInterval != "" {
+		args = append(args, "--housekeeping-interval="+o.HousekeepingInterval)
 	}
 	restart := []string{OrchService}
 	files := []File{
