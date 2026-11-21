@@ -34,6 +34,7 @@ func (s *Signer) Handler() http.Handler {
 	}))
 	mux.HandleFunc("POST /v1/orch", handleSigned(s, s.IssueOrch))
 	mux.HandleFunc("POST /v1/operator", handleSigned(s, s.IssueOperator))
+	mux.HandleFunc("POST /v1/exposer", handleSigned(s, s.IssueExposer))
 	mux.HandleFunc("POST /v1/revoke", handleSigned(s, s.Revoke))
 	mux.HandleFunc("POST /v1/reissue-host", handleSigned(s, s.ReissueHost))
 	mux.HandleFunc("POST /v1/retire-host", handleSigned(s, func(signed []byte) (struct{}, error) { return struct{}{}, s.RetireHost(signed) }))

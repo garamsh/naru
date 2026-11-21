@@ -391,3 +391,17 @@ func TestExposerNetwork(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, identity.RoleExposer, role)
 }
+
+func TestExposerSubject_IsTheSubjectExposerNetworkReadsBack(t *testing.T) {
+	for _, n := range []string{"lab", "prod-1", "a"} {
+		subject, ok := identity.ExposerSubject(n)
+		require.True(t, ok, n)
+		got, ok := identity.ExposerNetwork(identity.Identity{Role: identity.RoleExposer, Subject: subject})
+		assert.True(t, ok)
+		assert.Equal(t, n, got)
+	}
+	for _, n := range []string{"", "Lab", "a.b", "-a", "a/b", "exposer.lab"} {
+		_, ok := identity.ExposerSubject(n)
+		assert.False(t, ok, "%q", n)
+	}
+}

@@ -99,6 +99,15 @@ const ExposerPrefix = "exposer."
 // networkName is what a network is called: a DNS label.
 var networkName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
+// ExposerSubject returns the Subject of the RoleExposer certificate of network. ok is false when
+// network is not a DNS label.
+func ExposerSubject(network string) (subject string, ok bool) {
+	if !networkName.MatchString(network) {
+		return "", false
+	}
+	return ExposerPrefix + network, true
+}
+
 // ExposerNetwork returns the network an exposer identity serves. ok is false for any other role,
 // or for a Subject that does not name a network by a DNS label.
 func ExposerNetwork(who Identity) (network string, ok bool) {
