@@ -12,6 +12,8 @@ import (
 // mountEntry is a line of /proc/self/mountinfo.
 type mountEntry struct {
 	point, fsType, source string
+	// options are the mount's own options (nosuid, ro), which a bind of it starts from.
+	options []string
 	// superOptions are the file system's own options, among them prjquota.
 	superOptions []string
 }
@@ -24,10 +26,10 @@ func mountInfo(r io.Reader) ([]mountEntry, error) {
 		before, after, ok := strings.Cut(sc.Text(), " - ")
 		fields := strings.Fields(before)
 		rest := strings.Fields(after)
-		if !ok || len(fields) < 5 || len(rest) < 3 {
+		if !ok || len(fields) < 6 || len(rest) < 3 {
 			return nil, fmt.Errorf("mountinfo line %q has no mount point or file system", sc.Text())
 		}
-		out = append(out, mountEntry{point: unescape(fields[4]), fsType: rest[0], source: unescape(rest[1]), superOptions: strings.Split(rest[2], ",")})
+		out = append(out, mountEntry{point: unescape(fields[4]), options: strings.Split(fields[5], ","), fsType: rest[0], source: unescape(rest[1]), superOptions: strings.Split(rest[2], ",")})
 	}
 	return out, sc.Err()
 }
@@ -64,8 +66,10 @@ func holding(entries []mountEntry, path string) (mountEntry, bool) {
 	return best, found
 }
 
-func readMountInfo() ([]mountEntry, error) {
-	f, err := os.Open("/proc/self/mountinfo")
+func readMountInfo() ([]mountEntry, error) { return readMountInfoFile("/proc/self/mountinfo") }
+
+func readMountInfoFile(path string) ([]mountEntry, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}

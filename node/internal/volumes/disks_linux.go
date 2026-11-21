@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -12,6 +13,8 @@ import (
 type SysDisks struct {
 	// Sys is /sys/class/block and Dev /dev; the zero value is those.
 	Sys, Dev string
+	// MountInfo is /proc/self/mountinfo.
+	MountInfo string
 }
 
 // Find returns the one whole disk whose serial number is serial, as a virtio-blk disk gives it in
@@ -60,4 +63,47 @@ func hasSerial(dir, serial string) bool {
 		}
 	}
 	return false
+}
+
+// InUse returns an error when the Node itself uses the disk: it, or a partition of it, is mounted
+// (the boot disk's /var/lib/naru and EFI system partition are such mounts), or a device is mapped
+// over it, which the disk's holders directory lists.
+func (s SysDisks) InUse(disk Disk) error {
+	sys, mounts := s.Sys, s.MountInfo
+	if sys == "" {
+		sys = "/sys/class/block"
+	}
+	if mounts == "" {
+		mounts = "/proc/self/mountinfo"
+	}
+	name := filepath.Base(disk.Path)
+	parts := []string{name}
+	entries, err := os.ReadDir(filepath.Join(sys, name))
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), name) && e.IsDir() {
+			parts = append(parts, e.Name())
+		}
+	}
+	for _, p := range parts {
+		dir := filepath.Join(sys, name)
+		if p != name {
+			dir = filepath.Join(dir, p)
+		}
+		if held, err := os.ReadDir(filepath.Join(dir, "holders")); err == nil && len(held) > 0 {
+			return fmt.Errorf("%s is under the device %s", p, held[0].Name())
+		}
+	}
+	mounted, err := readMountInfoFile(mounts)
+	if err != nil {
+		return err
+	}
+	for _, m := range mounted {
+		if slices.Contains(parts, filepath.Base(m.source)) && strings.HasPrefix(m.source, "/dev/") {
+			return fmt.Errorf("%s is mounted at %s", m.source, m.point)
+		}
+	}
+	return nil
 }

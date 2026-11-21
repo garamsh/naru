@@ -12,7 +12,33 @@ import (
 )
 
 func (d *Driver) NodeGetCapabilities(context.Context, *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
-	return &csi.NodeGetCapabilitiesResponse{}, nil
+	return &csi.NodeGetCapabilitiesResponse{Capabilities: []*csi.NodeServiceCapability{
+		{Type: &csi.NodeServiceCapability_Rpc{Rpc: &csi.NodeServiceCapability_RPC{Type: csi.NodeServiceCapability_RPC_GET_VOLUME_STATS}}},
+	}}, nil
+}
+
+// NodeGetVolumeStats reports the bytes and inodes a local volume uses of its quota, or the size of a
+// block volume's disk.
+func (d *Driver) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
+	id, err := parseID(req.GetVolumeId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	r, err := d.load(id)
+	if errors.Is(err, errNoRecord) {
+		return nil, status.Errorf(codes.NotFound, "no volume %s", id)
+	}
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	if r.Kind == kindBlock {
+		return &csi.NodeGetVolumeStatsResponse{Usage: []*csi.VolumeUsage{{Unit: csi.VolumeUsage_BYTES, Total: r.Bytes}}}, nil
+	}
+	u, err := usage(d.dataDir(id))
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &csi.NodeGetVolumeStatsResponse{Usage: u}, nil
 }
 
 func (d *Driver) NodeGetInfo(context.Context, *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
@@ -33,17 +59,27 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	if err != nil {
 		return nil, err
 	}
-	r, err := d.load(req.GetVolumeId())
+	id, err := parseID(req.GetVolumeId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	r, err := d.load(id)
 	if errors.Is(err, errNoRecord) {
-		return nil, status.Errorf(codes.NotFound, "no volume %s", req.GetVolumeId())
+		return nil, status.Errorf(codes.NotFound, "no volume %s", id)
 	}
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	if block != (r.Kind == kindBlock) {
-		return nil, status.Errorf(codes.InvalidArgument, "the volume %s is not of the requested mode", req.GetVolumeId())
+		return nil, status.Errorf(codes.InvalidArgument, "the volume %s is not of the requested mode", id)
 	}
-	source := d.dataDir(req.GetVolumeId())
+	source := d.dataDir(id)
+	if !block {
+		// The mount may have lost prjquota since the volume was made; a Pod must not write past its size.
+		if err := d.quota.Enabled(d.cfg.StorageDir); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "the storage disk would not enforce the size: %v", err)
+		}
+	}
 	if block {
 		disk, err := d.disks.Find(r.Serial)
 		if err != nil {

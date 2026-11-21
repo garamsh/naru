@@ -77,6 +77,15 @@ func projectQuotaOf(entries []mountEntry, dir string) error {
 	return nil
 }
 
+// Free returns the bytes the file system holding dir has left for a program that is not root.
+func (XFSQuota) Free(dir string) (int64, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
 // Set gives dir the project, makes its new files take it and sets the project's hard block limit.
 func (XFSQuota) Set(dir string, project uint32, bytes int64) error {
 	f, err := os.Open(dir)
@@ -92,6 +101,14 @@ func (XFSQuota) Set(dir string, project uint32, bytes int64) error {
 	if err := ioctl(f.Fd(), fsIocSetXattr, unsafe.Pointer(&attr)); err != nil {
 		return fmt.Errorf("set the project of %s: %w", dir, err)
 	}
+	// A file system without 32-bit project ids keeps the low 16 bits and shares them between projects.
+	var back fsxattr
+	if err := ioctl(f.Fd(), fsIocGetXattr, unsafe.Pointer(&back)); err != nil {
+		return fmt.Errorf("read back the project of %s: %w", dir, err)
+	}
+	if back.projid != project {
+		return fmt.Errorf("%s keeps the project %d for %d: the file system has no 32-bit project ids", dir, back.projid, project)
+	}
 	entries, err := readMountInfo()
 	if err != nil {
 		return err
@@ -104,8 +121,11 @@ func (XFSQuota) Set(dir string, project uint32, bytes int64) error {
 	if err != nil {
 		return err
 	}
-	// The limit is in 512-byte blocks.
-	dq := diskQuota{version: fsDQuotVersion, flags: fsProjQuota, fieldmask: fsDQBHard, id: project, blkHard: uint64(bytes+511) / 512}
+	if bytes < 0 {
+		return fmt.Errorf("the limit %d is negative", bytes)
+	}
+	// The limit is in 512-byte blocks, rounded up.
+	dq := diskQuota{version: fsDQuotVersion, flags: fsProjQuota, fieldmask: fsDQBHard, id: project, blkHard: uint64(bytes)/512 + min(uint64(bytes)%512, 1)}
 	if _, _, errno := unix.Syscall6(unix.SYS_QUOTACTL, qXSetQLim, uintptr(unsafe.Pointer(dev)), uintptr(project), uintptr(unsafe.Pointer(&dq)), 0, 0); errno != 0 {
 		return fmt.Errorf("limit project %d on %s: %w", project, m.source, errno)
 	}
