@@ -74,6 +74,8 @@ What `naru-hostd` is: the service that creates, shows and destroys microVMs on a
 
 ## Open questions
 
+- **Exposures (decided, not built).** [ADR 0085](./adr/0085-a-service-of-type-loadbalancer-is-fulfilled-by-a-naru-cloud-controller-manager-that-asks-orch-for-an-address-from-a-pool-one-host-announces-it-on-the-lan-and-forwards-it-to-the-nodes-nodeports.md) (accepted) gives the host API a leased exposure endpoint: hostd holds the address on a LAN interface, announces it and forwards it by DNAT to the Nodes' NodePorts.
+
 - **The tap prefix.** The tap name prefix is not reported by mvmd.
 - **Inspecting one snapshot.** mvmd has no such call; hostd lists them all and picks one.
 
