@@ -110,6 +110,7 @@ func Ruleset(c Config) string {
 	line("\tchain forward {")
 	line("\t\ttype filter hook forward priority 0; policy drop;")
 	line("\t\tct state established,related accept")
+	exposureForward(c, line)
 	if c.TapPrefix != "" {
 		if len(members) > 0 {
 			line("\t\tiifname \"%s*\" ip saddr != @members counter drop comment \"forged source\"", c.TapPrefix)
@@ -134,6 +135,69 @@ func Ruleset(c Config) string {
 		}
 	}
 	line("\t}")
+	exposureRules(c, line)
 	line("}")
 	return b.String()
+}
+
+// exposureForward writes the rules of the forward chain that let the LAN reach the backends' NodePorts
+// of the exposures, and nothing else: one rule per forwarded port, from the LAN interface, to that
+// exposure's backends, for a flow the DNAT made.
+func exposureForward(c Config, line func(string, ...any)) {
+	if c.LAN == "" {
+		return
+	}
+	for _, e := range sortedExposures(c.Exposures) {
+		for _, p := range e.forwarded() {
+			line("\t\tiifname \"%s\" ip daddr { %s } %s dport %d ct status dnat ct state new accept comment \"%s:%d\"", c.LAN, addrList(e.Backends), p.Protocol, p.NodePort, e.Address, p.Port)
+		}
+	}
+}
+
+// exposureRules writes the chains that forward the LAN's traffic to the exposures' backends (ADR
+// 0085 item 6): a DNAT that picks a backend at random and a source NAT so the reply returns by this
+// host.
+func exposureRules(c Config, line func(string, ...any)) {
+	if c.LAN == "" {
+		return
+	}
+	var forwarded []Exposure
+	for _, e := range sortedExposures(c.Exposures) {
+		if len(e.forwarded()) > 0 {
+			forwarded = append(forwarded, e)
+		}
+	}
+	if len(forwarded) == 0 {
+		return
+	}
+	line("\tchain exposure_dnat {")
+	line("\t\ttype nat hook prerouting priority dstnat; policy accept;")
+	for _, e := range forwarded {
+		for _, p := range e.forwarded() {
+			line("\t\tiifname \"%s\" ip daddr %s %s dport %d dnat ip to numgen random mod %d map { %s } comment \"%s\"",
+				c.LAN, e.Address, p.Protocol, p.Port, len(e.Backends), backendMap(e.Backends, p.NodePort), e.Network)
+		}
+	}
+	line("\t}")
+	line("\tchain exposure_snat {")
+	line("\t\ttype nat hook postrouting priority srcnat; policy accept;")
+	line("\t\tiifname \"%s\" ct status dnat masquerade", c.LAN)
+	line("\t}")
+}
+
+func addrList(in []netip.Addr) string {
+	s := make([]string, len(in))
+	for i, a := range in {
+		s[i] = a.String()
+	}
+	return strings.Join(s, ", ")
+}
+
+// backendMap is the map a numgen picks from: number i is backend i at the NodePort.
+func backendMap(backends []netip.Addr, nodePort int) string {
+	s := make([]string, len(backends))
+	for i, a := range backends {
+		s[i] = fmt.Sprintf("%d : %s . %d", i, a, nodePort)
+	}
+	return strings.Join(s, ", ")
 }
