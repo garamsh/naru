@@ -56,7 +56,8 @@ func fill(dir string) {
 }
 
 // block writes a pattern to the first MiB of the device, reads it back and prints "block verified <n>" with
-// the length that matched.
+// the length that matched. A device that holds the pattern already is a disk a Pod wrote before, and it prints
+// "block kept <n>" and writes nothing.
 func block(device string) {
 	want := bytes.Repeat([]byte("naru-block "), 1<<16)[:1<<20]
 	f, err := os.OpenFile(device, os.O_RDWR, 0)
@@ -65,6 +66,10 @@ func block(device string) {
 		return
 	}
 	defer func() { _ = f.Close() }()
+	if kept := make([]byte, len(want)); bytes.Equal(readAt(f, kept), want) {
+		fmt.Printf("naru-entry: block kept %d\n", len(kept))
+		return
+	}
 	if _, err = f.WriteAt(want, 0); err == nil {
 		err = f.Sync()
 	}
@@ -77,4 +82,10 @@ func block(device string) {
 		return
 	}
 	fmt.Printf("naru-entry: block verified %d\n", len(got))
+}
+
+// readAt fills b from the start of f and returns what it read.
+func readAt(f *os.File, b []byte) []byte {
+	n, _ := f.ReadAt(b, 0)
+	return b[:n]
 }

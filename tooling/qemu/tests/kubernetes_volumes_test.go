@@ -107,7 +107,20 @@ func startVolumeCluster(t *testing.T, mode string) *node.KubeCluster {
 	return c
 }
 
-func TestNode_KubernetesALocalVolumeBindsAPodWritesItAndANewPodFindsTheDataAfterThePodIsDeleted(t *testing.T) {
+// pinned runs the Pod on the Node named nd.
+func pinned(pod, nd string) string {
+	return strings.Replace(pod, "spec:\n", "spec:\n  nodeSelector: {kubernetes.io/hostname: "+nd+"}\n", 1)
+}
+
+// otherNode is the one of the two Nodes that is not nd.
+func otherNode(nd string) string {
+	if nd == "node-1" {
+		return "node-2"
+	}
+	return "node-1"
+}
+
+func TestNode_KubernetesALocalVolumeBindsAPodWritesItAndANewPodOnTheSameNodeFindsTheDataWhileOneOnTheOtherNodeCannotStart(t *testing.T) {
 	c := startVolumeCluster(t, node.VolumeDiskStorage)
 	class := kubectlEventually(t, c, "naru-local is the default class", "get", "storageclass", "naru-local", "-o", `jsonpath={.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}`)
 	require.Equal(t, "true", class)
@@ -117,14 +130,18 @@ func TestNode_KubernetesALocalVolumeBindsAPodWritesItAndANewPodFindsTheDataAfter
 	apply(t, c, fmt.Sprintf(volumePod("writer", "data", false, "volume", "/data", "naru-was-here"), c.Image))
 	logEventually(t, c, "writer", "naru-entry: volume wrote naru-was-here")
 	assert.Equal(t, "naru-local", kubectlEventually(t, c, "the claim is served by the default class", "get", "pvc", "data", "-o", "jsonpath={.spec.storageClassName}"))
-	kubectlEventually(t, c, "the claim is bound", "get", "pvc", "data", "-o", "jsonpath={.status.phase}")
 	phase, _ := kubectl(t, c, "", "get", "pvc", "data", "-o", "jsonpath={.status.phase}")
 	require.Equal(t, "Bound", phase)
+	home := kubectlEventually(t, c, "the Node the writer ran on", "get", "pod", "writer", "-o", "jsonpath={.spec.nodeName}")
 
 	out, err := kubectl(t, c, "", "delete", "pod", "writer", "--wait")
 	require.NoError(t, err, out)
-	apply(t, c, fmt.Sprintf(volumePod("reader", "data", false, "volume", "/data", "not-written"), c.Image))
+	// The volume is a directory of one Node's disk: a Pod pinned to the other Node never starts.
+	apply(t, c, fmt.Sprintf(pinned(volumePod("elsewhere", "data", false, "volume", "/data", "not-written"), otherNode(home)), c.Image))
+	apply(t, c, fmt.Sprintf(pinned(volumePod("reader", "data", false, "volume", "/data", "not-written"), home), c.Image))
 	logEventually(t, c, "reader", "naru-entry: volume read naru-was-here")
+	phase, _ = kubectl(t, c, "", "get", "pod", "elsewhere", "-o", "jsonpath={.status.phase}")
+	assert.Equal(t, "Pending", phase, "the control reader on %s runs; the one on %s does not", home, otherNode(home))
 }
 
 func TestNode_KubernetesALocalVolumeStopsAPodThatFillsItWithTheQuotaError(t *testing.T) {
@@ -139,12 +156,13 @@ func TestNode_KubernetesALocalVolumeStopsAPodThatFillsItWithTheQuotaError(t *tes
 	assert.LessOrEqual(t, mib, 8, "no more than the 8 MiB the claim asked for was written")
 }
 
-func TestNode_KubernetesABlockVolumeIsADiskThePodWritesAndKeepsAfterItsClaimIsDeleted(t *testing.T) {
+func TestNode_KubernetesABlockVolumeIsADiskThePodWritesAndKeepsAfterItsClaimIsReleasedAndFreedByAnOperator(t *testing.T) {
 	c := startVolumeCluster(t, node.VolumeDiskBlock)
 	apply(t, c, claim("disk", "naru-block", "Block", "512Mi"))
 	apply(t, c, fmt.Sprintf(volumePod("blocker", "disk", true, "block", "/dev/vol"), c.Image))
 	logEventually(t, c, "blocker", "naru-entry: block verified 1048576")
 	pv := kubectlEventually(t, c, "the claim is bound to a volume", "get", "pvc", "disk", "-o", "jsonpath={.spec.volumeName}")
+	home := kubectlEventually(t, c, "the Node the blocker ran on", "get", "pod", "blocker", "-o", "jsonpath={.spec.nodeName}")
 
 	// naru-block retains: deleting the claim leaves the volume, and the disk is never wiped.
 	out, err := kubectl(t, c, "", "delete", "pod", "blocker", "--wait")
@@ -155,4 +173,18 @@ func TestNode_KubernetesABlockVolumeIsADiskThePodWritesAndKeepsAfterItsClaimIsDe
 		phase, _ := kubectl(t, c, "", "get", "pv", pv, "-o", "jsonpath={.status.phase}")
 		return phase == "Released"
 	}, kubeTimeout, 3*time.Second, "the volume is Released, not deleted")
+
+	// The operator frees the disk by the standard release: set the volume's reclaim policy to Delete.
+	// The driver forgets the claim and wipes nothing (ADR 0090).
+	out, err = kubectl(t, c, "", "patch", "pv", pv, "-p", `{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}`)
+	require.NoError(t, err, out)
+	require.Eventually(t, func() bool {
+		_, err := kubectl(t, c, "", "get", "pv", pv)
+		return err != nil
+	}, kubeTimeout, 3*time.Second, "the released volume is deleted")
+
+	// A new claim gets the same disk, and what the first Pod wrote is still on it.
+	apply(t, c, claim("disk2", "naru-block", "Block", "512Mi"))
+	apply(t, c, fmt.Sprintf(pinned(volumePod("again", "disk2", true, "block", "/dev/vol"), home), c.Image))
+	logEventually(t, c, "again", "naru-entry: block kept 1048576")
 }
