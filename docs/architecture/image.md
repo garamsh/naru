@@ -169,6 +169,7 @@ Claims about garamsh/mvmd hold at commit `b1a60cd649673a6db5fa72ca8cc23f088fd836
 
 ## Open questions
 
+- **Cluster add-ons.** [ADR 0083](./adr/0083-a-control-plane-node-applies-pinned-cluster-add-ons-from-its-image-with-an-init-service-and-every-node-imports-their-images-so-coredns-and-a-local-volume-provisioner-run-by-default.md) decides that the image carries CoreDNS, a local-volume provisioner and the manifests that run them, pinned by digest; none is built yet, and the packages, the initramfs lists and this file follow in the pull requests that build them (garamsh/naru#264).
 - **Installer.** How an image reaches a Node's disk is not decided.
 - **A/B upgrade.** The disk, the bundle and the boot behaviour are decided ([ADR 0020](./adr/0020-a-node-boots-one-kernel-file-per-slot-of-the-esp-with-the-initramfs-embedded-and-a-trial-slot-is-reached-once-by-bootnext.md)), and so are the writer of the trial slot and of the boot entry, the health decision, the promotion and how a bundle reaches a Node ([ADR 0025](./adr/0025-an-upgrade-is-a-bundle-posted-to-v1-upgrade-which-init-writes-to-the-trial-slot-and-the-trial-boot-promotes-when-healthy-and-rolls-back-when-not.md)). What is not decided: a health check that a service defines, an operator's confirmation before promotion, and an upgrade of the ESP's other files.
 - **Signing.** How an image, a kernel and a configuration are signed and verified is not decided.
