@@ -61,6 +61,8 @@ func main() {
 		netEach     = flag.Duration("network-interval", netrec.DefaultInterval, "the pause between the network reconciler's passes")
 		departAfter = flag.Duration("depart-after", member.DepartAfter, "how long the leader sees a member unreachable before it removes the member so that it rejoins empty")
 		houseEvery  = flag.Duration("housekeeping-interval", housekeepEvery, "the pause between the leader's etcd housekeeping passes")
+		etcdQuota   = flag.Int64("etcd-quota-bytes", 0, "the etcd backend quota; 0 derives it from the size of the data disk")
+		etcdKeep    = flag.String("etcd-compaction-retention", "", "how much history etcd keeps, as a duration; empty keeps "+member.CompactionRetention)
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 	)
 	flag.Parse()
@@ -70,7 +72,7 @@ func main() {
 		name: *name, dataDir: *dataDir, peerURL: *peerURL, clientURL: *clientURL, initial: *initial, state: *state, join: *join, restore: *restore,
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
-		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, departAfter: *departAfter, houseEvery: *houseEvery, metricsAddr: *metricsAddr,
+		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, departAfter: *departAfter, houseEvery: *houseEvery, quota: *etcdQuota, keep: *etcdKeep, metricsAddr: *metricsAddr,
 	}); err != nil {
 		log.Error("naru-orchd stopped", "err", err.Error())
 		os.Exit(1)
@@ -82,6 +84,8 @@ type runFlags struct {
 	cert, key, ca, sock, snapDir, revoke, recovery            string
 	snapEvery, maxAge, crlEvery, groupEach, netEach           time.Duration
 	departAfter, houseEvery                                   time.Duration
+	quota                                                     int64
+	keep                                                      string
 	hostCert, hostKey, hostCA                                 string
 	snapKeep                                                  int
 	metricsAddr                                               string
@@ -123,11 +127,17 @@ func run(log *slog.Logger, f runFlags) error {
 		reg = newRegistry(f.name)
 		registerer = reg
 	}
+	mcfg := member.Config{
+		Name: f.name, DataDir: f.dataDir, PeerURL: f.peerURL, ClientURL: f.clientURL,
+		InitialCluster: f.initial, State: f.state, Join: f.join, Cert: f.cert, Key: f.key, CA: f.ca, Log: log,
+		QuotaBytes: f.quota, CompactionRetention: f.keep,
+	}
+	quota, err := mcfg.BackendQuota()
+	if err != nil {
+		return err
+	}
 	o, err := orchd.Start(ctx, orchd.Config{
-		Config: member.Config{
-			Name: f.name, DataDir: f.dataDir, PeerURL: f.peerURL, ClientURL: f.clientURL,
-			InitialCluster: f.initial, State: f.state, Join: f.join, Cert: f.cert, Key: f.key, CA: f.ca,
-		},
+		Config: mcfg,
 		Listen: f.listen, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
 		GroupInterval: f.groupEach, NetworkInterval: f.netEach, Restore: f.restore,
 	}, orchd.Deps{
@@ -140,7 +150,7 @@ func run(log *slog.Logger, f runFlags) error {
 	if err != nil {
 		return err
 	}
-	go housekeep(ctx, log, o, f.dataDir, f.departAfter, f.houseEvery)
+	go housekeep(ctx, log, o, quota, f.departAfter, f.houseEvery)
 	if reg != nil {
 		go serveMetrics(ctx, log, f.metricsAddr, reg)
 	}

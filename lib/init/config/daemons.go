@@ -104,6 +104,11 @@ type Orch struct {
 	// HousekeepingInterval is the pause between the leader's etcd housekeeping passes (a Go
 	// duration); orch's own 1m when empty.
 	HousekeepingInterval string `yaml:"housekeepingInterval,omitempty"`
+	// EtcdQuotaBytes is the etcd backend quota in bytes, in place of the share of the data disk orch
+	// derives; EtcdCompactionRetention is how much history etcd keeps (a Go duration), 10m when
+	// empty. Both exist for tests (ADR 0088).
+	EtcdQuotaBytes          int64  `yaml:"etcdQuotaBytes,omitempty"`
+	EtcdCompactionRetention string `yaml:"etcdCompactionRetention,omitempty"`
 }
 
 // SignerSection is the signer this Node runs (spec.signer).
@@ -282,13 +287,16 @@ func (v *validation) orch(cfg NodeConfig) {
 	} else {
 		v.orchCluster(o, name)
 	}
-	for field, d := range map[string]string{"spec.orch.departAfter": o.DepartAfter, "spec.orch.housekeepingInterval": o.HousekeepingInterval} {
-		if d == "" {
+	for _, d := range []struct{ field, value string }{{"spec.orch.departAfter", o.DepartAfter}, {"spec.orch.housekeepingInterval", o.HousekeepingInterval}, {"spec.orch.etcdCompactionRetention", o.EtcdCompactionRetention}} {
+		if d.value == "" {
 			continue
 		}
-		if p, err := time.ParseDuration(d); err != nil || p <= 0 {
-			v.fail(field, "must be a positive duration such as 30m, got %q", d)
+		if p, err := time.ParseDuration(d.value); err != nil || p <= 0 {
+			v.fail(d.field, "must be a positive duration such as 30m, got %q", d.value)
 		}
+	}
+	if o.EtcdQuotaBytes < 0 {
+		v.fail("spec.orch.etcdQuotaBytes", "must not be negative, got %d", o.EtcdQuotaBytes)
 	}
 	if _, err := netip.ParseAddrPort(o.listen()); err != nil {
 		v.fail("spec.orch.listen", "must be an IP address and a port, got %q", o.Listen)
@@ -608,6 +616,12 @@ func orchService(o Orch, node string, m *Metrics) (Service, []File) {
 	}
 	if o.HousekeepingInterval != "" {
 		args = append(args, "--housekeeping-interval="+o.HousekeepingInterval)
+	}
+	if o.EtcdQuotaBytes > 0 {
+		args = append(args, "--etcd-quota-bytes="+strconv.FormatInt(o.EtcdQuotaBytes, 10))
+	}
+	if o.EtcdCompactionRetention != "" {
+		args = append(args, "--etcd-compaction-retention="+o.EtcdCompactionRetention)
 	}
 	restart := []string{OrchService}
 	files := []File{

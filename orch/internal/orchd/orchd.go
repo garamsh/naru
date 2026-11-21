@@ -100,12 +100,14 @@ type Orchd struct {
 	name    string
 	addr    string
 	leading atomic.Bool
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	log     *slog.Logger
-	cfg     Config
-	deps    Deps
-	runCtx  context.Context
+	// term is the context of the current leadership, which carries its fencing token.
+	term   atomic.Pointer[context.Context]
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	log    *slog.Logger
+	cfg    Config
+	deps   Deps
+	runCtx context.Context
 	// handler is the API's current handler: the one that waits for a restore, then the full one.
 	handler   atomic.Pointer[handlerBox]
 	restoring atomic.Bool
@@ -300,6 +302,7 @@ func dropStoredConfigs(ctx context.Context, d Deps, store inventory.Store) {
 func (o *Orchd) lead(d Deps, reconcilers []Reconciler, onLead func(context.Context)) func(context.Context) {
 	return func(ctx context.Context) {
 		o.leading.Store(true)
+		o.term.Store(&ctx)
 		defer o.leading.Store(false)
 		d.Log.Info("leading", "member", o.name)
 		onLead(ctx)
@@ -362,6 +365,18 @@ func (o *Orchd) etcdMember() *member.Member {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.member
+}
+
+// Term returns the context of the leadership this member holds, which ends with it and carries its
+// fencing token, or false while the member does not lead.
+func (o *Orchd) Term() (context.Context, bool) {
+	if !o.leading.Load() {
+		return nil, false
+	}
+	if t := o.term.Load(); t != nil {
+		return *t, true
+	}
+	return nil, false
 }
 
 // IsLeader reports whether this member currently leads.

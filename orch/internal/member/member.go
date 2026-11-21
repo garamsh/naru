@@ -2,6 +2,7 @@
 package member
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -17,7 +18,6 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 )
@@ -46,6 +46,12 @@ type Config struct {
 	Join string
 	// Cert, Key and CA are orch's own pair and the authority etcd trusts on both ports.
 	Cert, Key, CA string
+	// QuotaBytes overrides the backend quota, which is otherwise derived from the data disk.
+	QuotaBytes int64
+	// CompactionRetention overrides CompactionRetention (a duration such as "10m").
+	CompactionRetention string
+	// Log receives what Start decides about the data directory; nil discards it.
+	Log *slog.Logger
 }
 
 // Member is a running etcd member.
@@ -70,9 +76,13 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 	if c.Join != "" && c.State != StateExisting {
 		return nil, fmt.Errorf("--join needs the cluster state %q", StateExisting)
 	}
-	if c.Join != "" && HasData(c.DataDir) {
-		if err := DiscardIfRemoved(ctx, c); err != nil {
+	if HasData(c.DataDir) {
+		via, err := DiscardIfRemoved(ctx, c, cmp.Or(c.Log, slog.New(slog.DiscardHandler)))
+		if err != nil {
 			return nil, err
+		}
+		if via != "" {
+			c.Join, c.State = via, StateExisting
 		}
 	}
 	if c.Join != "" && !HasData(c.DataDir) {
@@ -82,7 +92,7 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 		}
 		c.InitialCluster = initial
 	}
-	tlsInfo := transport.TLSInfo{CertFile: c.Cert, KeyFile: c.Key, TrustedCAFile: c.CA, ClientCertAuth: true}
+	tlsInfo := peerTLS(c)
 
 	cfg := embed.NewConfig()
 	cfg.Name = c.Name
@@ -97,14 +107,14 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 	cfg.ClientTLSInfo = tlsInfo
 	cfg.LogLevel = "error"
 	cfg.AutoCompactionMode = embed.CompactorModePeriodic
-	cfg.AutoCompactionRetention = CompactionRetention
+	cfg.AutoCompactionRetention = cmp.Or(c.CompactionRetention, CompactionRetention)
 	cfg.MaxWalFiles = maxFiles
 	cfg.MaxSnapFiles = maxFiles
-	disk, err := DiskBytes(c.DataDir)
+	quota, err := c.BackendQuota()
 	if err != nil {
-		return nil, fmt.Errorf("size of the disk holding %s: %w", c.DataDir, err)
+		return nil, err
 	}
-	cfg.QuotaBackendBytes = Quota(disk)
+	cfg.QuotaBackendBytes = quota
 
 	e, err := embed.StartEtcd(cfg)
 	if err != nil {
@@ -138,37 +148,6 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 func HasData(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, "member"))
 	return err == nil
-}
-
-// DiscardIfRemoved deletes the member in c.DataDir when the cluster the member at c.Join belongs to
-// no longer has it, which is how a member whose disk filled up rejoins: the leader removed it
-// (Housekeeper), and the directory, which can no longer be opened, is of no use to a cluster that
-// has forgotten it. The next step joins afresh and syncs from the peers. A cluster that cannot be
-// asked leaves the directory alone.
-func DiscardIfRemoved(ctx context.Context, c Config) error {
-	conf, err := clientTLS(c)
-	if err != nil {
-		return err
-	}
-	cl, err := clientv3.New(clientv3.Config{Endpoints: []string{c.Join}, DialTimeout: 10 * time.Second, TLS: conf})
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = cl.Close() }()
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	list, err := cl.MemberList(ctx)
-	if err != nil {
-		return nil
-	}
-	if slices.ContainsFunc(list.Members, func(m *etcdserverpb.Member) bool { return slices.Contains(m.PeerURLs, c.PeerURL) }) {
-		return nil
-	}
-	if err := os.RemoveAll(filepath.Join(c.DataDir, "member")); err != nil {
-		return fmt.Errorf("discard the member the cluster removed: %w", err)
-	}
-	slog.Warn("discarded the member directory of a member the cluster removed; it joins afresh", "member", c.Name)
-	return nil
 }
 
 // join adds this member to the cluster the member at c.Join belongs to, unless an earlier attempt

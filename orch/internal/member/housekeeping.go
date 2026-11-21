@@ -2,6 +2,7 @@ package member
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -23,12 +24,17 @@ const (
 	// QuotaShare is the share of the data disk the database may take: one eighth, so that a
 	// defragmentation, which writes a second copy, and the WAL fit beside it.
 	QuotaShare = 8
-	// MinQuota and MaxQuota bound the quota derived from the disk. etcd advises at most 8 GiB; 2 GiB is
-	// its own default and the most orch's inventory has any need of.
+	// MinQuota is the quota below which orch's inventory of a small fleet does not fit. MaxQuota bounds
+	// the quota derived from the disk: etcd advises at most 8 GiB; 2 GiB is its own default and the
+	// most orch's inventory has any need of.
 	MinQuota = 128 << 20
 	MaxQuota = 2 << 30
-	// MinDefragBytes is the database size under which a defragmentation is not worth its pause.
-	MinDefragBytes = 32 << 20
+	// DefragShare is the share of the quota under which a database is not worth the pause of a
+	// defragmentation: one eighth.
+	DefragShare = 8
+	// DisarmShare is the share of the quota a database must be under for its no-space alarm to be
+	// cleared: half, so that the alarm does not return at the next write.
+	DisarmShare = 2
 	// DepartAfter is how long the leader sees a member unreachable before it removes the member, so
 	// that it rejoins with an empty data directory (ADR 0088).
 	DepartAfter = 30 * time.Minute
@@ -40,14 +46,36 @@ const (
 	defragTimeout = 5 * time.Minute
 )
 
-// Quota is the backend quota for a data disk of diskBytes: a share of the disk, within MinQuota and
-// MaxQuota.
-func Quota(diskBytes uint64) int64 {
-	return int64(min(max(diskBytes/QuotaShare, MinQuota), MaxQuota))
+// MinDisk is the smallest data disk a member runs on: the one at which the share is MinQuota. A
+// smaller disk cannot hold a database, the copy a defragmentation writes and the WAL, so the member
+// refuses to start on it.
+const MinDisk = MinQuota * QuotaShare
+
+// Quota is the backend quota for a data disk of diskBytes: a share of the disk, at most MaxQuota. A
+// disk under MinDisk is refused.
+func Quota(diskBytes uint64) (int64, error) {
+	if diskBytes < MinDisk {
+		return 0, fmt.Errorf("the data disk is %d bytes; etcd needs at least %d to keep a database, the copy a defragmentation writes and the WAL", diskBytes, uint64(MinDisk))
+	}
+	return int64(min(diskBytes/QuotaShare, MaxQuota)), nil
 }
 
-// DiskBytes is the size of the file system that holds path, or of the nearest directory above it
-// that exists, since etcd makes its data directory itself.
+// BackendQuota is the quota the member runs with: QuotaBytes when it is set, else a share of the
+// size of the disk that holds the data directory.
+func (c Config) BackendQuota() (int64, error) {
+	if c.QuotaBytes > 0 {
+		return c.QuotaBytes, nil
+	}
+	disk, err := DiskBytes(c.DataDir)
+	if err != nil {
+		return 0, fmt.Errorf("size of the disk holding %s: %w", c.DataDir, err)
+	}
+	return Quota(disk)
+}
+
+// DiskBytes is the size of the file system that holds path (its total size, not what is free, which
+// shrinks as etcd fills it), or of the nearest directory above it that exists, since etcd makes its
+// data directory itself.
 func DiskBytes(path string) (uint64, error) {
 	for {
 		var st syscall.Statfs_t
@@ -64,9 +92,9 @@ func DiskBytes(path string) (uint64, error) {
 }
 
 // ShouldDefrag reports whether a database of dbSize bytes of which inUse hold data is worth
-// defragmenting: it is not small and at least half of it is free pages.
-func ShouldDefrag(dbSize, inUse int64) bool {
-	return dbSize >= MinDefragBytes && (dbSize-inUse)*2 >= dbSize
+// defragmenting under quota: it is at least a DefragShare of it and at least half of it is free pages.
+func ShouldDefrag(quota, dbSize, inUse int64) bool {
+	return dbSize >= quota/DefragShare && (dbSize-inUse)*2 >= dbSize
 }
 
 // Removable reports why a member may not be removed, or nil when it may: the cluster has at least
@@ -98,6 +126,9 @@ type Housekeeper struct {
 	Departure time.Duration
 	Now       func() time.Time
 	Log       *slog.Logger
+	// Fence, when set, is called just before a removal and fails it when the pass no longer leads
+	// (ADR 0071), so a leader that paused past the end of its term removes nothing.
+	Fence func(ctx context.Context) error
 
 	// since is when each unreachable member was first seen so, by ID. It starts empty on every
 	// leader, which only delays a removal.
@@ -136,15 +167,20 @@ func (h *Housekeeper) Pass(ctx context.Context) error {
 	}
 	h.note(list.Members, down)
 
-	if len(down) == 0 {
-		for _, p := range up {
-			if err := h.defrag(ctx, p); err != nil {
-				return err
-			}
+	// A defragmentation blocks its member, so it runs only while every member answers. Clearing an
+	// alarm does not, and is the one thing a cluster with a member out needs from a member that
+	// answers.
+	var errs []error
+	for _, p := range up {
+		if len(down) == 0 {
+			errs = append(errs, h.defrag(ctx, p))
 		}
-		return nil
+		errs = append(errs, h.disarm(ctx, p))
 	}
-	return h.depart(ctx, list.Members, down)
+	if len(down) > 0 {
+		errs = append(errs, h.depart(ctx, list.Members, down))
+	}
+	return errors.Join(errs...)
 }
 
 // Forget drops what the housekeeper has seen of the members, for a member that no longer leads: a
@@ -162,6 +198,7 @@ func (h *Housekeeper) note(all, down []*etcdserverpb.Member) {
 		gone[m.ID] = true
 		if _, ok := h.since[m.ID]; !ok {
 			h.since[m.ID] = now
+			h.Log.Info("a member does not answer", "member", m.Name)
 		}
 	}
 	for _, m := range all {
@@ -172,31 +209,33 @@ func (h *Housekeeper) note(all, down []*etcdserverpb.Member) {
 }
 
 func (h *Housekeeper) defrag(ctx context.Context, p probe) error {
-	if ShouldDefrag(p.status.DbSize, p.status.DbSizeInUse) {
-		dctx, cancel := context.WithTimeout(ctx, defragTimeout)
-		_, err := h.Client.Defragment(dctx, p.member.ClientURLs[0])
-		cancel()
-		if err != nil {
-			return fmt.Errorf("defragment %s: %w", p.member.Name, err)
-		}
-		h.Log.Info("defragmented a member", "member", p.member.Name, "dbBytes", p.status.DbSize, "inUseBytes", p.status.DbSizeInUse)
+	if !ShouldDefrag(h.Quota, p.status.DbSize, p.status.DbSizeInUse) {
+		return nil
 	}
-	return h.disarm(ctx, p)
+	dctx, cancel := context.WithTimeout(ctx, defragTimeout)
+	defer cancel()
+	if _, err := h.Client.Defragment(dctx, p.member.ClientURLs[0]); err != nil {
+		return fmt.Errorf("defragment %s: %w", p.member.Name, err)
+	}
+	h.Log.Info("defragmented a member", "member", p.member.Name, "dbBytes", p.status.DbSize, "inUseBytes", p.status.DbSizeInUse)
+	return nil
 }
 
-// disarm clears the no-space alarm raised by a member whose database is now below the quota. etcd
-// keeps the whole cluster read-only until someone does.
+// disarm clears the no-space alarm raised by a member whose database, as it is now, is under a
+// DisarmShare of the quota. etcd keeps the whole cluster read-only until someone does.
 func (h *Housekeeper) disarm(ctx context.Context, p probe) error {
-	st, err := h.Client.Status(ctx, p.member.ClientURLs[0])
-	if err != nil || st.DbSize >= h.Quota {
-		return nil
-	}
 	alarms, err := h.Client.AlarmList(ctx)
 	if err != nil {
-		return nil
+		return fmt.Errorf("list the alarms: %w", err)
 	}
 	for _, a := range alarms.Alarms {
 		if a.Alarm != etcdserverpb.AlarmType_NOSPACE || a.MemberID != p.member.ID {
+			continue
+		}
+		pctx, cancel := context.WithTimeout(ctx, probeTimeout)
+		st, err := h.Client.Status(pctx, p.member.ClientURLs[0])
+		cancel()
+		if err != nil || st.DbSize >= h.Quota/DisarmShare {
 			continue
 		}
 		if _, err := h.Client.AlarmDisarm(ctx, (*clientv3.AlarmMember)(a)); err != nil {
@@ -222,6 +261,11 @@ func (h *Housekeeper) depart(ctx context.Context, all, down []*etcdserverpb.Memb
 		if err := Removable(len(all), len(down) == 1); err != nil {
 			h.Log.Warn("a member stays out and is not removed", "member", m.Name, "reason", err.Error())
 			return nil
+		}
+		if h.Fence != nil {
+			if err := h.Fence(ctx); err != nil {
+				return fmt.Errorf("remove %s: %w", m.Name, err)
+			}
 		}
 		if _, err := h.Client.MemberRemove(ctx, m.ID); err != nil {
 			return fmt.Errorf("remove %s: %w", m.Name, err)

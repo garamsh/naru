@@ -20,22 +20,37 @@ import (
 	"github.com/garamsh/naru/orch/internal/orchtest"
 )
 
-func TestQuota_IsAShareOfTheDiskWithinItsBounds(t *testing.T) {
+func TestQuota_IsAShareOfTheDiskWithinItsBoundsAndRefusesADiskTooSmallForIt(t *testing.T) {
 	tests := []struct {
 		name string
 		disk uint64
 		want int64
+		fail bool
 	}{
-		{"a disk of 8 GiB gives an eighth", 8 << 30, 1 << 30},
-		{"aurora's 2 GiB disk gives 256 MiB, below etcd's 2 GiB default that filled it", 2 << 30, 256 << 20},
-		{"a small disk is held to the floor", 100 << 20, member.MinQuota},
-		{"a huge disk is held to the ceiling", 1 << 40, member.MaxQuota},
+		{"a disk of 8 GiB gives an eighth", 8 << 30, 1 << 30, false},
+		{"a disk of 2 GiB gives 256 MiB, below etcd's 2 GiB default that filled it", 2 << 30, 256 << 20, false},
+		{"the smallest disk gives the smallest quota", member.MinDisk, member.MinQuota, false},
+		{"a huge disk is held to the ceiling", 1 << 40, member.MaxQuota, false},
+		{"a disk under the smallest is refused", member.MinDisk - 1, 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, member.Quota(tt.disk))
+			got, err := member.Quota(tt.disk)
+			if tt.fail {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestBackendQuota_TakesTheOverrideBeforeTheDisk(t *testing.T) {
+	got, err := member.Config{DataDir: t.TempDir(), QuotaBytes: 5 << 20}.BackendQuota()
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(5<<20), got, "an override below the disk-derived floor is used as it is")
 }
 
 func TestDiskBytes_MeasuresTheNearestDirectoryThatExists(t *testing.T) {
@@ -52,6 +67,7 @@ func TestDiskBytes_MeasuresTheNearestDirectoryThatExists(t *testing.T) {
 
 func TestShouldDefrag(t *testing.T) {
 	const mib = 1 << 20
+	const quota = 512 * mib // a share of 64 MiB
 	tests := []struct {
 		name        string
 		size, inUse int64
@@ -59,12 +75,12 @@ func TestShouldDefrag(t *testing.T) {
 	}{
 		{"a large database that is mostly free pages", 400 * mib, 20 * mib, true},
 		{"a large database that holds its data", 400 * mib, 300 * mib, false},
-		{"a small database that is mostly free pages", 8 * mib, 1 * mib, false},
-		{"a database that is exactly half free", 64 * mib, 32 * mib, true},
+		{"a database under a share of the quota", 63 * mib, 1 * mib, false},
+		{"a database at a share of the quota and exactly half free", 64 * mib, 32 * mib, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, member.ShouldDefrag(tt.size, tt.inUse))
+			assert.Equal(t, tt.want, member.ShouldDefrag(quota, tt.size, tt.inUse))
 		})
 	}
 }
@@ -89,10 +105,11 @@ func TestHousekeeper_DefragmentsADatabaseCompactionLeftMostlyFree(t *testing.T) 
 	require.NoError(t, err)
 	st, err := cl.Status(t.Context(), cl.Endpoints()[0])
 	require.NoError(t, err)
-	require.Greater(t, st.DbSize, int64(member.MinDefragBytes), "the history made a database worth defragmenting")
+	const quota = 256 << 20
+	require.Greater(t, st.DbSize, int64(quota/member.DefragShare), "the history made a database worth defragmenting")
 	require.Less(t, st.DbSizeInUse, st.DbSize/2, "compaction left most of it free")
 
-	h := &member.Housekeeper{Client: cl, Quota: member.MaxQuota, Now: time.Now, Log: slog.New(slog.DiscardHandler)}
+	h := &member.Housekeeper{Client: cl, Quota: quota, Now: time.Now, Log: slog.New(slog.DiscardHandler)}
 	require.NoError(t, h.Pass(t.Context()))
 
 	after, err := cl.Status(t.Context(), cl.Endpoints()[0])
@@ -123,12 +140,19 @@ func TestHousekeeper_RemovesAMemberThatStaysOutOnlyAfterTheDepartureTimeAndOnlyO
 }
 
 // fakeCluster answers MemberList with its members and Status for those whose client URL is not in down;
-// it records the members removed.
+// it records the members removed, defragmented and disarmed.
 type fakeCluster struct {
 	member.Cluster
 	members []*etcdserverpb.Member
 	down    map[string]bool
-	removed []uint64
+	// dbSize and inUse are what Status reports; 1 MiB each when zero.
+	dbSize, inUse int64
+	alarms        []*etcdserverpb.AlarmMember
+	// failDefrag names the endpoints whose defragmentation fails.
+	failDefrag map[string]bool
+	removed    []uint64
+	defragged  []string
+	disarmed   []uint64
 }
 
 func (f *fakeCluster) MemberList(context.Context, ...clientv3.OpOption) (*clientv3.MemberListResponse, error) {
@@ -139,7 +163,11 @@ func (f *fakeCluster) Status(_ context.Context, endpoint string) (*clientv3.Stat
 	if f.down[endpoint] {
 		return nil, errors.New("connection refused")
 	}
-	return &clientv3.StatusResponse{DbSize: 1 << 20, DbSizeInUse: 1 << 20}, nil
+	size, inUse := f.dbSize, f.inUse
+	if size == 0 {
+		size, inUse = 1<<20, 1<<20
+	}
+	return &clientv3.StatusResponse{DbSize: size, DbSizeInUse: inUse}, nil
 }
 
 func (f *fakeCluster) MemberRemove(_ context.Context, id uint64) (*clientv3.MemberRemoveResponse, error) {
@@ -147,7 +175,20 @@ func (f *fakeCluster) MemberRemove(_ context.Context, id uint64) (*clientv3.Memb
 	return &clientv3.MemberRemoveResponse{}, nil
 }
 
+func (f *fakeCluster) Defragment(_ context.Context, endpoint string) (*clientv3.DefragmentResponse, error) {
+	f.defragged = append(f.defragged, endpoint)
+	if f.failDefrag[endpoint] {
+		return nil, errors.New("defragment failed")
+	}
+	return &clientv3.DefragmentResponse{}, nil
+}
+
 func (f *fakeCluster) AlarmList(context.Context) (*clientv3.AlarmResponse, error) {
+	return &clientv3.AlarmResponse{Alarms: f.alarms}, nil
+}
+
+func (f *fakeCluster) AlarmDisarm(_ context.Context, m *clientv3.AlarmMember) (*clientv3.AlarmResponse, error) {
+	f.disarmed = append(f.disarmed, m.MemberID)
 	return &clientv3.AlarmResponse{}, nil
 }
 
@@ -192,30 +233,170 @@ func TestHousekeeper_RemovesAMemberOnlyFromThreeOrMoreAndOnlyWhenNoOtherMemberIs
 	}
 }
 
-func TestDiscardIfRemoved_DeletesTheMemberOnlyOfAClusterThatNoLongerHasIt(t *testing.T) {
+func TestHousekeeper_DisarmsTheNoSpaceAlarmOfAMemberOnlyOnceItsDatabaseIsWellUnderTheQuota(t *testing.T) {
+	const quota = 512 << 20
+	tests := []struct {
+		name   string
+		dbSize int64
+		down   []int
+		want   []uint64
+	}{
+		{"well under half the quota", quota/member.DisarmShare - 1, nil, []uint64{1}},
+		{"at half the quota the alarm would return at the next write", quota / member.DisarmShare, nil, nil},
+		{"over the quota", quota, nil, nil},
+		{"well under half the quota while another member is out", quota/member.DisarmShare - 1, []int{2}, []uint64{1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cl := fakeMembers(3, tt.down...)
+			cl.dbSize, cl.inUse = tt.dbSize, tt.dbSize
+			cl.alarms = []*etcdserverpb.AlarmMember{{MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}}
+			h := &member.Housekeeper{Client: cl, Quota: quota, Now: time.Now, Log: slog.New(slog.DiscardHandler)}
+
+			require.NoError(t, h.Pass(t.Context()))
+
+			assert.Equal(t, tt.want, cl.disarmed)
+		})
+	}
+}
+
+func TestHousekeeper_DefragmentsNoMemberWhileOneIsOutAndTriesTheRestAfterOneFails(t *testing.T) {
+	const quota = 512 << 20
+	cl := fakeMembers(3)
+	cl.dbSize, cl.inUse = 100<<20, 1<<20
+	cl.failDefrag = map[string]bool{cl.members[0].ClientURLs[0]: true}
+	h := &member.Housekeeper{Client: cl, Quota: quota, Now: time.Now, Log: slog.New(slog.DiscardHandler)}
+
+	err := h.Pass(t.Context())
+
+	require.ErrorContains(t, err, "defragment m1")
+	assert.Len(t, cl.defragged, 3, "a member whose defragmentation fails does not keep the others from theirs")
+
+	out := fakeMembers(3, 2)
+	out.dbSize, out.inUse = 100<<20, 1<<20
+	h = &member.Housekeeper{Client: out, Quota: quota, Now: time.Now, Log: slog.New(slog.DiscardHandler)}
+	require.NoError(t, h.Pass(t.Context()))
+	assert.Empty(t, out.defragged, "a defragmentation blocks its member, so none runs while another is out")
+}
+
+func TestHousekeeper_RemovesNothingWhenItsFenceFails(t *testing.T) {
+	cl := fakeMembers(3, 2)
+	now := time.Now()
+	fenced := errors.New("the term has ended")
+	h := &member.Housekeeper{Client: cl, Quota: member.MaxQuota, Departure: time.Hour, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler),
+		Fence: func(context.Context) error { return fenced }}
+	require.NoError(t, h.Pass(t.Context()))
+	now = now.Add(2 * time.Hour)
+
+	err := h.Pass(t.Context())
+
+	require.ErrorIs(t, err, fenced)
+	assert.Empty(t, cl.removed, "a leader that lost its term removes no member")
+}
+
+// startOutside runs a member that is not part of the cluster c, from a data directory the test
+// fills with what a removed member would hold, and returns its config.
+func rejoinConfig(t *testing.T, c *orchtest.Cluster, name, peer string) member.Config {
+	t.Helper()
+	files := c.CA.IssueFiles(t, t.TempDir(), name)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "member", "snap"), 0o755))
+	return member.Config{Name: name, DataDir: dir, PeerURL: peer, Cert: files.Cert, Key: files.Key, CA: files.CA}
+}
+
+func TestDiscardIfRemoved_AsksTheClusterByTheMembersNameWhateverWayItStarted(t *testing.T) {
 	c := orchtest.Start(t, orchtest.Options{Members: 3})
 	cl := c.Members[0].Etcd()
 	list, err := cl.MemberList(t.Context())
 	require.NoError(t, err)
-	files := c.CA.IssueFiles(t, t.TempDir(), "m9")
-	dataDir := func() string {
-		dir := t.TempDir()
-		require.NoError(t, os.MkdirAll(filepath.Join(dir, "member", "snap"), 0o755))
-		return dir
+	var peers []string
+	for _, m := range list.Members {
+		peers = append(peers, m.Name+"="+m.PeerURLs[0])
 	}
-	cfg := func(dir, peer, join string) member.Config {
-		return member.Config{Name: "m9", DataDir: dir, PeerURL: peer, Join: join, Cert: files.Cert, Key: files.Key, CA: files.CA}
+	initial := strings.Join(peers, ",")
+	log := slog.New(slog.DiscardHandler)
+
+	t.Run("joining: a member the cluster does not list", func(t *testing.T) {
+		cfg := rejoinConfig(t, c, "m9", "https://127.0.0.1:1")
+		cfg.Join = cl.Endpoints()[0]
+		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
+		require.NoError(t, err)
+		assert.Equal(t, cl.Endpoints()[0], via)
+		assert.False(t, member.HasData(cfg.DataDir))
+	})
+	t.Run("joining: a listed member keeps its directory", func(t *testing.T) {
+		cfg := rejoinConfig(t, c, list.Members[1].Name, list.Members[1].PeerURLs[0])
+		cfg.Join = cl.Endpoints()[0]
+		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
+		require.NoError(t, err)
+		assert.Empty(t, via)
+		assert.True(t, member.HasData(cfg.DataDir))
+	})
+	t.Run("joining: a cluster that cannot be asked leaves the directory", func(t *testing.T) {
+		cfg := rejoinConfig(t, c, "m9", "https://127.0.0.1:1")
+		cfg.Join = "https://127.0.0.1:1"
+		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
+		require.NoError(t, err)
+		assert.Empty(t, via)
+		assert.True(t, member.HasData(cfg.DataDir))
+	})
+	t.Run("static: a member the peers do not list", func(t *testing.T) {
+		cfg := rejoinConfig(t, c, "m9", "https://127.0.0.1:1")
+		cfg.InitialCluster = initial + ",m9=https://127.0.0.1:1"
+		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
+		require.NoError(t, err)
+		assert.NotEmpty(t, via)
+		assert.False(t, member.HasData(cfg.DataDir))
+	})
+	t.Run("static: a listed member keeps its directory even when its peer URL changed", func(t *testing.T) {
+		cfg := rejoinConfig(t, c, list.Members[1].Name, "https://127.0.0.1:1")
+		cfg.InitialCluster = initial
+		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
+		require.NoError(t, err)
+		assert.Empty(t, via)
+		assert.True(t, member.HasData(cfg.DataDir), "matched by name, not by URL")
+	})
+	t.Run("static: peers that do not answer leave the directory", func(t *testing.T) {
+		cfg := rejoinConfig(t, c, "m9", "https://127.0.0.1:1")
+		cfg.InitialCluster = "m9=https://127.0.0.1:1,m8=https://127.0.0.1:2"
+		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
+		require.NoError(t, err)
+		assert.Empty(t, via)
+		assert.True(t, member.HasData(cfg.DataDir))
+	})
+}
+
+func TestStart_RejoinsAStaticMemberTheHousekeeperRemoved(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 3})
+	lead := c.Leader(t, []int{0, 1, 2}, 30*time.Second)
+	out := (lead + 1) % 3
+	cl := c.Members[lead].Etcd()
+	before, err := cl.MemberList(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, c.Members[out].Stop())
+	now := time.Now()
+	h := &member.Housekeeper{Client: cl, Quota: member.MaxQuota, Departure: time.Hour, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
+	require.NoError(t, h.Pass(t.Context()))
+	now = now.Add(2 * time.Hour)
+	require.NoError(t, h.Pass(t.Context()))
+	gone, err := cl.MemberList(t.Context())
+	require.NoError(t, err)
+	require.Len(t, gone.Members, 2, "the housekeeper removed the member")
+
+	c.Restart(t, out)
+
+	after, err := cl.MemberList(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, after.Members, 3, "the member, started with a static initial cluster, joined the cluster again")
+	oldIDs := map[uint64]bool{}
+	for _, m := range before.Members {
+		oldIDs[m.ID] = true
 	}
-
-	removed := dataDir()
-	require.NoError(t, member.DiscardIfRemoved(t.Context(), cfg(removed, "https://127.0.0.1:1", cl.Endpoints()[0])))
-	assert.False(t, member.HasData(removed), "the cluster does not list the member, so its directory is deleted and the next start joins afresh")
-
-	listed := dataDir()
-	require.NoError(t, member.DiscardIfRemoved(t.Context(), cfg(listed, list.Members[1].PeerURLs[0], cl.Endpoints()[0])))
-	assert.True(t, member.HasData(listed), "a member the cluster lists keeps its directory")
-
-	unasked := dataDir()
-	require.NoError(t, member.DiscardIfRemoved(t.Context(), cfg(unasked, "https://127.0.0.1:1", "https://127.0.0.1:1")))
-	assert.True(t, member.HasData(unasked), "a cluster that cannot be asked leaves the directory alone")
+	fresh := 0
+	for _, m := range after.Members {
+		if !oldIDs[m.ID] {
+			fresh++
+		}
+	}
+	assert.Equal(t, 1, fresh, "it came back as a new member")
 }

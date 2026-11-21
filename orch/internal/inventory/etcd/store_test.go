@@ -175,6 +175,7 @@ func TestTheEventLogKeepsTheNewestEventsAndDropsTheOldest(t *testing.T) {
 	invetcd.KeepEvents(s, keep)
 	require.Equal(t, 20000, invetcd.MaxEvents, "the bound a store keeps by default")
 	base := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+	invetcd.SetClock(s, func() time.Time { return base })
 
 	for i := range keep + extra {
 		require.NoError(t, s.AppendEvent(t.Context(), orchapi.Event{Time: base.Add(time.Duration(i) * time.Second), Type: "t", Subject: "s", Detail: map[string]string{"n": time.Duration(i).String()}}))
@@ -197,6 +198,7 @@ func TestALogFarPastItsBoundIsTrimmedToItInOneAppend(t *testing.T) {
 	s := invetcd.New(kv)
 	const keep = 10
 	invetcd.KeepEvents(s, keep)
+	invetcd.SetClock(s, func() time.Time { return time.Unix(0, 0) })
 	for i := range keep + 300 { // more than keep plus etcd's 128 operations to a transaction
 		_, err := kv.Put(t.Context(), fmt.Sprintf("/naru/orch/events/%020d-seed", i), `{"type":"t"}`)
 		require.NoError(t, err)
@@ -209,23 +211,36 @@ func TestALogFarPastItsBoundIsTrimmedToItInOneAppend(t *testing.T) {
 	require.Len(t, evs, keep)
 }
 
-func TestTheEventLogDropsEventsOlderThanTheirAgeWhateverTheirCount(t *testing.T) {
+func TestTheEventLogDropsEventsOlderThanTheirAgeByTheStoresClockOnEveryWriteThatRecordsOne(t *testing.T) {
 	c := orchtest.Start(t, orchtest.Options{Members: 1})
 	s := invetcd.New(c.Members[0].Etcd())
 	now := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
-	ages := []time.Duration{invetcd.MaxEventAge + 2*time.Hour, invetcd.MaxEventAge + time.Hour, invetcd.MaxEventAge - time.Hour, time.Minute}
-	for _, age := range ages[:3] {
-		require.NoError(t, s.AppendEvent(t.Context(), orchapi.Event{Time: now.Add(-age), Type: "t"}))
+	invetcd.SetClock(s, func() time.Time { return now })
+	at := func(t time.Time) orchapi.Event { return orchapi.Event{Time: t, Type: "t"} }
+	times := func() []time.Time {
+		evs, err := s.ListEvents(t.Context(), "")
+		require.NoError(t, err)
+		var out []time.Time
+		for _, e := range evs {
+			out = append(out, e.Time)
+		}
+		return out
 	}
-	evs, err := s.ListEvents(t.Context(), "")
-	require.NoError(t, err)
-	require.Len(t, evs, 3, "an append trims by the age of its own event, so events older than the age of the one before them stay while they are the newest")
+	aged := now.Add(-invetcd.MaxEventAge)
+	for _, ev := range []time.Time{aged.Add(-2 * time.Hour), aged.Add(-time.Hour), aged.Add(time.Hour)} {
+		require.NoError(t, s.AppendEvent(t.Context(), at(ev)))
+	}
+	require.Equal(t, []time.Time{aged.Add(time.Hour)}, times(), "each append drops the events past the age, and the newest stays")
 
-	require.NoError(t, s.AppendEvent(t.Context(), orchapi.Event{Time: now, Type: "t"}))
+	// A write other than an append records an event too, and bounds the log by age as well.
+	require.NoError(t, s.PutProfile(t.Context(), []byte("a: b"), at(now)))
+	now = now.Add(2 * time.Hour)
+	require.Len(t, times(), 2, "the clock moving on drops nothing by itself")
+	require.NoError(t, s.PutProfile(t.Context(), []byte("a: c"), at(now)))
+	require.Equal(t, []time.Time{now.Add(-2 * time.Hour), now}, times(), "a profile write dropped the event the age passed, not only an append")
 
-	evs, err = s.ListEvents(t.Context(), "")
-	require.NoError(t, err)
-	require.Len(t, evs, 2, "the two events past the age are dropped, the one inside it and the new one stay")
-	require.True(t, evs[0].Time.Equal(now.Add(-ages[2])))
-	require.True(t, evs[1].Time.Equal(now))
+	// The control: an event dated far ahead, as a clock that jumped forward would date it, does not
+	// make the recent events old, because the cutoff is the store's clock.
+	require.NoError(t, s.AppendEvent(t.Context(), at(now.Add(30*24*time.Hour))))
+	require.Len(t, times(), 3, "recent events stay when an event is dated ahead")
 }

@@ -38,7 +38,9 @@ func TestStart_RunsEtcdWithPeriodicCompactionABoundedQuotaAndFewFiles(t *testing
 	assert.Equal(t, member.CompactionRetention, cfg.AutoCompactionRetention)
 	disk, err := member.DiskBytes(dir)
 	require.NoError(t, err)
-	assert.Equal(t, member.Quota(disk), cfg.QuotaBackendBytes, "the quota is a share of the disk, not etcd's default")
+	want, err := member.Quota(disk)
+	require.NoError(t, err)
+	assert.Equal(t, want, cfg.QuotaBackendBytes, "the quota is a share of the disk, not etcd's default")
 	assert.Equal(t, uint(2), cfg.MaxWalFiles)
 	assert.Equal(t, uint(2), cfg.MaxSnapFiles)
 }
