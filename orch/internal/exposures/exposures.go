@@ -21,9 +21,11 @@ import (
 
 // Errors the API maps to a status: a call outside the caller's network or pool is ErrForbidden
 // (403), and a request that names something the fleet does not hold is ErrUnprocessable (422).
+// ErrFull is the store's answer to a create over a network's limit.
 var (
 	ErrForbidden     = errors.New("the caller's network may not do this")
 	ErrUnprocessable = errors.New("the request cannot be carried out")
+	ErrFull          = errors.New("the network holds as many exposures as it may")
 )
 
 // Event types the service writes.
@@ -43,8 +45,13 @@ const (
 	maxPoolSize            = 1 << 16
 )
 
-// Record is an exposure as orch stores it: the exposure and the moment the lease last given to
-// its host ends.
+// PhaseReleasing is the phase of an exposure its network deleted, or that is being removed: it
+// keeps its address claimed until the host that held it confirmed the removal or its lease and
+// Skew have passed, and then the reconciler deletes it. It is never shown to an exposer.
+const PhaseReleasing = "releasing"
+
+// Record is an exposure as orch stores it: the exposure and the latest moment the lease given to
+// its host may end.
 type Record struct {
 	orchapi.Exposure
 	LeaseUntil time.Time `json:"leaseUntil,omitzero"`
@@ -57,21 +64,35 @@ func (r Record) Equal(o Record) bool {
 	return bytes.Equal(a, b)
 }
 
-// Store holds the pools and the exposures. Get and Delete of a pool and Get of an exposure return
-// inventory.ErrNotFound for what is not there; DeleteExposure of an absent one is not an error.
+// Claim is an address a pool has handed to an exposure.
+type Claim struct {
+	Address string
+	Network string
+	ID      string
+}
+
+// Store holds the pools and the exposures. An exposure is kept under its network and id, so an id
+// is the network's own. Get and Delete of a pool and Get of an exposure return
+// inventory.ErrNotFound for what is not there. Each write below holds only while what the caller
+// read is still what is stored.
 type Store interface {
-	PutPool(ctx context.Context, p orchapi.AddressPool, prev *orchapi.AddressPool) error
+	// PutPool writes p only while the stored pool is still prev (absent when prev is nil) and no
+	// address of p has been claimed since check read the pool's claims; check refuses a pool the
+	// claims do not fit.
+	PutPool(ctx context.Context, p orchapi.AddressPool, prev *orchapi.AddressPool, check func(held []Claim) error) error
 	GetPool(ctx context.Context, name string) (orchapi.AddressPool, error)
+	// DeletePool returns inventory.ErrConflict while any address of the pool is claimed.
 	DeletePool(ctx context.Context, name string) error
 	ListPools(ctx context.Context) ([]orchapi.AddressPool, error)
-	// CreateExposure writes r and claims its address in one transaction, and returns
-	// inventory.ErrConflict when the id exists or the address is claimed.
-	CreateExposure(ctx context.Context, r Record) error
+	// CreateExposure writes r and claims its address in one transaction, while pool is still the
+	// stored pool and the network holds fewer than limit exposures (ErrFull otherwise), and
+	// returns inventory.ErrConflict when the id exists or the address is claimed.
+	CreateExposure(ctx context.Context, r Record, pool orchapi.AddressPool, limit int) error
 	// UpdateExposure writes r only while the stored record is still prev.
 	UpdateExposure(ctx context.Context, r, prev Record) error
-	GetExposure(ctx context.Context, id string) (Record, error)
-	// DeleteExposure removes the record and releases its address.
-	DeleteExposure(ctx context.Context, id string) error
+	GetExposure(ctx context.Context, network, id string) (Record, error)
+	// DeleteExposure removes r and releases its address, only while r is still the stored record.
+	DeleteExposure(ctx context.Context, r Record) error
 	ListExposures(ctx context.Context) ([]Record, error)
 }
 
@@ -166,7 +187,8 @@ func overlapsAny(a, b []netip.Prefix) (netip.Prefix, netip.Prefix, bool) {
 // ApplyPool creates the pool or replaces its spec. Every address is usable, the network and
 // broadcast addresses of a CIDR included: the operator lists exactly the range the LAN's owner
 // gave. A replacement that would leave an exposure's address outside the pool, or its network
-// outside the pool's list, is refused.
+// outside the pool's list, is refused; the store checks that against the claims it holds at the
+// moment it writes, so an exposure created meanwhile cannot slip past.
 func (s *Service) ApplyPool(ctx context.Context, by, name string, spec orchapi.AddressPoolSpec) (orchapi.AddressPool, error) {
 	if !nameRe.MatchString(name) {
 		return orchapi.AddressPool{}, bad("pool name %q is not a DNS label", name)
@@ -177,6 +199,11 @@ func (s *Service) ApplyPool(ctx context.Context, by, name string, spec orchapi.A
 	}
 	if len(spec.Networks) == 0 {
 		return orchapi.AddressPool{}, bad("a pool lists the networks that may draw from it")
+	}
+	for _, n := range spec.Networks {
+		if !nameRe.MatchString(n) {
+			return orchapi.AddressPool{}, bad("network name %q is not a DNS label", n)
+		}
 	}
 	nets := slices.Clone(spec.Networks)
 	slices.Sort(nets)
@@ -210,26 +237,20 @@ func (s *Service) ApplyPool(ctx context.Context, by, name string, spec orchapi.A
 		}
 	}
 	p := orchapi.AddressPool{Name: name, CIDRs: spec.CIDRs, Networks: nets}
-	if prev != nil {
-		recs, err := s.store.ListExposures(ctx)
-		if err != nil {
-			return orchapi.AddressPool{}, err
-		}
-		for _, r := range recs {
-			if r.Pool != name {
-				continue
-			}
-			a, _ := netip.ParseAddr(r.Address)
+	fits := func(held []Claim) error {
+		for _, c := range held {
+			a, _ := netip.ParseAddr(c.Address)
 			in := false
-			for _, c := range cidrs {
-				in = in || c.Contains(a)
+			for _, x := range cidrs {
+				in = in || x.Contains(a)
 			}
-			if !in || !slices.Contains(nets, r.Network) {
-				return orchapi.AddressPool{}, fmt.Errorf("%w: exposure %s holds %s of network %s, which the new pool does not hold", inventory.ErrConflict, r.ID, r.Address, r.Network)
+			if !in || !slices.Contains(nets, c.Network) {
+				return fmt.Errorf("%w: exposure %s holds %s of network %s, which the new pool does not hold", inventory.ErrConflict, c.ID, c.Address, c.Network)
 			}
 		}
+		return nil
 	}
-	if err := s.store.PutPool(ctx, p, prev); err != nil {
+	if err := s.store.PutPool(ctx, p, prev, fits); err != nil {
 		return orchapi.AddressPool{}, err
 	}
 	return p, s.log.AppendEvent(ctx, orchapi.Event{Time: s.clock.Now(), Type: EventPoolApplied, Subject: name, Detail: map[string]string{"by": by}})
@@ -240,20 +261,8 @@ func (s *Service) Pools(ctx context.Context) ([]orchapi.AddressPool, error) {
 	return s.store.ListPools(ctx)
 }
 
-// DeletePool removes a pool no exposure draws from.
+// DeletePool removes a pool no exposure draws from; the store refuses while an address is claimed.
 func (s *Service) DeletePool(ctx context.Context, by, name string) error {
-	if _, err := s.store.GetPool(ctx, name); err != nil {
-		return err
-	}
-	recs, err := s.store.ListExposures(ctx)
-	if err != nil {
-		return err
-	}
-	for _, r := range recs {
-		if r.Pool == name {
-			return fmt.Errorf("%w: exposure %s draws from pool %s", inventory.ErrConflict, r.ID, name)
-		}
-	}
 	if err := s.store.DeletePool(ctx, name); err != nil {
 		return err
 	}
@@ -300,11 +309,23 @@ func validateSpec(spec orchapi.ExposureSpec) error {
 	return nil
 }
 
+// own refuses an empty network: the exposer calls act on one network, never on every one.
+func own(network string) error {
+	if network == "" {
+		return forbidden("the call names no network")
+	}
+	return nil
+}
+
 // ApplyExposure creates the exposure for the caller's network or replaces its spec. The caller
-// is the network the certificate names: a spec for another network, a pool that does not list
-// the caller's network and an exposure of another network are ErrForbidden. A new exposure gets
-// the requested address when it is in the pool and free, else the lowest free address.
+// is the network the certificate names: a spec for another network and a pool that does not list
+// the caller's network are ErrForbidden. An id is the network's own, so another network's
+// exposure of the same id is not seen. A new exposure gets the requested address when it is in
+// the pool and free, else the lowest free address.
 func (s *Service) ApplyExposure(ctx context.Context, by, network, id string, spec orchapi.ExposureSpec) (orchapi.Exposure, error) {
+	if err := own(network); err != nil {
+		return orchapi.Exposure{}, err
+	}
 	if !idRe.MatchString(id) {
 		return orchapi.Exposure{}, bad("exposure id %q is not valid", id)
 	}
@@ -334,32 +355,19 @@ func (s *Service) ApplyExposure(ctx context.Context, by, network, id string, spe
 			return orchapi.Exposure{}, unprocessable("backend %s is not the address of a live member of network %s", b, network)
 		}
 	}
-	recs, err := s.store.ListExposures(ctx)
-	if err != nil {
+	cur, err := s.store.GetExposure(ctx, network, id)
+	if err == nil {
+		return s.update(ctx, by, cur, spec)
+	}
+	if !errors.Is(err, inventory.ErrNotFound) {
 		return orchapi.Exposure{}, err
 	}
-	var cur *Record
-	count := 0
-	for i, r := range recs {
-		if r.ID == id {
-			cur = &recs[i]
-		}
-		if r.Network == network {
-			count++
-		}
-	}
-	if cur != nil {
-		return s.update(ctx, by, network, *cur, spec)
-	}
-	if count >= MaxExposuresPerNetwork {
-		return orchapi.Exposure{}, fmt.Errorf("%w: network %s holds %d exposures", inventory.ErrConflict, network, count)
-	}
-	return s.create(ctx, by, id, spec, pool, recs)
+	return s.create(ctx, by, id, spec, pool)
 }
 
-func (s *Service) update(ctx context.Context, by, network string, cur Record, spec orchapi.ExposureSpec) (orchapi.Exposure, error) {
-	if cur.Network != network {
-		return orchapi.Exposure{}, forbidden("exposure %s belongs to another network", cur.ID)
+func (s *Service) update(ctx context.Context, by string, cur Record, spec orchapi.ExposureSpec) (orchapi.Exposure, error) {
+	if cur.Phase == PhaseReleasing {
+		return orchapi.Exposure{}, fmt.Errorf("%w: exposure %s is being released; apply it again once it is gone", inventory.ErrConflict, cur.ID)
 	}
 	if cur.Pool != spec.Pool || spec.RequestedAddress != "" && spec.RequestedAddress != cur.Address {
 		return orchapi.Exposure{}, fmt.Errorf("%w: exposure %s keeps its pool and address; delete it to change them", inventory.ErrConflict, cur.ID)
@@ -377,8 +385,12 @@ func (s *Service) update(ctx context.Context, by, network string, cur Record, sp
 	return next.Exposure, nil
 }
 
-func (s *Service) create(ctx context.Context, by, id string, spec orchapi.ExposureSpec, pool orchapi.AddressPool, recs []Record) (orchapi.Exposure, error) {
+func (s *Service) create(ctx context.Context, by, id string, spec orchapi.ExposureSpec, pool orchapi.AddressPool) (orchapi.Exposure, error) {
 	cidrs, err := parseCIDRs(pool.CIDRs)
+	if err != nil {
+		return orchapi.Exposure{}, err
+	}
+	recs, err := s.store.ListExposures(ctx)
 	if err != nil {
 		return orchapi.Exposure{}, err
 	}
@@ -418,9 +430,15 @@ func (s *Service) create(ctx context.Context, by, id string, spec orchapi.Exposu
 		ID: id, Network: spec.Network, Pool: pool.Name, Address: addr.String(), Ports: spec.Ports,
 		Backends: slices.Clone(spec.Backends), ProxyProtocol: spec.ProxyProtocol, Phase: orchapi.ExposurePending,
 	}}
-	// The claim in the same transaction is what keeps two requests from one address: a lost race
-	// is a conflict, and the caller's next try plans from what the store holds.
-	if err := s.store.CreateExposure(ctx, r); err != nil {
+	// The claim in the same transaction is what keeps two requests from one address, the pool
+	// check keeps a create from landing in a pool that was replaced or deleted meanwhile, and the
+	// limit is counted there too: a lost race is a conflict, and the caller's next try plans from
+	// what the store holds.
+	err = s.store.CreateExposure(ctx, r, pool, MaxExposuresPerNetwork)
+	if errors.Is(err, ErrFull) {
+		return orchapi.Exposure{}, fmt.Errorf("%w: network %s holds %d exposures", inventory.ErrConflict, spec.Network, MaxExposuresPerNetwork)
+	}
+	if err != nil {
 		return orchapi.Exposure{}, err
 	}
 	return r.Exposure, s.event(ctx, EventExposureApplied, by, r)
@@ -430,49 +448,89 @@ func (s *Service) event(ctx context.Context, typ, by string, r Record) error {
 	return s.log.AppendEvent(ctx, orchapi.Event{Time: s.clock.Now(), Type: typ, Subject: r.ID, Detail: map[string]string{"by": by, "network": r.Network, "address": r.Address}})
 }
 
-// Exposure returns one exposure. A caller with a network (not empty) sees only its own: another
-// network's is ErrForbidden.
+// Exposure returns one exposure of the caller's network. Another network's exposure and an absent
+// one are both inventory.ErrNotFound, and an exposure being released is not shown.
 func (s *Service) Exposure(ctx context.Context, network, id string) (orchapi.Exposure, error) {
-	r, err := s.store.GetExposure(ctx, id)
+	if err := own(network); err != nil {
+		return orchapi.Exposure{}, err
+	}
+	if !idRe.MatchString(id) {
+		return orchapi.Exposure{}, bad("exposure id %q is not valid", id)
+	}
+	r, err := s.store.GetExposure(ctx, network, id)
 	if err != nil {
 		return orchapi.Exposure{}, err
 	}
-	if network != "" && r.Network != network {
-		return orchapi.Exposure{}, forbidden("exposure %s belongs to another network", id)
+	if r.Phase == PhaseReleasing {
+		return orchapi.Exposure{}, inventory.ErrNotFound
 	}
 	return r.Exposure, nil
 }
 
-// Exposures lists the exposures of the network, or every one when network is empty.
+// Exposures lists the exposures of the caller's network, those being released left out.
 func (s *Service) Exposures(ctx context.Context, network string) ([]orchapi.Exposure, error) {
+	if err := own(network); err != nil {
+		return nil, err
+	}
+	all, err := s.AllExposures(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []orchapi.Exposure{}
+	for _, e := range all {
+		if e.Network == network && e.Phase != PhaseReleasing {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// AllExposures lists every network's exposures, those being released included. It is the
+// operators' view, not an exposer's.
+func (s *Service) AllExposures(ctx context.Context) ([]orchapi.Exposure, error) {
 	recs, err := s.store.ListExposures(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := []orchapi.Exposure{}
 	for _, r := range recs {
-		if network == "" || r.Network == network {
-			out = append(out, r.Exposure)
-		}
+		out = append(out, r.Exposure)
 	}
 	return out, nil
 }
 
-// DeleteExposure releases the exposure's address. An absent exposure is not an error; one of
-// another network is ErrForbidden. The host's lease is removed by the reconciler.
+// deleteTries bounds how often a delete re-reads the record the reconciler renewed under it.
+const deleteTries = 3
+
+// DeleteExposure starts the release of the caller's exposure: the address stays claimed, and so
+// cannot be given to another exposure, until the host that held it confirmed the removal or its
+// lease and Skew have passed, and then the reconciler deletes the record. An absent exposure,
+// another network's included, and one already being released are not an error.
 func (s *Service) DeleteExposure(ctx context.Context, by, network, id string) error {
-	r, err := s.store.GetExposure(ctx, id)
-	if errors.Is(err, inventory.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
+	if err := own(network); err != nil {
 		return err
 	}
-	if network != "" && r.Network != network {
-		return forbidden("exposure %s belongs to another network", id)
+	if !idRe.MatchString(id) {
+		return bad("exposure id %q is not valid", id)
 	}
-	if err := s.store.DeleteExposure(ctx, id); err != nil {
-		return err
+	var err error
+	for range deleteTries {
+		var cur Record
+		cur, err = s.store.GetExposure(ctx, network, id)
+		if errors.Is(err, inventory.ErrNotFound) || err == nil && cur.Phase == PhaseReleasing {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		next := cur
+		next.Phase = PhaseReleasing
+		if err = s.store.UpdateExposure(ctx, next, cur); err == nil {
+			return s.event(ctx, EventExposureDeleted, by, cur)
+		}
+		if !errors.Is(err, inventory.ErrConflict) {
+			return err
+		}
 	}
-	return s.event(ctx, EventExposureDeleted, by, r)
+	return err
 }

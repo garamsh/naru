@@ -4,7 +4,9 @@ package exposurestest
 
 import (
 	"context"
+	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,27 +15,38 @@ import (
 	"github.com/garamsh/naru/orch/internal/inventory"
 )
 
-// Store is an exposures.Store in memory, with the claim rule of the etcd one.
+// Store is an exposures.Store in memory, with the claim, count and pool rules of the etcd one.
 type Store struct {
 	mu     sync.Mutex
 	pools  map[string]orchapi.AddressPool
-	exps   map[string]exposures.Record
-	claims map[string]string
+	exps   map[string]exposures.Record // by network/id
+	claims map[string]exposures.Claim  // by pool/address
 }
 
 var _ exposures.Store = (*Store)(nil)
 
 // NewStore returns an empty Store.
 func NewStore() *Store {
-	return &Store{pools: map[string]orchapi.AddressPool{}, exps: map[string]exposures.Record{}, claims: map[string]string{}}
+	return &Store{pools: map[string]orchapi.AddressPool{}, exps: map[string]exposures.Record{}, claims: map[string]exposures.Claim{}}
 }
 
-func (s *Store) PutPool(_ context.Context, p orchapi.AddressPool, prev *orchapi.AddressPool) error {
+func recKey(network, id string) string { return network + "/" + id }
+
+func (s *Store) PutPool(_ context.Context, p orchapi.AddressPool, prev *orchapi.AddressPool, check func([]exposures.Claim) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur, ok := s.pools[p.Name]
-	if ok != (prev != nil) || ok && cur.Name != prev.Name {
+	if ok != (prev != nil) || ok && !reflect.DeepEqual(cur, *prev) {
 		return inventory.ErrConflict
+	}
+	var held []exposures.Claim
+	for k, c := range s.claims {
+		if strings.HasPrefix(k, p.Name+"/") {
+			held = append(held, c)
+		}
+	}
+	if err := check(held); err != nil {
+		return err
 	}
 	s.pools[p.Name] = p
 	return nil
@@ -55,6 +68,11 @@ func (s *Store) DeletePool(_ context.Context, name string) error {
 	if _, ok := s.pools[name]; !ok {
 		return inventory.ErrNotFound
 	}
+	for k := range s.claims {
+		if strings.HasPrefix(k, name+"/") {
+			return inventory.ErrConflict
+		}
+	}
 	delete(s.pools, name)
 	return nil
 }
@@ -70,47 +88,65 @@ func (s *Store) ListPools(context.Context) ([]orchapi.AddressPool, error) {
 	return out, nil
 }
 
-func (s *Store) CreateExposure(_ context.Context, r exposures.Record) error {
+func (s *Store) CreateExposure(_ context.Context, r exposures.Record, pool orchapi.AddressPool, limit int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	claim := r.Pool + "/" + r.Address
-	if _, ok := s.exps[r.ID]; ok {
+	n := 0
+	for _, o := range s.exps {
+		if o.Network == r.Network {
+			n++
+		}
+	}
+	if n >= limit {
+		return exposures.ErrFull
+	}
+	if _, ok := s.exps[recKey(r.Network, r.ID)]; ok {
 		return inventory.ErrConflict
 	}
 	if _, ok := s.claims[claim]; ok {
 		return inventory.ErrConflict
 	}
-	s.exps[r.ID], s.claims[claim] = r, r.ID
+	if cur, ok := s.pools[pool.Name]; !ok || !reflect.DeepEqual(cur, pool) {
+		return inventory.ErrConflict
+	}
+	s.exps[recKey(r.Network, r.ID)] = r
+	s.claims[claim] = exposures.Claim{Address: r.Address, Network: r.Network, ID: r.ID}
 	return nil
 }
 
 func (s *Store) UpdateExposure(_ context.Context, r, prev exposures.Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if cur, ok := s.exps[r.ID]; !ok || !cur.Equal(prev) {
+	if cur, ok := s.exps[recKey(r.Network, r.ID)]; !ok || !cur.Equal(prev) {
 		return inventory.ErrConflict
 	}
-	s.exps[r.ID] = r
+	s.exps[recKey(r.Network, r.ID)] = r
 	return nil
 }
 
-func (s *Store) GetExposure(_ context.Context, id string) (exposures.Record, error) {
+func (s *Store) GetExposure(_ context.Context, network, id string) (exposures.Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r, ok := s.exps[id]
+	r, ok := s.exps[recKey(network, id)]
 	if !ok {
 		return r, inventory.ErrNotFound
 	}
 	return r, nil
 }
 
-func (s *Store) DeleteExposure(_ context.Context, id string) error {
+func (s *Store) DeleteExposure(_ context.Context, r exposures.Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if r, ok := s.exps[id]; ok {
-		delete(s.claims, r.Pool+"/"+r.Address)
+	cur, ok := s.exps[recKey(r.Network, r.ID)]
+	if !ok {
+		return nil
 	}
-	delete(s.exps, id)
+	if !cur.Equal(r) {
+		return inventory.ErrConflict
+	}
+	delete(s.claims, r.Pool+"/"+r.Address)
+	delete(s.exps, recKey(r.Network, r.ID))
 	return nil
 }
 
@@ -121,7 +157,7 @@ func (s *Store) ListExposures(context.Context) ([]exposures.Record, error) {
 	for _, r := range s.exps {
 		out = append(out, r)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(out, func(i, j int) bool { return recKey(out[i].Network, out[i].ID) < recKey(out[j].Network, out[j].ID) })
 	return out, nil
 }
 

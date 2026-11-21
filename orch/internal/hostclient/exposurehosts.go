@@ -5,11 +5,14 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/exposures"
+	"github.com/garamsh/naru/orch/internal/groups"
 )
 
 // ExposureAPI is one host's API as the exposure reconciler and the backend check use it.
@@ -63,38 +66,63 @@ type errNotAdmitted string
 
 func (e errNotAdmitted) Error() string { return "host " + string(e) + " is not admitted" }
 
+// probeAll runs f on every admitted host at once, each with its own probeTimeout, so one host that
+// does not answer holds back no other and the whole takes no longer than one probe.
+func probeAll[T any](ctx context.Context, admitted []orchapi.Host, f func(ctx context.Context, a orchapi.Host) (T, bool)) []T {
+	got := make([]T, len(admitted))
+	ok := make([]bool, len(admitted))
+	var wg sync.WaitGroup
+	for i, a := range admitted {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, probeTimeout)
+			defer cancel()
+			got[i], ok[i] = f(cctx, a)
+		}()
+	}
+	wg.Wait()
+	var out []T
+	for i := range got {
+		if ok[i] {
+			out = append(out, got[i])
+		}
+	}
+	return out
+}
+
+// live reports whether the microVM is running: a stopped or failed one answers nothing, so it is
+// no backend and its host no place for an address on its network.
+func live(m hostapi.MicroVM) bool { return machineState(m.State) == groups.MachineRunning }
+
 // List returns the admitted hosts that answered, with their LAN interface and the networks they
-// run a microVM on.
+// run a live microVM on.
 func (h *ExposureHosts) List(ctx context.Context) ([]exposures.Host, error) {
 	admitted, err := h.inv.Hosts(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var out []exposures.Host
-	for _, a := range admitted {
+	return probeAll(ctx, admitted, func(ctx context.Context, a orchapi.Host) (exposures.Host, bool) {
 		c := h.dial(a.ID, a.Address)
-		cctx, cancel := context.WithTimeout(ctx, probeTimeout)
-		info, err := c.Host(cctx)
-		var vms []hostapi.MicroVM
-		if err == nil {
-			vms, err = c.MicroVMs(cctx)
-		}
-		cancel()
+		info, err := c.Host(ctx)
 		if err != nil {
-			continue
+			return exposures.Host{}, false
+		}
+		vms, err := c.MicroVMs(ctx)
+		if err != nil {
+			return exposures.Host{}, false
 		}
 		seen := map[string]bool{}
 		var nets []string
 		for _, m := range vms {
-			if m.Network != "" && !seen[m.Network] {
+			if live(m) && m.Network != "" && !seen[m.Network] {
 				seen[m.Network] = true
 				nets = append(nets, m.Network)
 			}
 		}
 		sort.Strings(nets)
-		out = append(out, exposures.Host{ID: a.ID, LAN: info.LANInterface, Networks: nets})
-	}
-	return out, nil
+		return exposures.Host{ID: a.ID, LAN: info.LANInterface, Networks: nets}, true
+	}), nil
 }
 
 // Put takes or renews the lease on the host.
@@ -140,25 +168,28 @@ func (h *ExposureHosts) Delete(ctx context.Context, hostID, address string) erro
 	return c.DeleteExposure(ctx, address)
 }
 
-// Addresses returns the addresses of the microVMs of the network on every host that answers.
+// Addresses returns the addresses of the running microVMs of the network on every host that
+// answers.
 func (h *ExposureHosts) Addresses(ctx context.Context, network string) ([]string, error) {
 	admitted, err := h.inv.Hosts(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
-	for _, a := range admitted {
-		cctx, cancel := context.WithTimeout(ctx, probeTimeout)
-		vms, err := h.dial(a.ID, a.Address).MicroVMs(cctx)
-		cancel()
+	for _, addrs := range probeAll(ctx, admitted, func(ctx context.Context, a orchapi.Host) ([]string, bool) {
+		vms, err := h.dial(a.ID, a.Address).MicroVMs(ctx)
 		if err != nil {
-			continue
+			return nil, false
 		}
+		var addrs []string
 		for _, m := range vms {
-			if m.Network == network {
-				out = append(out, m.Addresses...)
+			if live(m) && m.Network == network {
+				addrs = append(addrs, m.Addresses...)
 			}
 		}
+		return addrs, true
+	}) {
+		out = append(out, addrs...)
 	}
 	return out, nil
 }

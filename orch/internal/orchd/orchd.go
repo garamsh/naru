@@ -260,10 +260,10 @@ func (o *Orchd) assemble(m *member.Member) bool {
 		eh := d.NewExposureHosts(svc)
 		exposureSvc = exposures.New(exposuresetcd.New(m.Client()), networkStore, eh, invStore, d.Clock)
 		reconcilers = append(reconcilers, exposures.NewReconciler(exposures.Config{
-			Hosts: eh, Exposures: exposuresetcd.New(leaderKV), Clock: d.Clock, Log: d.Log,
+			Hosts: eh, Exposures: exposuresetcd.New(leaderKV), Networks: networkStore, Clock: d.Clock, Log: d.Log,
 		}))
 	}
-	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
+	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
 
 	o.wg.Add(3)
 	go func() {

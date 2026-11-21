@@ -92,13 +92,15 @@ func (c *Client) Exposures(ctx context.Context) ([]Exposure, error) {
 	return out, c.do(ctx, http.MethodGet, "/v1/exposures", nil, nil, &out)
 }
 
-// Exposure returns one exposure.
+// Exposure returns one exposure of the caller's network. An id of another network is not found, as an absent one is.
 func (c *Client) Exposure(ctx context.Context, id string) (Exposure, error) {
 	var out Exposure
 	return out, c.do(ctx, http.MethodGet, "/v1/exposures/"+url.PathEscape(id), nil, nil, &out)
 }
 
-// DeleteExposure releases the exposure's address. It is idempotent: an absent exposure is not an error.
+// DeleteExposure starts the release of the exposure's address; the address is given to another
+// exposure once the host that announced it confirmed the removal or its lease ran out. It is
+// idempotent: an absent exposure, and an id of another network, is not an error.
 func (c *Client) DeleteExposure(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/exposures/"+url.PathEscape(id), nil, nil, nil)
 }

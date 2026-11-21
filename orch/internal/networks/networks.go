@@ -38,6 +38,11 @@ type Groups interface {
 	ListGroups(ctx context.Context) ([]groups.GroupSpec, error)
 }
 
+// Pools lists the address pools, to keep a network's prefix out of them.
+type Pools interface {
+	ListPools(ctx context.Context) ([]orchapi.AddressPool, error)
+}
+
 // Log is the inventory's event log.
 type Log interface {
 	AppendEvent(ctx context.Context, ev orchapi.Event) error
@@ -76,17 +81,21 @@ func Validate(n orchapi.Network) error {
 type Service struct {
 	store  Store
 	groups Groups
+	pools  Pools
 	log    Log
 	clock  Clock
 }
 
 // New returns a Service.
-func New(store Store, groups Groups, log Log, clock Clock) *Service {
-	return &Service{store: store, groups: groups, log: log, clock: clock}
+func New(store Store, groups Groups, pools Pools, log Log, clock Clock) *Service {
+	return &Service{store: store, groups: groups, pools: pools, log: log, clock: clock}
 }
 
 // Apply creates the network or replaces its spec; by is the caller, for the event log. A network
-// that a group uses keeps its prefix, since the members' Pod prefixes were cut from it.
+// that a group uses keeps its prefix, since the members' Pod prefixes were cut from it. A prefix
+// never overlaps an address pool: the exposures' addresses are on the LAN, outside every network.
+// Like the group check, this reads and then writes; two operators racing a pool and a network that
+// overlap can both pass, and the second to be applied finds the other.
 func (s *Service) Apply(ctx context.Context, by, name string, spec orchapi.NetworkSpec) (orchapi.Network, error) {
 	n := orchapi.Network{Name: name, Prefix: spec.Prefix, APIEndpoint: spec.APIEndpoint}
 	if err := Validate(n); err != nil {
@@ -109,11 +118,33 @@ func (s *Service) Apply(ctx context.Context, by, name string, spec orchapi.Netwo
 	case err != nil && !errors.Is(err, inventory.ErrNotFound):
 		return orchapi.Network{}, err
 	}
+	if prev == nil || old.Prefix != n.Prefix {
+		if err := s.clear(ctx, n); err != nil {
+			return orchapi.Network{}, err
+		}
+	}
 	if err := s.store.Put(ctx, n, prev); err != nil {
 		return orchapi.Network{}, err
 	}
 	ev := orchapi.Event{Time: s.clock.Now(), Type: EventApplied, Subject: name, Detail: map[string]string{"by": by, "prefix": n.Prefix}}
 	return n, s.log.AppendEvent(ctx, ev)
+}
+
+// clear refuses a network whose prefix overlaps an address pool.
+func (s *Service) clear(ctx context.Context, n orchapi.Network) error {
+	pools, err := s.pools.ListPools(ctx)
+	if err != nil {
+		return err
+	}
+	p, _ := netip.ParsePrefix(n.Prefix)
+	for _, pool := range pools {
+		for _, c := range pool.CIDRs {
+			if q, err := netip.ParsePrefix(c); err == nil && q.Overlaps(p) {
+				return fmt.Errorf("%w: prefix %s overlaps %s of address pool %s", inventory.ErrConflict, n.Prefix, c, pool.Name)
+			}
+		}
+	}
+	return nil
 }
 
 // Get returns the network.

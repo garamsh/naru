@@ -15,14 +15,19 @@ import (
 	"github.com/garamsh/naru/lib/orchapi"
 )
 
-// Lease timing (ADR 0085 item 5). A host removes an address LeaseSeconds after its last renewal;
-// orch renews every pass, so the pass interval is a third of the lease.
+// Lease timing (ADR 0085 item 5). A host removes an address LeaseSeconds after it received the
+// last renewal; orch renews every pass, so the pass interval is a third of the lease.
 const (
 	LeaseSeconds    = 15
 	DefaultInterval = LeaseSeconds * time.Second / 3
 	// Skew is added to a lease's deadline before orch moves its address to another host that did
 	// not confirm the release.
 	Skew = 2 * time.Second
+	// CallTimeout bounds every call of a pass to the hosts, and the write of the deadline before
+	// a renewal. A host cannot receive a renewal later than CallTimeout after the deadline was
+	// computed, so the deadline stored is never earlier than the end of the host's lease; and one
+	// host that does not answer delays no other exposure's renewal for longer than this.
+	CallTimeout = 2 * time.Second
 )
 
 // Host is an admitted host the reconciler may lease an address to. LAN is the interface it
@@ -58,12 +63,14 @@ type Hosts interface {
 type Exposures interface {
 	ListExposures(ctx context.Context) ([]Record, error)
 	UpdateExposure(ctx context.Context, r, prev Record) error
+	DeleteExposure(ctx context.Context, r Record) error
 }
 
 // Config is what NewReconciler needs. Whoever holds the leader lease constructs and runs one.
 type Config struct {
 	Hosts     Hosts
 	Exposures Exposures
+	Networks  Networks
 	Clock     Clock
 	Interval  time.Duration
 	Log       *slog.Logger
@@ -73,6 +80,7 @@ type Config struct {
 type Reconciler struct {
 	hosts    Hosts
 	store    Exposures
+	networks Networks
 	clock    Clock
 	interval time.Duration
 	log      *slog.Logger
@@ -83,7 +91,7 @@ func NewReconciler(c Config) *Reconciler {
 	if c.Interval <= 0 {
 		c.Interval = DefaultInterval
 	}
-	return &Reconciler{hosts: c.Hosts, store: c.Exposures, clock: c.Clock, interval: c.Interval, log: c.Log}
+	return &Reconciler{hosts: c.Hosts, store: c.Exposures, networks: c.Networks, clock: c.Clock, interval: c.Interval, log: c.Log}
 }
 
 // Run reconciles every interval until ctx ends, and returns ctx's error.
@@ -122,11 +130,24 @@ func Choose(address, network string, hosts []Host) (string, bool) {
 // Reconcile runs one pass. For each exposure it renews the lease on its host while that host is
 // still the choice. An address moves only after the old host confirmed that it removed it, or
 // after the old lease's deadline and Skew have passed, so at most one host holds an address except
-// for a clock skew beyond Skew. A lease on a host for an address no exposure holds is removed.
+// for a clock skew beyond Skew. The same rule frees the address of an exposure being released and
+// of one whose network is gone. A lease on a host for an address no exposure holds is removed.
+// Every call is bounded by CallTimeout and each exposure and host is served on its own, so one
+// host that hangs delays no other renewal.
 func (r *Reconciler) Reconcile(ctx context.Context) error {
-	hosts, err := r.hosts.List(ctx)
+	lctx, cancel := context.WithTimeout(ctx, CallTimeout)
+	hosts, err := r.hosts.List(lctx)
+	cancel()
 	if err != nil {
 		return fmt.Errorf("list hosts: %w", err)
+	}
+	nets, err := r.networks.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list networks: %w", err)
+	}
+	live := map[string]bool{}
+	for _, n := range nets {
+		live[n.Name] = true
 	}
 	recs, err := r.store.ListExposures(ctx)
 	if err != nil {
@@ -135,56 +156,78 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].ID < hosts[j].ID })
 	var errs []error
 	var mu sync.Mutex
+	fail := func(err error) {
+		mu.Lock()
+		errs = append(errs, err)
+		mu.Unlock()
+	}
 	var wg sync.WaitGroup
 	for _, rec := range recs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := r.one(ctx, hosts, rec); err != nil {
-				mu.Lock()
-				errs = append(errs, fmt.Errorf("exposure %s: %w", rec.ID, err))
-				mu.Unlock()
+			if err := r.one(ctx, hosts, live[rec.Network], rec); err != nil {
+				fail(fmt.Errorf("exposure %s: %w", rec.ID, err))
 			}
 		}()
 	}
 	wg.Wait()
-	known := map[string]string{}
+	known := map[string]bool{}
 	for _, rec := range recs {
-		known[rec.Address] = rec.ID
+		known[rec.Address] = true
 	}
 	for _, h := range hosts {
-		held, err := r.hosts.Held(ctx, h.ID)
-		if err != nil {
-			r.log.Warn("host skipped: no leases", "host", h.ID, "err", err.Error())
-			continue
-		}
-		for _, a := range held {
-			if _, ok := known[a]; ok {
-				continue
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hctx, cancel := context.WithTimeout(ctx, CallTimeout)
+			defer cancel()
+			held, err := r.hosts.Held(hctx, h.ID)
+			if err != nil {
+				r.log.Warn("host skipped: no leases", "host", h.ID, "err", err.Error())
+				return
 			}
-			if err := r.hosts.Delete(ctx, h.ID, a); err != nil {
-				errs = append(errs, fmt.Errorf("remove %s from host %s: %w", a, h.ID, err))
+			for _, a := range held {
+				if known[a] {
+					continue
+				}
+				if err := r.hosts.Delete(hctx, h.ID, a); err != nil {
+					fail(fmt.Errorf("remove %s from host %s: %w", a, h.ID, err))
+				}
 			}
-		}
+		}()
 	}
+	wg.Wait()
 	return errors.Join(errs...)
 }
 
-func (r *Reconciler) one(ctx context.Context, hosts []Host, rec Record) error {
-	now := r.clock.Now()
-	want, ok := Choose(rec.Address, rec.Network, hosts)
-	answers := func(id string) bool {
-		return slices.ContainsFunc(hosts, func(h Host) bool { return h.ID == id })
+// vacated reports whether the host that holds the exposure's address no longer does: it answered
+// that it removed it, or its lease and Skew have passed.
+func (r *Reconciler) vacated(ctx context.Context, hosts []Host, rec Record, now time.Time) bool {
+	if rec.Host == "" {
+		return true
 	}
+	if slices.ContainsFunc(hosts, func(h Host) bool { return h.ID == rec.Host }) && r.hosts.Delete(ctx, rec.Host, rec.Address) == nil {
+		return true
+	}
+	return !now.Before(rec.LeaseUntil.Add(Skew))
+}
+
+func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, rec Record) error {
+	start := r.clock.Now()
+	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
+	if rec.Phase == PhaseReleasing || !networkLive {
+		if !r.vacated(ctx, hosts, rec, start) {
+			return nil // its lease may still run: wait for the confirmation or the deadline
+		}
+		return r.store.DeleteExposure(ctx, rec)
+	}
+	want, ok := Choose(rec.Address, rec.Network, hosts)
 	next := rec
 	if rec.Host != "" && rec.Host != want {
-		// The holder is no longer the choice, or there is none: release it first.
-		released := false
-		if answers(rec.Host) {
-			released = r.hosts.Delete(ctx, rec.Host, rec.Address) == nil
-		}
-		if !released && now.Before(rec.LeaseUntil.Add(Skew)) {
-			return nil // its lease may still run: wait for the confirmation or the deadline
+		if !r.vacated(ctx, hosts, rec, start) {
+			return nil
 		}
 		next.Host, next.LeaseUntil, next.Phase = "", time.Time{}, orchapi.ExposurePending
 		if err := r.store.UpdateExposure(ctx, next, rec); err != nil {
@@ -199,14 +242,14 @@ func (r *Reconciler) one(ctx context.Context, hosts []Host, rec Record) error {
 		}
 		return nil
 	}
-	// The deadline is stored before the host is asked, so a crash between the two leaves a record
-	// that waits at least as long as the lease the host may have taken.
-	until := now.Add(LeaseSeconds * time.Second)
+	// The deadline is stored before the host is asked, and the store write and the renewal both
+	// end within CallTimeout of start. The host receives the renewal by then and holds the address
+	// LeaseSeconds after that, so this is never earlier than the end of its lease, however long
+	// the renewal takes or whichever leader asks next.
+	until := start.Add(CallTimeout + LeaseSeconds*time.Second)
 	next.Host, next.LeaseUntil = want, until
-	if !next.Equal(rec) {
-		if err := r.store.UpdateExposure(ctx, next, rec); err != nil {
-			return err
-		}
+	if err := r.store.UpdateExposure(ctx, next, rec); err != nil {
+		return err
 	}
 	l := Lease{Network: rec.Network, Ports: rec.Ports, Backends: rec.Backends, ProxyProtocol: rec.ProxyProtocol, Seconds: LeaseSeconds}
 	if err := r.hosts.Put(ctx, want, rec.Address, l); err != nil {
