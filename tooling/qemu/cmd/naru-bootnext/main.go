@@ -28,7 +28,7 @@ func main() {
 	sys := flag.String("sys", "/sys/class/block", "the directory of the kernel's block devices")
 	dev := flag.String("dev", "/dev", "the directory of the device nodes")
 	flag.Parse()
-	disk, esp, err := findESP(*sys, *dev, wire.ESPGUID)
+	esp, disk, err := upgrade.FindESP(*sys, *dev, wire.ESPGUID)
 	if err == nil {
 		err = run(disk, esp)
 	}
@@ -76,29 +76,6 @@ func run(disk, espDev string) error {
 	next, nextErr := efivar.Uint16(efivar.Dir, "BootNext")
 	fmt.Printf("naru56-efi: BootCurrent=%s BootNext=%s trial=%t\n", show(cur, curErr), show(next, nextErr), err == nil)
 	return nil
-}
-
-// findESP returns the device node of the boot disk and of the partition whose PARTUUID is guid, found
-// in sysClassBlock the way naru-init finds it, so the kernel's order of naming the disks does not matter.
-func findESP(sysClassBlock, devDir, guid string) (disk, esp string, err error) {
-	entries, err := os.ReadDir(sysClassBlock)
-	if err != nil {
-		return "", "", err
-	}
-	for _, e := range entries {
-		dir := filepath.Join(sysClassBlock, e.Name())
-		uevent, err := os.ReadFile(filepath.Join(dir, "uevent"))
-		if err != nil || !upgrade.HasPartUUID(string(uevent), guid) {
-			continue
-		}
-		// A partition's sysfs entry lies under its disk's.
-		real, err := filepath.EvalSymlinks(dir)
-		if err != nil {
-			return "", "", err
-		}
-		return filepath.Join(devDir, filepath.Base(filepath.Dir(real))), filepath.Join(devDir, e.Name()), nil
-	}
-	return "", "", fmt.Errorf("no partition has the GUID %s", guid)
 }
 
 func show(n uint16, err error) string {

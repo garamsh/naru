@@ -1,4 +1,4 @@
-package main
+package upgrade_test
 
 import (
 	"os"
@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/init/upgrade"
 	"github.com/garamsh/naru/lib/wire"
 )
 
@@ -26,6 +27,9 @@ func sysfs(t *testing.T, disks map[string]map[string]string) string {
 			p := filepath.Join(d, part)
 			require.NoError(t, os.MkdirAll(p, 0o755))
 			require.NoError(t, os.WriteFile(filepath.Join(p, "uevent"), []byte("DEVTYPE=partition\nPARTUUID="+uuid+"\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(p, "partition"), []byte("1\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(p, "start"), []byte("2048\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(p, "size"), []byte("1024\n"), 0o644))
 			require.NoError(t, os.Symlink(p, filepath.Join(class, part)))
 		}
 	}
@@ -38,17 +42,17 @@ func TestFindESP_FollowsThePartitionGUIDNotTheDiskName(t *testing.T) {
 		"sdb": {"sdb1": wire.ESPGUID, "sdb2": "66666666-2222-3333-4444-555555555555"},
 	})
 
-	disk, esp, err := findESP(class, "/dev", wire.ESPGUID)
+	part, disk, err := upgrade.FindESP(class, "/dev", wire.ESPGUID)
 
 	require.NoError(t, err)
+	assert.Equal(t, "/dev/sdb1", part)
 	assert.Equal(t, "/dev/sdb", disk, "the boot disk is the one holding the ESP, not sda")
-	assert.Equal(t, "/dev/sdb1", esp)
 }
 
 func TestFindESP_FailsWhenNoPartitionHasTheGUID(t *testing.T) {
 	class := sysfs(t, map[string]map[string]string{"sda": {"sda1": "11111111-2222-3333-4444-555555555555"}})
 
-	_, _, err := findESP(class, "/dev", wire.ESPGUID)
+	_, _, err := upgrade.FindESP(class, "/dev", wire.ESPGUID)
 
 	assert.ErrorContains(t, err, "no partition has the GUID")
 }
