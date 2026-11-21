@@ -1,0 +1,60 @@
+add table inet naru
+delete table inet naru
+table inet naru {
+	set leased {
+		type ipv4_addr; flags timeout;
+		elements = { 192.168.0.80 timeout 1s }
+	}
+	set net_a {
+		type ipv4_addr
+		flags interval
+		elements = { 10.0.0.3, 10.0.2.7, 10.8.0.0/16 }
+	}
+	set net_b {
+		type ipv4_addr
+		flags interval
+		elements = { 10.0.0.4, 10.9.0.0/16 }
+	}
+	set networks {
+		type ipv4_addr
+		flags interval
+		elements = { 10.0.0.3, 10.0.0.4, 10.0.2.7, 10.8.0.0/16, 10.9.0.0/16 }
+	}
+	set members {
+		type ipv4_addr
+		flags interval
+		elements = { 10.0.0.3, 10.0.0.4, 10.8.1.0/24, 10.9.1.0/24 }
+	}
+	chain input {
+		type filter hook input priority 0; policy accept;
+		ct state established,related accept
+		iifname "tap*" counter drop comment "microVM to the host"
+		ip saddr @net_a counter drop comment "a to the host"
+		ip saddr @net_b counter drop comment "b to the host"
+	}
+	chain forward {
+		type filter hook forward priority 0; policy drop;
+		ct state established,related accept
+		iifname "lan0" ip daddr { 10.8.0.5, 10.8.0.6 } tcp dport 30080 ct status dnat ct original ip daddr @leased ct state new accept comment "192.168.0.80:80"
+		iifname "lan0" ip daddr { 10.8.0.5, 10.8.0.6 } udp dport 30053 ct status dnat ct original ip daddr @leased ct state new accept comment "192.168.0.80:53"
+		iifname "tap*" ip saddr != @members counter drop comment "forged source"
+		ip saddr 172.16.0.0/24 ip daddr 10.8.0.2 accept comment "management to a's API endpoint"
+		ip saddr @net_a ip daddr @net_a accept comment "a inside its set"
+		ip saddr @net_a ip daddr @networks counter drop comment "a to another network"
+		ip saddr @net_a ip daddr 172.16.0.0/24 counter drop comment "a to management"
+		ip saddr @net_a oifname "eth0" accept comment "a egress"
+		ip saddr @net_b ip daddr @net_b accept comment "b inside its set"
+		ip saddr @net_b ip daddr @networks counter drop comment "b to another network"
+		ip saddr @net_b ip daddr 172.16.0.0/24 counter drop comment "b to management"
+		ip saddr @net_b oifname "eth0" accept comment "b egress"
+	}
+	chain exposure_dnat {
+		type nat hook prerouting priority dstnat; policy accept;
+		iifname "lan0" ip daddr 192.168.0.80 ip daddr @leased tcp dport 80 dnat ip to numgen random mod 2 map { 0 : 10.8.0.5 . 30080, 1 : 10.8.0.6 . 30080 } comment "a"
+		iifname "lan0" ip daddr 192.168.0.80 ip daddr @leased udp dport 53 dnat ip to numgen random mod 2 map { 0 : 10.8.0.5 . 30053, 1 : 10.8.0.6 . 30053 } comment "a"
+	}
+	chain exposure_snat {
+		type nat hook postrouting priority srcnat; policy accept;
+		iifname "lan0" ct status dnat ct original ip daddr @leased masquerade
+	}
+}
