@@ -3,6 +3,7 @@
 package tests_test
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -21,6 +22,7 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
+	"github.com/garamsh/naru/tooling/qemu/internal/release"
 )
 
 // The tests of the in-place upgrade (ADR 0025) run one Node on the boot disk the build made, with
@@ -106,6 +108,19 @@ func freeLoopbackPort(t *testing.T) int {
 func bundleFor(t *testing.T, kind, version string) (bundle, sums string) {
 	t.Helper()
 	return bundleOf(t, filepath.Join(os.Getenv("NARU_UPGRADE_DIR"), kind, "bzImage"), version)
+}
+
+// bundleWithExtensionFor is bundleFor with the naru-orch extension that make image-upgrade built for
+// the kernel's version, as the release's bundle carries it (ADR 0084). It also returns the extension's
+// SHA-256, which `naructl extension list` shows.
+func bundleWithExtensionFor(t *testing.T, kind, version string) (bundle, sums, extSHA string) {
+	t.Helper()
+	dir := os.Getenv("NARU_UPGRADE_DIR")
+	image := filepath.Join(dir, kind, fixture.ExtensionDir, fixture.ExtensionImageName)
+	raw, err := os.ReadFile(image)
+	require.NoError(t, err)
+	bundle, sums = bundleOf(t, filepath.Join(dir, kind, "bzImage"), version, release.BundleExtension{Name: fixture.ExtensionName, Path: image})
+	return bundle, sums, fmt.Sprintf("%x", sha256.Sum256(raw))
 }
 
 // upgradeState is what `naructl upgrade --status` prints.
@@ -247,9 +262,16 @@ func TestNode_UpgradeToAKernelThatRefusesIsRolledBackByTheNodeToTheVersionBefore
 // control host before its upgrade (ADR 0055).
 func startUpgradeNodeMounting(t *testing.T) (*node.Node, string) {
 	t.Helper()
+	return startUpgradeNodeNaming(t, "{name: naru-orch, sha256: "+inputs.Extension.SHA256+"}")
+}
+
+// startUpgradeNodeNaming is startUpgradeNodeMounting for the entry of spec.extensions given as YAML.
+// An entry with no sha256 is resolved by init to the image built for its version (ADR 0084).
+func startUpgradeNodeNaming(t *testing.T, entry string) (*node.Node, string) {
+	t.Helper()
 	nd, admin := startUpgradeNode(t)
 	ext := inputs.Extension
-	patch := "spec:\n  extensions:\n    - {name: naru-orch, sha256: " + ext.SHA256 + "}\n"
+	patch := "spec:\n  extensions:\n    - " + entry + "\n"
 	r := ctl(admin, "apply", "-f", patchFile(t, patch), "--mode", "staged")
 	require.NoError(t, r.Err, r.refusal())
 	require.NoError(t, nd.Reboot())
@@ -279,4 +301,51 @@ func TestNode_UpgradeIsRefusedByTheNodeWith422WhenAnExtensionEntryHasNoImageForT
 	assert.Equal(t, before.BootID, after.BootID, "the Node was not rebooted")
 	assert.Contains(t, after.Outcome, "none has ended", "and no upgrade started")
 	assert.NotContains(t, nd.Console(), "upgrade staged")
+}
+
+func TestNode_UpgradeCarriesTheExtensionAnUnpinnedEntryNamesAndTheNodeComesBackOnItWithOrchUp(t *testing.T) {
+	want := os.Getenv("NARU_VERSION")
+	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
+	next := want + "-next"
+	nd, admin := startUpgradeNodeNaming(t, "{name: naru-orch}")
+	old := inputs.Extension.SHA256
+	bundle, sums, newSHA := bundleWithExtensionFor(t, "next", next)
+	require.NotEqual(t, old, newSHA, "the extension of the next version is another image")
+
+	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
+
+	require.NoError(t, r.Err, r.refusal())
+	awaitRestarting(t, nd, "the Node runs the next version and has promoted it", func() bool {
+		s, err := statusOf(tool, admin)
+		return err == nil && s.Version == next && s.Slot == "default" && strings.Contains(s.Outcome, "promoted")
+	})
+	eventually(t, "the Node mounts the extension the bundle carried and has removed the old one", func() bool {
+		rows := extensionRows(t, admin)
+		_, oldStored := rows[old]
+		return rows[newSHA] != nil && rows[newSHA][len(rows[newSHA])-1] == "/usr/lib/naru/extensions/naru-orch" && !oldStored
+	})
+	services := ctl(admin, "services")
+	require.NoError(t, services.Err, services.refusal())
+	assert.Contains(t, services.Stdout, "naru-orchd", "orch runs from the extension of the new version")
+}
+
+func TestNode_ARefusedUpgradeThatCarriedAnExtensionRollsBackToTheOldExtensionAndRemovesTheNewOne(t *testing.T) {
+	want := os.Getenv("NARU_VERSION")
+	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
+	nd, admin := startUpgradeNodeNaming(t, "{name: naru-orch}")
+	old := inputs.Extension.SHA256
+	bundle, sums, refusedSHA := bundleWithExtensionFor(t, "refuse", want+"-refuse")
+
+	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
+
+	require.NoError(t, r.Err, r.refusal())
+	awaitRestarting(t, nd, "the Node is back on its version and has rolled the upgrade back", func() bool {
+		s, err := statusOf(tool, admin)
+		return err == nil && s.Version == want && s.Slot == "default" && strings.Contains(s.Outcome, "rolled back")
+	})
+	eventually(t, "the old extension is mounted and the refused version's is gone", func() bool {
+		rows := extensionRows(t, admin)
+		_, refusedStored := rows[refusedSHA]
+		return rows[old] != nil && rows[old][len(rows[old])-1] == "/usr/lib/naru/extensions/naru-orch" && !refusedStored
+	})
 }
