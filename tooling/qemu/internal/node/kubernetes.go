@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
@@ -49,6 +50,11 @@ type KubeSpec struct {
 	// volumes (naru-local: XFS, mounted by init, the first storage disk) or offers whole as a block
 	// volume (naru-block), so that the volume add-on has a disk to serve (ADR 0083).
 	VolumeDisk string
+	// ServiceAccountIssuers are gen kubernetes --service-account-issuer, the first of which signs
+	// (ADR 0087), and ServiceAccountAlgorithm is --service-account-algorithm. A cluster with issuers
+	// keeps the authority's directory until Stop, as CADir, so that a test reads the signing key.
+	ServiceAccountIssuers   []string
+	ServiceAccountAlgorithm string
 }
 
 // The extra disk of a cluster that serves volumes (KubeSpec.VolumeDisk).
@@ -101,14 +107,29 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 	}
 	// The CA's directory goes once the Nodes' user-data is written: it holds the authority's key, the
 	// ServiceAccount key and admin.conf. The administrator keeps a copy of admin.conf.
-	if len(spec.Late) == 0 {
+	keep := len(spec.Late) > 0 || len(spec.ServiceAccountIssuers) > 0
+	if !keep {
 		defer func() { _ = os.RemoveAll(caDir) }()
 	}
 	if err := spec.Naructl.GenCA(caDir); err != nil {
 		return nil, err
 	}
 	apiServer := QEMUNetwork(1, total).IP
-	if err := spec.Naructl.GenKubernetes(caDir, apiServer, "127.0.0.1:"+strconv.Itoa(port), spec.DisableAddons...); err != nil {
+	if len(spec.ServiceAccountIssuers) > 0 {
+		args := []string{"gen", "kubernetes", "--ca-dir", caDir, "--endpoint", apiServer, "--admin-address", "127.0.0.1:" + strconv.Itoa(port)}
+		for _, name := range spec.DisableAddons {
+			args = append(args, "--disable-addon", name)
+		}
+		for _, issuer := range spec.ServiceAccountIssuers {
+			args = append(args, "--service-account-issuer", issuer)
+		}
+		if spec.ServiceAccountAlgorithm != "" {
+			args = append(args, "--service-account-algorithm", spec.ServiceAccountAlgorithm)
+		}
+		if r := spec.Naructl.Run(args...); r.Err != nil {
+			return nil, fmt.Errorf("naructl %s: %w: %s", strings.Join(args, " "), r.Err, r.Stderr)
+		}
+	} else if err := spec.Naructl.GenKubernetes(caDir, apiServer, "127.0.0.1:"+strconv.Itoa(port), spec.DisableAddons...); err != nil {
 		return nil, err
 	}
 	var apiPort int
@@ -140,7 +161,7 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 		Image:      spec.Inputs.Image.Repository + "@" + spec.Inputs.Image.Digest,
 		spec:       spec, caDir: caDir, apiServer: apiServer, total: total, hostPort: port, APIAdmin: apiAdmin,
 	}
-	if len(spec.Late) > 0 {
+	if keep {
 		c.CADir = caDir
 	}
 	// The sandbox runs the image's command with no arguments, which would serve the microVM probe on

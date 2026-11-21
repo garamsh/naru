@@ -185,7 +185,8 @@ func genCommands() *cobra.Command {
 		leaf("etcd-client", "write ca.crt, tls.crt and tls.key, a client pair etcd's members accept", genEtcdClient),
 		leaf("token", "write a Node's bootstrap token, if none is there", genToken),
 		leaf("node", "write a Node's user data", genNode),
-		leaf("kubernetes", "write the front-proxy authority, the ServiceAccount keys and admin.conf", genKubernetes),
+		leaf("kubernetes", "write the front-proxy authority, the ServiceAccount keys and issuers, and admin.conf", genKubernetes),
+		leaf("kubernetes-jwks", "write the OpenID Connect discovery document and key set of the first ServiceAccount issuer, to publish", genKubernetesJWKS),
 		leaf("kubernetes-node", "write a Kubernetes Node's user data", genKubernetesNode),
 		leaf("kubernetes-bootstrap-rbac", "print the RBAC manifest a cluster that takes bootstrap tokens needs", kubernetesBootstrapRBAC),
 	)
