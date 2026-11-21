@@ -3,7 +3,6 @@ package apply
 import (
 	"fmt"
 	"slices"
-	"strings"
 )
 
 // deleteKey marks a keyed element of a patch that removes the element.
@@ -63,23 +62,26 @@ func merge(target, patch any, field string) (any, error) {
 	return out, nil
 }
 
+// ident is what identifies an element of a keyed list: the field that holds it and its value.
+type ident struct{ field, value string }
+
 // mergeKeyed merges the elements of patch into existing by key. An element
 // with a new key is appended, one with "$patch": "delete" removes its element,
 // and any other is merged into the element with the same key.
 func mergeKeyed(existing, patch []any, key, fallback, field string) ([]any, error) {
 	out := slices.Clone(existing)
-	// identity is the key of an element, or the fallback when it has no key, tagged so that the
-	// two never match each other.
-	identity := func(m map[string]any) string {
+	// identity is the key of an element, or the fallback when it has no key; the two never match
+	// each other.
+	identity := func(m map[string]any) ident {
 		if s, _ := m[key].(string); s != "" {
-			return key + ":" + s
+			return ident{key, s}
 		}
 		if s, _ := m[fallback].(string); s != "" && fallback != "" {
-			return fallback + ":" + s
+			return ident{fallback, s}
 		}
-		return ""
+		return ident{}
 	}
-	find := func(id string) int {
+	find := func(id ident) int {
 		return slices.IndexFunc(out, func(e any) bool {
 			m, _ := e.(map[string]any)
 			return identity(m) == id
@@ -92,17 +94,16 @@ func mergeKeyed(existing, patch []any, key, fallback, field string) ([]any, erro
 			return nil, &InvalidError{Fields: []string{el}, Message: "must be an object"}
 		}
 		id := identity(m)
-		if id == "" {
-			return nil, &InvalidError{Fields: []string{el + "." + key}, Message: fmt.Sprintf("must be the %s of the element", key)}
+		if id == (ident{}) {
+			return nil, &InvalidError{Fields: []string{el + "." + key}, Message: missingKey(key, fallback)}
 		}
-		name := id[strings.Index(id, ":")+1:]
 		at := find(id)
 		if op, has := m[deleteKey]; has {
 			if op != "delete" {
 				return nil, &InvalidError{Fields: []string{el + "." + deleteKey}, Message: fmt.Sprintf("must be %q, got %v", "delete", op)}
 			}
 			if at < 0 {
-				return nil, &InvalidError{Fields: []string{el}, Message: fmt.Sprintf("deletes %q, which %s does not hold", name, field)}
+				return nil, &InvalidError{Fields: []string{el}, Message: fmt.Sprintf("deletes %q, which %s does not hold", id.value, field)}
 			}
 			out = slices.Delete(out, at, at+1)
 			continue
@@ -148,4 +149,12 @@ func clone(v any) any {
 		return out
 	}
 	return v
+}
+
+// missingKey says what an element without an identity lacks.
+func missingKey(key, fallback string) string {
+	if fallback == "" {
+		return fmt.Sprintf("must be the %s of the element", key)
+	}
+	return fmt.Sprintf("must be the %s of the element, or its %s where it has no %s", key, fallback, key)
 }

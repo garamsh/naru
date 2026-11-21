@@ -238,10 +238,15 @@ func stageExtension(extensions *extension.Manager) func(name, sha256, version st
 	}
 }
 
-// pruneExtensions removes the images built for another version that the configuration does not pin.
+// pruneExtensions removes the images built for another version than init's that no pinned entry of
+// the configuration names.
 func pruneExtensions(configs *store.Store, extensions *extension.Manager, log *slog.Logger) {
 	st, err := configs.Load()
+	if errors.Is(err, store.ErrNotFound) {
+		return // nothing is known to be pinned, so nothing is removed
+	}
 	if err != nil {
+		log.Error("read the configuration to remove the extension images of another version", "err", err)
 		return
 	}
 	if _, err := extensions.Prune(st.Config.Spec.Extensions); err != nil {

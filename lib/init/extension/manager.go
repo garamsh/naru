@@ -182,42 +182,31 @@ func (m *Manager) Stage(body io.Reader, digest, name, version string) (img Image
 	return img, added, nil
 }
 
-// Prune removes the stored images that no pinned entry of specs names, whose name an unpinned entry
-// lists, and that are built for another version than init's. It returns their digests. A pinned
-// image is the operator's and stays (ADR 0084).
+// Prune removes the stored images that are built for another version than init's and that no
+// pinned entry of specs names, and returns their digests. A pinned image is the operator's and
+// stays; so does one that is mounted. It tries every image and returns the failures joined
+// (ADR 0084).
 func (m *Manager) Prune(specs []config.Extension) ([]string, error) {
 	stored, err := m.store.List()
 	if err != nil {
 		return nil, err
 	}
 	var removed []string
+	var errs []error
 	for _, img := range stored {
-		if img.Version == m.version || !m.prunable(img, specs) {
+		if img.Version == m.version || slices.ContainsFunc(specs, func(e config.Extension) bool { return e.SHA256 == img.SHA256 }) {
 			continue
 		}
-		if err := m.Delete(img.SHA256); err != nil {
-			if errors.Is(err, ErrMounted) {
-				continue
-			}
-			return removed, err
-		}
-		removed = append(removed, img.SHA256)
-		m.log.Info("extension image removed: built for another naru version than this", "name", img.Name, "sha256", img.SHA256, "version", img.Version)
-	}
-	return removed, nil
-}
-
-func (m *Manager) prunable(img Image, specs []config.Extension) bool {
-	unpinned := false
-	for _, e := range specs {
-		switch {
-		case e.SHA256 == img.SHA256:
-			return false
-		case e.SHA256 == "" && e.Name == img.Name:
-			unpinned = true
+		switch err := m.Delete(img.SHA256); {
+		case errors.Is(err, ErrMounted):
+		case err != nil:
+			errs = append(errs, fmt.Errorf("remove %s: %w", img.SHA256, err))
+		default:
+			removed = append(removed, img.SHA256)
+			m.log.Info("extension image removed: built for another naru version than this", "name", img.Name, "sha256", img.SHA256, "version", img.Version)
 		}
 	}
-	return unpinned
+	return removed, errors.Join(errs...)
 }
 
 // Put stores the image read from body, whose SHA-256 must be digest.
