@@ -62,7 +62,7 @@ func main() {
 		netEach     = flag.Duration("network-interval", netrec.DefaultInterval, "the pause between the network reconciler's passes")
 		bsStore     = flag.String("boot-set-store", "", "https URL or directory of the release assets the Node boot sets are added from; empty adds none")
 		bsRoot      = flag.String("boot-set-trust-root", "", "the Sigstore trusted_root.json that verifies a release; defaults to the public-good root built in")
-		bsIdentity  = flag.String("boot-set-identity", "", "the certificate identity a release is signed by; a trailing * is a prefix of at least https://github.com/<owner>/<repo>/; defaults to the release workflow of garamsh/naru at the version's tag")
+		bsIdentity  = flag.String("boot-set-identity", release.DefaultIdentity, "the certificate identity a release is signed by; a trailing * is a prefix of at least https://github.com/<owner>/<repo>/; \"{version}\" is the version asked for; the default is the release workflow of garamsh/naru at that version's tag; empty is an error")
 		bsIssuer    = flag.String("boot-set-issuer", release.DefaultIssuer, "the OIDC issuer of the certificate a release is signed with")
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 	)

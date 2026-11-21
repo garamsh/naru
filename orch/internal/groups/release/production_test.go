@@ -48,7 +48,7 @@ func copyDev13(t *testing.T) string {
 // an observer timestamp and an inclusion proof) against the bundle the release workflow made.
 // Each refusal is read beside the same release accepted.
 func TestProductionVerifierOnTheDev13Release(t *testing.T) {
-	good := Config{Location: copyDev13(t), Issuer: DefaultIssuer}
+	good := Config{Location: copyDev13(t), Issuer: DefaultIssuer, Identity: DefaultIdentity}
 	set, err := mustNew(t, good).Fetch(context.Background(), dev13Version)
 	if err != nil {
 		t.Fatalf("the published release does not verify: %v", err)
@@ -96,7 +96,7 @@ func TestProductionVerifierOnTheDev13Release(t *testing.T) {
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			cfg := Config{Location: copyDev13(t), Issuer: DefaultIssuer}
+			cfg := Config{Location: copyDev13(t), Issuer: DefaultIssuer, Identity: DefaultIdentity}
 			if c.config != nil {
 				c.config(&cfg)
 			}

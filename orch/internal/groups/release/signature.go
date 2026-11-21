@@ -23,17 +23,15 @@ var trustedRootJSON []byte
 type signature struct {
 	verifier *verify.Verifier
 	issuer   string
-	// identity is the signer, or a prefix ending in "*" (see checkIdentity); empty means the
-	// release workflow at the tag of the version checked.
+	// identity is the signer, or a prefix ending in "*" (see checkIdentity); "{version}" in it is
+	// the version checked.
 	identity string
 	// parse reads a bundle; a test replaces it.
 	parse func(raw []byte) (verify.SignedEntity, error)
 }
 
-// defaultIdentity is the release workflow of this repository at the tag of version.
-func defaultIdentity(version string) string {
-	return "https://github.com/garamsh/naru/.github/workflows/release.yml@refs/tags/" + version
-}
+// DefaultIdentity is the release workflow of this repository at the tag of the version checked.
+const DefaultIdentity = "https://github.com/garamsh/naru/.github/workflows/release.yml@refs/tags/{version}"
 
 // githubRepoPrefix matches the start of a prefix identity that names one GitHub repository: the
 // issuer is shared by every repository, so a shorter prefix accepts workflows of others.
@@ -42,6 +40,9 @@ var githubRepoPrefix = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9_.-]+/
 // checkIdentity refuses an identity that is a prefix (ends in "*") shorter than
 // https://github.com/<owner>/<repo>/, or that has a "*" elsewhere.
 func checkIdentity(identity string) error {
+	if identity == "" {
+		return errors.New("boot set identity is empty: leave the flag out for the release workflow at the version's tag")
+	}
 	p, isPrefix := strings.CutSuffix(identity, "*")
 	if strings.Contains(p, "*") {
 		return errors.New("boot set identity may have a * only at its end")
@@ -53,8 +54,7 @@ func checkIdentity(identity string) error {
 }
 
 // newSignature is the check against the trusted root at rootPath, or the embedded one when
-// rootPath is empty, for the certificates issued by issuer to identity, or to the release
-// workflow at the tag of the version when identity is empty.
+// rootPath is empty, for the certificates issued by issuer to identity, which is not empty.
 func newSignature(rootPath, issuer, identity string) (signature, error) {
 	var tm root.TrustedMaterial
 	var err error
@@ -87,10 +87,7 @@ func newSignatureWith(tm root.TrustedMaterial, issuer, identity string, opts ...
 
 // certificateIdentity is what a certificate must name to have signed the release of version.
 func (s signature) certificateIdentity(version string) (verify.CertificateIdentity, error) {
-	identity := s.identity
-	if identity == "" {
-		identity = defaultIdentity(version)
-	}
+	identity := strings.ReplaceAll(s.identity, "{version}", version)
 	san, sanRegex := identity, ""
 	if p, ok := strings.CutSuffix(identity, "*"); ok {
 		san, sanRegex = "", "^"+regexp.QuoteMeta(p)+".*$"
