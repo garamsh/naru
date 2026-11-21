@@ -75,6 +75,9 @@ func startExposures(t *testing.T) exposureServer {
 	p := e.as(t, ProvisionerOrganization)
 	code, b := e.do(t, p, "PUT", "/v1/networks/a", hostapi.NetworkRequest{Prefix: "10.8.0.0/16", RemoteMembers: []string{"10.0.2.7/32"}})
 	require.Equal(t, 200, code, string(b))
+	for _, a := range []string{"10.8.0.5", "10.8.0.6"} {
+		require.NoError(t, e.nets.Attach(context.Background(), network.Member{Network: "a", Address: netip.MustParseAddr(a)}))
+	}
 	return exposureServer{e, link}
 }
 
@@ -82,7 +85,7 @@ func goodExposure() hostapi.ExposureRequest {
 	return hostapi.ExposureRequest{
 		Network:      "a",
 		Ports:        []hostapi.ExposurePort{{Protocol: "tcp", Port: 443, NodePort: 30443}, {Protocol: "udp", Port: 53, NodePort: 30053}},
-		Backends:     []string{"10.8.0.5", "10.0.2.7"},
+		Backends:     []string{"10.8.0.5", "10.8.0.6"},
 		LeaseSeconds: 15,
 	}
 }
@@ -106,7 +109,7 @@ func TestExposure_PutListDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.WithinDuration(t, before.Add(15*time.Second), at, 3*time.Second, "the lease ends leaseSeconds after the request")
 	assert.True(t, e.link.has("192.168.0.80"))
-	assert.Contains(t, e.nft.ruleset(), "192.168.0.80 ip daddr @leased tcp dport 443 dnat ip to numgen random mod 2 map { 0 : 10.8.0.5 . 30443, 1 : 10.0.2.7 . 30443 }")
+	assert.Contains(t, e.nft.ruleset(), "192.168.0.80 ip daddr @leased tcp dport 443 dnat ip to numgen random mod 2 map { 0 : 10.8.0.5 . 30443, 1 : 10.8.0.6 . 30443 }")
 
 	code, b = e.do(t, r, "GET", "/v1/exposures", nil)
 	require.Equal(t, 200, code, string(b))
@@ -160,6 +163,7 @@ func TestExposure_Refusals(t *testing.T) {
 		{"protocol sctp", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].Protocol = "sctp" })},
 		{"the same port twice", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[1] = r.Ports[0] })},
 		{"no backends", ok, change(func(r *hostapi.ExposureRequest) { r.Backends = nil })},
+		{"backend on another host", ok, change(func(r *hostapi.ExposureRequest) { r.Backends = []string{"10.0.2.7"} })},
 		{"backend outside the network", ok, change(func(r *hostapi.ExposureRequest) { r.Backends = []string{"10.9.0.5"} })},
 		{"backend is not an address", ok, change(func(r *hostapi.ExposureRequest) { r.Backends = []string{"node"} })},
 		{"backend twice", ok, change(func(r *hostapi.ExposureRequest) { r.Backends = []string{"10.8.0.5", "10.8.0.5"} })},
