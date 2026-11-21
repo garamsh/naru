@@ -5,7 +5,7 @@
 #
 #   bzImage bzImage.bare initramfs.cpio.gz node-initrd.cpio.gz boot-sets.json inputs.env
 #   guest/        guest.json, the guest kernel, the Node's boot-set kernel and the two guest initrds
-#   extensions/   the naru-orch extension
+#   extensions/   the naru-orch and naru-volumes extensions
 #   gaon/ etcd/ k8s/ regtools/   the programs the tests run on the host or hand to the release
 #
 # regtools/ca-certificates.crt is the cacert package's bundle with the throwaway root of NARU_TEST_ROOT
@@ -23,7 +23,7 @@ pkgs=$2
 root=$3
 image=$4
 
-want=(mvmd gaon etcd kubernetes containerd cni ecr-login rolesanywhere cacert extension kernel-host initramfs-host initramfs-node bzImage)
+want=(mvmd gaon etcd kubernetes containerd cni ecr-login rolesanywhere cacert extension volumes kernel-host initramfs-host initramfs-node bzImage)
 tars=()
 for p in "${want[@]}"; do
   tars+=("$pkgs/$p.tar")
@@ -41,6 +41,7 @@ cp "$root/bzImage/bzImage" "$root/kernel-host/bzImage.bare" "$root/initramfs-hos
   "$root/initramfs-host/boot-sets.json" "$root/initramfs-node/node-initrd.cpio.gz" "$root/mvmd/inputs.env" "$image/"
 cp -r "$root/initramfs-host/guest" "$image/guest"
 cp -r "$root/extension/extensions" "$image/extensions"
+cp "$root"/volumes/extensions/* "$image/extensions/"
 
 mkdir -p "$image/gaon" "$image/etcd" "$image/k8s" "$image/regtools"
 cp "$root"/gaon/usr/bin/* "$image/gaon/"

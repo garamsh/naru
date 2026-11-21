@@ -1,6 +1,8 @@
 package node
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -8,9 +10,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
@@ -50,6 +52,9 @@ type KubeSpec struct {
 	// volumes (naru-local: XFS, mounted by init, the first storage disk) or offers whole as a block
 	// volume (naru-block), so that the volume add-on has a disk to serve (ADR 0083).
 	VolumeDisk string
+	// VolumesImageDir is the image directory make image wrote (its extensions/ holds naru-volumes.sqfs
+	// and .json), which a cluster with VolumeDisk stores on every Node's data disk beside naru-orch.
+	VolumesImageDir string
 }
 
 // The extra disk of a cluster that serves volumes (KubeSpec.VolumeDisk).
@@ -89,6 +94,14 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 	for _, i := range spec.Late {
 		if i < 3 {
 			return nil, errors.New("Late numbers workers after node-2")
+		}
+	}
+	if spec.VolumeDisk != "" {
+		if spec.Inputs.Extension.StoreDir == "" {
+			return nil, errors.New("a cluster that serves volumes needs the staged extension store")
+		}
+		if err := StoreVolumesExtension(spec.Inputs.Extension.StoreDir, spec.VolumesImageDir); err != nil {
+			return nil, err
 		}
 	}
 	total := 2 + len(spec.Late)
@@ -236,7 +249,16 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	if c.hostNIC() {
 		k.ExtraNIC = c.HostMAC() + "=" + HostNICPrefix
 	}
-	if err := genKubernetesNode(spec, k); err != nil {
+	switch spec.VolumeDisk {
+	case "":
+	case VolumeDiskStorage:
+		k.Storage = []string{"data1=serial:" + KubeVolumeSerial}
+	case VolumeDiskBlock:
+		k.BlockSerials = []string{KubeVolumeSerial}
+	default:
+		return nil, nil, fmt.Errorf("VolumeDisk is %q, not %q or %q", spec.VolumeDisk, VolumeDiskStorage, VolumeDiskBlock)
+	}
+	if err := spec.Naructl.GenKubernetesNode(k); err != nil {
 		return nil, nil, err
 	}
 	if userData, err = os.ReadFile(k.Out); err != nil {
@@ -246,50 +268,74 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	return userData, networkConfig, err
 }
 
-// genKubernetesNode has naructl write the Node's files. A cluster that serves volumes adds the flags
-// the harness's naructl wrapper has no field for (--storage, --block-serial), so the command is composed
-// here; the same arguments as Tool.GenKubernetesNode otherwise.
-func genKubernetesNode(spec KubeSpec, k naructl.KubernetesNode) error {
-	if spec.VolumeDisk == "" {
-		return spec.Naructl.GenKubernetesNode(k)
+// VolumesExtensionName is the system extension that carries the volume add-on (ADR 0083, 0084).
+const VolumesExtensionName = "naru-volumes"
+
+// VolumesExtensionAssets are the files of the volume extension in a directory: its image and its
+// description, as make image writes them (imageDir/extensions) and as a release names them.
+func VolumesExtensionAssets(dir string) (image, info string) {
+	return filepath.Join(dir, VolumesExtensionName+".sqfs"), filepath.Join(dir, VolumesExtensionName+".json")
+}
+
+// VolumesExtensionInfo is the description make image writes beside the extension's image.
+type VolumesExtensionInfo struct {
+	Name     string   `json:"name"`
+	Version  string   `json:"version"`
+	SHA256   string   `json:"sha256"`
+	Services []string `json:"services"`
+}
+
+var volumesDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// ReadVolumesExtensionInfo reads and checks the description at path: the extension is named
+// naru-volumes, has a version and the SHA-256 of its image, and runs no service.
+func ReadVolumesExtensionInfo(path string) (VolumesExtensionInfo, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return VolumesExtensionInfo{}, fmt.Errorf("the volume extension's description (make image): %w", err)
 	}
-	if spec.VolumeDisk != VolumeDiskStorage && spec.VolumeDisk != VolumeDiskBlock {
-		return fmt.Errorf("VolumeDisk is %q, not %q or %q", spec.VolumeDisk, VolumeDiskStorage, VolumeDiskBlock)
+	var i VolumesExtensionInfo
+	if err := json.Unmarshal(b, &i); err != nil {
+		return VolumesExtensionInfo{}, fmt.Errorf("%s: %w", path, err)
 	}
-	args := []string{"gen", "kubernetes-node", "--ca-dir", k.CA, "--name", k.Name, "--role", k.Role, "--address", k.Address,
-		"--endpoint", k.Endpoint, "--pod-network", k.PodNetwork, "--pod-prefix", k.PodPrefix, "--out", k.Out,
-		"--local-registry", "--registry-ca", k.RegistryCA, "--sandbox-image", k.SandboxImage,
-		"--network-config", k.NetworkConfig, "--mac", k.MAC, "--gateway", k.Gateway}
-	for _, v := range k.Peers {
-		args = append(args, "--peer", v)
+	if i.Name != VolumesExtensionName || i.Version == "" || len(i.Services) != 0 || !volumesDigest.MatchString(i.SHA256) {
+		return VolumesExtensionInfo{}, fmt.Errorf("%s names no %s extension with a version, a SHA-256 and no service", path, VolumesExtensionName)
 	}
-	for _, v := range k.Nameservers {
-		args = append(args, "--nameserver", v)
+	return i, nil
+}
+
+// StoreVolumesExtension lays the volume extension that make image built in imageDir (the directory
+// whose extensions/ holds it) out in storeDir, a Node's extension store: <sha256>.sqfs and its
+// manifest <sha256>.json, beside what the store holds. A Node whose spec.extensions lists
+// naru-volumes with no digest finds it there (ADR 0084).
+func StoreVolumesExtension(storeDir, imageDir string) error {
+	image, infoPath := VolumesExtensionAssets(filepath.Join(imageDir, "extensions"))
+	info, err := ReadVolumesExtensionInfo(infoPath)
+	if err != nil {
+		return err
 	}
-	if k.Search != "" {
-		args = append(args, "--search", k.Search)
+	manifest, err := json.Marshal(struct {
+		Name     string   `json:"name"`
+		Version  string   `json:"version"`
+		Services []string `json:"services"`
+	}{info.Name, info.Version, []string{}})
+	if err != nil {
+		return err
 	}
-	if k.ExtraNIC != "" {
-		args = append(args, "--extra-nic", k.ExtraNIC)
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		return err
 	}
-	for _, v := range k.Disable {
-		args = append(args, "--disable", v)
+	b, err := os.ReadFile(image)
+	if err != nil {
+		return fmt.Errorf("the volume extension's image (make image): %w", err)
 	}
-	if k.BootstrapTokens {
-		args = append(args, "--bootstrap-tokens")
+	if got := fmt.Sprintf("%x", sha256.Sum256(b)); got != info.SHA256 {
+		return fmt.Errorf("%s states SHA-256 %s, and its image is %s (make image)", infoPath, info.SHA256, got)
 	}
-	if k.Token {
-		args = append(args, "--token")
+	if err := os.WriteFile(filepath.Join(storeDir, info.SHA256+".sqfs"), b, 0o644); err != nil {
+		return err
 	}
-	if spec.VolumeDisk == VolumeDiskStorage {
-		args = append(args, "--storage", "data1=serial:"+KubeVolumeSerial)
-	} else {
-		args = append(args, "--block-serial", KubeVolumeSerial)
-	}
-	if r := spec.Naructl.Run(args...); r.Err != nil {
-		return fmt.Errorf("naructl %s: %w: %s", strings.Join(args[:2], " "), r.Err, strings.TrimSpace(r.Stderr))
-	}
-	return nil
+	return os.WriteFile(filepath.Join(storeDir, info.SHA256+".json"), manifest, 0o644)
 }
 
 // Stop ends every Node, and removes the authority's directory a cluster with Late workers kept.

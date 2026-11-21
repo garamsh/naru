@@ -25,7 +25,7 @@ variable "REFUSE_LDFLAGS" { default = "-X github.com/garamsh/naru/lib/init/linux
 # which differ from the image's in naru-init (ADR 0025), and the naru-orch extension built for the
 # next and the refusing version, which the bundles of an upgrade carry (ADR 0084).
 group "upgrade" {
-  targets = ["bzImage-next", "bzImage-refuse", "extension-next", "extension-refuse"]
+  targets = ["bzImage-next", "bzImage-refuse", "extension-next", "extension-refuse", "volumes-next", "volumes-refuse"]
 }
 
 group "default" {
@@ -217,6 +217,26 @@ target "volumes" {
   contexts = { src = "../.." }
   args     = { NARU_VERSION = NARU_VERSION }
   output   = ["type=oci,dest=${OUT}/volumes.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+# The volume add-on's extension of the next version, built from the same inputs as volumes under the
+# manifest that names ${NARU_VERSION}-next (a bundle of that version carries it, ADR 0084).
+target "volumes-next" {
+  inherits = ["_package"]
+  context  = "volumes"
+  contexts = { src = "../.." }
+  args     = { NARU_VERSION = "${NARU_VERSION}-next" }
+  output   = ["type=oci,dest=${OUT}/volumes-next.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+# The volume add-on's extension of the refuse version, built from the same inputs as volumes under the
+# manifest that names ${NARU_VERSION}-refuse (a bundle of that version carries it, ADR 0084).
+target "volumes-refuse" {
+  inherits = ["_package"]
+  context  = "volumes"
+  contexts = { src = "../.." }
+  args     = { NARU_VERSION = "${NARU_VERSION}-refuse" }
+  output   = ["type=oci,dest=${OUT}/volumes-refuse.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
 target "libseccomp" {

@@ -28,6 +28,7 @@ func TestGenKubernetesNode_PassesEveryFieldAsItsFlag(t *testing.T) {
 		LocalRegistry: true, RegistryCA: "/ca.pem", SandboxImage: "127.0.0.1:5000/x@sha256:ab",
 		Binaries: map[string]string{"kubelet": "/k", "containerd": "/c"}, Disable: []string{"kube-proxy"},
 		Out: "/o.yaml", NetworkConfig: "/nc",
+		Storage: []string{"data1=serial:S1"}, BlockSerials: []string{"S2", "S3"},
 	}))
 
 	line := argsOf(t, out)
@@ -36,6 +37,7 @@ func TestGenKubernetesNode_PassesEveryFieldAsItsFlag(t *testing.T) {
 		"--peer 10.78.0.1=10.64.1.0/24", "--local-registry", "--registry-ca /ca.pem", "--sandbox-image 127.0.0.1:5000/x@sha256:ab",
 		"--network-config /nc", "--mac 02:00:00:00:00:02", "--binary containerd=/c --binary kubelet=/k", "--disable kube-proxy",
 		"--pod-network 10.64.0.0/12 --pod-prefix 10.64.2.0/24",
+		"--storage data1=serial:S1", "--block-serial S2 --block-serial S3",
 	} {
 		assert.Contains(t, line, want)
 	}
