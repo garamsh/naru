@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/pflag"
 	"go.yaml.in/yaml/v3"
@@ -91,6 +92,9 @@ func groupGet(fs *pflag.FlagSet) runner {
 		if g.Invalid != "" {
 			_, _ = fmt.Fprintf(stdout, "invalid: %s\n", g.Invalid)
 		}
+		if g.Hold != nil {
+			_, _ = fmt.Fprintf(stdout, "held at %s: %s\n", g.Hold.Time.Format(time.RFC3339), g.Hold.Message)
+		}
 		if !g.Observed {
 			_, _ = fmt.Fprintln(stdout, "the hosts did not answer: phases are the stored ones")
 		}
@@ -120,7 +124,7 @@ func groupList(fs *pflag.FlagSet) runner {
 			return err
 		}
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "GROUP\tREGION\tWANTED\tRUNNING\tMEMBERS")
+		_, _ = fmt.Fprintln(tw, "GROUP\tREGION\tWANTED\tRUNNING\tMEMBERS\tHELD")
 		for _, g := range gs {
 			running := 0
 			for _, m := range g.Members {
@@ -128,7 +132,11 @@ func groupList(fs *pflag.FlagSet) runner {
 					running++
 				}
 			}
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\n", g.Spec.Name, g.Spec.Region, g.Spec.Count, running, len(g.Members))
+			held := "-"
+			if g.Hold != nil {
+				held = "yes"
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%s\n", g.Spec.Name, g.Spec.Region, g.Spec.Count, running, len(g.Members), held)
 		}
 		return tw.Flush()
 	}

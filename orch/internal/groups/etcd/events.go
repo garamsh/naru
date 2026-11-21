@@ -12,8 +12,9 @@ import (
 // EventPrefix starts the type of every event the engine writes to the log.
 const EventPrefix = "group."
 
-// holdRepeat is how long a hold that repeats is left out of the log after it was written.
-const holdRepeat = 10 * time.Minute
+// HoldRepeat is how long a hold that repeats is left out of the log after it was written. A hold the
+// log shows older than twice this has ended.
+const HoldRepeat = 10 * time.Minute
 
 // Appender is the inventory's event log.
 type Appender interface {
@@ -21,7 +22,7 @@ type Appender interface {
 }
 
 // Events writes the engine's events to the inventory's log. A hold the engine reports on every
-// pass is written once per holdRepeat.
+// pass is written once per HoldRepeat.
 type Events struct {
 	log Appender
 
@@ -62,12 +63,12 @@ func (e *Events) repeated(ev groups.Event) bool {
 	k := holdKey{ev.Group, ev.Member, ev.Message}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if at, ok := e.held[k]; ok && ev.Time.Sub(at) < holdRepeat {
+	if at, ok := e.held[k]; ok && ev.Time.Sub(at) < HoldRepeat {
 		return true
 	}
 	// Holds that stopped repeating are dropped so the map does not outgrow the live holds.
 	for old, at := range e.held {
-		if ev.Time.Sub(at) >= holdRepeat {
+		if ev.Time.Sub(at) >= HoldRepeat {
 			delete(e.held, old)
 		}
 	}
