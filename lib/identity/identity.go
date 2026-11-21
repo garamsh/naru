@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Role is what a certificate lets its holder do. It is carried in the
@@ -23,6 +24,9 @@ const (
 	RoleAutomation Role = "automation"
 	RoleHost       Role = "host"
 	RoleOrch       Role = "orch"
+	// RoleExposer is the cloud-controller-manager of one network; its Subject is ExposerPrefix and
+	// the network's name (ADR 0085 item 7).
+	RoleExposer Role = "exposer"
 )
 
 var (
@@ -45,7 +49,7 @@ type Identity struct {
 // Valid reports whether r is one of the roles.
 func (r Role) Valid() bool {
 	switch r {
-	case RoleRoot, RoleOperator, RoleReader, RoleAutomation, RoleHost, RoleOrch:
+	case RoleRoot, RoleOperator, RoleReader, RoleAutomation, RoleHost, RoleOrch, RoleExposer:
 		return true
 	}
 	return false
@@ -86,4 +90,17 @@ func Authenticate(chains [][]*x509.Certificate, crl *CRL) (Identity, error) {
 		return Identity{}, err
 	}
 	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf)}, nil
+}
+
+// ExposerPrefix starts the Subject of a RoleExposer certificate; the rest is the network it serves.
+const ExposerPrefix = "exposer."
+
+// ExposerNetwork returns the network an exposer identity serves. ok is false for any other role,
+// or for a Subject that does not name a network.
+func ExposerNetwork(who Identity) (network string, ok bool) {
+	n, found := strings.CutPrefix(who.Subject, ExposerPrefix)
+	if who.Role != RoleExposer || !found || n == "" {
+		return "", false
+	}
+	return n, true
 }

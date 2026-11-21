@@ -21,6 +21,7 @@ import (
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
+	"github.com/garamsh/naru/orch/internal/exposures"
 	"github.com/garamsh/naru/orch/internal/groupsvc"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/restore"
@@ -57,11 +58,25 @@ type Networks interface {
 	Delete(ctx context.Context, by, name string) error
 }
 
+// Exposures is the exposures service the handlers call. A network of "" is an operator's view of
+// every network; an exposer's is the one its certificate names.
+type Exposures interface {
+	ApplyPool(ctx context.Context, by, name string, spec orchapi.AddressPoolSpec) (orchapi.AddressPool, error)
+	Pools(ctx context.Context) ([]orchapi.AddressPool, error)
+	DeletePool(ctx context.Context, by, name string) error
+	ApplyExposure(ctx context.Context, by, network, id string, spec orchapi.ExposureSpec) (orchapi.Exposure, error)
+	Exposure(ctx context.Context, network, id string) (orchapi.Exposure, error)
+	Exposures(ctx context.Context, network string) ([]orchapi.Exposure, error)
+	DeleteExposure(ctx context.Context, by, network, id string) error
+}
+
 // Deps is what the handlers call.
 type Deps struct {
 	Inventory inventory.Service
 	Groups    groupsvc.Service
 	Networks  Networks
+	// Exposures is nil while the member has no way to reach the hosts; its endpoints answer 501.
+	Exposures Exposures
 	Signer    inventory.Signer
 	Auth      auth.Authenticator
 	Snapshots Snapshots
@@ -100,6 +115,13 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/networks/{name}", h.guard(auth.Read, h.networkGet))
 	mux.HandleFunc("PUT /v1/networks/{name}", h.guard(auth.Operate, h.networkApply))
 	mux.HandleFunc("DELETE /v1/networks/{name}", h.guard(auth.Operate, h.networkDelete))
+	mux.HandleFunc("GET /v1/address-pools", h.guard(auth.Read, h.poolList))
+	mux.HandleFunc("PUT /v1/address-pools/{name}", h.guard(auth.Operate, h.poolApply))
+	mux.HandleFunc("DELETE /v1/address-pools/{name}", h.guard(auth.Operate, h.poolDelete))
+	mux.HandleFunc("GET /v1/exposures", h.guard(auth.ReadExposures, h.exposureList))
+	mux.HandleFunc("GET /v1/exposures/{id}", h.guard(auth.ReadExposures, h.exposureGet))
+	mux.HandleFunc("PUT /v1/exposures/{id}", h.guard(auth.Expose, h.exposureApply))
+	mux.HandleFunc("DELETE /v1/exposures/{id}", h.guard(auth.Expose, h.exposureDelete))
 	mux.HandleFunc("GET /v1/crl", h.crl)
 	mux.HandleFunc("POST /v1/admit", h.guard(auth.Operate, h.admit))
 	mux.HandleFunc("POST /v1/enrollment-keys", h.guard(auth.Operate, h.createKey))
@@ -239,6 +261,10 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusForbidden, err.Error()
 	case errors.Is(err, inventory.ErrCodeMismatch), errors.Is(err, inventory.ErrSignerRefused):
 		status, msg = http.StatusForbidden, err.Error()
+	case errors.Is(err, exposures.ErrForbidden):
+		status, msg = http.StatusForbidden, err.Error()
+	case errors.Is(err, exposures.ErrUnprocessable):
+		status, msg = http.StatusUnprocessableEntity, err.Error()
 	case errors.Is(err, inventory.ErrNotFound):
 		status, msg = http.StatusNotFound, err.Error()
 	case errors.Is(err, restore.ErrRejected):
@@ -428,6 +454,91 @@ func (h *handler) networkApply(w http.ResponseWriter, r *http.Request, who ident
 
 func (h *handler) networkDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
 	if err := h.Networks.Delete(r.Context(), who.Subject, r.PathValue("name")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// exposureScope returns the network the caller may see: an exposer's own, or "" for a reader. An
+// exposer whose Subject names no network is refused.
+func exposureScope(w http.ResponseWriter, who identity.Identity) (string, bool) {
+	if who.Role != identity.RoleExposer {
+		return "", true
+	}
+	n, ok := identity.ExposerNetwork(who)
+	if !ok {
+		writeJSON(w, http.StatusForbidden, orchapi.Error{Message: "the exposer certificate names no network"})
+	}
+	return n, ok
+}
+
+func (h *handler) exposuresOn(w http.ResponseWriter) bool {
+	if h.Exposures == nil {
+		writeJSON(w, http.StatusNotImplemented, orchapi.Error{Message: "this member serves no exposures"})
+		return false
+	}
+	return true
+}
+
+func (h *handler) poolList(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	if h.exposuresOn(w) {
+		out, err := h.Exposures.Pools(r.Context())
+		reply(w, r, out, err)
+	}
+}
+
+func (h *handler) poolApply(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	var spec orchapi.AddressPoolSpec
+	if h.exposuresOn(w) && decode(w, r, &spec) {
+		out, err := h.Exposures.ApplyPool(r.Context(), who.Subject, r.PathValue("name"), spec)
+		reply(w, r, out, err)
+	}
+}
+
+func (h *handler) poolDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	if !h.exposuresOn(w) {
+		return
+	}
+	if err := h.Exposures.DeletePool(r.Context(), who.Subject, r.PathValue("name")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *handler) exposureList(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	if n, ok := exposureScope(w, who); ok && h.exposuresOn(w) {
+		out, err := h.Exposures.Exposures(r.Context(), n)
+		reply(w, r, out, err)
+	}
+}
+
+func (h *handler) exposureGet(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	if n, ok := exposureScope(w, who); ok && h.exposuresOn(w) {
+		out, err := h.Exposures.Exposure(r.Context(), n, r.PathValue("id"))
+		reply(w, r, out, err)
+	}
+}
+
+func (h *handler) exposureApply(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	n, ok := exposureScope(w, who)
+	if !ok || !h.exposuresOn(w) {
+		return
+	}
+	var spec orchapi.ExposureSpec
+	if decode(w, r, &spec) {
+		out, err := h.Exposures.ApplyExposure(r.Context(), who.Subject, n, r.PathValue("id"), spec)
+		reply(w, r, out, err)
+	}
+}
+
+func (h *handler) exposureDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	n, ok := exposureScope(w, who)
+	if !ok || !h.exposuresOn(w) {
+		return
+	}
+	if err := h.Exposures.DeleteExposure(r.Context(), who.Subject, n, r.PathValue("id")); err != nil {
 		writeError(w, r, err)
 		return
 	}
