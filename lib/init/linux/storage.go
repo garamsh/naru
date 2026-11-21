@@ -110,7 +110,7 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	}
 	log.Info("storage disk mounted", "name", s.Name, "device", dev, "mount", mnt, "blocks", sb.DataBlocks, "blockSize", sb.BlockSize)
 	if mnt == h.mvmdStorage {
-		if err := h.linkMvmdStorage(mnt); err != nil {
+		if err := h.linkMvmdStorage(mnt, log); err != nil {
 			return fmt.Errorf("storage %q: %w", s.Name, err)
 		}
 		log.Info("mvmd's disks, snapshots and disk snapshots linked into storage", "mount", mnt)
@@ -135,8 +135,9 @@ var mvmdLinked = []string{"disks", "snapshots", "disk-snapshots"}
 // linkMvmdStorage makes each of mvmdLinked a directory of the storage mount at mnt, which only the
 // daemon may list, and a link to it in mvmd's state directory. An empty directory there, as the
 // mount point of an earlier release left, is replaced; a link that is right stays; a directory
-// that holds files is an error, since a link would hide them.
-func (h *Host) linkMvmdStorage(mnt string) error {
+// that holds entries has them moved into the storage target first (moveEntry), since a link
+// would hide them, and an entry whose name is taken there is an error.
+func (h *Host) linkMvmdStorage(mnt string, log *slog.Logger) error {
 	if err := os.MkdirAll(h.mvmdState, 0o700); err != nil {
 		return err
 	}
@@ -148,15 +149,16 @@ func (h *Host) linkMvmdStorage(mnt string) error {
 		if err := os.Chmod(target, 0o700); err != nil {
 			return err
 		}
-		if err := linkTo(link, target); err != nil {
+		if err := linkTo(link, target, log); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// linkTo makes link a symbolic link to target.
-func linkTo(link, target string) error {
+// linkTo makes link a symbolic link to target. A directory at link has its entries moved into
+// target first.
+func linkTo(link, target string, log *slog.Logger) error {
 	info, err := os.Lstat(link)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -172,8 +174,10 @@ func linkTo(link, target string) error {
 		if err != nil {
 			return err
 		}
-		if len(entries) > 0 {
-			return fmt.Errorf("%s already holds %d entries, which a link would hide; mvmd will refuse to start with its disks, snapshots and disk snapshots on two file systems", link, len(entries))
+		for _, e := range entries {
+			if err := moveEntry(filepath.Join(link, e.Name()), filepath.Join(target, e.Name()), log); err != nil {
+				return err
+			}
 		}
 		if err := os.Remove(link); err != nil {
 			return err
