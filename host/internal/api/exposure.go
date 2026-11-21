@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -24,7 +25,9 @@ const (
 	maxExposurePorts = 64
 	maxBackends      = 64
 	maxLeaseSeconds  = 120
-	proxyV2          = "v2"
+	// defaultLeaseSeconds is the lease of a request that names none (ADR 0085 item 5).
+	defaultLeaseSeconds = 15
+	proxyV2             = "v2"
 )
 
 func (s *Server) routeExposures(mux *http.ServeMux) {
@@ -49,7 +52,7 @@ func exposureView(e network.Exposure) hostapi.Exposure {
 	v.Network, v.Backends = e.Network, []string{}
 	v.Ports = []hostapi.ExposurePort{}
 	for _, p := range e.Ports {
-		v.Ports = append(v.Ports, hostapi.ExposurePort{Protocol: p.Protocol, Port: p.Port, NodePort: p.NodePort})
+		v.Ports = append(v.Ports, hostapi.ExposurePort{Protocol: string(p.Protocol), Port: p.Port, NodePort: p.NodePort})
 	}
 	for _, b := range e.Backends {
 		v.Backends = append(v.Backends, b.String())
@@ -60,8 +63,8 @@ func exposureView(e network.Exposure) hostapi.Exposure {
 	return v
 }
 
-// putExposure takes the lease on the address, or renews it. The lease ends leaseSeconds from this
-// request unless a later one renews it.
+// putExposure takes the lease on the address, or renews it. The lease ends leaseSeconds (15 when
+// absent) after the host receives the request, unless a later one renews it.
 func (s *Server) putExposure(w http.ResponseWriter, r *http.Request) {
 	if s.noExposures(w) {
 		return
@@ -81,7 +84,8 @@ func (s *Server) putExposure(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := s.deps.Exposures.Put(ctx, e, time.Duration(req.LeaseSeconds)*time.Second); err != nil {
+	lease := cmp.Or(req.LeaseSeconds, defaultLeaseSeconds)
+	if err := s.deps.Exposures.Put(ctx, e, time.Duration(lease)*time.Second); err != nil {
 		s.exposureFail(w, err)
 		return
 	}
@@ -126,17 +130,18 @@ func parseExposure(address string, req hostapi.ExposureRequest) (network.Exposur
 	}
 	seen := map[network.ExposurePort]bool{}
 	for i, p := range req.Ports {
-		key := network.ExposurePort{Protocol: p.Protocol, Port: p.Port}
-		bad := (p.Protocol != network.TCP && p.Protocol != network.UDP) || p.Port < 1 || p.Port > 65535 || p.NodePort < 1 || p.NodePort > 65535 || seen[key]
+		proto := network.Protocol(p.Protocol)
+		key := network.ExposurePort{Protocol: proto, Port: p.Port}
+		bad := (proto != network.TCP && proto != network.UDP) || p.Port < 1 || p.Port > 65535 || p.NodePort < network.NodePortFirst || p.NodePort > network.NodePortLast || seen[key]
 		// A receiver that expects the PROXY header rejects a connection without it, and UDP has no
 		// connection to write it on: the whole Service is TCP (ADR 0085 item 8).
-		bad = bad || (e.Proxy && p.Protocol == network.UDP)
+		bad = bad || (e.Proxy && proto == network.UDP)
 		seen[key] = true
 		if bad {
 			fields = append(fields, fmt.Sprintf("ports[%d]", i))
 			continue
 		}
-		e.Ports = append(e.Ports, network.ExposurePort{Protocol: p.Protocol, Port: p.Port, NodePort: p.NodePort})
+		e.Ports = append(e.Ports, network.ExposurePort{Protocol: proto, Port: p.Port, NodePort: p.NodePort})
 	}
 	if len(req.Backends) == 0 || len(req.Backends) > maxBackends {
 		fields = append(fields, "backends")
@@ -151,7 +156,8 @@ func parseExposure(address string, req hostapi.ExposureRequest) (network.Exposur
 		have[x] = true
 		e.Backends = append(e.Backends, x)
 	}
-	if req.LeaseSeconds < 1 || req.LeaseSeconds > maxLeaseSeconds {
+	// A lease with no leaseSeconds is the default of ADR 0085 item 5.
+	if req.LeaseSeconds < 0 || req.LeaseSeconds > maxLeaseSeconds {
 		fields = append(fields, "leaseSeconds")
 	}
 	return e, fields
@@ -166,8 +172,12 @@ func (s *Server) exposureFail(w http.ResponseWriter, err error) {
 		invalid(w, "address")
 	case errors.Is(err, network.ErrBackend):
 		invalid(w, "backends")
+	case errors.Is(err, network.ErrHostAddress):
+		invalid(w, "address")
+	case errors.Is(err, network.ErrInvalid):
+		invalid(w, "exposure")
 	case errors.Is(err, network.ErrNoLAN):
-		writeJSON(w, http.StatusConflict, hostapi.ErrorBody{Error: err.Error()})
+		writeJSON(w, http.StatusNotImplemented, hostapi.ErrorBody{Error: err.Error()})
 	default:
 		s.deps.Log.Error("cannot keep the exposures", "err", err.Error())
 		writeJSON(w, http.StatusBadGateway, hostapi.ErrorBody{Error: err.Error()})

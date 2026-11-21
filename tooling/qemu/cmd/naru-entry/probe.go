@@ -26,10 +26,16 @@ const udpPort = 9999
 //	/received                the source addresses of the datagrams received, "<address> <count>" per line
 //
 // Every other path answers like serve, so the microVM is also a TCP target for the others.
+//
+// The exposure test (#275) reaches the microVM from the LAN through two NodePorts: plainPort answers
+// "src=<address>" with the source address it saw, and proxyPort reads a PROXY protocol v2 header first
+// and answers "proxy-src=<address>:<port>" with the client address the header names.
 func probe(addr string) {
 	var mu sync.Mutex
 	seen := map[string]int{}
 	go receive(&mu, seen)
+	go listenEach(plainPort, plain)
+	go listenEach(proxyPort, proxied)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/probe", func(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +74,52 @@ func probe(addr string) {
 		srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 		fmt.Println("naru94-probe: serve ended:", srv.ListenAndServe())
 	}()
+}
+
+// The NodePorts the exposure test forwards to, in the range of a Service's nodePort.
+const (
+	plainPort = 30080
+	proxyPort = 30443
+)
+
+func listenEach(port int, handle func(net.Conn)) {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		fmt.Println("naru94-probe: listen tcp:", err)
+		return
+	}
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go handle(c)
+	}
+}
+
+// plain tells the client the source address the connection came from.
+func plain(c net.Conn) {
+	defer c.Close()
+	host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+	fmt.Fprintf(c, "src=%s\n", host)
+}
+
+// proxied reads the PROXY protocol v2 header and tells the client the address it names.
+func proxied(c net.Conn) {
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	head := make([]byte, 16)
+	if _, err := io.ReadFull(c, head); err != nil || string(head[:12]) != "\r\n\r\n\x00\r\nQUIT\n" {
+		fmt.Fprintln(c, "no-header")
+		return
+	}
+	body := make([]byte, binary.BigEndian.Uint16(head[14:]))
+	if _, err := io.ReadFull(c, body); err != nil || len(body) < 12 {
+		fmt.Fprintln(c, "no-header")
+		return
+	}
+	src, _ := netip.AddrFromSlice(body[0:4])
+	fmt.Fprintf(c, "proxy-src=%s:%d\n", src, binary.BigEndian.Uint16(body[8:]))
 }
 
 func reply(w io.Writer, err error) {

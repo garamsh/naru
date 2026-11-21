@@ -89,8 +89,10 @@ func startExposer(ctx context.Context, m *network.Manager, lan string, log *slog
 		return nil, fmt.Errorf("--lan-interface: %w", err)
 	}
 	x := &network.Exposer{Manager: m, Link: link, Log: log}
+	// A lease or an address that cannot be restored is logged and tried again every second; it does
+	// not keep the host from serving the others.
 	if err := x.Restore(ctx); err != nil {
-		return nil, err
+		log.Error("cannot restore the exposures", "err", err.Error())
 	}
 	go x.Run(ctx)
 	return x, nil

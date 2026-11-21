@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -55,6 +56,11 @@ type Manager struct {
 	State string
 	// Now is the clock the leases' deadlines are read against; nil is time.Now.
 	Now func() time.Time
+	// Boot returns the ID of the current boot and the time since it began, which a wall-clock step
+	// does not change; nil reads /proc. State keeps the leases against it.
+	Boot func() (string, time.Duration, error)
+	// Log reports a lease Load dropped; nil is silent.
+	Log *slog.Logger
 
 	mu  sync.Mutex
 	c   Config
@@ -66,8 +72,17 @@ type state struct {
 	Networks []Network `json:"networks"`
 	Members  []Member  `json:"members"`
 	Peers    []Peer    `json:"peers"`
-	// Exposures are the leases with their deadlines, which a restart restores unless they ran out.
-	Exposures []Exposure `json:"exposures,omitempty"`
+	// Boot and Exposures are the leases with the time they end, counted from the start of the boot
+	// Boot names: a restart in the same boot restores a lease that has not run out, and a reboot,
+	// which took the addresses and the rules with it, restores none.
+	Boot      string       `json:"boot,omitempty"`
+	Exposures []leaseState `json:"exposures,omitempty"`
+}
+
+// leaseState is a lease in the file: Until is when it ends, as a time since the start of the boot.
+type leaseState struct {
+	Exposure
+	Until time.Duration `json:"until"`
 }
 
 // Load reads State, when it exists, and applies it, so the host is closed by the ruleset before
@@ -85,16 +100,63 @@ func (m *Manager) Load(ctx context.Context) error {
 				return fmt.Errorf("%s: %w", m.State, err)
 			}
 			next.Networks, next.Members, next.Peers = s.Networks, s.Members, s.Peers
-			for _, e := range s.Exposures {
-				if !m.expired(e) {
-					next.Exposures = append(next.Exposures, e)
-				}
-			}
+			next.Exposures = m.restoreLeases(s, next)
 		case !errors.Is(err, os.ErrNotExist):
 			return err
 		}
 	}
 	return m.run(ctx, next)
+}
+
+// restoreLeases returns the leases of s that the host may still serve: those of this boot that have
+// not run out and that are valid against the networks Load restored. It reads the time left from
+// the boot's clock, so a wall clock that stepped while hostd was down changes nothing.
+func (m *Manager) restoreLeases(s state, c Config) []Exposure {
+	boot, up, err := m.boot()
+	var out []Exposure
+	for _, l := range s.Exposures {
+		e := l.Exposure
+		left := l.Until - up
+		var why error
+		switch {
+		case err != nil:
+			why = err
+		case s.Boot != boot:
+			why = errors.New("it is from another boot")
+		case left <= 0:
+			why = errors.New("it ran out")
+		default:
+			e.Deadline = m.now().Add(left)
+			why = checkExposure(m.Base, c, e)
+		}
+		if why != nil {
+			if m.Log != nil {
+				m.Log.Info("dropped a lease at load", "address", e.Address.String(), "reason", why.Error())
+			}
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func (m *Manager) boot() (string, time.Duration, error) {
+	if m.Boot != nil {
+		return m.Boot()
+	}
+	id, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return "", 0, err
+	}
+	var up float64
+	raw, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return "", 0, err
+	}
+	if _, err := fmt.Sscan(string(raw), &up); err != nil {
+		return "", 0, err
+	}
+	return strings.TrimSpace(string(id)), time.Duration(up * float64(time.Second)), nil
 }
 
 // TunnelInfo returns the tunnel's public key and port; false when the host has no tunnel.
@@ -294,6 +356,7 @@ func (m *Manager) withBase(c Config) Config {
 // push writes c to the host: the ruleset, then the tunnel's peers. committed is whether the ruleset
 // was committed, so that a failure of the tunnel is known to have changed the host.
 func (m *Manager) push(ctx context.Context, c Config) (committed bool, err error) {
+	c.At = m.now()
 	if _, err := m.Run.Run(ctx, []byte(Ruleset(c)), "nft", "-f", "-"); err != nil {
 		return false, fmt.Errorf("apply the ruleset: %w", err)
 	}
@@ -329,6 +392,10 @@ func (m *Manager) apply(ctx context.Context, next Config) error {
 		if sameDeadlines(next.Exposures, prev.Exposures) {
 			return nil
 		}
+		// The set the rules match keeps each address for the time it has left; a renewal sets it again.
+		if err := m.refresh(ctx, next); err != nil {
+			return err
+		}
 		m.c.Exposures = next.Exposures
 		return m.save()
 	}
@@ -341,12 +408,32 @@ func (m *Manager) apply(ctx context.Context, next Config) error {
 	return nil
 }
 
+// refresh sets the leased addresses' time left in the host's table, which the renewal changed, and
+// nothing else.
+func (m *Manager) refresh(ctx context.Context, c Config) error {
+	c.At = m.now()
+	c = m.withBase(c)
+	if _, err := m.Run.Run(ctx, []byte(leasedRefresh(c)), "nft", "-f", "-"); err != nil {
+		return fmt.Errorf("renew the leased addresses: %w", err)
+	}
+	return nil
+}
+
 // save writes the state to State.
 func (m *Manager) save() error {
 	if m.State == "" {
 		return nil
 	}
-	raw, err := json.Marshal(state{Networks: sortedNetworks(m.c.Networks), Members: m.c.Members, Peers: sortedPeers(m.c.Peers), Exposures: sortedExposures(m.c.Exposures)})
+	boot, up, berr := m.boot()
+	st := state{Networks: sortedNetworks(m.c.Networks), Members: m.c.Members, Peers: sortedPeers(m.c.Peers), Boot: boot}
+	for _, e := range sortedExposures(m.c.Exposures) {
+		st.Exposures = append(st.Exposures, leaseState{Exposure: e, Until: up + e.Deadline.Sub(m.now())})
+	}
+	if berr != nil {
+		// Without the boot's clock no lease can be restored, so none is kept.
+		st.Boot, st.Exposures = "", nil
+	}
+	raw, err := json.Marshal(st)
 	if err == nil {
 		err = writeFile(m.State, raw)
 	}
@@ -390,6 +477,9 @@ func stateOf(c Config) string {
 	for i := range exposures {
 		exposures[i].Deadline = time.Time{}
 	}
-	raw, _ := json.Marshal(state{Networks: nets, Members: members, Peers: peers, Exposures: exposures})
+	raw, _ := json.Marshal(struct {
+		state
+		Exposures []Exposure
+	}{state{Networks: nets, Members: members, Peers: peers}, exposures})
 	return string(raw)
 }
