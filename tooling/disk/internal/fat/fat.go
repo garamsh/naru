@@ -37,6 +37,8 @@ type Volume struct {
 	clusters          uint32
 	dataStart         int64
 	table             []uint32
+	next              uint32
+	probes            uint64
 	date, clock       uint16
 }
 
@@ -89,6 +91,7 @@ func newVolume(f *os.File, stamp time.Time) (*Volume, error) {
 		return nil, err
 	}
 	v.table = make([]uint32, v.clusters)
+	v.next = 2
 	for i := range v.table {
 		v.table[i] = binary.LittleEndian.Uint32(raw[4*i:])
 	}
@@ -268,9 +271,16 @@ func (v *Volume) store(content io.Reader, size int64) (uint32, error) {
 	return first, nil
 }
 
-// allocate marks the lowest free cluster the end of a chain and returns it.
+// allocate marks the first free cluster from the one after the last it gave, wrapping once past
+// the end, as the end of a chain and returns it.
 func (v *Volume) allocate() (uint32, error) {
-	for c := uint32(2); c < v.clusters; c++ {
+	for range v.clusters - 2 {
+		c := v.next
+		v.next++
+		if v.next >= v.clusters {
+			v.next = 2
+		}
+		v.probes++
 		if v.table[c]&entryMask == 0 {
 			v.table[c] = endOfChain
 			return c, nil
