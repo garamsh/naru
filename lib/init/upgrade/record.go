@@ -33,11 +33,10 @@ type Outcome struct {
 }
 
 // pending is an upgrade that has been staged and has not ended: written before the trial entry is
-// set, removed when the upgrade ends. Reason is set by a trial boot that gives up.
+// set, removed when the upgrade ends.
 type pending struct {
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Reason string `json:"reason,omitempty"`
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 func (u *Upgrader) readPending() (pending, bool) {

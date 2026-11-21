@@ -304,7 +304,7 @@ func (u *Upgrader) arm(p esp, s Staged) error {
 
 // disarm undoes an arm that failed part way, and removes the trial slot.
 func (u *Upgrader) disarm(p esp) {
-	if _, err := u.dropTrial(p); err != nil {
+	if _, _, err := u.dropTrial(p); err != nil {
 		u.cfg.Log.Error("remove the trial slot after a failed upgrade", "err", err)
 	}
 	if err := errors.Join(deleteVariable(u.cfg.EFIVars, bootName(trialEntry)), u.removePending()); err != nil {
@@ -315,9 +315,16 @@ func (u *Upgrader) disarm(p esp) {
 	}
 }
 
-// dropTrial deletes TRIAL.EFI from the ESP and reports whether it was there.
-func (u *Upgrader) dropTrial(p esp) (was bool, err error) {
+// dropTrial deletes TRIAL.EFI and the reason the trial boot left beside it from the ESP, and
+// reports whether the trial slot was there and the reason, which is empty when the trial left none.
+func (u *Upgrader) dropTrial(p esp) (was bool, reason string, err error) {
 	err = u.withESP(p, func(dir string) error {
+		if b, err := os.ReadFile(filepath.Join(dir, reasonFile)); err == nil {
+			reason = string(b)
+		}
+		if err := os.Remove(filepath.Join(dir, reasonFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		err := os.Remove(filepath.Join(dir, trialSlot))
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -328,7 +335,7 @@ func (u *Upgrader) dropTrial(p esp) (was bool, err error) {
 		}
 		return atomicfile.SyncDir(dir)
 	})
-	return was, err
+	return was, reason, err
 }
 
 // Reconcile settles an upgrade a default boot finds unfinished: a trial slot or a trial entry
@@ -354,10 +361,10 @@ func (u *Upgrader) Reconcile() {
 	if entryErr != nil && !havePending {
 		return
 	}
-	trialWas := false
+	trialWas, trialReason := false, ""
 	if p, err := findESP(u.cfg.SysClassBlock, u.cfg.DevDir, u.cfg.ESPGUID); err != nil {
 		u.cfg.Log.Error("find the ESP to remove the trial slot", "err", err)
-	} else if trialWas, err = u.dropTrial(p); err != nil {
+	} else if trialWas, trialReason, err = u.dropTrial(p); err != nil {
 		u.cfg.Log.Error("remove the trial slot", "err", err)
 	}
 	if err := deleteVariable(u.cfg.EFIVars, bootName(trialEntry)); err != nil {
@@ -378,7 +385,7 @@ func (u *Upgrader) Reconcile() {
 		out.Result = ResultPromoted
 		u.cfg.Log.Info("upgrade promoted", "from", out.From, "to", out.To)
 	} else {
-		out.Result, out.Reason = ResultRolledBack, pend.Reason
+		out.Result, out.Reason = ResultRolledBack, trialReason
 		if out.Reason == "" {
 			out.Reason = "the trial boot did not reach a healthy state"
 		}
@@ -425,15 +432,16 @@ func (u *Upgrader) Promote() error {
 	return nil
 }
 
-// giveUp records why a trial boot is not promoted, for the default boot that follows to report.
+// giveUp records why a trial boot is not promoted, for the default boot that follows to report. The
+// reason goes to the ESP, beside the trial slot it explains: a trial that refused for want of its
+// data disk has nowhere durable else to write it.
 func (u *Upgrader) giveUp(reason string) {
 	u.cfg.Log.Error("upgrade trial is not healthy; rebooting without promoting", "reason", reason)
-	pend, _ := u.readPending()
-	pend.Reason = reason
-	if pend.To == "" {
-		pend.To = u.cfg.Version
+	p, err := findESP(u.cfg.SysClassBlock, u.cfg.DevDir, u.cfg.ESPGUID)
+	if err == nil {
+		err = u.withESP(p, func(dir string) error { return writeSynced(filepath.Join(dir, reasonFile), []byte(reason)) })
 	}
-	if err := u.writePending(pend); err != nil {
+	if err != nil {
 		u.cfg.Log.Error("record why the trial is given up", "err", err)
 	}
 }
