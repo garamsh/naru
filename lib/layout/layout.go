@@ -203,7 +203,9 @@ type service struct {
 	Args         []string          `yaml:"args,omitempty"`
 	Env          map[string]string `yaml:"env,omitempty"`
 	ControlPlane bool              `yaml:"controlPlane,omitempty"`
-	KeptPair     *keptPair         `yaml:"keptPair,omitempty"`
+	// RestartPolicy is "on-failure" for a service that runs until it succeeds, and empty for one init keeps running.
+	RestartPolicy string    `yaml:"restartPolicy,omitempty"`
+	KeptPair      *keptPair `yaml:"keptPair,omitempty"`
 	// RestartOnChange and LogFiles are files init watches or follows for the service.
 	RestartOnChange []string `yaml:"restartOnChange,omitempty"`
 	LogFiles        []string `yaml:"logFiles,omitempty"`

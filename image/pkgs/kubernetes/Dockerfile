@@ -1,4 +1,4 @@
-# kube-apiserver, kube-controller-manager, kube-scheduler, kubelet and kube-proxy (ADR 0075), static,
+# kube-apiserver, kube-controller-manager, kube-scheduler, kubelet, kube-proxy and kubectl (ADR 0075, 0083), static,
 # from the pinned commit, with the version stamped the way Kubernetes' own build does. The Go release
 # is the one the checkout's .go-version names, which is what Kubernetes builds that tag with.
 FROM builder AS build
@@ -20,13 +20,14 @@ RUN . /pin.env && cd src \
       ldflags="$ldflags -X $pkg.gitVersion=$KUBERNETES_VERSION -X $pkg.gitCommit=$KUBERNETES_COMMIT -X $pkg.gitTreeState=clean"; \
       ldflags="$ldflags -X $pkg.gitMajor=1 -X $pkg.gitMinor=$minor -X $pkg.buildDate=$build_date"; \
     done \
- && programs="kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy" \
+ && programs="kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy kubectl" \
 && mkdir -p /build/bin \
  && go build -trimpath -buildvcs=false -tags selinux,notest,grpcnotrace -ldflags="$ldflags" \
       -o /build/bin/ $(for p in $programs; do echo ./cmd/$p; done) \
  && for p in $programs; do \
       install-go.sh "$GOTOOLCHAIN" /build/bin/$p /out/usr/bin/$p; \
-      [ "$(/build/bin/$p --version | awk '{ print $NF }')" = "$KUBERNETES_VERSION" ]; \
+      if [ "$p" = kubectl ]; then v=$(/build/bin/$p version --client | awk '$1 == "Client" && $2 == "Version:" { print $3 }'); else v=$(/build/bin/$p --version | awk '{ print $NF }'); fi; \
+      [ "$v" = "$KUBERNETES_VERSION" ]; \
     done
 
 FROM scratch

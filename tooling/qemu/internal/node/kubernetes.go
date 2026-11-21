@@ -34,6 +34,11 @@ type KubeSpec struct {
 	Naructl   naructl.Tool
 	// Disable names services left out of every Node's configuration.
 	Disable []string
+	// DisableAddons names the add-ons the cluster leaves out (gen kubernetes --disable-addon).
+	DisableAddons []string
+	// Resolver makes node-1's address the resolver of every Node, so that a Pod on node-1 listening on
+	// port 53 answers the names the Nodes and the cluster's DNS forward outside the cluster.
+	Resolver bool
 	// Late numbers the workers (3 and up) StartLate starts, not StartKubernetes. A cluster with them
 	// has the control-plane Node accept bootstrap tokens and serve a Node API (APIAdmin), through
 	// which `naructl token create --kubernetes` adds a Late worker's token live (ADR 0081); the
@@ -90,7 +95,7 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 		return nil, err
 	}
 	apiServer := QEMUNetwork(1, total).IP
-	if err := spec.Naructl.GenKubernetes(caDir, apiServer, "127.0.0.1:"+strconv.Itoa(port)); err != nil {
+	if err := spec.Naructl.GenKubernetes(caDir, apiServer, "127.0.0.1:"+strconv.Itoa(port), spec.DisableAddons...); err != nil {
 		return nil, err
 	}
 	var apiPort int
@@ -191,6 +196,9 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	role := "worker"
 	if c.ControlPlane {
 		role = "control-plane"
+	}
+	if spec.Resolver {
+		n.Nameservers = []string{QEMUNetwork(1, c.Total).IP}
 	}
 	k := naructl.KubernetesNode{
 		CA: caDir, Name: c.Name, Role: role, Address: n.IP + "/" + strconv.Itoa(ones), Endpoint: apiServer,

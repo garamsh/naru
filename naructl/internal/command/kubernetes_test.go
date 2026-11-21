@@ -77,6 +77,40 @@ func TestGenKubernetes_WritesTheAdminKubeconfigAndKeepsTheKeysOnASecondRun(t *te
 	}
 }
 
+func TestGenKubernetes_DisableAddonIsWhatTheControlPlaneNodeReadsAndAnUnknownNameIsRefused(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "dns")
+
+	data, err := os.ReadFile(dep.kubeNode(t, "control-plane"))
+	require.NoError(t, err)
+
+	assert.NotContains(t, string(data), "name: addons\n", "a cluster without DNS has nothing for the add-ons service to apply")
+	_, err = run(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "nope")
+	require.Error(t, err)
+	assert.EqualError(t, err, `--disable-addon "nope" is not one of dns`)
+}
+
+func TestGenKubernetes_AGenWithoutDisableAddonTurnsEveryAddonOnAgain(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "dns")
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10")
+
+	data, err := os.ReadFile(dep.kubeNode(t, "control-plane"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(data), "name: addons\n")
+}
+
+func TestGenKubernetes_AControlPlaneNodeAppliesTheAddonsByDefault(t *testing.T) {
+	dep := newDeployment(t)
+	dep.kubernetes(t)
+
+	data, err := os.ReadFile(dep.kubeNode(t, "control-plane"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(data), "name: addons\n")
+}
+
 func TestTopology_KubernetesIsTheOneBesidesGaons(t *testing.T) {
 	out, err := run(t, "topology", "kubernetes")
 	require.NoError(t, err)
