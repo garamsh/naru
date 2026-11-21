@@ -16,10 +16,12 @@ const (
 
 var sha256RE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// Extension names a system extension image by the SHA-256 of the file.
+// Extension names a system extension image. A SHA256 pins the image by the digest of its file; an
+// entry with none is resolved by init to the one stored image of its name built for init's own
+// version (ADR 0084).
 type Extension struct {
 	Name   string `yaml:"name"`
-	SHA256 string `yaml:"sha256"`
+	SHA256 string `yaml:"sha256,omitempty"`
 }
 
 // Dir returns the directory the extension is mounted on.
@@ -52,18 +54,27 @@ func ExtensionOf(svc Service) string {
 func (v *validation) extensions(spec Spec) {
 	names := map[string]bool{}
 	digests := map[string]bool{}
+	unpinned := map[string]bool{}
 	for i, e := range spec.Extensions {
 		field := fmt.Sprintf("spec.extensions[%d]", i)
 		if !nameRE.MatchString(e.Name) {
 			v.fail(field+".name", "must be lowercase letters, digits and '-', at most 63 characters, got %q", e.Name)
 		}
-		if !sha256RE.MatchString(e.SHA256) {
-			v.fail(field+".sha256", "must be 64 lowercase hex digits, the SHA-256 of the image, got %q", e.SHA256)
-		}
-		if digests[e.SHA256] {
+		switch {
+		case e.SHA256 == "":
+			if unpinned[e.Name] {
+				v.fail(field+".name", "%q has more than one entry with no sha256", e.Name)
+			}
+			unpinned[e.Name] = true
+		case !sha256RE.MatchString(e.SHA256):
+			v.fail(field+".sha256", "must be 64 lowercase hex digits, the SHA-256 of the image, or absent, got %q", e.SHA256)
+		case digests[e.SHA256]:
 			v.fail(field+".sha256", "%q is listed twice", e.SHA256)
 		}
-		names[e.Name], digests[e.SHA256] = true, true
+		names[e.Name] = true
+		if e.SHA256 != "" {
+			digests[e.SHA256] = true
+		}
 	}
 	if (spec.Orch != nil || spec.Signer != nil) && !names[OrchExtension] {
 		section := "spec.orch"

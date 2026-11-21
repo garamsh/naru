@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -91,7 +92,7 @@ func Main() {
 	}
 	upgrades := upgrade.NewWith(upgrade.Config{Version: version(), Started: started, Log: log, Extensions: func() ([]upgrade.Entry, []upgrade.Image, error) {
 		return storedExtensions(configs, extensions)
-	}})
+	}, Stage: stageExtension(extensions), Unstage: func(sha string) { _ = extensions.Delete(sha) }, Prune: func() { pruneExtensions(configs, extensions, log) }})
 	upgrades.Detect()
 	server := api.New(api.Deps{
 		Services:   services,
@@ -220,6 +221,37 @@ func storedExtensions(configs *store.Store, extensions *extension.Manager) ([]up
 		images = append(images, upgrade.Image{Name: e.Name, SHA256: e.SHA256, Version: e.Version})
 	}
 	return entries, images, nil
+}
+
+// stageExtension stores an extension member of an upgrade bundle, and says what is wrong with it
+// in the terms the upgrade's refusals use (ADR 0084).
+func stageExtension(extensions *extension.Manager) func(name, sha256, version string, body io.Reader) (bool, error) {
+	return func(name, sha256, version string, body io.Reader) (bool, error) {
+		_, added, err := extensions.Stage(body, sha256, name, version)
+		switch {
+		case errors.Is(err, extension.ErrTooLarge), errors.Is(err, syscall.ENOSPC):
+			return added, fmt.Errorf("%w: the extension %s: %v", upgrade.ErrTooLarge, name, err)
+		case errors.Is(err, extension.ErrDigest), errors.Is(err, extension.ErrImage), errors.Is(err, extension.ErrStage):
+			return added, fmt.Errorf("%w: the extension %s: %v", upgrade.ErrBundle, name, err)
+		}
+		return added, err
+	}
+}
+
+// pruneExtensions removes the images built for another version than init's that no pinned entry of
+// the configuration names.
+func pruneExtensions(configs *store.Store, extensions *extension.Manager, log *slog.Logger) {
+	st, err := configs.Load()
+	if errors.Is(err, store.ErrNotFound) {
+		return // nothing is known to be pinned, so nothing is removed
+	}
+	if err != nil {
+		log.Error("read the configuration to remove the extension images of another version", "err", err)
+		return
+	}
+	if _, err := extensions.Prune(st.Config.Spec.Extensions); err != nil {
+		log.Error("remove the extension images of another version", "err", err)
+	}
 }
 
 // extensionMounts returns where the system extensions are mounted.

@@ -86,3 +86,33 @@ func TestWriteBundle_FailsWhenTheKernelIsMissing(t *testing.T) {
 
 	assert.Error(t, err)
 }
+
+func TestWriteBundle_CarriesTheExtensionsAfterTheManifestAndListsThemInIt(t *testing.T) {
+	dir := t.TempDir()
+	ext := filepath.Join(dir, "orch.sqfs")
+	require.NoError(t, os.WriteFile(ext, []byte("EXT"), 0o644))
+	out := filepath.Join(dir, "b.tar")
+
+	require.NoError(t, WriteBundle(out, "v1", writeKernel(t, "K"), 1<<30, BundleExtension{Name: "naru-orch", Path: ext}))
+
+	f, err := os.Open(out)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	tr := tar.NewReader(f)
+	var names []string
+	var manifest []byte
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		names = append(names, h.Name)
+		body, _ := io.ReadAll(tr)
+		if h.Name == BundleManifest {
+			manifest = body
+		}
+	}
+	assert.Equal(t, []string{"kernel.efi", "manifest.json", "extensions/naru-orch.sqfs"}, names)
+	assert.Contains(t, string(manifest), `"name": "naru-orch"`)
+	assert.Contains(t, string(manifest), `"bytes": 3`)
+}

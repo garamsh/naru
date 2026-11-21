@@ -8,9 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"syscall"
 )
+
+// bundleExtensionDir is the directory of the extension members of a bundle, which follow the
+// manifest (ADR 0084).
+const bundleExtensionDir = "extensions/"
 
 // The members of the upgrade bundle, in this order (ADR 0020).
 const (
@@ -37,12 +42,37 @@ type Manifest struct {
 		Bytes  int64  `json:"bytes"`
 		SHA256 string `json:"sha256"`
 	} `json:"kernel"`
+	// Extensions are the members that follow manifest.json, in order.
+	Extensions []BundleExtension `json:"extensions,omitempty"`
+}
+
+// BundleExtension describes the member extensions/<Name>.sqfs of a bundle.
+type BundleExtension struct {
+	Name   string `json:"name"`
+	Bytes  int64  `json:"bytes"`
+	SHA256 string `json:"sha256"`
+}
+
+// stager takes the extension members of a bundle. wanted says whether the Node's configuration
+// names the extension; stage stores a member the Node wants, whose digest the body must have, and
+// reports whether the image is new to the store.
+type stager struct {
+	wanted func(name string) bool
+	stage  func(name, sha256, version string, body io.Reader) (added bool, err error)
+	// added collects the digests this bundle added, for Install to remove again on a refusal.
+	added []string
 }
 
 // receive reads the bundle from body, which it caps at max bytes, and writes the kernel member to
 // kernel as it arrives. It returns the manifest once the SHA-256 of the whole body is wantSHA and
 // the manifest names the kernel it was given, by name, size and digest.
 func receive(body io.Reader, max int64, wantSHA string, kernel io.Writer) (Manifest, error) {
+	return receiveWith(body, max, wantSHA, kernel, nil)
+}
+
+// receiveWith is receive for a bundle whose extension members are given to st. A nil st discards
+// them.
+func receiveWith(body io.Reader, max int64, wantSHA string, kernel io.Writer, st *stager) (Manifest, error) {
 	whole := sha256.New()
 	src := io.TeeReader(&capped{r: body, left: max}, whole)
 	tr := tar.NewReader(src)
@@ -75,11 +105,12 @@ func receive(body io.Reader, max int64, wantSHA string, kernel io.Writer) (Manif
 	if err != nil {
 		return Manifest{}, readError(bundleManifest, err)
 	}
-	switch _, err := tr.Next(); {
-	case err == nil:
-		return Manifest{}, fmt.Errorf("%w: a member follows %s", ErrBundle, bundleManifest)
-	case !errors.Is(err, io.EOF):
-		return Manifest{}, readError("the end of the bundle", err)
+	var m Manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return Manifest{}, fmt.Errorf("%w: %s is not JSON: %v", ErrBundle, bundleManifest, err)
+	}
+	if err := receiveExtensions(tr, m, st); err != nil {
+		return Manifest{}, err
 	}
 	// What follows the end blocks of the tar is part of what the digest covers.
 	if _, err := io.Copy(io.Discard, src); err != nil {
@@ -89,10 +120,6 @@ func receive(body io.Reader, max int64, wantSHA string, kernel io.Writer) (Manif
 	if got := hex.EncodeToString(whole.Sum(nil)); got != strings.ToLower(wantSHA) {
 		return Manifest{}, fmt.Errorf("%w: the SHA-256 of the body is %s, not the %s asked for", ErrBundle, got, wantSHA)
 	}
-	var m Manifest
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return Manifest{}, fmt.Errorf("%w: %s is not JSON: %v", ErrBundle, bundleManifest, err)
-	}
 	if m.Version == "" {
 		return Manifest{}, fmt.Errorf("%w: %s names no version", ErrBundle, bundleManifest)
 	}
@@ -100,6 +127,46 @@ func receive(body io.Reader, max int64, wantSHA string, kernel io.Writer) (Manif
 		return Manifest{}, fmt.Errorf("%w: %s does not describe the kernel (it is %d bytes with SHA-256 %s)", ErrBundle, bundleManifest, n, got)
 	}
 	return m, nil
+}
+
+// receiveExtensions reads the members after the manifest, each of which the manifest lists, in
+// order, with its size and digest. The end of the tar follows the last. A manifest that lists a
+// name twice is refused before any member is read.
+func receiveExtensions(tr *tar.Reader, m Manifest, st *stager) error {
+	for i, e := range m.Extensions {
+		if slices.ContainsFunc(m.Extensions[:i], func(p BundleExtension) bool { return p.Name == e.Name }) {
+			return fmt.Errorf("%w: %s lists the extension %s twice", ErrBundle, bundleManifest, e.Name)
+		}
+	}
+	for _, e := range m.Extensions {
+		h, err := tr.Next()
+		if err != nil {
+			return readError("the extension "+e.Name, err)
+		}
+		if h.Name != bundleExtensionDir+e.Name+".sqfs" || h.Typeflag != tar.TypeReg || h.Size != e.Bytes {
+			return fmt.Errorf("%w: the member %q is not the regular file %s%s.sqfs of %d bytes that %s lists", ErrBundle, h.Name, bundleExtensionDir, e.Name, e.Bytes, bundleManifest)
+		}
+		if st == nil || !st.wanted(e.Name) {
+			if _, err := io.Copy(io.Discard, tr); err != nil {
+				return readError(h.Name, err)
+			}
+			continue
+		}
+		added, err := st.stage(e.Name, strings.ToLower(e.SHA256), m.Version, tr)
+		if added {
+			st.added = append(st.added, strings.ToLower(e.SHA256))
+		}
+		if err != nil {
+			return err
+		}
+	}
+	switch _, err := tr.Next(); {
+	case err == nil:
+		return fmt.Errorf("%w: a member follows the extensions %s lists", ErrBundle, bundleManifest)
+	case !errors.Is(err, io.EOF):
+		return readError("the end of the bundle", err)
+	}
+	return nil
 }
 
 // readError says what a failed read of the body is: the cap, or a body that is not a tar.

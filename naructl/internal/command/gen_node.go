@@ -98,7 +98,7 @@ func (f *nodeFlags) declare(fs *pflag.FlagSet) {
 	fs.StringVar(&f.orchJoin, "orch-join", "", "spec.orch.join: the client URL, https://<host>:<port>, of a running member, which this member joins; it takes the initial cluster from that cluster, so no --orch-member, and excludes --orch-restore")
 	fs.BoolVar(&f.orchRestore, "orch-restore", false, "spec.orch.restore: orchd starts empty and waits for root's etcd snapshot (PUT /v1/restore)")
 	fs.StringVar(&f.orchKey, "orch-key", "", "spec.orch: the file holding orch's private key, which the user data carries 0600 for orch's user alone")
-	fs.Var(&f.extensions, "extension", "spec.extensions: <name>=<SHA-256 of the image>, a system extension init mounts before any service starts, repeatable; the signer and orch need naru-orch=the sha256 field of the release's naru-orch-ext-TAG.json")
+	fs.Var(&f.extensions, "extension", "spec.extensions: <name> or <name>=<SHA-256 of the image>, a system extension init mounts before any service starts, repeatable; <name> alone takes the stored image of that name built for the running naru version, which an upgrade bundle carries, and the form with a SHA-256 pins one image; the signer and orch need naru-orch")
 	fs.StringVar(&f.metricsListen, "metrics-listen", "", "spec.metrics: the IP address init and the daemons serve /metrics on, each on its own port")
 	fs.StringVar(&f.machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
 	fs.Var(&f.peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")

@@ -82,15 +82,16 @@ type Orch struct {
 // OrchExtension is the extension that carries naru-orchd and naru-signer.
 const OrchExtension = "naru-orch"
 
-// Extension is one entry of spec.extensions.
+// Extension is one entry of spec.extensions. An entry with no SHA256 is resolved by init to the one
+// stored image of its name built for init's version (ADR 0084).
 type Extension struct {
 	Name   string `yaml:"name"`
-	SHA256 string `yaml:"sha256"`
+	SHA256 string `yaml:"sha256,omitempty"`
 }
 
 type extensionSpec struct {
 	Name   string `yaml:"name"`
-	SHA256 string `yaml:"sha256"`
+	SHA256 string `yaml:"sha256,omitempty"`
 }
 
 var extensionDigestRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -158,20 +159,27 @@ type fileOwner struct {
 // checkDaemons reports the first thing init would refuse in the sections above, which would stop
 // the Node booting or leave it without what orch needs.
 func (n Node) checkDaemons() error {
-	seen, digests := map[string]bool{}, map[string]bool{}
+	seen, digests, unpinned := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, e := range n.Extensions {
 		switch {
 		case e.Name == "":
 			return errors.New("an extension needs a name")
-		case !extensionDigestRE.MatchString(e.SHA256):
-			return fmt.Errorf("the extension %q needs the lowercase hex SHA-256 of its image, not %q", e.Name, e.SHA256)
+		case e.SHA256 == "" && unpinned[e.Name]:
+			return fmt.Errorf("the extension %q is given twice with no SHA-256", e.Name)
+		case e.SHA256 != "" && !extensionDigestRE.MatchString(e.SHA256):
+			return fmt.Errorf("the extension %q needs the lowercase hex SHA-256 of its image, or none, not %q", e.Name, e.SHA256)
 		case digests[e.SHA256]:
 			return fmt.Errorf("the extension image %s is given twice", e.SHA256)
 		}
-		seen[e.Name], digests[e.SHA256] = true, true
+		seen[e.Name] = true
+		if e.SHA256 == "" {
+			unpinned[e.Name] = true
+		} else {
+			digests[e.SHA256] = true
+		}
 	}
 	if (n.Signer != nil || n.Orch != nil) && !seen[OrchExtension] {
-		return fmt.Errorf("the signer and orch run from the %s extension: give --extension %s=<SHA-256 of its image>", OrchExtension, OrchExtension)
+		return fmt.Errorf("the signer and orch run from the %s extension: give --extension %s, or %s=<SHA-256 of its image> to pin it", OrchExtension, OrchExtension, OrchExtension)
 	}
 	if h := n.HostNetwork; h != nil {
 		if n.Host == nil {

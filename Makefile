@@ -166,7 +166,9 @@ in-builder-image:
 # which the upgrade group of image/pkgs builds from the programs and the kernel of the image:
 # next/bzImage is the same tree with the version $(VERSION)-next stamped in, and refuse/bzImage a
 # naru-init that cannot find its data disk (the linker flag is REFUSE_LDFLAGS of the bake file), so a
-# trial boot of it refuses, with a seed or without, and rolls back by itself.
+# trial boot of it refuses, with a seed or without, and rolls back by itself. next/extensions/ is the
+# naru-orch extension built for that version, which a bundle of it carries (ADR 0084); so does
+# refuse/extensions/.
 UPGRADE := $(BUILD)/upgrade
 in-builder-image-upgrade: in-builder-image
 	@set -e; \
@@ -174,6 +176,8 @@ in-builder-image-upgrade: in-builder-image
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
 	  $(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/bzImage-$$v.tar; \
 	  cp $(PKGROOT)/bzImage-$$v/bzImage $(UPGRADE)/$$v/; \
+	  $(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/extension-$$v.tar; \
+	  cp -r $(PKGROOT)/extension-$$v/extensions $(UPGRADE)/$$v/extensions; \
 	done
 
 # in-builder-disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT

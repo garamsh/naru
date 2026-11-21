@@ -22,9 +22,10 @@ variable "TESTROOT" { default = "initramfs-node/no-testroot" }
 variable "REFUSE_LDFLAGS" { default = "-X github.com/garamsh/naru/lib/init/linux.dataDiskLabel=naru67-absent" }
 
 # What make image-upgrade adds to make image: the kernels the upgrade tests put on a running Node,
-# which differ from the image's in naru-init (ADR 0025).
+# which differ from the image's in naru-init (ADR 0025), and the naru-orch extension built for the
+# next and the refusing version, which the bundles of an upgrade carry (ADR 0084).
 group "upgrade" {
-  targets = ["bzImage-next", "bzImage-refuse"]
+  targets = ["bzImage-next", "bzImage-refuse", "extension-next", "extension-refuse"]
 }
 
 group "default" {
@@ -152,6 +153,24 @@ target "extension" {
   contexts = { naru = "target:naru" }
   args     = { NARU_VERSION = NARU_VERSION }
   output   = ["type=oci,dest=${OUT}/extension.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+# The extension of the next version: the programs of the image under the manifest that names
+# ${NARU_VERSION}-next, the version bzImage-next's naru-init reports.
+target "extension-next" {
+  inherits = ["_package"]
+  context  = "extension"
+  contexts = { naru = "target:naru" }
+  args     = { NARU_VERSION = "${NARU_VERSION}-next" }
+  output   = ["type=oci,dest=${OUT}/extension-next.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "extension-refuse" {
+  inherits = ["_package"]
+  context  = "extension"
+  contexts = { naru = "target:naru" }
+  args     = { NARU_VERSION = "${NARU_VERSION}-refuse" }
+  output   = ["type=oci,dest=${OUT}/extension-refuse.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
 target "etcd" {

@@ -18,13 +18,14 @@ import (
 
 // bundleOf writes the upgrade bundle of the kernel at kernelPath as the release would, with the ESP
 // of the image the Node boots recorded in its manifest, and its SHA256SUMS, and returns their paths.
-func bundleOf(t *testing.T, kernelPath, version string) (bundle, sums string) {
+// exts are the extension images the bundle carries (ADR 0084).
+func bundleOf(t *testing.T, kernelPath, version string, exts ...release.BundleExtension) (bundle, sums string) {
 	t.Helper()
 	esp, err := release.ESPBytes(filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"))
 	require.NoError(t, err)
 	dir := t.TempDir()
 	bundle = filepath.Join(dir, release.BundleName(version))
-	require.NoError(t, release.WriteBundle(bundle, version, kernelPath, esp))
+	require.NoError(t, release.WriteBundle(bundle, version, kernelPath, esp, exts...))
 	b, err := os.ReadFile(bundle)
 	require.NoError(t, err)
 	sums = filepath.Join(dir, "SHA256SUMS")

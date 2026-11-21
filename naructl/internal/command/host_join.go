@@ -75,7 +75,7 @@ func genHostProfile(fs *pflag.FlagSet) runner {
 	fs.StringVar(&hostEgress, "host-egress-interface", "", "spec.host.network: the interface the virtual networks' egress leaves by (with --host-management-prefix)")
 	fs.IntVar(&hostTunnelPort, "host-tunnel-port", 0, "spec.host.network: the UDP port of the WireGuard tunnel (with --host-management-prefix; default 51820)")
 	fs.Var(&storage, "storage", "<name>=<label, /dev/path or serial:NUMBER>, an extra disk the host offers as XFS, repeatable: the first holds mvmd's disks, snapshots and Machine run directories, on XFS with reflinks, and the others are mounted under /var/lib/naru/storage")
-	fs.Var(&extensions, "extension", "<name>=<SHA-256 of the image>, a system extension init mounts before any service starts, repeatable")
+	fs.Var(&extensions, "extension", "<name> or <name>=<SHA-256 of the image>, a system extension init mounts before any service starts, repeatable")
 	fs.StringVar(&apiClientCA, "api-client-ca", "", "the file holding the PEM of the authority naru-hostd's clients chain to, beside orch's (a key in it is refused)")
 	fs.StringVar(&pool, "machine-pool", "", "the IPv4 prefix orch gives each host a /24 of for its Machines, such as 10.200.0.0/16")
 	fs.StringVar(&p.Orch.URL, "orch-url", "", "orch's https URL, which an admitted host's agent keeps reporting to")
@@ -175,11 +175,11 @@ func parseStorage(s string) (layout.StorageDisk, error) {
 	return layout.StorageDisk{Name: name, Label: value}, nil
 }
 
-// parseExtension reads one --extension value, <name>=<SHA-256 of the image>.
+// parseExtension reads one --extension value, <name> or <name>=<SHA-256 of the image>.
 func parseExtension(e string) (layout.Extension, error) {
-	name, digest, ok := strings.Cut(e, "=")
-	if !ok || name == "" || digest == "" {
-		return layout.Extension{}, fmt.Errorf("--extension %q is not <name>=<SHA-256 of the image>", e)
+	name, digest, pinned := strings.Cut(e, "=")
+	if name == "" || (pinned && digest == "") {
+		return layout.Extension{}, fmt.Errorf("--extension %q is not <name> or <name>=<SHA-256 of the image>", e)
 	}
 	return layout.Extension{Name: name, SHA256: digest}, nil
 }
