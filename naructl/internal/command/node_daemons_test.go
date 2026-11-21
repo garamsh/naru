@@ -243,6 +243,23 @@ func TestGenNode_ASignerReplicaMakesItsJoinKeyFirstAndJoinsOnceAuthorised(t *tes
 	assert.Equal(t, in.authorisationText, second.Spec.Signer.Replica.Join.Authorisation)
 }
 
+func TestGenNode_AnExtensionWithNoDigestIsWrittenWithoutAShaAndInitAcceptsIt(t *testing.T) {
+	dep := newDeployment(t)
+
+	path := dep.node(t, "node-1", "--signer", "--extension", "naru-orch", "--extension", "tools="+d("1"), "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10")
+
+	validate(t, path)
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var doc struct {
+		Spec struct {
+			Extensions []map[string]string `yaml:"extensions"`
+		} `yaml:"spec"`
+	}
+	require.NoError(t, yaml.Unmarshal(b, &doc))
+	assert.Equal(t, []map[string]string{{"name": "naru-orch"}, {"name": "tools", "sha256": d("1")}}, doc.Spec.Extensions, "the entry of naru-orch has no sha256 key, not an empty one")
+}
+
 func TestGenNode_HostRevocationPublicKeyIsWrittenToSpecHostAndRefusedWithoutTheHostAPI(t *testing.T) {
 	dep := newDeployment(t)
 	in := newDaemonInputs(t)
@@ -315,7 +332,9 @@ func TestGenNode_DaemonFlagsRefuseWhatInitWouldRefuseOrWhatDoesNothing(t *testin
 		{"host orch without a key", append([]string{"--host-orch-url", "https://192.168.0.10:7500", "--host-orch-ca-sha256", d("a")}, host...), "--host-orch-enroll-key"},
 		{"orch without the signer", without("--signer"), "run the signer here"},
 		{"signer without the naru-orch extension", without("--extension", orchExtension), "run from the naru-orch extension"},
-		{"extension that is not name=digest", []string{"--extension", "naru-orch"}, "is not <name>=<SHA-256"},
+		{"extension with an empty digest", []string{"--extension", "naru-orch="}, "is not <name> or <name>=<SHA-256"},
+		{"extension with no name", []string{"--extension", "=" + d("e")}, "is not <name> or <name>=<SHA-256"},
+		{"an extension with no digest given twice", []string{"--extension", "tools", "--extension", "tools"}, "given twice with no SHA-256"},
 		{"extension with a short digest", []string{"--extension", "naru-orch=abcd"}, "lowercase hex SHA-256"},
 		{"an extension image given twice", []string{"--extension", "tools=" + d("1"), "--extension", "more=" + d("1")}, "given twice"},
 		{"orch without its key", without("--orch-key"), "needs its certificate"},
