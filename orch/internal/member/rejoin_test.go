@@ -185,6 +185,38 @@ func TestRejoinPeers_ALeftoverMarkerDoesNotDecideWhatTheClusterAnswers(t *testin
 	})
 }
 
+func TestRejoinPeers_DiscardsOnlyOnTheAnswerOfTheClusterItsDataBelongsTo(t *testing.T) {
+	t.Run("a peer of another cluster that does not list the member: the directory is kept", func(t *testing.T) {
+		a := orchtest.Start(t, orchtest.Options{Members: 3})
+		b := orchtest.Start(t, orchtest.Options{Members: 1, CA: a.CA})
+		cfg := a.MemberConfig(2)
+		for _, m := range a.Members {
+			require.NoError(t, m.Stop())
+		}
+		cfg.Join = b.MemberConfig(0).ClientURL
+
+		peers, err := member.RejoinPeers(t.Context(), cfg, quiet)
+
+		require.NoError(t, err)
+		assert.Empty(t, peers)
+		assert.True(t, member.HasData(cfg.DataDir), "the answer of another cluster does not remove the member")
+		assert.NoFileExists(t, markerOf(cfg))
+	})
+	t.Run("a peer of its own cluster that does not list the member: the directory is discarded", func(t *testing.T) {
+		c := orchtest.Start(t, orchtest.Options{Members: 3})
+		lead := c.Leader(t, []int{0, 1, 2}, 30*time.Second)
+		out := (lead + 1) % 3
+		cfg := c.MemberConfig(out)
+		removeStopped(t, c, out, lead)
+
+		peers, err := member.RejoinPeers(t.Context(), cfg, quiet)
+
+		require.NoError(t, err)
+		assert.NotEmpty(t, peers)
+		assert.False(t, member.HasData(cfg.DataDir))
+	})
+}
+
 func writeMarker(t *testing.T, cfg member.Config, peers ...string) {
 	t.Helper()
 	data, err := json.Marshal(map[string][]string{"peers": peers})
