@@ -2,6 +2,7 @@ package etcd
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,8 +13,12 @@ import (
 // EventPrefix starts the type of every event the engine writes to the log.
 const EventPrefix = "group."
 
-// HoldRepeat is how long a hold that repeats is left out of the log after it was written. A hold the
-// log shows older than twice this has ended.
+// bootSetPrefix starts the kind of the boot set reconciler's events, which are written under their
+// own type (bootset.added) and not under EventPrefix.
+const bootSetPrefix = "bootset."
+
+// HoldRepeat is how long a hold, or a failure to add a boot set, that repeats is left out of the log
+// after it was written. A hold the log shows older than twice this has ended.
 const HoldRepeat = 10 * time.Minute
 
 // Appender is the inventory's event log.
@@ -22,7 +27,8 @@ type Appender interface {
 }
 
 // Events writes the engine's events to the inventory's log. A hold the engine reports on every
-// pass is written once per HoldRepeat.
+// pass, and a boot set that fails again in the same class on the same host, is written once per
+// HoldRepeat.
 type Events struct {
 	log Appender
 
@@ -30,7 +36,10 @@ type Events struct {
 	held map[holdKey]time.Time
 }
 
-type holdKey struct{ group, member, message string }
+type holdKey struct {
+	kind                       groups.EventKind
+	group, member, host, class string
+}
 
 var _ groups.Events = (*Events)(nil)
 
@@ -39,7 +48,7 @@ func NewEvents(log Appender) *Events { return &Events{log: log, held: map[holdKe
 
 // Record implements groups.Events.
 func (e *Events) Record(ctx context.Context, ev groups.Event) error {
-	if ev.Kind == groups.EventHold && e.repeated(ev) {
+	if (ev.Kind == groups.EventHold || ev.Kind == groups.EventBootSetFailed) && e.repeated(ev) {
 		return nil
 	}
 	detail := map[string]string{"message": ev.Message}
@@ -52,15 +61,22 @@ func (e *Events) Record(ctx context.Context, ev groups.Event) error {
 	if ev.Host != "" {
 		detail["host"] = ev.Host
 	}
-	subject := ev.Group
+	subject, typ := ev.Group, EventPrefix+string(ev.Kind)
 	if ev.Member != "" {
 		subject = ev.Member
 	}
-	return e.log.AppendEvent(ctx, orchapi.Event{Time: ev.Time, Type: EventPrefix + string(ev.Kind), Subject: subject, Detail: detail})
+	if strings.HasPrefix(string(ev.Kind), bootSetPrefix) {
+		subject, typ = ev.Host, string(ev.Kind)
+	}
+	return e.log.AppendEvent(ctx, orchapi.Event{Time: ev.Time, Type: typ, Subject: subject, Detail: detail})
 }
 
 func (e *Events) repeated(ev groups.Event) bool {
-	k := holdKey{ev.Group, ev.Member, ev.Message}
+	what := ev.Message
+	if ev.Class != "" {
+		what = ev.Class
+	}
+	k := holdKey{ev.Kind, ev.Group, ev.Member, ev.Host, what}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if at, ok := e.held[k]; ok && ev.Time.Sub(at) < HoldRepeat {

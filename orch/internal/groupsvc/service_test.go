@@ -169,7 +169,7 @@ func TestMicroVMsListWhatTheHostsReportAndNameTheGroupOfAMembersMicroVM(t *testi
 	svc, st, _ := newSvc(fh)
 	st.members["web-1"] = groups.Member{ID: "web-1", Group: "web", Host: "h1", MachineID: "web-1", Phase: groups.PhaseRunning}
 	require.NoError(t, fh.Create(t.Context(), "h1", groups.MachineSpec{ID: "web-1", PodPrefix: "10.9.0.0/26", Template: groups.Template{Form: groups.FormImage, Version: "r@sha256:abc", Network: "lab"}}))
-	require.NoError(t, fh.Create(t.Context(), "h2", groups.MachineSpec{ID: "adhoc", Template: groups.Template{Form: groups.FormOS, NodeVersion: "node-2"}}))
+	require.NoError(t, fh.Create(t.Context(), "h2", groups.MachineSpec{ID: "adhoc", BootSet: "node-2", Template: groups.Template{Form: groups.FormOS, NodeVersion: "v2.0.0"}}))
 
 	got, err := svc.MicroVMs(t.Context())
 	require.NoError(t, err)
