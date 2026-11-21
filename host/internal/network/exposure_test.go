@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,6 +25,15 @@ var t0 = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 type clock struct {
 	mu sync.Mutex
 	t  time.Time
+	// boot, when set, is the boot of the host; otherwise it is boot-1, up as long as the clock has run since t0.
+	boot func() (string, time.Duration, error)
+}
+
+func (c *clock) bootInfo() (string, time.Duration, error) {
+	if c.boot != nil {
+		return c.boot()
+	}
+	return "boot-1", c.now().Sub(t0), nil
 }
 
 func (c *clock) now() time.Time {
@@ -44,29 +54,58 @@ type fakeLink struct {
 	addrs     map[netip.Addr]bool
 	announced []netip.Addr
 	addErr    error
+	// refused are the addresses Check refuses; valid is the time the kernel was given for each address.
+	refused map[netip.Addr]bool
+	valid   map[netip.Addr]time.Duration
+	// failAdd are the addresses Add fails for.
+	failAdd map[netip.Addr]bool
+	// removeErr, when set, is the error of every Remove.
+	removeErr error
 }
 
 func newLink(left ...netip.Addr) *fakeLink {
-	l := &fakeLink{addrs: map[netip.Addr]bool{}}
+	l := &fakeLink{addrs: map[netip.Addr]bool{}, refused: map[netip.Addr]bool{}, valid: map[netip.Addr]time.Duration{}, failAdd: map[netip.Addr]bool{}}
 	for _, a := range left {
 		l.addrs[a] = true
 	}
 	return l
 }
 
-func (l *fakeLink) Add(a netip.Addr) error {
+func (l *fakeLink) Check(a netip.Addr) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.refused[a] {
+		return network.ErrHostAddress
+	}
+	return nil
+}
+
+func (l *fakeLink) Add(a netip.Addr, valid time.Duration) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.addErr != nil {
 		return l.addErr
 	}
+	if l.failAdd[a] {
+		return errors.New("no such device")
+	}
 	l.addrs[a] = true
+	l.valid[a] = valid
 	return nil
+}
+
+func (l *fakeLink) validFor(a netip.Addr) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.valid[a]
 }
 
 func (l *fakeLink) Remove(a netip.Addr) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.removeErr != nil {
+		return l.removeErr
+	}
 	delete(l.addrs, a)
 	return nil
 }
@@ -116,6 +155,7 @@ func startExposer(t *testing.T, state string, link *fakeLink, c *clock) *exposur
 	m := newManager(f, &fakeTunnel{}, state)
 	m.Base.LAN = "lan0"
 	m.Now = c.now
+	m.Boot = c.bootInfo
 	require.NoError(t, m.Load(context.Background()))
 	if _, ok := m.Network("a"); !ok {
 		require.NoError(t, m.Declare(context.Background(), network.Network{Name: "a", Prefix: pfx("10.8.0.0/16"), Remote: []netip.Prefix{pfx("10.0.2.7/32")}}))
@@ -211,15 +251,15 @@ func TestExposer_ARenewalRunsNoNft(t *testing.T) {
 	e := startExposer(t, filepath.Join(t.TempDir(), "networks.json"), link, c)
 	ctx := context.Background()
 	require.NoError(t, e.x.Put(ctx, web(false), 15*time.Second))
-	before := len(e.f.calls)
 	c.advance(5 * time.Second)
 	require.NoError(t, e.x.Put(ctx, web(false), 15*time.Second))
-	assert.Len(t, e.f.calls, before, "the table is not replaced by a renewal")
+	assert.Contains(t, e.f.lastScript(), "flush set inet naru leased", "a renewal refreshes the leased set")
+	assert.NotContains(t, e.f.lastScript(), "delete table", "the table is not replaced by a renewal")
 
 	changed := web(false)
 	changed.Backends = changed.Backends[:1]
 	require.NoError(t, e.x.Put(ctx, changed, 15*time.Second))
-	assert.Len(t, e.f.calls, before+1, "control: a change of backends is")
+	assert.Contains(t, e.f.lastScript(), "delete table", "control: a change of backends replaces it")
 }
 
 func TestExposer_DeleteReleasesAtOnce(t *testing.T) {
@@ -282,6 +322,87 @@ func TestExposer_AnAddressTheLinkRefusesLeavesNoRules(t *testing.T) {
 	require.Error(t, e.x.Put(context.Background(), web(false), 15*time.Second))
 	assert.Empty(t, e.x.Exposures())
 	assert.NotContains(t, e.f.last(), "dnat", "the host forwards no address it does not own")
+
+	link.addErr = nil
+	require.NoError(t, e.x.Put(context.Background(), web(false), 15*time.Second), "control: with the link working the same lease is taken")
+	assert.Contains(t, e.f.last(), "dnat ip to")
+}
+
+func TestExposer_AnAddressTheHostHoldsIsRefusedBeforeAnythingIsDone(t *testing.T) {
+	c, link := &clock{t: t0}, newLink()
+	e := startExposer(t, "", link, c)
+	link.refused[addr("192.168.0.80")] = true
+	before := len(e.f.calls)
+	assert.ErrorIs(t, e.x.Put(context.Background(), web(false), 15*time.Second), network.ErrHostAddress)
+	assert.False(t, link.has(addr("192.168.0.80")))
+	assert.Len(t, e.f.calls, before, "no rule was applied")
+	other := web(false)
+	other.Address = addr("192.168.0.81")
+	assert.NoError(t, e.x.Put(context.Background(), other, 15*time.Second), "control: another address is taken")
+}
+
+func TestExposer_TheKernelIsGivenTheTimeThatIsLeft(t *testing.T) {
+	c, link := &clock{t: t0}, newLink()
+	e := startExposer(t, "", link, c)
+	ctx := context.Background()
+	a := addr("192.168.0.80")
+	require.NoError(t, e.x.Put(ctx, web(false), 15*time.Second))
+	assert.Equal(t, 15*time.Second, link.validFor(a), "the address is valid for the lease")
+	c.advance(5 * time.Second)
+	require.NoError(t, e.x.Put(ctx, web(false), 15*time.Second))
+	assert.Equal(t, 15*time.Second, link.validFor(a), "a renewal gives it the lease again")
+	c.advance(5 * time.Second)
+	require.NoError(t, e.x.Tick(ctx))
+	assert.Equal(t, 15*time.Second, link.validFor(a), "control: a pass with no renewal does not extend it")
+}
+
+func TestExposer_OneLeaseFailingLeavesTheOthersServed(t *testing.T) {
+	c, link := &clock{t: t0}, newLink()
+	e := startExposer(t, "", link, c)
+	ctx := context.Background()
+	require.NoError(t, e.x.Put(ctx, web(false), 15*time.Second))
+	second := web(false)
+	second.Address = addr("192.168.0.81")
+	link.failAdd[second.Address] = true
+	require.Error(t, e.x.Put(ctx, second, 15*time.Second))
+	assert.Equal(t, []netip.Addr{addr("192.168.0.80")}, addresses(e.x.Exposures()), "the lease that failed was released")
+	assert.True(t, link.has(addr("192.168.0.80")), "the other is held")
+	assert.Contains(t, e.f.last(), "192.168.0.80", "and served")
+	assert.NotContains(t, e.f.last(), "192.168.0.81")
+	delete(link.failAdd, second.Address)
+	assert.NoError(t, e.x.Put(ctx, second, 15*time.Second), "control: without the failure it is taken")
+}
+
+func TestExposer_AFailedRenewalKeepsTheLease(t *testing.T) {
+	c, link := &clock{t: t0}, newLink()
+	e := startExposer(t, "", link, c)
+	ctx := context.Background()
+	a := addr("192.168.0.80")
+	require.NoError(t, e.x.Put(ctx, web(false), 15*time.Second))
+	c.advance(5 * time.Second)
+	link.failAdd[a] = true
+	assert.Error(t, e.x.Put(ctx, web(false), 15*time.Second))
+	assert.Equal(t, []netip.Addr{a}, addresses(e.x.Exposures()), "the lease is kept")
+	assert.True(t, link.has(a))
+	assert.Contains(t, e.f.last(), "dnat ip to")
+}
+
+func TestExposer_ALeaseThatRanOutLeavesWhenNftFails(t *testing.T) {
+	c, link := &clock{t: t0}, newLink()
+	e := startExposer(t, "", link, c)
+	ctx := context.Background()
+	a := addr("192.168.0.80")
+	require.NoError(t, e.x.Put(ctx, web(false), 15*time.Second))
+
+	c.advance(15 * time.Second)
+	e.f.fail = true
+	assert.Error(t, e.x.Tick(ctx), "the failure is reported")
+	assert.Empty(t, e.x.Exposures(), "the lease is gone")
+	assert.False(t, link.has(a), "and its address with it")
+
+	e.f.fail = false
+	require.NoError(t, e.x.Tick(ctx))
+	assert.NotContains(t, e.f.last(), "dnat", "the next pass makes the table again")
 }
 
 func TestExposer_ARestartRestoresTheLeaseAndDropsWhatRanOut(t *testing.T) {
@@ -331,4 +452,97 @@ func addresses(in []network.Exposure) []netip.Addr {
 		out = append(out, e.Address)
 	}
 	return out
+}
+
+func TestExposer_ALeaseDoesNotSurviveWhatTheClockCannotTell(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		restart func(c *clock)
+		kept    bool
+	}{
+		{"control: the same boot, within the lease", func(c *clock) { c.advance(5 * time.Second) }, true},
+		{"another boot", func(c *clock) {
+			c.advance(5 * time.Second)
+			c.boot = func() (string, time.Duration, error) { return "boot-2", 5 * time.Second, nil }
+		}, false},
+		{"the wall clock stepped back after the lease ran out", func(c *clock) {
+			c.advance(-time.Hour)
+			c.boot = func() (string, time.Duration, error) { return "boot-1", 20 * time.Second, nil }
+		}, false},
+		{"the boot cannot be read", func(c *clock) {
+			c.boot = func() (string, time.Duration, error) { return "", 0, errors.New("no /proc") }
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := filepath.Join(t.TempDir(), "networks.json")
+			c, link := &clock{t: t0}, newLink()
+			e := startExposer(t, state, link, c)
+			require.NoError(t, e.x.Put(context.Background(), web(false), 15*time.Second))
+			tc.restart(c)
+			again := startExposer(t, state, link, c)
+			if tc.kept {
+				assert.Len(t, again.x.Exposures(), 1)
+				assert.True(t, link.has(addr("192.168.0.80")))
+				assert.InDelta(t, 10, link.validFor(addr("192.168.0.80")).Seconds(), 1, "the kernel is given what is left")
+				return
+			}
+			assert.Empty(t, again.x.Exposures())
+			assert.False(t, link.has(addr("192.168.0.80")))
+		})
+	}
+}
+
+func TestExposer_AStateThatNoLongerHoldsIsDroppedAtLoad(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "networks.json")
+	c, link := &clock{t: t0}, newLink()
+	e := startExposer(t, state, link, c)
+	require.NoError(t, e.x.Put(context.Background(), web(false), 15*time.Second))
+	raw, err := os.ReadFile(state)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name string
+		edit func(string) string
+		kept bool
+	}{
+		{"control: the file as it was written", func(s string) string { return s }, true},
+		{"a backend outside the network", func(s string) string { return strings.Replace(s, "10.8.0.6", "10.9.9.9", 1) }, false},
+		{"a node port outside the range", func(s string) string { return strings.Replace(s, "30080", "80", 1) }, false},
+		{"the address of the management plane", func(s string) string { return strings.Replace(s, "192.168.0.80", "172.16.0.9", 1) }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "networks.json")
+			require.NoError(t, os.WriteFile(path, []byte(tc.edit(string(raw))), 0o600))
+			again := startExposer(t, path, newLink(), c)
+			assert.Equal(t, tc.kept, len(again.x.Exposures()) == 1)
+		})
+	}
+}
+
+func TestManager_RefusesAnExposureThatIsMalformed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*network.Exposure)
+	}{
+		{"a node port below the range", func(x *network.Exposure) { x.Ports[0].NodePort = 29999 }},
+		{"a node port above the range", func(x *network.Exposure) { x.Ports[0].NodePort = 32768 }},
+		{"a protocol that is neither", func(x *network.Exposure) { x.Ports[0].Protocol = "sctp" }},
+		{"a port twice", func(x *network.Exposure) { x.Ports[1] = x.Ports[0] }},
+		{"the PROXY protocol on a UDP port", func(x *network.Exposure) { x.Proxy = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := startExposer(t, "", newLink(), &clock{t: t0})
+			x := web(false)
+			tc.change(&x)
+			x.Deadline = t0.Add(time.Minute)
+			assert.ErrorIs(t, e.m.PutExposure(context.Background(), x), network.ErrInvalid)
+		})
+	}
+	for _, port := range []int{30000, 32767} {
+		e := startExposer(t, "", newLink(), &clock{t: t0})
+		x := web(false)
+		x.Ports[0].NodePort = port
+		x.Deadline = t0.Add(time.Minute)
+		assert.NoError(t, e.m.PutExposure(context.Background(), x), "control: node port %d is in the range", port)
+	}
 }

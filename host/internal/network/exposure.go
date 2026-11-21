@@ -15,19 +15,36 @@ var (
 	ErrNoLAN    = errors.New("the host has no LAN interface")
 	ErrReserved = errors.New("the address belongs to a network, a member or the management plane")
 	ErrBackend  = errors.New("a backend is not a member of the exposure's network")
+	// ErrHostAddress is an address the host cannot take for a lease because it is the host's own,
+	// the LAN's network or broadcast address, or its gateway: announcing it would take it over.
+	ErrHostAddress = errors.New("the address belongs to the host or to the LAN")
+	// ErrInvalid is an exposure that is malformed: a port outside its range, a NodePort outside
+	// Kubernetes' range, a repeated port, no backend, or a UDP port with the PROXY protocol.
+	ErrInvalid = errors.New("the exposure is invalid")
 )
+
+// Protocol is the transport of an exposed port.
+type Protocol string
 
 // The protocols of an exposed port.
 const (
-	TCP = "tcp"
-	UDP = "udp"
+	TCP Protocol = "tcp"
+	UDP Protocol = "udp"
+)
+
+// The range of a Service's nodePort. Kubernetes allocates them from 30000 to 32767 unless the API
+// server's --service-node-port-range says otherwise (https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport);
+// naru does not change it.
+const (
+	NodePortFirst = 30000
+	NodePortLast  = 32767
 )
 
 // ExposurePort is a port of an exposure: the port on the address and the NodePort it goes to.
 type ExposurePort struct {
-	Protocol string `json:"protocol"`
-	Port     int    `json:"port"`
-	NodePort int    `json:"nodePort"`
+	Protocol Protocol `json:"protocol"`
+	Port     int      `json:"port"`
+	NodePort int      `json:"nodePort"`
 }
 
 // Exposure is a lease on a LAN address: the host owns the address and forwards its ports to the
@@ -91,9 +108,6 @@ func (m *Manager) Exposures() []Exposure {
 func (m *Manager) PutExposure(ctx context.Context, e Exposure) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.Base.LAN == "" {
-		return ErrNoLAN
-	}
 	if err := m.checkExposure(e); err != nil {
 		return err
 	}
@@ -107,32 +121,73 @@ func (m *Manager) PutExposure(ctx context.Context, e Exposure) error {
 	return m.apply(ctx, next)
 }
 
+// Validate refuses an exposure that is malformed, whatever the host holds.
+func (e Exposure) Validate() error {
+	if !e.Address.Is4() {
+		return fmt.Errorf("%w: the address is not IPv4", ErrInvalid)
+	}
+	if len(e.Ports) == 0 || len(e.Backends) == 0 {
+		return fmt.Errorf("%w: it needs a port and a backend", ErrInvalid)
+	}
+	seen := map[ExposurePort]bool{}
+	for _, p := range e.Ports {
+		key := ExposurePort{Protocol: p.Protocol, Port: p.Port}
+		switch {
+		case p.Protocol != TCP && p.Protocol != UDP:
+			return fmt.Errorf("%w: protocol %q", ErrInvalid, p.Protocol)
+		case p.Port < 1 || p.Port > 65535:
+			return fmt.Errorf("%w: port %d", ErrInvalid, p.Port)
+		case p.NodePort < NodePortFirst || p.NodePort > NodePortLast:
+			return fmt.Errorf("%w: nodePort %d is outside %d-%d", ErrInvalid, p.NodePort, NodePortFirst, NodePortLast)
+		case seen[key]:
+			return fmt.Errorf("%w: %s port %d twice", ErrInvalid, p.Protocol, p.Port)
+		case e.Proxy && p.Protocol == UDP:
+			return fmt.Errorf("%w: a UDP port cannot carry the PROXY protocol", ErrInvalid)
+		}
+		seen[key] = true
+	}
+	for _, b := range e.Backends {
+		if !b.Is4() {
+			return fmt.Errorf("%w: backend %s is not IPv4", ErrInvalid, b)
+		}
+	}
+	return nil
+}
+
 // checkExposure refuses an exposure whose address or backends the host must not serve.
-func (m *Manager) checkExposure(e Exposure) error {
+func (m *Manager) checkExposure(e Exposure) error { return checkExposure(m.Base, m.c, e) }
+
+func checkExposure(base, c Config, e Exposure) error {
+	if base.LAN == "" {
+		return ErrNoLAN
+	}
+	if err := e.Validate(); err != nil {
+		return err
+	}
 	var n *Network
-	for i := range m.c.Networks {
-		if m.c.Networks[i].Name == e.Network {
-			n = &m.c.Networks[i]
+	for i := range c.Networks {
+		if c.Networks[i].Name == e.Network {
+			n = &c.Networks[i]
 		}
 	}
 	if n == nil {
 		return ErrUnknownNetwork
 	}
-	if m.Base.Management.IsValid() && m.Base.Management.Contains(e.Address) {
+	if base.Management.IsValid() && base.Management.Contains(e.Address) {
 		return ErrReserved
 	}
-	for _, o := range m.c.Networks {
+	for _, o := range c.Networks {
 		if o.Prefix.Contains(e.Address) || slices.ContainsFunc(o.Remote, func(p netip.Prefix) bool { return p.Contains(e.Address) }) {
 			return ErrReserved
 		}
 	}
-	for _, x := range m.c.Members {
+	for _, x := range c.Members {
 		if x.Address == e.Address || (x.Routed.IsValid() && x.Routed.Contains(e.Address)) {
 			return ErrReserved
 		}
 	}
 	for _, b := range e.Backends {
-		if !m.isMember(*n, b) {
+		if !isMember(c, *n, b) {
 			return fmt.Errorf("%w: %s", ErrBackend, b)
 		}
 	}
@@ -141,11 +196,11 @@ func (m *Manager) checkExposure(e Exposure) error {
 
 // isMember reports whether a is an address of the network's membership: inside its prefix, one of
 // its remote members, or the address of a member attached here.
-func (m *Manager) isMember(n Network, a netip.Addr) bool {
+func isMember(c Config, n Network, a netip.Addr) bool {
 	if n.Prefix.Contains(a) || slices.ContainsFunc(n.Remote, func(p netip.Prefix) bool { return p.Contains(a) }) {
 		return true
 	}
-	return slices.ContainsFunc(m.c.Members, func(x Member) bool { return x.Network == n.Name && x.Address == a })
+	return slices.ContainsFunc(c.Members, func(x Member) bool { return x.Network == n.Name && x.Address == a })
 }
 
 // DeleteExposure drops the lease on a, and applies. An absent one is not an error.
@@ -163,7 +218,8 @@ func (m *Manager) DeleteExposure(ctx context.Context, a netip.Addr) error {
 }
 
 // ExpireExposures drops the leases whose deadline has passed, and applies. It returns the addresses
-// it dropped.
+// it dropped, also when the host refused the ruleset: a lease that ran out is not served again, and
+// the table is made again on the next pass.
 func (m *Manager) ExpireExposures(ctx context.Context) ([]netip.Addr, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -178,9 +234,17 @@ func (m *Manager) ExpireExposures(ctx context.Context) ([]netip.Addr, error) {
 		}
 	}
 	if len(gone) == 0 {
-		return nil, nil
+		if m.ran {
+			return nil, nil
+		}
+		return nil, m.run(ctx, m.c)
 	}
-	return gone, m.apply(ctx, next)
+	err := m.apply(ctx, next)
+	if err != nil {
+		m.c.Exposures, m.ran = next.Exposures, false
+		_ = m.save()
+	}
+	return gone, err
 }
 
 func (m *Manager) expired(e Exposure) bool { return !m.now().Before(e.Deadline) }
