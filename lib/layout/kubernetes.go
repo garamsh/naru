@@ -261,7 +261,7 @@ func (n Node) checkKube() error {
 	case k.Token != "" && !pki.ValidToken(k.Token):
 		return errors.New("the bootstrap token is not <id>.<secret>, [a-z0-9]{6}.[a-z0-9]{16}")
 	case !ValidIssuers(k.ServiceAccountIssuers):
-		return errors.New("a ServiceAccount issuer is an https URL with a host, no query or fragment and no trailing slash, and none is repeated")
+		return errors.New("a ServiceAccount issuer is a plain https URL (a host and a path of letters, digits and - . _ ~ segments, no userinfo, query, fragment, trailing slash or space), and none is repeated")
 	case !validAddons(k.DisabledAddons):
 		return fmt.Errorf("an add-on to disable is not one of %s", strings.Join(Addons, ", "))
 	case !validBlockSerials(k.BlockSerials, n.Storage):
@@ -325,16 +325,43 @@ func (k KubeNode) issuerArgs() []string {
 // JWKSURI is where issuer serves its JSON Web Key Set.
 func JWKSURI(issuer string) string { return issuer + JWKSPath }
 
-// ValidIssuers reports whether every issuer is an https URL with a host and no query or fragment, as
-// OpenID Connect Discovery requires of an issuer, and none is repeated.
+// ValidIssuers reports whether every issuer is a plain https URL, as OpenID Connect Discovery requires
+// of an issuer, and none is repeated. Plain is: the scheme https in lower case, a host, no userinfo,
+// query or fragment, and a path of segments of letters, digits and - . _ ~ that are neither empty (so
+// no trailing slash) nor "." nor "..". A path is also a directory name under gen kubernetes-jwks's
+// --out-dir, and a line of a file, which is why it is this narrow.
 func ValidIssuers(issuers []string) bool {
 	seen := map[string]bool{}
 	for _, iss := range issuers {
-		u, err := url.Parse(iss)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery || strings.HasSuffix(iss, "/") || seen[iss] {
+		if !plainIssuer(iss) || seen[iss] {
 			return false
 		}
 		seen[iss] = true
+	}
+	return true
+}
+
+func plainIssuer(iss string) bool {
+	rest, ok := strings.CutPrefix(iss, "https://")
+	if !ok {
+		return false
+	}
+	host, path, _ := strings.Cut(rest, "/")
+	if host == "" || strings.ContainsFunc(host, func(r rune) bool { return r <= ' ' || r >= 0x7f || strings.ContainsRune("@?#%\\/", r) }) {
+		return false
+	}
+	if u, err := url.Parse(iss); err != nil || u.Host != host {
+		return false
+	}
+	if !strings.Contains(rest, "/") {
+		return true
+	}
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" || seg == "." || seg == ".." || strings.ContainsFunc(seg, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-._~", r))
+		}) {
+			return false
+		}
 	}
 	return true
 }
