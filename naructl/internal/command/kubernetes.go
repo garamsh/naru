@@ -139,7 +139,7 @@ func serviceAccountKey(caDir string, o saKeyOptions) error {
 		if err != nil {
 			return err
 		}
-		// The key first: a run that ends between the files leaves no sa.pub, and the next makes both.
+		// The key first: a run that ends between the files leaves no sa.pub, and the next writes it from sa.key.
 		if err := writeKeyFile(key, keyPEM, 0o600); err != nil {
 			return err
 		}
@@ -185,6 +185,31 @@ func serviceAccountKey(caDir string, o saKeyOptions) error {
 		return writeKeyFile(key, keyPEM, 0o600)
 	case o.named && have != o.alg:
 		return fmt.Errorf("the ServiceAccount key is %s, not %s; --rotate-service-account-key makes a new one", have, o.alg)
+	}
+	return repairPublicKeys(pub, signer)
+}
+
+// repairPublicKeys finishes a first run that ended after sa.key: sa.pub is written from the signing key
+// when it is absent. A present sa.pub must list the signing key first; one that lists it second is the
+// state of a rotation that ended before sa.key was replaced, valid only until that rotation is run again.
+func repairPublicKeys(pub string, signer []byte) error {
+	have, err := os.ReadFile(pub)
+	if errors.Is(err, os.ErrNotExist) {
+		return writeKeyFile(pub, signer, 0o644)
+	}
+	if err != nil {
+		return err
+	}
+	first, err := pki.SigningKeyID(have)
+	if err != nil {
+		return fmt.Errorf("%s: %w", pub, err)
+	}
+	want, err := pki.SigningKeyID(signer)
+	if err != nil {
+		return err
+	}
+	if first != want {
+		return fmt.Errorf("%s lists the key %s first, not the signing key %s; that is the state of a rotation that ended before sa.key was replaced, so run it again with --rotate-service-account-key=%s, or drop the previous key with --drop-previous-service-account-key", pub, first, want, want)
 	}
 	return nil
 }

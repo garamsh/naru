@@ -70,3 +70,39 @@ func TestIssuerDir_IsUnderOutDirAndRefusesAPathThatLeavesIt(t *testing.T) {
 		assert.ErrorContains(t, err, "outside --out-dir", bad)
 	}
 }
+
+func TestServiceAccountKey_AFirstRunThatEndedAfterTheKeyIsRepairedByTheNextAndOneThatListsAnotherKeyFirstIsRefused(t *testing.T) {
+	clean := t.TempDir()
+	must.NoError(t, serviceAccountKey(clean, saKeyOptions{alg: pki.RS256}))
+	cleanPub := readFile(t, filepath.Join(clean, "sa.pub"))
+
+	dir := t.TempDir()
+	real := writeKeyFile
+	t.Cleanup(func() { writeKeyFile = real })
+	writeKeyFile = func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == "sa.pub" {
+			return errors.New("the run ends here")
+		}
+		return real(path, data, perm)
+	}
+	must.Error(t, serviceAccountKey(dir, saKeyOptions{alg: pki.RS256}))
+	_, err := os.Stat(filepath.Join(dir, "sa.pub"))
+	must.ErrorIs(t, err, os.ErrNotExist)
+	writeKeyFile = real
+
+	must.NoError(t, serviceAccountKey(dir, saKeyOptions{alg: pki.RS256}))
+
+	signer, err := pki.SigningPublicKey(readFile(t, filepath.Join(dir, "sa.key")))
+	must.NoError(t, err)
+	assert.Equal(t, signer, readFile(t, filepath.Join(dir, "sa.pub")), "the retry writes sa.pub from the key sa.key holds")
+	assert.Equal(t, len(cleanPub), len(signer), "control: a clean first run leaves the same shape of pair")
+	must.NoError(t, serviceAccountKey(dir, saKeyOptions{alg: pki.RS256}), "a complete pair is left as it is")
+
+	_, otherPub, err := pki.ServiceAccountKey(pki.RS256)
+	must.NoError(t, err)
+	must.NoError(t, os.WriteFile(filepath.Join(dir, "sa.pub"), otherPub, 0o644))
+	err = serviceAccountKey(dir, saKeyOptions{alg: pki.RS256})
+	must.Error(t, err)
+	assert.ErrorContains(t, err, "lists the key")
+	assert.Equal(t, otherPub, readFile(t, filepath.Join(dir, "sa.pub")), "a refused run changes nothing")
+}
