@@ -58,7 +58,7 @@ func running(id string) orchapi.GroupMember {
 func TestGroupsShowTheLatestHoldOfAGroupThatHasFewerMembersThanItsCount(t *testing.T) {
 	log := &eventLog{}
 	rec := groupsetcd.NewEvents(log)
-	at := time.Unix(1000, 0).UTC()
+	at := time.Now().Add(-5 * time.Minute).UTC().Round(0)
 	for i, msg := range []string{"old reason", "host h-1: region eu-1 is not kr-seoul"} {
 		require.NoError(t, rec.Record(t.Context(), groups.Event{Time: at.Add(time.Duration(i) * time.Minute), Kind: groups.EventHold, Group: "web", Message: msg}))
 	}
@@ -93,6 +93,27 @@ func TestGroupsShowTheLatestHoldOfAGroupThatHasFewerMembersThanItsCount(t *testi
 	require.Nil(t, all[1].Hold, "control: a group at its count shows no hold")
 	require.NotNil(t, all[2].Hold)
 	require.Equal(t, "other reason", all[2].Hold.Message, "each group shows its own hold")
+}
+
+func TestGroupsShowNoHoldOlderThanTwiceTheRepeatInterval(t *testing.T) {
+	log := &eventLog{}
+	rec := groupsetcd.NewEvents(log)
+	now := time.Now()
+	require.NoError(t, rec.Record(t.Context(), groups.Event{Time: now.Add(-2*groupsetcd.HoldRepeat - time.Minute), Kind: groups.EventHold, Group: "stale", Message: "last week's reason"}))
+	require.NoError(t, rec.Record(t.Context(), groups.Event{Time: now.Add(-2*groupsetcd.HoldRepeat + time.Minute), Kind: groups.EventHold, Group: "fresh", Message: "a missed write ago"}))
+	h := &handler{Deps{Inventory: log, Groups: groupList{groups: []orchapi.Group{
+		{Spec: orchapi.GroupSpec{Name: "stale", Count: 1}},
+		{Spec: orchapi.GroupSpec{Name: "fresh", Count: 1}},
+	}}}}
+
+	w := httptest.NewRecorder()
+	h.groupList(w, httptest.NewRequest(http.MethodGet, "/v1/groups", nil), identity.Identity{})
+	var all []orchapi.Group
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &all))
+	require.Len(t, all, 2)
+	require.Nil(t, all[0].Hold, "a hold older than twice the repeat interval has ended")
+	require.NotNil(t, all[1].Hold, "control: a hold inside it still shows")
+	require.Equal(t, "a missed write ago", all[1].Hold.Message)
 }
 
 func TestGroupsAtTheirCountDoNotReadTheLog(t *testing.T) {

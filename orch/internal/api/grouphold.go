@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"github.com/garamsh/naru/lib/orchapi"
+	groupsetcd "github.com/garamsh/naru/orch/internal/groups/etcd"
 )
 
 // holdEvent is the type of the event the groups engine records when it places nothing, with the
@@ -11,7 +13,9 @@ import (
 const holdEvent = "group.hold"
 
 // withHold sets Hold on each group that has fewer live members than its count, from the newest
-// hold event the log holds for that group. The log is read once, and only when a group is short.
+// hold event the log holds for that group, when it is newer than twice the engine's repeat interval:
+// the engine writes an ongoing hold at least once per interval, so an older one has ended, and twice
+// covers one write missed after a change of leader. The log is read once, and only when a group is short.
 func (h *handler) withHold(ctx context.Context, gs []orchapi.Group) error {
 	short := map[string]bool{}
 	for _, g := range gs {
@@ -32,9 +36,10 @@ func (h *handler) withHold(ctx context.Context, gs []orchapi.Group) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	latest := map[string]orchapi.GroupHold{}
 	for _, ev := range evs {
-		if ev.Type == holdEvent && short[ev.Detail["group"]] {
+		if ev.Type == holdEvent && short[ev.Detail["group"]] && now.Sub(ev.Time) <= 2*groupsetcd.HoldRepeat {
 			latest[ev.Detail["group"]] = orchapi.GroupHold{Time: ev.Time, Message: ev.Detail["message"]}
 		}
 	}
