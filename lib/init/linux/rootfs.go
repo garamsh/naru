@@ -3,7 +3,6 @@ package linux
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -185,7 +184,7 @@ func copyFileMode(from, to string, perm fs.FileMode) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if err := copyData(out, in); err != nil {
 		_ = out.Close()
 		return err
 	}

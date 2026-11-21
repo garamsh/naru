@@ -170,6 +170,9 @@ func linkTo(link, target string, log *slog.Logger) error {
 		}
 		return nil
 	case info.IsDir():
+		if err := removeTombstones(link); err != nil {
+			return err
+		}
 		entries, err := os.ReadDir(link)
 		if err != nil {
 			return err

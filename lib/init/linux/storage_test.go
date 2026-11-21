@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -404,6 +405,20 @@ func mvmdRig(t *testing.T) (*storageRig, string) {
 	return r, state
 }
 
+// seedStorage makes fn run once the storage disk is mounted, as the mount hides what its mount
+// point held before.
+func seedStorage(t *testing.T, r *storageRig, fn func()) {
+	t.Helper()
+	mount := r.host.mount
+	r.host.mount = func(source, target, fstype string, flags uintptr, data string) error {
+		if err := mount(source, target, fstype, flags, data); err != nil {
+			return err
+		}
+		fn()
+		return nil
+	}
+}
+
 func prepareMvmd(r *storageRig) error {
 	return r.prepare(config.Storage{Name: "vmdisks", Device: filepath.Join(r.host.devDir, "sdb")})
 }
@@ -467,14 +482,16 @@ func TestHost_PrepareStorageFinishesAMoveThatWasInterrupted(t *testing.T) {
 	r, state := mvmdRig(t)
 	snaps, target := filepath.Join(state, "snapshots"), filepath.Join(r.mnt, "snapshots")
 	require.NoError(t, os.MkdirAll(snaps, 0o700))
-	require.NoError(t, os.MkdirAll(target, 0o700))
 	for _, name := range []string{"half", "done"} {
 		require.NoError(t, os.WriteFile(filepath.Join(snaps, name), []byte("whole "+name), 0o600))
 	}
-	// Interrupted while copying: a partial copy under the temporary name.
-	require.NoError(t, os.WriteFile(filepath.Join(target, movingPrefix+"half"), []byte("whol"), 0o600))
-	// Interrupted after the rename, before the source was removed: both places hold the entry.
-	require.NoError(t, os.WriteFile(filepath.Join(target, "done"), []byte("whole done"), 0o600))
+	seedStorage(t, r, func() {
+		require.NoError(t, os.MkdirAll(target, 0o700))
+		// Interrupted while copying: a partial copy under the temporary name.
+		require.NoError(t, os.WriteFile(filepath.Join(target, movingPrefix+"half"), []byte("whol"), 0o600))
+		// Interrupted after the rename, before the source was removed: both places hold the entry.
+		require.NoError(t, os.WriteFile(filepath.Join(target, "done"), []byte("whole done"), 0o600))
+	})
 
 	require.NoError(t, prepareMvmd(r))
 
@@ -493,9 +510,11 @@ func TestHost_PrepareStorageRefusesAnEntryWhoseNameIsTakenInStorageAndNamesBothP
 	r, state := mvmdRig(t)
 	src, dst := filepath.Join(state, "disks", "d1"), filepath.Join(r.mnt, "disks", "d1")
 	require.NoError(t, os.MkdirAll(filepath.Join(state, "disks"), 0o700))
-	require.NoError(t, os.MkdirAll(filepath.Join(r.mnt, "disks"), 0o700))
 	require.NoError(t, os.WriteFile(src, []byte("old"), 0o600))
-	require.NoError(t, os.WriteFile(dst, []byte("other"), 0o600))
+	seedStorage(t, r, func() {
+		require.NoError(t, os.MkdirAll(filepath.Join(r.mnt, "disks"), 0o700))
+		require.NoError(t, os.WriteFile(dst, []byte("other"), 0o600))
+	})
 
 	err := prepareMvmd(r)
 
@@ -520,4 +539,44 @@ func TestHost_PrepareStorageLeavesALinkThatIsRightAndRefusesOneThatIsNot(t *test
 	err := linkTo(filepath.Join(state, "disks"), filepath.Join(r.mnt, "elsewhere"), slog.Default())
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "mvmd will refuse to start")
+}
+
+func TestHost_PrepareStorageDropsWhatAnInterruptedRemovalLeftAndDoesNotTakeItForAConflict(t *testing.T) {
+	r, state := mvmdRig(t)
+	snaps, target := filepath.Join(state, "snapshots"), filepath.Join(r.mnt, "snapshots")
+	require.NoError(t, os.MkdirAll(filepath.Join(snaps, removedPrefix+"s1"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(snaps, removedPrefix+"s1", "part"), []byte("half"), 0o600))
+	seedStorage(t, r, func() {
+		require.NoError(t, os.MkdirAll(target, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(target, "s1"), []byte("whole"), 0o600))
+	})
+
+	require.NoError(t, prepareMvmd(r))
+
+	entries, err := os.ReadDir(target)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "the tombstone was neither moved nor kept")
+	assert.Equal(t, "s1", entries[0].Name())
+}
+
+func TestCopyData_KeepsAHoleOfASparseFileUnallocated(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	f, err := os.Create(src)
+	require.NoError(t, err)
+	_, err = f.WriteAt([]byte("tail"), 64<<20)
+	require.NoError(t, err)
+	require.NoError(t, f.Truncate(65<<20))
+	require.NoError(t, f.Close())
+
+	require.NoError(t, copyFileMode(src, filepath.Join(dir, "dst"), 0o600))
+
+	want, err := os.ReadFile(src)
+	require.NoError(t, err)
+	got, err := os.ReadFile(filepath.Join(dir, "dst"))
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "same bytes and size")
+	var st syscall.Stat_t
+	require.NoError(t, syscall.Stat(filepath.Join(dir, "dst"), &st))
+	assert.Less(t, st.Blocks*512, int64(8<<20), "the 64 MiB hole takes no blocks")
 }

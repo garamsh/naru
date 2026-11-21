@@ -9,10 +9,80 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 )
 
 // movingPrefix starts the name an entry has in the storage target while it is being copied there.
 const movingPrefix = ".naru-moving-"
+
+// removedPrefix starts the name a source entry has while it is being removed.
+const removedPrefix = ".naru-removed-"
+
+// removeEntry removes src by renaming it to a tombstone in its directory, which is atomic, and then
+// removing that. An interruption leaves src whole or gone, never half removed under its own name,
+// so the next boot cannot take what is left for a conflict; linkTo removes the tombstones.
+func removeEntry(src string) error {
+	tomb := filepath.Join(filepath.Dir(src), removedPrefix+filepath.Base(src))
+	if err := os.RemoveAll(tomb); err != nil {
+		return err
+	}
+	if err := os.Rename(src, tomb); err != nil {
+		return err
+	}
+	return os.RemoveAll(tomb)
+}
+
+// removeTombstones removes what an interrupted removeEntry left in dir.
+func removeTombstones(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), removedPrefix) {
+			if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// The whence values of lseek(2) that find data and holes.
+const (
+	seekData = 3
+	seekHole = 4
+)
+
+// copyData writes the bytes of in to out, which is empty, skipping its holes, so that a sparse file
+// stays sparse, and sets out's size to in's.
+func copyData(out, in *os.File) error {
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	size := info.Size()
+	var off int64
+	for off < size {
+		data, err := in.Seek(off, seekData)
+		if errors.Is(err, syscall.ENXIO) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		hole, err := in.Seek(data, seekHole)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(io.NewOffsetWriter(out, data), io.NewSectionReader(in, data, hole-data)); err != nil {
+			return err
+		}
+		off = hole
+	}
+	return out.Truncate(size)
+}
 
 // moveEntry moves the entry src of a directory of mvmd's state to dst in the storage target, which
 // is on another file system. The copy is made under a temporary name, fsynced, and renamed to dst;
@@ -29,7 +99,7 @@ func moveEntry(src, dst string, log *slog.Logger) error {
 		if !same {
 			return fmt.Errorf("%s and %s both exist and differ; neither is overwritten, and mvmd will refuse to start with its disks, snapshots and disk snapshots on two file systems", src, dst)
 		}
-		if err := os.RemoveAll(src); err != nil {
+		if err := removeEntry(src); err != nil {
 			return err
 		}
 		log.Info("storage entry already copied; the source is removed", "from", src, "to", dst)
@@ -53,7 +123,7 @@ func moveEntry(src, dst string, log *slog.Logger) error {
 	if err := syncPath(filepath.Dir(dst)); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(src); err != nil {
+	if err := removeEntry(src); err != nil {
 		return err
 	}
 	log.Info("storage entry moved from mvmd's state directory", "from", src, "to", dst)
