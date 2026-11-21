@@ -252,8 +252,12 @@ func TestNode_GaonRegistersEachNodeKeepsItsLeaseAndSurvivesTheControlPlaneNodeRe
 // (127.0.0.1 is the host forward's). Both agents have no pair at first and get one through a
 // CertificateSigningRequest the controllers approve, so both Nodes register and are Ready. The console
 // of node-1 shows init issuing the API server's, the scheduler's and the controllers' pairs before the
-// first service starts, and no key. After node-2 loses power the agent reuses the pair it keeps on
-// the data disk: the Node's Lease is renewed again and no further request is created.
+// first service starts, and no key. After node-2 reboots the agent reuses the pair it keeps on
+// the data disk: the Node's Lease is renewed again and no further request is created. The reboot is
+// the graceful one (Ctrl-Alt-Del, which syncs and unmounts the data disk), not a power cut: the test
+// reboots as soon as the Lease is renewed, which can be inside the file system's commit interval of
+// the agent's write, and a power cut there loses a pair the agent completed. What a power cut costs
+// the agent is gaon's to decide, not this test's.
 func TestNode_GaonAgentsGetTheirPairsFromSigningRequestsWithATokenAndAWorkerReusesItsPairAfterRebooting(t *testing.T) {
 	c := start(t, node.ClusterSpec{N: 2, Gaon: true, BootPKI: true})
 	api, err := hostapi.New(c.HostAddr, c.Client)
@@ -299,7 +303,7 @@ func TestNode_GaonAgentsGetTheirPairsFromSigningRequestsWithATokenAndAWorkerReus
 		before = l.Spec.RenewTime
 		return err == nil && !before.IsZero()
 	})
-	require.NoError(t, second.Reboot())
+	require.NoError(t, second.RebootGracefully(bootTimeout))
 	require.NoError(t, second.WaitFor(ctx, bootTimeout, "started", "service=gaon-node-agent"), "node-2 booted again")
 	// The Lease is renewed only by an agent that holds a certificate; the first boot's pair is the only one it can hold.
 	eventually(t, "node-2's Lease is renewed after the reboot", func() bool {
