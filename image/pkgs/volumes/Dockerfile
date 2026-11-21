@@ -50,7 +50,7 @@ RUN mkdir -p /oci/blobs/sha256 /rootfs /tree/addons/images /tree/addons/manifest
  && printf '{"imageLayoutVersion":"1.0.0"}' >/oci/oci-layout \
  && tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner --format=gnu -cf /tree/addons/images/volumes.tar -C /oci . \
  && sed "s#@VOLUMES_IMAGE@#naru.local/volumes@sha256:$digest#" /volumes.yaml.in >/tree/addons/manifests/volumes.yaml \
- && ! grep -q '@' /tree/addons/manifests/volumes.yaml
+ && ! grep -q '@[A-Z_]*@' /tree/addons/manifests/volumes.yaml
 # The extension: the same squashfs as the extension package makes (zstd, one processor, root ownership,
 # times fixed by SOURCE_DATE_EPOCH), with no service: the add-on runs in Pods.
 RUN name=naru-volumes tree=/tree \
