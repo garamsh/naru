@@ -64,7 +64,7 @@ What `naru-orchd` is: the service of the control hosts that keeps the inventory 
 
 ## Open questions
 
-- **Exposures (decided, not built).** [ADR 0085](./adr/0085-a-service-of-type-loadbalancer-is-fulfilled-by-a-naru-cloud-controller-manager-that-asks-orch-for-an-address-from-a-pool-one-host-announces-it-on-the-lan-and-forwards-it-to-the-nodes-nodeports.md) (proposed) gives orch address pools, exposures for Services of type LoadBalancer, a lease per announcing host and the `naru:exposer` role scoped to one network.
+- **Exposures (decided, not built).** [ADR 0085](./adr/0085-a-service-of-type-loadbalancer-is-fulfilled-by-a-naru-cloud-controller-manager-that-asks-orch-for-an-address-from-a-pool-one-host-announces-it-on-the-lan-and-forwards-it-to-the-nodes-nodeports.md) (accepted) gives orch address pools, exposures for Services of type LoadBalancer, a lease per announcing host and the `naru:exposer` role scoped to one network.
 
 - `naructl orch init` writes the recovery key and its public half only. The root person file and the first control host's identities come from the signer's own commands, which this change does not have.
 - The rate limits are per member, so an attacker who spreads requests over three members is allowed three times the rate.
