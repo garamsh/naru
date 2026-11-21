@@ -709,3 +709,63 @@ func TestUpgrader_WatchGivesUpWhenThePromotionFails(t *testing.T) {
 	a, _ := n.slot("BOOTX64.EFI")
 	assert.Equal(t, "kernel-A", a)
 }
+
+func TestMissingExtensions_NamesTheEntriesWithNoStoredImageBuiltForTheVersion(t *testing.T) {
+	old := upgrade.Image{Name: "orch", SHA256: "a", Version: "v1"}
+	next := upgrade.Image{Name: "orch", SHA256: "b", Version: "v2"}
+	entries := func(sums ...string) []upgrade.Entry {
+		var out []upgrade.Entry
+		for _, s := range sums {
+			out = append(out, upgrade.Entry{Name: "orch", SHA256: s})
+		}
+		return out
+	}
+	tests := map[string]struct {
+		entries []upgrade.Entry
+		stored  []upgrade.Image
+		want    []string
+	}{
+		"no entries":                      {nil, []upgrade.Image{old}, nil},
+		"an entry for the old version":    {entries("a"), []upgrade.Image{old}, []string{"orch"}},
+		"an entry whose image is missing": {entries("a", "b"), []upgrade.Image{old}, []string{"orch"}},
+		"an entry beside the old one":     {entries("a", "b"), []upgrade.Image{old, next}, nil},
+		"another extension's image":       {entries("b"), []upgrade.Image{{Name: "other", SHA256: "b", Version: "v2"}}, []string{"orch"}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, upgrade.MissingExtensions(tt.entries, tt.stored, "v2"))
+		})
+	}
+}
+
+func TestUpgrader_InstallRefusesABundleWhoseVersionHasNoImageForAnExtensionEntryAndTouchesNothing(t *testing.T) {
+	n := newNode(t)
+	u := n.upgrader("v1", func(c *upgrade.Config) {
+		c.Extensions = func() ([]upgrade.Entry, []upgrade.Image, error) {
+			return []upgrade.Entry{{Name: "orch", SHA256: "a"}}, []upgrade.Image{{Name: "orch", SHA256: "a", Version: "v1"}}, nil
+		}
+	})
+	b, sum := bundle(t, "v2", "kernel-B")
+
+	_, err := u.Install(bytes.NewReader(b), sum)
+
+	require.ErrorIs(t, err, upgrade.ErrExtensions)
+	assert.ErrorContains(t, err, "orch")
+	assert.ErrorContains(t, err, "ADR 0055")
+	n.untouched()
+}
+
+func TestUpgrader_InstallStagesABundleWhoseVersionHasItsExtensionImage(t *testing.T) {
+	n := newNode(t)
+	u := n.upgrader("v1", func(c *upgrade.Config) {
+		c.Extensions = func() ([]upgrade.Entry, []upgrade.Image, error) {
+			return []upgrade.Entry{{Name: "orch", SHA256: "a"}, {Name: "orch", SHA256: "b"}},
+				[]upgrade.Image{{Name: "orch", SHA256: "a", Version: "v1"}, {Name: "orch", SHA256: "b", Version: "v2"}}, nil
+		}
+	})
+	b, sum := bundle(t, "v2", "kernel-B")
+
+	_, err := u.Install(bytes.NewReader(b), sum)
+
+	require.NoError(t, err)
+}

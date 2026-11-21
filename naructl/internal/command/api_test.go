@@ -248,10 +248,6 @@ type fakeNode struct {
 	extensionBody []byte
 	// extensionRemoved is the path of the last DELETE /v1/extensions/.
 	extensionRemoved string
-	// extensionEntries is spec.extensions of GET /v1/config, and storedExtensions the images of GET
-	// /v1/extensions in place of the default ones, when they are not nil.
-	extensionEntries []map[string]any
-	storedExtensions []map[string]any
 	// signerSocket is the unix socket /v1/signer/ is forwarded to, as init forwards it, when it is not empty.
 	signerSocket string
 }
@@ -287,10 +283,6 @@ func newFakeNodeTLS(t *testing.T, dep deployment, maxTLS uint16) *fakeNode {
 	})
 	mux.HandleFunc("GET /v1/extensions", func(w http.ResponseWriter, r *http.Request) {
 		f.note(r)
-		if f.storedExtensions != nil {
-			writeJSON(w, 200, map[string]any{"extensions": f.storedExtensions})
-			return
-		}
 		writeJSON(w, 200, map[string]any{"extensions": []map[string]any{
 			{"sha256": strings.Repeat("a", 64), "size": 1234, "name": "naru-orch", "version": "v9.9.9", "services": []string{"naru-orchd", "naru-signer"}, "mounted": true, "mountPoint": "/usr/lib/naru/extensions/naru-orch"},
 			{"sha256": strings.Repeat("b", 64), "size": 99, "name": "naru-orch", "version": "v9.9.8", "services": []string{"naru-orchd"}, "mounted": false},
@@ -331,13 +323,9 @@ func newFakeNodeTLS(t *testing.T, dep deployment, maxTLS uint16) *fakeNode {
 		f.note(r)
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		spec := map[string]any{"api": map[string]any{"key": "REDACTED", "certificate": "CERT"}}
-		if f.extensionEntries != nil {
-			spec["extensions"] = f.extensionEntries
-		}
 		writeJSON(w, 200, map[string]any{"revision": f.revision, "config": map[string]any{
 			"apiVersion": "naru.garam.sh/v1alpha1",
-			"spec":       spec,
+			"spec":       map[string]any{"api": map[string]any{"key": "REDACTED", "certificate": "CERT"}},
 			"status":     map[string]any{"version": "v1.2.3", "revision": f.revision},
 		}})
 	})

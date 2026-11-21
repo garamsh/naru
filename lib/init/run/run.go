@@ -6,6 +6,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -88,7 +89,9 @@ func Main() {
 		default:
 		}
 	}
-	upgrades := upgrade.New(version(), started, log)
+	upgrades := upgrade.NewWith(upgrade.Config{Version: version(), Started: started, Log: log, Extensions: func() ([]upgrade.Entry, []upgrade.Image, error) {
+		return storedExtensions(configs, extensions)
+	}})
 	upgrades.Detect()
 	server := api.New(api.Deps{
 		Services:   services,
@@ -189,6 +192,34 @@ func refuse(sigs <-chan os.Signal) {
 // and SIGABRT is to exit, and if PID 1 exits the kernel panics.
 func ignoreSignals() {
 	signal.Ignore(syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT)
+}
+
+// storedExtensions returns spec.extensions of the stored configuration and the stored images, which
+// an upgrade is checked against (ADR 0055).
+func storedExtensions(configs *store.Store, extensions *extension.Manager) ([]upgrade.Entry, []upgrade.Image, error) {
+	st, err := configs.Load()
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	var entries []upgrade.Entry
+	for _, e := range st.Config.Spec.Extensions {
+		entries = append(entries, upgrade.Entry{Name: e.Name, SHA256: e.SHA256})
+	}
+	if len(entries) == 0 {
+		return nil, nil, nil
+	}
+	have, err := extensions.List()
+	if err != nil {
+		return nil, nil, err
+	}
+	var images []upgrade.Image
+	for _, e := range have {
+		images = append(images, upgrade.Image{Name: e.Name, SHA256: e.SHA256, Version: e.Version})
+	}
+	return entries, images, nil
 }
 
 // extensionMounts returns where the system extensions are mounted.

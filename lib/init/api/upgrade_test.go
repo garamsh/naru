@@ -82,10 +82,11 @@ func TestServer_UpgradeThatIsRefusedAnswersTheStatusOfTheReasonAndDoesNotReboot(
 		err    error
 		status int
 	}{
-		"a bundle that is wrong":       {fmt.Errorf("%w: the SHA-256 differs", upgrade.ErrBundle), http.StatusBadRequest},
-		"a bundle that is too large":   {fmt.Errorf("%w: over the cap", upgrade.ErrTooLarge), http.StatusRequestEntityTooLarge},
-		"a Node that cannot take one":  {fmt.Errorf("%w: a trial is running", upgrade.ErrBusy), http.StatusConflict},
-		"a failure of the Node itself": {errors.New("mount the ESP /dev/vda1: secret detail"), http.StatusInternalServerError},
+		"a bundle that is wrong":                {fmt.Errorf("%w: the SHA-256 differs", upgrade.ErrBundle), http.StatusBadRequest},
+		"a bundle that is too large":            {fmt.Errorf("%w: over the cap", upgrade.ErrTooLarge), http.StatusRequestEntityTooLarge},
+		"a version without its extension image": {fmt.Errorf("%w: naru-orch", upgrade.ErrExtensions), http.StatusUnprocessableEntity},
+		"a Node that cannot take one":           {fmt.Errorf("%w: a trial is running", upgrade.ErrBusy), http.StatusConflict},
+		"a failure of the Node itself":          {errors.New("mount the ESP /dev/vda1: secret detail"), http.StatusInternalServerError},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

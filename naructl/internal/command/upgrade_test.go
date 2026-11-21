@@ -1,43 +1,25 @@
 package command_test
 
 import (
-	"archive/tar"
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// bundleTar is a bundle for version: the kernel member and manifest.json.
-func bundleTar(t *testing.T, kernel, version string) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for _, m := range []struct{ name, body string }{{"kernel.efi", kernel}, {"manifest.json", `{"version":"` + version + `"}`}} {
-		require.NoError(t, tw.WriteHeader(&tar.Header{Name: m.name, Mode: 0o644, Size: int64(len(m.body)), Typeflag: tar.TypeReg}))
-		_, err := tw.Write([]byte(m.body))
-		require.NoError(t, err)
-	}
-	require.NoError(t, tw.Close())
-	return buf.Bytes()
-}
-
-// bundleWithSums writes a bundle of the kernel body for v2 and a sums file that lists it with
-// sum, which is the bundle's digest when it is empty.
+// bundleWithSums writes a bundle of body and a sums file that lists it with sum, which is the
+// body's digest when it is empty.
 func bundleWithSums(t *testing.T, body, sum string) (bundle, sums string) {
 	t.Helper()
 	dir := t.TempDir()
 	bundle = filepath.Join(dir, "naru-host-upgrade-v2.tar")
-	data := bundleTar(t, body, "v2")
-	require.NoError(t, os.WriteFile(bundle, data, 0o644))
+	require.NoError(t, os.WriteFile(bundle, []byte(body), 0o644))
 	if sum == "" {
-		h := sha256.Sum256(data)
+		h := sha256.Sum256([]byte(body))
 		sum = hex.EncodeToString(h[:])
 	}
 	sums = filepath.Join(dir, "SHA256SUMS")
@@ -54,11 +36,9 @@ func TestUpgrade_SendsTheBundleWithTheDigestTheSumsFileListsAndPrintsTheActions(
 	out, err := run(t, "upgrade", "--config", node.clientFile(t, dep, "admin"), "--bundle", bundle, "--sums", sums)
 
 	require.NoError(t, err, out)
-	assert.Equal(t, []string{"GET /v1/config", "POST /v1/upgrade"}, node.requests, "the Node's extensions are checked first")
-	sent, err := os.ReadFile(bundle)
-	require.NoError(t, err)
-	assert.Equal(t, sent, node.upgradeBody)
-	h := sha256.Sum256(sent)
+	assert.Equal(t, []string{"POST /v1/upgrade"}, node.requests)
+	assert.Equal(t, []byte("the bundle"), node.upgradeBody)
+	h := sha256.Sum256([]byte("the bundle"))
 	assert.Equal(t, "sha256="+hex.EncodeToString(h[:]), node.upgradeQuery)
 	assert.Contains(t, out, "the Node accepted the upgrade:\n  upgrade v2\n  reboot node\n")
 }
@@ -161,43 +141,4 @@ func TestUpgrade_ARefusalKeepsTheFieldsTheNodeNames(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Equal(t, "422 Unprocessable Entity: the bundle is not an upgrade (fields: sha256, bundle)", out)
-}
-
-func TestUpgrade_RefusesBeforePostingWhenAnExtensionEntryHasNoStoredImageBuiltForTheBundlesVersion(t *testing.T) {
-	old, next := strings.Repeat("a", 64), strings.Repeat("c", 64)
-	entry := func(sha string) map[string]any { return map[string]any{"name": "naru-orch", "sha256": sha} }
-	tests := map[string]struct {
-		entries []map[string]any
-		refused bool
-	}{
-		"an entry for the old version only":                     {[]map[string]any{entry(old)}, true},
-		"an entry whose image is not stored":                    {[]map[string]any{entry(old), entry(next)}, true},
-		"an entry for the old and one for the new, both stored": {[]map[string]any{entry(old), entry(strings.Repeat("d", 64))}, false},
-		"no extension entry":                                    {nil, false},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			dep := newDeployment(t)
-			apiAuthority(t, dep)
-			node := newFakeNode(t, dep)
-			node.extensionEntries = tt.entries
-			node.storedExtensions = []map[string]any{
-				{"sha256": old, "name": "naru-orch", "version": "v1"},
-				{"sha256": strings.Repeat("d", 64), "name": "naru-orch", "version": "v2"},
-			}
-			bundle, sums := bundleWithSums(t, "the bundle", "")
-
-			out, err := run(t, "upgrade", "--config", node.clientFile(t, dep, "admin"), "--bundle", bundle, "--sums", sums)
-
-			if !tt.refused {
-				require.NoError(t, err, out)
-				assert.Contains(t, node.requests, "POST /v1/upgrade")
-				return
-			}
-			require.Error(t, err)
-			assert.Contains(t, out, "naru-orch")
-			assert.Contains(t, out, "ADR 0055")
-			assert.NotContains(t, node.requests, "POST /v1/upgrade", "nothing is posted")
-		})
-	}
 }

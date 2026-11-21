@@ -65,6 +65,9 @@ type Config struct {
 	Mount   func(source, target, fstype string, flags uintptr, data string) error
 	Unmount func(target string, flags int) error
 	Sync    func(dir string) error
+	// Extensions returns spec.extensions of the stored configuration and the stored images, for the
+	// check that the bundle's version can mount them. Nil checks nothing.
+	Extensions func() ([]Entry, []Image, error)
 	// Now and After are the clock and a timer.
 	Now   func() time.Time
 	After func(time.Duration) <-chan time.Time
@@ -199,6 +202,9 @@ func (u *Upgrader) Install(body io.Reader, wantSHA string) (Staged, error) {
 			return err
 		}
 		m, err = receive(body, u.cfg.MaxBytes, wantSHA, f)
+		if err == nil {
+			err = u.checkExtensions(m.Version)
+		}
 		if err == nil {
 			err = f.Sync()
 		}

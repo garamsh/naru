@@ -260,7 +260,7 @@ func startUpgradeNodeMounting(t *testing.T) (*node.Node, string) {
 	return nd, admin
 }
 
-func TestNode_UpgradeIsRefusedByNaructlWhenAnExtensionEntryHasNoImageForTheBundlesVersion(t *testing.T) {
+func TestNode_UpgradeIsRefusedByTheNodeWith422WhenAnExtensionEntryHasNoImageForTheBundlesVersion(t *testing.T) {
 	want := os.Getenv("NARU_VERSION")
 	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
 	nd, admin := startUpgradeNodeMounting(t)
@@ -271,6 +271,7 @@ func TestNode_UpgradeIsRefusedByNaructlWhenAnExtensionEntryHasNoImageForTheBundl
 	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
 
 	require.Error(t, r.Err)
+	assert.Contains(t, r.refusal(), "422", "the Node answers before it writes the slot")
 	assert.Contains(t, r.refusal(), "naru-orch", "the refusal names the extension")
 	assert.Contains(t, r.refusal(), "ADR 0055", "and the steps")
 	after, err := statusOf(tool, admin)
@@ -278,26 +279,4 @@ func TestNode_UpgradeIsRefusedByNaructlWhenAnExtensionEntryHasNoImageForTheBundl
 	assert.Equal(t, before.BootID, after.BootID, "the Node was not rebooted")
 	assert.Contains(t, after.Outcome, "none has ended", "and no upgrade started")
 	assert.NotContains(t, nd.Console(), "upgrade staged")
-}
-
-func TestNode_ATrialBootThatRefusesForAnExtensionIsRolledBackWithInitsReasonInLastUpgrade(t *testing.T) {
-	want := os.Getenv("NARU_VERSION")
-	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
-	nd, admin := startUpgradeNodeMounting(t)
-	// The manifest names the version the Node runs, whose extension is stored and named, so
-	// naructl sends it; the kernel is the next one, whose init has no image for its own version.
-	bundle, sums := bundleOf(t, filepath.Join(os.Getenv("NARU_UPGRADE_DIR"), "next", "bzImage"), want)
-
-	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
-
-	require.NoError(t, r.Err, r.refusal())
-	awaitRestarting(t, nd, "the Node is back on its old version and says the upgrade rolled back", func() bool {
-		s, err := statusOf(tool, admin)
-		return err == nil && strings.Contains(s.Outcome, "rolled back")
-	})
-	after, err := statusOf(tool, admin)
-	require.NoError(t, err)
-	assert.Equal(t, want, after.Version)
-	assert.Contains(t, after.Reason, "the boot sequence refused: mount the system extensions", "naructl upgrade --status prints init's refusal")
-	assert.Contains(t, after.Reason, `extension "naru-orch": no entry is built for naru `+want+"-next")
 }

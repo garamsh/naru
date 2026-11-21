@@ -2,17 +2,14 @@ package command
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
 
-	"github.com/garamsh/naru/naructl/internal/client"
 	"github.com/garamsh/naru/naructl/internal/upgrade"
 )
 
@@ -53,15 +50,8 @@ func upgradeCmd(fs *pflag.FlagSet) runner {
 		if err := upgrade.Check(*bundle, want); err != nil {
 			return err
 		}
-		version, err := upgrade.BundleVersion(*bundle)
-		if err != nil {
-			return err
-		}
 		cl, err := c.dial()
 		if err != nil {
-			return err
-		}
-		if err := requireExtensions(cl, version); err != nil {
 			return err
 		}
 		b, err := os.Open(*bundle)
@@ -86,45 +76,6 @@ func upgradeCmd(fs *pflag.FlagSet) runner {
 		_, _ = fmt.Fprintln(stdout, "the Node reboots into the new kernel and keeps it only when it is healthy; naructl version shows the version it runs and naructl upgrade --status how the upgrade ended")
 		return nil
 	}
-}
-
-// requireExtensions refuses an upgrade to version when the Node's configuration lists a system
-// extension of which the Node stores no image built for version: its trial boot would refuse
-// (ADR 0055) and roll back.
-func requireExtensions(cl *client.Client, version string) error {
-	ctx, cancel := withTimeout()
-	defer cancel()
-	cfg, err := cl.Config(ctx)
-	if err != nil {
-		return err
-	}
-	var doc struct {
-		Spec struct {
-			Extensions []upgrade.Entry `json:"extensions"`
-		} `json:"spec"`
-	}
-	if err := json.Unmarshal(cfg.Config, &doc); err != nil {
-		return fmt.Errorf("read spec.extensions of the Node's configuration: %w", err)
-	}
-	if len(doc.Spec.Extensions) == 0 {
-		return nil
-	}
-	have, err := cl.Extensions(ctx)
-	if err != nil {
-		return err
-	}
-	stored := make([]upgrade.Image, len(have))
-	for i, e := range have {
-		stored[i] = upgrade.Image{Name: e.Name, SHA256: e.SHA256, Version: e.Version}
-	}
-	missing := upgrade.MissingExtensions(doc.Spec.Extensions, stored, version)
-	if len(missing) == 0 {
-		return nil
-	}
-	return fmt.Errorf("the Node would refuse its boot on %s: no stored image of %s is built for it and named in spec.extensions. "+
-		"Deliver the release's image with `naructl extension add`, add its entry beside the old one with `naructl apply --mode staged`, "+
-		"post the bundle again, and remove the old entry and image once the new slot is promoted (ADR 0055, Consequences)",
-		version, strings.Join(missing, ", "))
 }
 
 func upgradeStatus(c call, stdout io.Writer) error {

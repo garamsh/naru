@@ -1,7 +1,6 @@
 package upgrade_test
 
 import (
-	"archive/tar"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,55 +58,4 @@ func TestCheck_AcceptsTheFileWithTheDigestAndRefusesAnyOther(t *testing.T) {
 	require.NoError(t, upgrade.Check(path, abc), "the control: the right digest")
 	assert.Error(t, upgrade.Check(path, sumA))
 	assert.Error(t, upgrade.Check(path+".none", abc))
-}
-
-func TestBundleVersion_ReadsTheVersionOfTheManifestAndRefusesABundleWithoutOne(t *testing.T) {
-	write := func(members map[string]string) string {
-		path := filepath.Join(t.TempDir(), "b.tar")
-		f, err := os.Create(path)
-		require.NoError(t, err)
-		tw := tar.NewWriter(f)
-		for _, name := range []string{"kernel.efi", "manifest.json"} {
-			body, ok := members[name]
-			if !ok {
-				continue
-			}
-			require.NoError(t, tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}))
-			_, err = tw.Write([]byte(body))
-			require.NoError(t, err)
-		}
-		require.NoError(t, tw.Close())
-		require.NoError(t, f.Close())
-		return path
-	}
-
-	got, err := upgrade.BundleVersion(write(map[string]string{"kernel.efi": "k", "manifest.json": `{"version":"v2"}`}))
-	require.NoError(t, err)
-	assert.Equal(t, "v2", got)
-	for name, members := range map[string]map[string]string{
-		"no manifest":        {"kernel.efi": "k"},
-		"no version":         {"kernel.efi": "k", "manifest.json": `{}`},
-		"a manifest of junk": {"kernel.efi": "k", "manifest.json": `x`},
-	} {
-		_, err := upgrade.BundleVersion(write(members))
-		assert.Error(t, err, name)
-	}
-	_, err = upgrade.BundleVersion(filepath.Join(t.TempDir(), "none.tar"))
-	assert.Error(t, err)
-}
-
-func TestMissingExtensions_NamesTheExtensionsWithNoStoredImageForTheVersion(t *testing.T) {
-	old := upgrade.Image{Name: "naru-orch", SHA256: sumA, Version: "v1"}
-	next := upgrade.Image{Name: "naru-orch", SHA256: sumB, Version: "v2"}
-	entries := func(shas ...string) (e []upgrade.Entry) {
-		for _, s := range shas {
-			e = append(e, upgrade.Entry{Name: "naru-orch", SHA256: s})
-		}
-		return e
-	}
-
-	assert.Equal(t, []string{"naru-orch"}, upgrade.MissingExtensions(entries(sumA), []upgrade.Image{old, next}, "v2"), "the new image is stored but not named")
-	assert.Equal(t, []string{"naru-orch"}, upgrade.MissingExtensions(entries(sumA, sumB), []upgrade.Image{old}, "v2"), "the new entry's image is not stored")
-	assert.Empty(t, upgrade.MissingExtensions(entries(sumA, sumB), []upgrade.Image{old, next}, "v2"), "the control: both are named and stored")
-	assert.Empty(t, upgrade.MissingExtensions(nil, nil, "v2"))
 }
