@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/guest"
@@ -114,9 +115,8 @@ func ReadRelease(dir, work string) (Release, error) {
 	if err != nil {
 		return Release{}, err
 	}
-	volumesInfo := filepath.Join(dir, ReleaseVolumesExtensionName(r.Version, ".json"))
-	if _, err := os.Stat(volumesInfo); err == nil {
-		// A release made before the volume extension carries none, and its naructl names none.
+	if !PredatesVolumes(r.Version) {
+		volumesInfo := filepath.Join(dir, ReleaseVolumesExtensionName(r.Version, ".json"))
 		if err := storeVolumes(volumesInfo, filepath.Join(dir, ReleaseVolumesExtensionName(r.Version, ".sqfs")), ext.StoreDir); err != nil {
 			return Release{}, err
 		}
@@ -129,6 +129,18 @@ func ReadRelease(dir, work string) (Release, error) {
 		return Release{}, err
 	}
 	return r, nil
+}
+
+// lastDevWithoutVolumes is the number of the last published v0.1.0-dev.N release made before the
+// volume extension (ADR 0083), which carries none and whose naructl names none.
+const lastDevWithoutVolumes = 13
+
+// PredatesVolumes reports whether the release of that version was made before the volume extension.
+// Any other version, including one that is not a v0.1.0-dev.N, carries it.
+func PredatesVolumes(version string) bool {
+	n, ok := strings.CutPrefix(version, "v0.1.0-dev.")
+	dev, err := strconv.Atoi(n)
+	return ok && err == nil && dev <= lastDevWithoutVolumes
 }
 
 // releaseVersion is the release's guest manifest and version, from the one naru-guest-<v>.json in dir.
