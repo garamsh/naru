@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"syscall"
 )
@@ -129,8 +130,14 @@ func receiveWith(body io.Reader, max int64, wantSHA string, kernel io.Writer, st
 }
 
 // receiveExtensions reads the members after the manifest, each of which the manifest lists, in
-// order, with its size and digest. The end of the tar follows the last.
+// order, with its size and digest. The end of the tar follows the last. A manifest that lists a
+// name twice is refused before any member is read.
 func receiveExtensions(tr *tar.Reader, m Manifest, st *stager) error {
+	for i, e := range m.Extensions {
+		if slices.ContainsFunc(m.Extensions[:i], func(p BundleExtension) bool { return p.Name == e.Name }) {
+			return fmt.Errorf("%w: %s lists the extension %s twice", ErrBundle, bundleManifest, e.Name)
+		}
+	}
 	for _, e := range m.Extensions {
 		h, err := tr.Next()
 		if err != nil {

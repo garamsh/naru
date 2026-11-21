@@ -75,8 +75,8 @@ type Config struct {
 	Stage   func(name, sha256, version string, body io.Reader) (added bool, err error)
 	Unstage func(sha256 string)
 	// Prune removes the stored extension images built for another version than the running one
-	// that the configuration does not pin (ADR 0084). It runs when an upgrade has ended: after a
-	// promotion and on a default boot. Nil prunes nothing.
+	// that no pinned entry of the configuration names (ADR 0084). It runs when an upgrade has
+	// ended: after a promotion and on a default boot. Nil prunes nothing.
 	Prune func()
 	// Now and After are the clock and a timer.
 	Now   func() time.Time
@@ -87,7 +87,7 @@ type Config struct {
 // Upgrader is the upgrade of the Node init runs.
 type Upgrader struct {
 	cfg Config
-	// installing is held while a bundle is received.
+	// installing is held while a bundle is received and while Reconcile settles the last upgrade.
 	installing sync.Mutex
 
 	mu   sync.Mutex
@@ -320,6 +320,12 @@ func (u *Upgrader) Reconcile() {
 	if u.Slot() == SlotTrial {
 		return
 	}
+	// A bundle being received is a new upgrade and nothing unfinished; the image it stores is built
+	// for another version and must outlive a prune until that version has booted (ADR 0084).
+	if !u.installing.TryLock() {
+		return
+	}
+	defer u.installing.Unlock()
 	if u.cfg.Prune != nil {
 		defer u.cfg.Prune()
 	}
