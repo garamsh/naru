@@ -79,20 +79,20 @@ func TestGenKubernetes_WritesTheAdminKubeconfigAndKeepsTheKeysOnASecondRun(t *te
 
 func TestGenKubernetes_DisableAddonIsWhatTheControlPlaneNodeReadsAndAnUnknownNameIsRefused(t *testing.T) {
 	dep := newDeployment(t)
-	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "dns")
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "dns", "--disable-addon", "volumes")
 
 	data, err := os.ReadFile(dep.kubeNode(t, "control-plane"))
 	require.NoError(t, err)
 
-	assert.NotContains(t, string(data), "name: addons\n", "a cluster without DNS has nothing for the add-ons service to apply")
+	assert.NotContains(t, string(data), "name: addons\n", "a cluster without DNS and volumes has nothing for the add-ons service to apply")
 	_, err = run(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "nope")
 	require.Error(t, err)
-	assert.EqualError(t, err, `--disable-addon "nope" is not one of dns`)
+	assert.EqualError(t, err, `--disable-addon "nope" is not one of dns, volumes`)
 }
 
 func TestGenKubernetes_AGenWithoutDisableAddonTurnsEveryAddonOnAgain(t *testing.T) {
 	dep := newDeployment(t)
-	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "dns")
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "dns", "--disable-addon", "volumes")
 	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10")
 
 	data, err := os.ReadFile(dep.kubeNode(t, "control-plane"))
@@ -154,4 +154,38 @@ func TestGenKubernetesBootstrapRBAC_PrintsTheBindingsASingleApplyNeeds(t *testin
 	for _, want := range []string{"system:node-bootstrapper", "system:bootstrappers"} {
 		assert.Contains(t, out, want)
 	}
+}
+
+func TestGenKubernetes_DisablingVolumesLeavesTheVolumeExtensionOutOfTheNodes(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "volumes")
+
+	data, err := os.ReadFile(dep.kubeNode(t, "worker", "--block-serial", "b1"))
+	require.NoError(t, err)
+
+	assert.NotContains(t, string(data), "naru-volumes")
+	cp, err := os.ReadFile(dep.kubeNode(t, "control-plane"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cp), "/addons/manifests/dns.yaml", "dns is still applied")
+	assert.NotContains(t, string(cp), "volumes.yaml")
+}
+
+func TestGenKubernetesNode_StorageAndBlockSerialsMakeTheNodeOfferVolumes(t *testing.T) {
+	dep := newDeployment(t)
+	dep.kubernetes(t)
+
+	out := dep.kubeNode(t, "worker", "--storage", "data=serial:s1", "--block-serial", "b1", "--block-serial", "b2")
+	validate(t, out)
+	data, err := os.ReadFile(out)
+	require.NoError(t, err)
+
+	got := string(data)
+	assert.Contains(t, got, "name: naru-volumes\n", "the volume extension is in the Node's configuration")
+	assert.Contains(t, got, "--node-labels=naru.garam.sh/volumes=true")
+	assert.Contains(t, got, "storageDir")
+	assert.Contains(t, got, "serial: s1")
+	_, err = run(t, "gen", "kubernetes-node", "--ca-dir", dep.ca, "--name", "node-2", "--role", "worker", "--address", "192.168.0.20/24",
+		"--endpoint", "192.168.0.10", "--pod-network", "10.64.0.0/12", "--pod-prefix", "10.64.2.0/24", "--peer", "192.168.0.10=10.64.1.0/24",
+		"--storage", "data=serial:s1", "--block-serial", "s1", "--out", filepath.Join(t.TempDir(), "x.yaml"))
+	require.Error(t, err, "a disk is either a storage disk or a block disk")
 }

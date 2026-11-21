@@ -104,6 +104,7 @@ func loadOrMakeFrontProxy(caDir string) (*pki.CA, error) {
 func genKubernetesNode(fs *pflag.FlagSet) runner {
 	var (
 		nameservers, binaries, disable, timeServers, peers list
+		storage, blockSerials                              list
 		extraNIC                                           string
 		n                                                  layout.Node
 		k                                                  layout.KubeNode
@@ -126,6 +127,8 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 	fs.Var(&binaries, "binary", "<service>=<absolute path>, the executable of a service in place of the image's, repeatable")
 	fs.Var(&disable, "disable", "a service to leave out ("+strings.Join(layout.Kubernetes.Names(), ", ")+"), repeatable")
 	fs.Var(&timeServers, "time-server", "an SNTP server init sets the clock from, host or host:port, repeatable")
+	fs.Var(&storage, "storage", "an extra disk init formats as XFS and mounts, <name>=<label, /dev/path or serial:NUMBER>, repeatable: the first holds the Node's local volumes (naru-local)")
+	fs.Var(&blockSerials, "block-serial", "the serial number of a disk the Node offers whole as a block volume (naru-block), repeatable: init neither formats nor mounts it")
 	fs.BoolVar(&k.LocalRegistry, "local-registry", false, "run the registry service from the data disk's inputs")
 	fs.StringVar(&k.RegistryCA, "registry-ca", "", "the path on the Node of the CA containerd trusts for the registry service (with --sandbox-image)")
 	fs.StringVar(&k.SandboxImage, "sandbox-image", "", "the image of a Pod's sandbox container, which containerd pulls")
@@ -243,6 +246,14 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 			}
 			n.Binaries[name] = bin
 		}
+		for _, s := range storage {
+			d, err := parseStorage(s)
+			if err != nil {
+				return err
+			}
+			n.Storage = append(n.Storage, d)
+		}
+		k.BlockSerials = blockSerials
 		n.Disable, n.TimeServers, n.Kube = disable, timeServers, &k
 		userData, err := n.UserData()
 		if err != nil {
