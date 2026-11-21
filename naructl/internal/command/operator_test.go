@@ -45,7 +45,7 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 	f := &fakeSigner{socket: shortSocketPath(t), roots: roots, got: map[string]json.RawMessage{}, who: map[string]identity.Identity{}, status: http.StatusOK}
 	l, err := net.Listen("unix", f.socket)
 	require.NoError(t, err)
-	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/revoke": identity.ActionRevoke,
+	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/exposer": identity.ActionIssueExposer, "/v1/revoke": identity.ActionRevoke,
 		"/v1/reissue-host": identity.ActionReissueHost, "/v1/register-host": identity.ActionRegisterHost, "/v1/retire-host": identity.ActionRetireHost}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/ca" {
@@ -75,6 +75,15 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 			_ = json.Unmarshal(body, &rot)
 			csr, _ := x509.ParseCertificateRequest(rot.CSR)
 			cert := issueFrom(t, caOf(t), rot.HostID, identity.RoleHost, csr.PublicKey)
+			_ = json.NewEncoder(w).Encode(identity.Issued{Certificate: cert.Raw, Serial: cert.SerialNumber.Text(16), NotAfter: cert.NotAfter})
+			return
+		}
+		if r.URL.Path == "/v1/exposer" {
+			var ex identity.ExposerRequest
+			_ = json.Unmarshal(body, &ex)
+			subject, _ := identity.ExposerSubject(ex.Network)
+			csr, _ := x509.ParseCertificateRequest(ex.CSR)
+			cert := issueFrom(t, caOf(t), subject, identity.RoleExposer, csr.PublicKey)
 			_ = json.NewEncoder(w).Encode(identity.Issued{Certificate: cert.Raw, Serial: cert.SerialNumber.Text(16), NotAfter: cert.NotAfter})
 			return
 		}
