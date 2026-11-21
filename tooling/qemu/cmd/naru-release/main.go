@@ -5,11 +5,19 @@
 //
 // naru-release compare <published SHA256SUMS> <new SHA256SUMS> exits 0 when a tag's published release and a new build of it agree on
 // every asset, and 1 naming each asset that differs (the release workflow refuses to touch a release that does).
+//
+// naru-release previous <tag> reads release tags, one per line, from standard input and prints the one with the highest
+// SemVer 2.0.0 version below <tag>, or nothing when none is below it.
+//
+// naru-release notes renders the release notes template with the tag, the commit, the two figures and the build's SHA256SUMS
+// (see -h for the flags) to standard output.
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -26,8 +34,15 @@ func main() {
 }
 
 func run() error {
-	if len(os.Args) > 1 && os.Args[1] == "compare" {
-		return compare(os.Args[2:])
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "compare":
+			return compare(os.Args[2:])
+		case "previous":
+			return previous(os.Args[2:], os.Stdin, os.Stdout)
+		case "notes":
+			return notes(os.Args[2:], os.Stdout)
+		}
 	}
 	var o release.Options
 	flag.StringVar(&o.Root, "root", ".", "repository root")
@@ -94,4 +109,64 @@ func compare(args []string) error {
 	}
 	fmt.Println("naru-release: the published release and this build agree on every asset")
 	return nil
+}
+
+func previous(args []string, in io.Reader, out io.Writer) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: naru-release previous <tag> < tags")
+	}
+	var tags []string
+	sc := bufio.NewScanner(in)
+	for sc.Scan() {
+		if t := strings.TrimSpace(sc.Text()); t != "" {
+			tags = append(tags, t)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	prev, err := release.Previous(args[0], tags)
+	if err != nil {
+		return err
+	}
+	if prev != "" {
+		fmt.Fprintln(out, prev)
+	}
+	return nil
+}
+
+func notes(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("notes", flag.ContinueOnError)
+	var n release.Notes
+	var tmpl, sums string
+	fs.StringVar(&tmpl, "template", "", "the release notes template (docs/operate/release-notes.md.tmpl)")
+	fs.StringVar(&sums, "sums", "", "the build's SHA256SUMS")
+	fs.StringVar(&n.Tag, "tag", "", "the release's tag")
+	fs.StringVar(&n.Commit, "commit", "", "the commit built")
+	fs.Int64Var(&n.ESPBytes, "esp-bytes", 0, "the boot disk's ESP, in bytes")
+	fs.Int64Var(&n.UpgradeKernelBytes, "upgrade-kernel-bytes", 0, "the largest kernel an in-place upgrade can take, in bytes")
+	fs.BoolVar(&n.Recreate, "requires-recreation", false, "tell Nodes of an earlier image to be recreated")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if tmpl == "" || sums == "" || n.Tag == "" || n.Commit == "" || n.ESPBytes <= 0 || n.UpgradeKernelBytes <= 0 {
+		return fmt.Errorf("notes: -template, -sums, -tag, -commit, -esp-bytes and -upgrade-kernel-bytes are required")
+	}
+	text, err := os.ReadFile(tmpl)
+	if err != nil {
+		return err
+	}
+	b, err := os.ReadFile(sums)
+	if err != nil {
+		return err
+	}
+	if err := n.ReadSums(b); err != nil {
+		return err
+	}
+	rendered, err := release.RenderNotes(string(text), n)
+	if err != nil {
+		return err
+	}
+	_, err = out.Write(rendered)
+	return err
 }
