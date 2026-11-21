@@ -10,6 +10,8 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/garamsh/naru/lib/atomicfile"
 )
 
 // The files of the two kernel slots, relative to the ESP's mount, and the trial slot's path as the
@@ -20,6 +22,9 @@ const (
 	trialSlot     = "TRIAL.EFI"
 	trialFirmware = `\EFI\BOOT\TRIAL.EFI`
 )
+
+// reasonFile is where a trial boot that gives up leaves its reason, in the slots' directory.
+const reasonFile = "TRIAL.WHY"
 
 // esp is the EFI system partition as a hard-drive device path node names it.
 type esp struct {
@@ -143,4 +148,18 @@ func syncFS(dir string) error {
 		return err
 	}
 	return errors.Join(unix.Syncfs(int(d.Fd())), d.Close())
+}
+
+// writeSynced writes path with data and flushes the file and its directory. The ESP is FAT, which
+// keeps no permissions for atomicfile.Write to set.
+func writeSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(data)
+	if err := errors.Join(werr, f.Sync(), f.Close()); err != nil {
+		return err
+	}
+	return atomicfile.SyncDir(filepath.Dir(path))
 }
