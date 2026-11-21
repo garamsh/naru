@@ -3,6 +3,11 @@
 package tests_test
 
 import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -12,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostcli"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
@@ -67,4 +73,50 @@ func TestNode_AStorageDiskHoldsMvmdsDisksSnapshotsAndRunDirectoriesWhileAMicroVM
 	assert.Equal(t, "running", microVMState(t, c.Host.Reader, "src"))
 	assert.False(t, nd.Has("storage disk not prepared"), "init prepared the disk and its links")
 	assert.False(t, nd.Has("different file systems"), "mvmd found its disks and snapshots on one file system")
+}
+
+// A host that a release before the links ran left a file in mvmd's snapshots directory on the data
+// disk. Init moves it into the storage mount and links the directory, where it used to refuse the
+// boot, and nothing an operator could reach cleared the file. The control host is the first boot
+// of the same Node, whose snapshots directory is a link; its disk is then changed the way the old
+// release left it. Without the move, init refuses and the storage mount never holds the file.
+func TestNode_AFileInMvmdsStateSnapshotsDirectoryIsMovedIntoTheStorageMountAndTheDirectoryLinked(t *testing.T) {
+	dir := t.TempDir()
+	spec := node.ClusterSpec{N: 1, Configure: withStorageDisk}
+	spec.Disk, spec.Dir, spec.Inputs, spec.Naructl = filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), dir, inputs, tool
+	c, err := node.StartCluster(spec)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		c.Stop()
+		t.Logf("console of %s:\n%s", c.Nodes[0].Name, c.Nodes[0].Console())
+	})
+	nd := c.Nodes[0]
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "storageprobe", "reflink=ok", "marker=written"))
+	require.True(t, nd.Has("linked into storage"), "the control: the first boot linked mvmd's directories")
+	nd.Stop()
+
+	data := filepath.Join(dir, nd.Name, "data.img")
+	stale := filepath.Join(t.TempDir(), "stale")
+	require.NoError(t, os.WriteFile(stale, []byte("left by a crash-looping mvmd"), 0o600))
+	script := filepath.Join(t.TempDir(), "debugfs")
+	state := strings.TrimPrefix(wire.MvmdStateDir, wire.DataMount+"/")
+	require.NoError(t, os.WriteFile(script, []byte("rm "+state+"/snapshots\nmkdir "+state+"/snapshots\nwrite "+stale+" "+state+"/snapshots/stale\n"), 0o600))
+	// e2fsck exits 1 when it replayed the journal.
+	if out, err := exec.Command("/sbin/e2fsck", "-fy", data).CombinedOutput(); err != nil {
+		var ee *exec.ExitError
+		require.True(t, errors.As(err, &ee) && ee.ExitCode() <= 1, string(out))
+	}
+	out, err := exec.Command("/sbin/debugfs", "-w", "-f", script, data).CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	require.NoError(t, nd.Reboot())
+
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "storageprobe", "fs=xfs", "marker=kept"))
+	assert.True(t, nd.Has("storage entry moved"), "init moved the file")
+	assert.True(t, nd.Has("linked into storage"), "and linked the directory")
+	assert.False(t, nd.Has("boot refused"), "instead of refusing the boot")
+	eventually(t, "the storage mount holds the file", func() bool {
+		_, s, _ := onStorage(nd)
+		return s >= 1
+	})
 }
