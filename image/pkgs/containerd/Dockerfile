@@ -27,10 +27,12 @@ RUN . /pin.env && export GOTOOLCHAIN=go$(awk '$1 == "go" { print $2 }' src/conta
  && tags="urfave_cli_no_docs osusergo netgo static_build no_btrfs no_devmapper no_zfs" \
  && (cd src/containerd \
       && CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags "$tags" -ldflags="$ldflags" -o /build/bin/containerd ./cmd/containerd \
-      && CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags "$tags no_grpc" -ldflags="$ldflags" -o /build/bin/containerd-shim-runc-v2 ./cmd/containerd-shim-runc-v2) \
- && for p in containerd containerd-shim-runc-v2; do install-go.sh "$GOTOOLCHAIN" /build/bin/$p /out/usr/bin/$p; done \
+      && CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags "$tags no_grpc" -ldflags="$ldflags" -o /build/bin/containerd-shim-runc-v2 ./cmd/containerd-shim-runc-v2 \
+      && CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags "$tags" -ldflags="$ldflags" -o /build/bin/ctr ./cmd/ctr) \
+ && for p in containerd containerd-shim-runc-v2 ctr; do install-go.sh "$GOTOOLCHAIN" /build/bin/$p /out/usr/bin/$p; done \
  && [ "$(/build/bin/containerd --version | awk '{ print $3 }')" = "$CONTAINERD_VERSION" ] \
- && [ "$(/build/bin/containerd-shim-runc-v2 -v | awk '$1 == "Version:" { print $2 }')" = "$CONTAINERD_VERSION" ]
+ && [ "$(/build/bin/containerd-shim-runc-v2 -v | awk '$1 == "Version:" { print $2 }')" = "$CONTAINERD_VERSION" ] \
+ && [ "$(/build/bin/ctr --version | awk '{ print $NF }')" = "$CONTAINERD_VERSION" ]
 RUN . /pin.env && export GOTOOLCHAIN=go$(awk '$1 == "go" { print $2 }' src/containerd/go.mod) \
  && (cd src/runc && CGO_ENABLED=1 PKG_CONFIG="pkg-config --static" CGO_CFLAGS="$CFLAGS" \
       go build -trimpath -buildvcs=false -tags seccomp,urfave_cli_no_docs,netgo,osusergo \

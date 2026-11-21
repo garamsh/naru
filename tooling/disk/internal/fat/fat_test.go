@@ -117,3 +117,68 @@ func TestOpen_RefusesAFileThatIsNotFAT32(t *testing.T) {
 
 	assert.Error(t, err)
 }
+
+func TestAdd_ReadsTheTableLinearlyInTheClustersItWrites(t *testing.T) {
+	v, err := fat.Open(volume(t), stamp)
+	require.NoError(t, err)
+	defer func() { _ = v.Close() }()
+	const clusters = 6000
+
+	require.NoError(t, v.Add("INITRD.GZ", bytes.NewReader(content(clusters*512)), clusters*512))
+
+	// The root directory takes cluster 2 and the file the clusters after it, so a linear allocator
+	// reads about one entry a cluster; one that rescans from cluster 2 reads about clusters²/2.
+	assert.Less(t, v.Probes(), uint64(2*clusters))
+}
+
+func TestAllocate_WrapsOnceAndFindsAFreeClusterBelowTheLastOneGiven(t *testing.T) {
+	v, err := fat.Open(volume(t), stamp)
+	require.NoError(t, err)
+	defer func() { _ = v.Close() }()
+	var last uint32
+	for {
+		c, err := v.Allocate()
+		if err != nil {
+			break
+		}
+		last = c
+	}
+	require.Greater(t, last, uint32(7), "setup: the volume was filled past the cluster freed below")
+	v.Free(7)
+
+	got, err := v.Allocate()
+
+	require.NoError(t, err)
+	assert.Equal(t, uint32(7), got)
+	_, err = v.Allocate()
+	assert.Error(t, err, "control: no other cluster is free")
+}
+
+func TestAllocate_LaysOutTheClustersTheLowestFreeAllocatorDid(t *testing.T) {
+	v, err := fat.Open(volume(t), stamp)
+	require.NoError(t, err)
+	defer func() { _ = v.Close() }()
+	// Add never frees, so the files of an image are laid out by a run of allocations; sizes in clusters
+	// of 512 bytes, from empty to the several thousand of an initrd.
+	for _, sizes := range [][]int{{1, 1, 1}, {1, 2, 3, 12}, {6145, 1}, {200, 1, 70000 / 512}} {
+		for _, n := range sizes {
+			for range n {
+				want := v.LowestFree()
+				got, err := v.Allocate()
+				require.NoError(t, err)
+				require.Equal(t, want, got)
+			}
+		}
+	}
+	require.NotZero(t, v.LowestFree(), "control: the volume still has free clusters")
+
+	add := func(name string, n int) {
+		require.NoError(t, v.Add(name, bytes.NewReader(content(n)), int64(n)))
+	}
+	want := v.LowestFree()
+	add("EFI/BOOT/BOOTX64.EFI", 100000)
+	got, err := v.ReadFile("EFI/BOOT/BOOTX64.EFI")
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(content(100000), got))
+	assert.Equal(t, want+2+uint32(100000/512+1), v.LowestFree(), "the directories and the file took the clusters next in order")
+}

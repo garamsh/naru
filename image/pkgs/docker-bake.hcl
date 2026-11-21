@@ -22,14 +22,15 @@ variable "TESTROOT" { default = "initramfs-node/no-testroot" }
 variable "REFUSE_LDFLAGS" { default = "-X github.com/garamsh/naru/lib/init/linux.dataDiskLabel=naru67-absent" }
 
 # What make image-upgrade adds to make image: the kernels the upgrade tests put on a running Node,
-# which differ from the image's in naru-init (ADR 0025).
+# which differ from the image's in naru-init (ADR 0025), and the naru-orch extension built for the
+# next and the refusing version, which the bundles of an upgrade carry (ADR 0084).
 group "upgrade" {
-  targets = ["bzImage-next", "bzImage-refuse"]
+  targets = ["bzImage-next", "bzImage-refuse", "extension-next", "extension-refuse"]
 }
 
 group "default" {
   targets = ["builder", "toolchain", "util-linux", "e2fsprogs", "liburcu", "libinih", "xfsprogs", "libmnl", "libnftnl", "jansson", "nftables", "cacert",
-    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes",
+    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes", "coredns", "volumes",
     "libseccomp", "containerd", "rolesanywhere",
     "mvmd", "guest-initrds",
     "kernel-host", "kernel-node", "kernel-guest-naru",
@@ -154,6 +155,24 @@ target "extension" {
   output   = ["type=oci,dest=${OUT}/extension.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
+# The extension of the next version: the programs of the image under the manifest that names
+# ${NARU_VERSION}-next, the version bzImage-next's naru-init reports.
+target "extension-next" {
+  inherits = ["_package"]
+  context  = "extension"
+  contexts = { naru = "target:naru" }
+  args     = { NARU_VERSION = "${NARU_VERSION}-next" }
+  output   = ["type=oci,dest=${OUT}/extension-next.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "extension-refuse" {
+  inherits = ["_package"]
+  context  = "extension"
+  contexts = { naru = "target:naru" }
+  args     = { NARU_VERSION = "${NARU_VERSION}-refuse" }
+  output   = ["type=oci,dest=${OUT}/extension-refuse.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
 target "etcd" {
   inherits = ["_package"]
   context  = "etcd"
@@ -182,6 +201,22 @@ target "kubernetes" {
   inherits = ["_package"]
   context  = "kubernetes"
   output   = ["type=oci,dest=${OUT}/kubernetes.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "coredns" {
+  inherits = ["_package"]
+  context  = "coredns"
+  output   = ["type=oci,dest=${OUT}/coredns.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+# The volume add-on's extension (ADR 0083, 0084): the driver and its sidecars, an image archive and the
+# manifests in a squashfs, with the description make image reads as it reads the naru-orch extension's.
+target "volumes" {
+  inherits = ["_package"]
+  context  = "volumes"
+  contexts = { src = "../.." }
+  args     = { NARU_VERSION = NARU_VERSION }
+  output   = ["type=oci,dest=${OUT}/volumes.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
 target "libseccomp" {
@@ -273,6 +308,7 @@ target "_initramfs" {
     kubernetes     = "target:kubernetes"
     containerd     = "target:containerd"
     cni            = "target:cni"
+    coredns        = "target:coredns"
     cacert         = "target:cacert"
   }
 }

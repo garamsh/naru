@@ -33,12 +33,13 @@ COPY --from=rolesanywhere /usr/bin/aws_signing_helper /stage/
 COPY --from=kubernetes /usr/bin/ /stage/
 COPY --from=containerd /usr/bin/ /stage/
 COPY --from=cni /usr/bin/ /stage/
+COPY --from=coredns /usr/lib/naru/addons/ /stage/addons/
 COPY --from=cacert /etc/ssl/certs/ca-certificates.crt /cacert.crt
 COPY --from=testroot / /testroot/
 COPY initramfs.list /initramfs.list
 RUN { cat /cacert.crt; if [ -f /testroot/ca.pem ]; then cat /testroot/ca.pem; fi; } >/stage/ca-certificates.crt \
  && for f in naru-init mkfs.ext4 mkfs.xfs naru-standin naru-vip naru-fence etcd docker-credential-ecr-login aws_signing_helper \
-      kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy containerd containerd-shim-runc-v2 runc bridge host-local loopback; do \
+      kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy kubectl ctr containerd containerd-shim-runc-v2 runc bridge host-local loopback; do \
       file "/stage/$f" | grep -Eq 'statically linked|static-pie linked' || { echo "initramfs: $f is not a static executable" >&2; exit 1; }; \
     done \
  && sed "s#@OUT@#/stage#" /initramfs.list >/node.list \

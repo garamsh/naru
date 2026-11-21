@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/guest"
@@ -63,7 +64,7 @@ func bootDiskPath(dir, version string) (string, error) {
 
 // ReadRelease reads the assets `make release` writes into dir (naru-host-<v>.qcow2, or naru-<v>.qcow2
 // in a release made before ADR 0056, naru-data-<v>.qcow2,
-// naru-guest-<v>.json, naru-inputs-<v>.json and naru-orch-ext-<v>.sqfs with its .json) and prepares what a Node boots from them in work:
+// naru-guest-<v>.json, naru-inputs-<v>.json and naru-orch-ext-<v>.sqfs with its .json, and naru-volumes-ext-<v> likewise when the release has it) and prepares what a Node boots from them in work:
 // naru.img, the boot disk as a raw file, and inputs/, the tree of the data disk. It needs
 // qemu-img and /sbin/debugfs, which the Nodes need as well.
 func ReadRelease(dir, work string) (Release, error) {
@@ -114,6 +115,12 @@ func ReadRelease(dir, work string) (Release, error) {
 	if err != nil {
 		return Release{}, err
 	}
+	if !PredatesVolumes(r.Version) {
+		volumesInfo := filepath.Join(dir, ReleaseVolumesExtensionName(r.Version, ".json"))
+		if err := storeVolumes(volumesInfo, filepath.Join(dir, ReleaseVolumesExtensionName(r.Version, ".sqfs")), ext.StoreDir); err != nil {
+			return Release{}, err
+		}
+	}
 	r.Inputs = Inputs{
 		Dir: filepath.Join(work, "inputs"), FirecrackerSHA256: ri.FirecrackerSHA256, Guest: m,
 		Image: Image{Repository: ri.ImageRepository, Digest: ri.ImageDigest}, Extension: ext,
@@ -122,6 +129,18 @@ func ReadRelease(dir, work string) (Release, error) {
 		return Release{}, err
 	}
 	return r, nil
+}
+
+// lastDevWithoutVolumes is the number of the last published v0.1.0-dev.N release made before the
+// volume extension (ADR 0083), which carries none and whose naructl names none.
+const lastDevWithoutVolumes = 13
+
+// PredatesVolumes reports whether the release of that version was made before the volume extension.
+// Any other version, including one that is not a v0.1.0-dev.N, carries it.
+func PredatesVolumes(version string) bool {
+	n, ok := strings.CutPrefix(version, "v0.1.0-dev.")
+	dev, err := strconv.Atoi(n)
+	return ok && err == nil && dev <= lastDevWithoutVolumes
 }
 
 // releaseVersion is the release's guest manifest and version, from the one naru-guest-<v>.json in dir.

@@ -21,6 +21,18 @@ func TestCheck_AcceptsOneExtensionNameWithADigestPerVersion(t *testing.T) {
 	assert.NoError(t, n.Check())
 }
 
+func TestCheck_AcceptsAnEntryWithNoDigestBesidePinnedOnesAndRefusesTheSameNameTwice(t *testing.T) {
+	pinned := layout.Extension{Name: layout.OrchExtension, SHA256: strings.Repeat("e", 64)}
+	unpinned := layout.Extension{Name: layout.OrchExtension}
+	accepted := node(t, func(n *layout.Node) { n.Extensions = []layout.Extension{pinned, unpinned, {Name: "csi"}} })
+	twice := node(t, func(n *layout.Node) { n.Extensions = []layout.Extension{unpinned, pinned, unpinned} })
+
+	require.NoError(t, accepted.Check())
+	err := twice.Check()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "given twice with no SHA-256")
+}
+
 func TestCheck_RefusesTheDaemonSettingsInitWouldRefuse(t *testing.T) {
 	_, ca := hostNode(t)
 	join := &layout.SignerJoin{Peer: "192.168.0.41:7600", PeerCA: "ca", Authorisation: "{}"}

@@ -17,3 +17,11 @@ func TestSerialSocketPathStaysInsideTheUnixSocketLimitForALongNodeDirectory(t *t
 	assert.NotEqual(t, one, two)
 	assert.Equal(t, one, SerialSocketPath(long+"node-1"), "the path is the same each time it is asked")
 }
+
+// The monitor socket of a Node is inside the same limit, and is not the serial socket.
+func TestMonitorSocketPathStaysInsideTheUnixSocketLimitAndIsNotTheSerialSocket(t *testing.T) {
+	long := "/home/sauce/.cache/t-w14/TestControlPlane_" + strings.Repeat("ThreeNodesWhoseSerialSocket", 4) + "123456/001/node-1"
+
+	assert.LessOrEqual(t, len(MonitorSocketPath(long)), 107)
+	assert.NotEqual(t, SerialSocketPath(long), MonitorSocketPath(long))
+}

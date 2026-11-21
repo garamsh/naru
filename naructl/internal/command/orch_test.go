@@ -106,9 +106,23 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 		_ = json.NewEncoder(w).Encode(orchapi.Group{Spec: spec, Hash: "h1", Observed: true, Members: []orchapi.GroupMember{}})
 	})
 	mux.HandleFunc("GET /v1/groups", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode([]orchapi.Group{{Spec: orchapi.GroupSpec{Name: "web", Region: "kr-seoul", Count: 2}, Members: []orchapi.GroupMember{{ID: "web-1", Phase: orchapi.PhaseRunning}, {ID: "web-2", Phase: orchapi.PhasePending}}}})
+		_ = json.NewEncoder(w).Encode([]orchapi.Group{{Spec: orchapi.GroupSpec{Name: "web", Region: "kr-seoul", Count: 2}, Members: []orchapi.GroupMember{{ID: "web-1", Phase: orchapi.PhaseRunning}, {ID: "web-2", Phase: orchapi.PhasePending}}},
+			{Spec: orchapi.GroupSpec{Name: "stuck", Region: "kr-seoul", Count: 1}, Members: []orchapi.GroupMember{}, Hold: &orchapi.GroupHold{Time: time.Unix(1000, 0).UTC(), Message: "no host can take it"}}})
+	})
+	mux.HandleFunc("GET /v1/events", func(w http.ResponseWriter, _ *http.Request) {
+		at := time.Unix(1000, 0).UTC()
+		_ = json.NewEncoder(w).Encode([]orchapi.Event{
+			{Time: at, Type: "group.applied", Subject: "stuck", Detail: map[string]string{"by": "alice"}},
+			{Time: at.Add(time.Minute), Type: "host.admitted", Subject: "h-1"},
+			{Time: at.Add(2 * time.Minute), Type: "group.hold", Subject: "stuck", Detail: map[string]string{"group": "stuck", "message": "no host can take it"}},
+			{Time: at.Add(3 * time.Minute), Type: "group.create", Subject: "web-1", Detail: map[string]string{"group": "web", "host": "h-1"}},
+		})
 	})
 	mux.HandleFunc("GET /v1/groups/{name}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("name") == "stuck" {
+			_ = json.NewEncoder(w).Encode(orchapi.Group{Spec: orchapi.GroupSpec{Name: "stuck", Region: "kr-seoul", Count: 1}, Hash: "h1", Observed: true, Members: []orchapi.GroupMember{}, Hold: &orchapi.GroupHold{Time: time.Unix(1000, 0).UTC(), Message: "no host can take it"}})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(orchapi.Group{Spec: orchapi.GroupSpec{Name: r.PathValue("name"), Region: "kr-seoul", Count: 1}, Hash: "h1", Observed: true, Members: []orchapi.GroupMember{{ID: "web-1", Host: "host-a", TemplateHash: "h1", Phase: orchapi.PhaseRunning}}})
 	})
 	mux.HandleFunc("DELETE /v1/groups/{name}", func(w http.ResponseWriter, r *http.Request) {

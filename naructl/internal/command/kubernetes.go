@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/pflag"
@@ -23,6 +24,7 @@ func genKubernetes(fs *pflag.FlagSet) runner {
 	caDir := fs.String("ca-dir", "", "directory of ca.pem and ca.key, which receives the rest")
 	endpoint := fs.String("endpoint", "", "the address of the API server")
 	adminAddress := fs.String("admin-address", "", "the host:port admin.conf dials, when it is not the endpoint on the API port (a forward)")
+	disableAddons := fs.StringArray("disable-addon", nil, "a cluster add-on the cluster does not run ("+strings.Join(layout.Addons, ", ")+"), repeatable: its objects are the cluster owner's, and the Nodes neither apply nor remove them")
 	return func(args []string, stdout, stderr io.Writer) error {
 		if err := require(fs, "ca-dir", "endpoint"); err != nil {
 			return err
@@ -36,6 +38,20 @@ func genKubernetes(fs *pflag.FlagSet) runner {
 			return err
 		}
 		if _, err := loadOrMakeFrontProxy(*caDir); err != nil {
+			return err
+		}
+		for _, name := range *disableAddons {
+			if !slices.Contains(layout.Addons, name) {
+				return fmt.Errorf("--disable-addon %q is not one of %s", name, strings.Join(layout.Addons, ", "))
+			}
+		}
+		// The file follows the flags: with none, every add-on is on again.
+		disabled := filepath.Join(*caDir, pki.DisabledAddonsFile)
+		if len(*disableAddons) == 0 {
+			if err := os.Remove(disabled); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		} else if err := pki.WriteFile(disabled, []byte(strings.Join(*disableAddons, "\n")+"\n"), 0o644); err != nil {
 			return err
 		}
 		key, pub := filepath.Join(*caDir, pki.ServiceAccountKeyFile), filepath.Join(*caDir, pki.ServiceAccountPubFile)
@@ -88,6 +104,7 @@ func loadOrMakeFrontProxy(caDir string) (*pki.CA, error) {
 func genKubernetesNode(fs *pflag.FlagSet) runner {
 	var (
 		nameservers, binaries, disable, timeServers, peers list
+		storage, blockSerials                              list
 		extraNIC                                           string
 		n                                                  layout.Node
 		k                                                  layout.KubeNode
@@ -110,6 +127,8 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 	fs.Var(&binaries, "binary", "<service>=<absolute path>, the executable of a service in place of the image's, repeatable")
 	fs.Var(&disable, "disable", "a service to leave out ("+strings.Join(layout.Kubernetes.Names(), ", ")+"), repeatable")
 	fs.Var(&timeServers, "time-server", "an SNTP server init sets the clock from, host or host:port, repeatable")
+	fs.Var(&storage, "storage", "an extra disk init formats as XFS and mounts, <name>=<label, /dev/path or serial:NUMBER>, repeatable: the first holds the Node's local volumes (naru-local)")
+	fs.Var(&blockSerials, "block-serial", "the serial number of a disk the Node offers whole as a block volume (naru-block), repeatable: init neither formats nor mounts it")
 	fs.BoolVar(&k.LocalRegistry, "local-registry", false, "run the registry service from the data disk's inputs")
 	fs.StringVar(&k.RegistryCA, "registry-ca", "", "the path on the Node of the CA containerd trusts for the registry service (with --sandbox-image)")
 	fs.StringVar(&k.SandboxImage, "sandbox-image", "", "the image of a Pod's sandbox container, which containerd pulls")
@@ -142,6 +161,11 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 			}
 		} else if !errors.Is(serr, os.ErrNotExist) {
 			return serr
+		}
+		if b, rerr := os.ReadFile(filepath.Join(caDir, pki.DisabledAddonsFile)); rerr == nil {
+			k.DisabledAddons = strings.Fields(string(b))
+		} else if !errors.Is(rerr, os.ErrNotExist) {
+			return rerr
 		}
 		if k.BootstrapTokens && k.ControlPlane {
 			if k.Tokens, err = pki.ReadTokens(caDir); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -222,6 +246,14 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 			}
 			n.Binaries[name] = bin
 		}
+		for _, s := range storage {
+			d, err := parseStorage(s)
+			if err != nil {
+				return err
+			}
+			n.Storage = append(n.Storage, d)
+		}
+		k.BlockSerials = blockSerials
 		n.Disable, n.TimeServers, n.Kube = disable, timeServers, &k
 		userData, err := n.UserData()
 		if err != nil {

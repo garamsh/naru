@@ -65,6 +65,10 @@ type fleetOpts struct {
 	vmCPUs int
 	// capture records the shared network at every Node.
 	capture bool
+	// upgradable has every Node boot a disk of its own that it may write, so that an upgrade can stage
+	// its trial slot, and the control Nodes name the naru-orch extension without its digest, so that
+	// init takes the image built for the version it runs (ADR 0084).
+	upgradable bool
 	// services are added to every Node.
 	services []node.ExtraService
 	// forward is guest ports of every Node's second NIC to forward from the test host besides orch's and the
@@ -185,6 +189,7 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 		N: o.controls + o.hosts, Gaon: true, NodeAPI: true, Host: true, Hosts: f.hosts(), Capture: o.capture,
 		Disable: []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"},
 		Forward: forward, HostMemoryMiB: defaultNodeMiB + o.vmMiB, HostCPUs: o.vmCPUs, GenFlags: f.genFlags, ExtraServices: o.services, EditUserData: o.userData,
+		WritableDisk: o.upgradable,
 	})
 	f.c = c
 
@@ -267,7 +272,11 @@ func (f *fleet) genFlags(c node.Config) []string {
 		return flags
 	}
 	// The signer and orch run from the naru-orch extension, which the data disk stores (ADR 0055).
-	flags = append(flags, "--extension", "naru-orch="+inputs.Extension.SHA256, "--signer", "--signer-peer-listen", nodeIP(c.Index)+":"+signerPeerPort,
+	extension := "naru-orch=" + inputs.Extension.SHA256
+	if f.opts.upgradable {
+		extension = "naru-orch"
+	}
+	flags = append(flags, "--extension", extension, "--signer", "--signer-peer-listen", nodeIP(c.Index)+":"+signerPeerPort,
 		"--signer-peer-name", nodeIP(c.Index), "--signer-peer-name", fmt.Sprintf("node-%d", c.Index))
 	if c.Index == 1 {
 		return append(flags, "--signer-recovery-public", f.rec.pub, "--signer-root-csr", f.rootCSR)

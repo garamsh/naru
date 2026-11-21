@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -101,6 +102,9 @@ type ClusterSpec struct {
 	RTCBase string
 	// ExtraDiskFirst attaches every Node's extra disk before its data disk.
 	ExtraDiskFirst bool
+	// WritableDisk boots every Node from its own copy of Disk, in the Node's directory, which it may
+	// write: the ESP an upgrade stages the trial slot on. Without it the Nodes share Disk read-only.
+	WritableDisk bool
 	// Registries are the gen node --registry values of every Node of a Gaon cluster. When nil, each
 	// Node trusts the registry service's authority for RegistryAddr through its configuration.
 	Registries []string
@@ -276,6 +280,13 @@ func (c *Cluster) startNode(spec ClusterSpec, gen *gaonFiles, i int) error {
 		spec.Configure(&cfg)
 	}
 	start := Spec{Config: cfg, Disk: spec.Disk, Dir: filepath.Join(spec.Dir, name), Mcast: c.Mcast, RTCBase: spec.RTCBase, SerialSocket: spec.SerialSocket, Capture: spec.Capture, ExtraDiskFirst: spec.ExtraDiskFirst}
+	if spec.WritableDisk {
+		own := filepath.Join(start.Dir, "naru.img")
+		if err := copyDisk(spec.Disk, own); err != nil {
+			return fmt.Errorf("copy the boot disk of %s: %w", name, err)
+		}
+		start.Disk, start.WritableDisk = own, true
+	}
 	if gen != nil {
 		if spec.secondNIC(i) {
 			start.Config.HostPort = gen.ports[i] // a control-plane Node and a host have the second NIC
@@ -828,4 +839,25 @@ func appendService(file string, svc any) error {
 		return err
 	}
 	return os.WriteFile(file, out, 0o600)
+}
+
+// copyDisk writes the boot disk from to the file to, making its directory.
+func copyDisk(from, to string) error {
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(from)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.Create(to)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }

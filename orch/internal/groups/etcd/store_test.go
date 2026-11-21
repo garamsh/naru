@@ -214,8 +214,8 @@ func TestListNetworksReadsTheNetworksOrchKeeps(t *testing.T) {
 	require.Empty(t, none)
 
 	nets := netetcd.New(c.Members[0].Etcd())
-	require.NoError(t, nets.Put(t.Context(), orchapi.Network{Name: "lab", Prefix: "10.9.0.0/24"}, nil))
-	require.NoError(t, nets.Put(t.Context(), orchapi.Network{Name: "a", Prefix: "10.8.0.0/24", APIEndpoint: "10.8.0.2"}, nil))
+	require.NoError(t, nets.Put(t.Context(), orchapi.Network{Name: "lab", Prefix: "10.9.0.0/24"}, nil, nil))
+	require.NoError(t, nets.Put(t.Context(), orchapi.Network{Name: "a", Prefix: "10.8.0.0/24", APIEndpoint: "10.8.0.2"}, nil, nil))
 	got, err := s.ListNetworks(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, []groups.Network{{Name: "a", Prefix: "10.8.0.0/24"}, {Name: "lab", Prefix: "10.9.0.0/24"}}, got)

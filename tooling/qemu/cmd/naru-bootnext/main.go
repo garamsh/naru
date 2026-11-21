@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/garamsh/naru/lib/init/upgrade"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/efivar"
 )
 
@@ -23,16 +25,21 @@ import (
 const trialEntry = 0x0100
 
 func main() {
-	disk := flag.String("disk", "/dev/sda", "the boot disk; its first partition is the ESP")
+	sys := flag.String("sys", "/sys/class/block", "the directory of the kernel's block devices")
+	dev := flag.String("dev", "/dev", "the directory of the device nodes")
 	flag.Parse()
-	if err := run(*disk); err != nil {
+	esp, disk, err := upgrade.FindESP(*sys, *dev, wire.ESPGUID)
+	if err == nil {
+		err = run(disk, esp)
+	}
+	if err != nil {
 		fmt.Println("naru56-efi: failed:", err)
 		os.Exit(1)
 	}
 	time.Sleep(time.Hour)
 }
 
-func run(disk string) error {
+func run(disk, espDev string) error {
 	if err := os.MkdirAll(efivar.Dir, 0o755); err != nil {
 		return err
 	}
@@ -43,7 +50,7 @@ func run(disk string) error {
 	if err := os.MkdirAll(esp, 0o755); err != nil {
 		return err
 	}
-	if err := syscall.Mount(disk+"1", esp, "vfat", 0, ""); err != nil {
+	if err := syscall.Mount(espDev, esp, "vfat", 0, ""); err != nil {
 		return fmt.Errorf("mount the ESP: %w", err)
 	}
 	defer func() { _ = syscall.Unmount(esp, 0) }()

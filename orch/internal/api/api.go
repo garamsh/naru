@@ -21,6 +21,7 @@ import (
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
+	"github.com/garamsh/naru/orch/internal/exposures"
 	"github.com/garamsh/naru/orch/internal/groupsvc"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/restore"
@@ -57,11 +58,26 @@ type Networks interface {
 	Delete(ctx context.Context, by, name string) error
 }
 
+// Exposures is the exposures service the handlers call. The calls on one exposure name the network
+// the exposer's certificate names; AllExposures is the readers' view of every network.
+type Exposures interface {
+	ApplyPool(ctx context.Context, by, name string, spec orchapi.AddressPoolSpec) (orchapi.AddressPool, error)
+	Pools(ctx context.Context) ([]orchapi.AddressPool, error)
+	DeletePool(ctx context.Context, by, name string) error
+	ApplyExposure(ctx context.Context, by, network, id string, spec orchapi.ExposureSpec) (orchapi.Exposure, error)
+	Exposure(ctx context.Context, network, id string) (orchapi.Exposure, error)
+	Exposures(ctx context.Context, network string) ([]orchapi.Exposure, error)
+	AllExposures(ctx context.Context) ([]orchapi.Exposure, error)
+	DeleteExposure(ctx context.Context, by, network, id string) error
+}
+
 // Deps is what the handlers call.
 type Deps struct {
 	Inventory inventory.Service
 	Groups    groupsvc.Service
 	Networks  Networks
+	// Exposures is nil while the member has no way to reach the hosts; its endpoints answer 501.
+	Exposures Exposures
 	Signer    inventory.Signer
 	Auth      auth.Authenticator
 	Snapshots Snapshots
@@ -100,6 +116,14 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/networks/{name}", h.guard(auth.Read, h.networkGet))
 	mux.HandleFunc("PUT /v1/networks/{name}", h.guard(auth.Operate, h.networkApply))
 	mux.HandleFunc("DELETE /v1/networks/{name}", h.guard(auth.Operate, h.networkDelete))
+	mux.HandleFunc("GET /v1/address-pools", h.guard(auth.Read, h.poolList))
+	mux.HandleFunc("PUT /v1/address-pools/{name}", h.guard(auth.Operate, h.poolApply))
+	mux.HandleFunc("DELETE /v1/address-pools/{name}", h.guard(auth.Operate, h.poolDelete))
+	mux.HandleFunc("GET /v1/exposures", h.guard(auth.ReadExposures, h.exposureList))
+	mux.HandleFunc("GET /v1/exposures/{id}", h.guard(auth.Expose, h.exposureGet))
+	mux.HandleFunc("PUT /v1/exposures/{id}", h.guard(auth.Expose, h.exposureApply))
+	mux.HandleFunc("DELETE /v1/exposures/{id}", h.guard(auth.Expose, h.exposureDelete))
+	mux.HandleFunc("DELETE /v1/networks/{name}/exposures/{id}", h.guard(auth.Operate, h.operatorExposureDelete))
 	mux.HandleFunc("GET /v1/crl", h.crl)
 	mux.HandleFunc("POST /v1/admit", h.guard(auth.Operate, h.admit))
 	mux.HandleFunc("POST /v1/enrollment-keys", h.guard(auth.Operate, h.createKey))
@@ -239,6 +263,12 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusForbidden, err.Error()
 	case errors.Is(err, inventory.ErrCodeMismatch), errors.Is(err, inventory.ErrSignerRefused):
 		status, msg = http.StatusForbidden, err.Error()
+	case errors.Is(err, exposures.ErrForbidden):
+		status, msg = http.StatusForbidden, err.Error()
+	case errors.Is(err, errNoExposures):
+		status, msg = http.StatusNotImplemented, err.Error()
+	case errors.Is(err, exposures.ErrUnprocessable):
+		status, msg = http.StatusUnprocessableEntity, err.Error()
 	case errors.Is(err, inventory.ErrNotFound):
 		status, msg = http.StatusNotFound, err.Error()
 	case errors.Is(err, restore.ErrRejected):
@@ -374,11 +404,20 @@ func (h *handler) microVMs(w http.ResponseWriter, r *http.Request, _ identity.Id
 
 func (h *handler) groupList(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
 	out, err := h.Groups.List(r.Context())
+	if err == nil {
+		err = h.withHold(r.Context(), out)
+	}
 	reply(w, r, out, err)
 }
 
 func (h *handler) groupGet(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
 	out, err := h.Groups.Get(r.Context(), r.PathValue("name"))
+	if err == nil {
+		one := []orchapi.Group{out}
+		if err = h.withHold(r.Context(), one); err == nil {
+			out = one[0]
+		}
+	}
 	reply(w, r, out, err)
 }
 
@@ -428,6 +467,138 @@ func (h *handler) networkApply(w http.ResponseWriter, r *http.Request, who ident
 
 func (h *handler) networkDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
 	if err := h.Networks.Delete(r.Context(), who.Subject, r.PathValue("name")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// errNoExposures is the answer of a member that has no way to reach the hosts.
+var errNoExposures = errors.New("this member serves no exposures")
+
+func (h *handler) exposures() (Exposures, error) {
+	if h.Exposures == nil {
+		return nil, errNoExposures
+	}
+	return h.Exposures, nil
+}
+
+// exposerCall returns the exposures service and the network an exposer's certificate names. An
+// exposer whose Subject names no network is refused.
+func (h *handler) exposerCall(who identity.Identity) (Exposures, string, error) {
+	svc, err := h.exposures()
+	if err != nil {
+		return nil, "", err
+	}
+	n, ok := identity.ExposerNetwork(who)
+	if !ok {
+		return nil, "", fmt.Errorf("%w: the exposer certificate names no network", exposures.ErrForbidden)
+	}
+	return svc, n, nil
+}
+
+func (h *handler) poolList(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	svc, err := h.exposures()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	out, err := svc.Pools(r.Context())
+	reply(w, r, out, err)
+}
+
+func (h *handler) poolApply(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	svc, err := h.exposures()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var spec orchapi.AddressPoolSpec
+	if decode(w, r, &spec) {
+		out, err := svc.ApplyPool(r.Context(), who.Subject, r.PathValue("name"), spec)
+		reply(w, r, out, err)
+	}
+}
+
+func (h *handler) poolDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	svc, err := h.exposures()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := svc.DeletePool(r.Context(), who.Subject, r.PathValue("name")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// exposureList shows an exposer its own network's exposures and a reader every network's.
+func (h *handler) exposureList(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	if who.Role != identity.RoleExposer {
+		svc, err := h.exposures()
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		out, err := svc.AllExposures(r.Context())
+		reply(w, r, out, err)
+		return
+	}
+	svc, n, err := h.exposerCall(who)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	out, err := svc.Exposures(r.Context(), n)
+	reply(w, r, out, err)
+}
+
+func (h *handler) exposureGet(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	svc, n, err := h.exposerCall(who)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	out, err := svc.Exposure(r.Context(), n, r.PathValue("id"))
+	reply(w, r, out, err)
+}
+
+func (h *handler) exposureApply(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	svc, n, err := h.exposerCall(who)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var spec orchapi.ExposureSpec
+	if decode(w, r, &spec) {
+		out, err := svc.ApplyExposure(r.Context(), who.Subject, n, r.PathValue("id"), spec)
+		reply(w, r, out, err)
+	}
+}
+
+func (h *handler) exposureDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	svc, n, err := h.exposerCall(who)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := svc.DeleteExposure(r.Context(), who.Subject, n, r.PathValue("id")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// operatorExposureDelete releases an exposure of the network the path names, for the exposures a
+// revoked exposer's controller left behind.
+func (h *handler) operatorExposureDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	svc, err := h.exposures()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := svc.DeleteExposure(r.Context(), who.Subject, r.PathValue("name"), r.PathValue("id")); err != nil {
 		writeError(w, r, err)
 		return
 	}

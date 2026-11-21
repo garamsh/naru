@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/layout/pki"
 	"github.com/garamsh/naru/lib/wire"
@@ -34,6 +35,8 @@ type kubeSpec struct {
 			Name         string   `yaml:"name"`
 			Args         []string `yaml:"args"`
 			ControlPlane bool     `yaml:"controlPlane"`
+			Binary       string   `yaml:"binary"`
+			Restart      string   `yaml:"restartPolicy"`
 		} `yaml:"services"`
 		Files []struct {
 			Path    string   `yaml:"path"`
@@ -41,7 +44,12 @@ type kubeSpec struct {
 			Mode    string   `yaml:"mode"`
 			Restart []string `yaml:"restart"`
 		} `yaml:"files"`
-		PKI struct {
+		Storage []struct {
+			Name   string `yaml:"name"`
+			Serial string `yaml:"serial"`
+		} `yaml:"storage"`
+		Extensions []map[string]string `yaml:"extensions"`
+		PKI        struct {
 			Authorities []struct {
 				Name, Key string
 			} `yaml:"authorities"`
@@ -116,7 +124,7 @@ func TestKubernetesUserData_WorkerRunsTheKubeletAndTheProxyAndNoControlPlane(t *
 			running = append(running, sv.Name)
 		}
 	}
-	assert.Equal(t, []string{"containerd", "kubelet", "kube-proxy"}, running, "what a worker runs")
+	assert.Equal(t, []string{"containerd", "addon-image-coredns", "addon-image-volumes", "kubelet", "kube-proxy"}, running, "what a worker runs")
 }
 
 func TestKubernetesUserData_ControlPlaneRunsEveryServiceInTheTopologysOrder(t *testing.T) {
@@ -365,4 +373,207 @@ func TestKubernetesUserData_WorkerWithATokenKeepsItsKubeProxyPairAndKubeconfig(t
 	assert.Contains(t, paths, "/run/kubernetes/pki/kube-proxy.crt")
 	assert.Contains(t, paths, "/run/kubernetes/pki/kube-proxy.key")
 	assert.Contains(t, paths["/run/kubernetes/kube-proxy.conf"], "client-certificate")
+}
+
+func serviceByName(t *testing.T, s kubeSpec, name string) (args []string, binary, restart string) {
+	t.Helper()
+	for _, sv := range s.Spec.Services {
+		if sv.Name == name {
+			return sv.Args, sv.Binary, sv.Restart
+		}
+	}
+	require.Failf(t, "no such service", "%s is not in %v", name, serviceNames(s))
+	return nil, "", ""
+}
+
+func fileContent(t *testing.T, s kubeSpec, path string) string {
+	t.Helper()
+	for _, f := range s.Spec.Files {
+		if f.Path == path {
+			return f.Content
+		}
+	}
+	require.Failf(t, "no such file", "%s", path)
+	return ""
+}
+
+func TestKubernetesUserData_KubeletGivesPodsTheClusterDNSAtTheAddressOfTheKubeDNSService(t *testing.T) {
+	for _, controlPlane := range []bool{true, false} {
+		s := kubeUserData(t, kubeNode(t, controlPlane, nil))
+
+		var kubelet struct {
+			ClusterDNS    []string `yaml:"clusterDNS"`
+			ClusterDomain string   `yaml:"clusterDomain"`
+		}
+		require.NoError(t, yaml.Unmarshal([]byte(fileContent(t, s, layout.KubeDir+"/kubelet.yaml")), &kubelet))
+		assert.Equal(t, []string{"10.96.0.10"}, kubelet.ClusterDNS, "control-plane %v", controlPlane)
+		assert.Equal(t, layout.ClusterDomain, kubelet.ClusterDomain)
+	}
+}
+
+func TestKubernetesUserData_ControlPlaneAppliesTheEnabledAddonsWithItsOwnPairAndRunsUntilItSucceeds(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, nil))
+
+	args, binary, restart := serviceByName(t, s, "addons")
+	assert.Equal(t, "/bin/kubectl", binary)
+	assert.Equal(t, "on-failure", restart)
+	assert.Contains(t, args, "--server-side")
+	assert.Contains(t, args, "--field-manager=naru-addons")
+	assert.Contains(t, args, layout.AddonsDir+"/manifests/dns.yaml")
+	var found bool
+	for _, c := range s.Spec.PKI.Certificates {
+		if c.Name == "addons" {
+			found = true
+			assert.Equal(t, "system:masters", c.Organization)
+			assert.Equal(t, "client", c.Usage)
+			assert.Equal(t, []string{"addons"}, c.Restart)
+		}
+	}
+	assert.True(t, found, "init issues the add-ons' pair")
+}
+
+func TestKubernetesUserData_DisabledDNSIsNeitherAppliedNorGivenAPairButItsImageIsStillImported(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, func(n *layout.Node) { n.Kube.DisabledAddons = []string{"dns", "volumes"} }))
+
+	assert.NotContains(t, serviceNames(s), "addons", "no add-on is left to apply")
+	for _, c := range s.Spec.PKI.Certificates {
+		assert.NotEqual(t, "addons", c.Name)
+	}
+	assert.Contains(t, serviceNames(s), "addon-image-coredns")
+	assert.NotContains(t, serviceNames(s), "addon-image-volumes", "a disabled volume add-on's extension is large: it is not imported")
+}
+
+func TestKubernetesUserData_EveryNodeImportsTheAddonImagesUnderTheNameTheManifestsUseAndPinsThemUntilThatSucceeds(t *testing.T) {
+	for _, controlPlane := range []bool{true, false} {
+		s := kubeUserData(t, kubeNode(t, controlPlane, nil))
+
+		args, binary, restart := serviceByName(t, s, "addon-image-coredns")
+		assert.Equal(t, "/bin/ctr", binary)
+		assert.Equal(t, "on-failure", restart)
+		line := strings.Join(args, " ")
+		assert.Contains(t, line, "--namespace k8s.io images import --digests", "the CRI reads the k8s.io namespace")
+		assert.Contains(t, line, "--base-name naru.local/coredns ", "without it ctr names the image import-<date>, and the manifest's reference is never created")
+		assert.Contains(t, line, "--label io.cri-containerd.pinned=pinned", "the tag and the digest image are pinned as they are imported")
+		assert.Equal(t, layout.AddonsDir+"/images/coredns.tar", args[len(args)-1])
+		assert.NotContains(t, serviceNames(s), "addon-pin-coredns")
+	}
+}
+
+func TestKubernetesUserData_RefusesAnUnknownAddonToDisable(t *testing.T) {
+	_, err := kubeNode(t, true, func(n *layout.Node) { n.Kube.DisabledAddons = []string{"nope"} }).UserData()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dns")
+}
+
+func volumesFile(s kubeSpec, path string) (string, bool) {
+	for _, f := range s.Spec.Files {
+		if f.Path == path {
+			return f.Content, true
+		}
+	}
+	return "", false
+}
+
+func TestKubernetesUserData_VolumesAreAnUnpinnedExtensionWhoseManifestsAndImageAreItsOwn(t *testing.T) {
+	cp := kubeUserData(t, kubeNode(t, true, nil))
+
+	require.Len(t, cp.Spec.Extensions, 1)
+	assert.Equal(t, "naru-volumes", cp.Spec.Extensions[0]["name"])
+	assert.Empty(t, cp.Spec.Extensions[0]["sha256"], "an entry with no sha256 is resolved by init to the image built for its version (ADR 0084)")
+	dir := "/usr/lib/naru/extensions/naru-volumes/addons"
+	args, _, _ := serviceByName(t, cp, "addons")
+	assert.Contains(t, args, dir+"/manifests/volumes.yaml")
+	assert.Contains(t, args, layout.AddonsDir+"/manifests/dns.yaml")
+	imp, binary, restart := serviceByName(t, cp, "addon-image-volumes")
+	assert.Equal(t, "/bin/ctr", binary)
+	assert.Equal(t, "on-failure", restart)
+	assert.Equal(t, dir+"/images/volumes.tar", imp[len(imp)-1])
+	assert.Contains(t, strings.Join(imp, " "), "--base-name naru.local/volumes ")
+	names := serviceNames(cp)
+	assert.Less(t, slicesIndex(names, "containerd"), slicesIndex(names, "addon-image-volumes"))
+}
+
+func slicesIndex(list []string, s string) int {
+	for i, v := range list {
+		if v == s {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestKubernetesUserData_DisablingVolumesLeavesNoExtensionNoConfigAndNoLabel(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, func(n *layout.Node) {
+		n.Kube.DisabledAddons = []string{"volumes"}
+		n.Storage = []layout.StorageDisk{{Name: "data", Serial: "s1"}}
+	}))
+
+	assert.Empty(t, s.Spec.Extensions)
+	assert.NotContains(t, serviceNames(s), "addon-image-volumes")
+	_, found := volumesFile(s, layout.VolumesConfig)
+	assert.False(t, found)
+	args, _, _ := serviceByName(t, s, "kubelet")
+	assert.NotContains(t, strings.Join(args, " "), layout.VolumesNodeLabel)
+	args, _, _ = serviceByName(t, s, "addons")
+	assert.NotContains(t, strings.Join(args, " "), "volumes.yaml")
+}
+
+func TestKubernetesUserData_ANodeWithDisksGetsTheDriversConfigAndTheLabelThatSelectsItsPod(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, false, func(n *layout.Node) {
+		n.Storage = []layout.StorageDisk{{Name: "data", Serial: "s1"}, {Name: "more", Serial: "s2"}}
+		n.Kube.BlockSerials = []string{"b1", "b2"}
+	}))
+
+	cfg, found := volumesFile(s, layout.VolumesConfig)
+	require.True(t, found)
+	assert.JSONEq(t, `{"stateDir":"/var/lib/naru/volumes","storageDir":"/var/lib/naru/storage/data","blockSerials":["b1","b2"]}`, cfg, "local volumes are on the first storage disk")
+	assert.Contains(t, cfg, config.StorageRoot+"/data", "where init mounts the first storage disk")
+	require.Len(t, s.Spec.Storage, 2, "init formats and mounts the storage disks")
+	assert.Equal(t, "s1", s.Spec.Storage[0].Serial)
+	args, _, _ := serviceByName(t, s, "kubelet")
+	assert.Contains(t, args, "--node-labels=naru.garam.sh/volumes=true")
+}
+
+func TestKubernetesUserData_ABlockOnlyNodeOffersNoLocalVolumes(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, false, func(n *layout.Node) { n.Kube.BlockSerials = []string{"b1"} }))
+
+	cfg, _ := volumesFile(s, layout.VolumesConfig)
+	assert.JSONEq(t, `{"stateDir":"/var/lib/naru/volumes","blockSerials":["b1"]}`, cfg)
+}
+
+func TestKubernetesUserData_ANodeWithNoDiskIsNotLabelledAndHasNoConfig(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, false, nil))
+
+	_, found := volumesFile(s, layout.VolumesConfig)
+	assert.False(t, found)
+	args, _, _ := serviceByName(t, s, "kubelet")
+	assert.NotContains(t, strings.Join(args, " "), layout.VolumesNodeLabel)
+}
+
+func TestKubernetesUserData_LabelAndBootstrapFlagsBothReachTheKubelet(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, false, func(n *layout.Node) {
+		n.Kube.BlockSerials = []string{"b1"}
+		n.Kube.Token = "abcdef.0123456789abcdef"
+	}))
+
+	args, _, _ := serviceByName(t, s, "kubelet")
+	assert.Contains(t, args, "--node-labels=naru.garam.sh/volumes=true")
+	assert.Contains(t, strings.Join(args, " "), "--bootstrap-kubeconfig=")
+}
+
+func TestKubernetesUserData_RefusesBlockSerialsInitWouldFormat(t *testing.T) {
+	for name, serials := range map[string][]string{"empty": {""}, "repeated": {"b", "b"}, "a storage disk's": {"s1"}} {
+		_, err := kubeNode(t, false, func(n *layout.Node) {
+			n.Storage = []layout.StorageDisk{{Name: "data", Serial: "s1"}}
+			n.Kube.BlockSerials = serials
+		}).UserData()
+		assert.Error(t, err, name)
+	}
+}
+
+func TestKubernetesUserData_RefusesAStorageDiskInitWouldRefuse(t *testing.T) {
+	_, err := kubeNode(t, false, func(n *layout.Node) { n.Storage = []layout.StorageDisk{{Name: "Bad_Name", Serial: "s"}} }).UserData()
+
+	require.Error(t, err)
 }

@@ -116,6 +116,22 @@ func (m *Manager) pick(name string, entries []config.Extension) (Image, error) {
 	var found []Image
 	var elsewhere []string
 	for _, e := range entries {
+		if e.SHA256 == "" {
+			// An unpinned entry takes every stored image of its name built for init's version.
+			for _, img := range stored {
+				if img.Name == name && img.Version == m.version && !slices.ContainsFunc(found, func(f Image) bool { return f.SHA256 == img.SHA256 }) {
+					found = append(found, img)
+				}
+			}
+			if !slices.ContainsFunc(stored, func(img Image) bool { return img.Name == name && img.Version == m.version }) {
+				for _, img := range stored {
+					if img.Name == name {
+						elsewhere = append(elsewhere, img.Version)
+					}
+				}
+			}
+			continue
+		}
 		i := slices.IndexFunc(stored, func(img Image) bool { return img.SHA256 == e.SHA256 })
 		switch {
 		case i < 0:
@@ -125,7 +141,7 @@ func (m *Manager) pick(name string, entries []config.Extension) (Image, error) {
 		case stored[i].Version != m.version:
 			elsewhere = append(elsewhere, stored[i].Version)
 			m.log.Info("extension entry skipped: its image is built for another naru version", "name", name, "sha256", e.SHA256, "version", stored[i].Version)
-		default:
+		case !slices.ContainsFunc(found, func(f Image) bool { return f.SHA256 == e.SHA256 }):
 			found = append(found, stored[i])
 		}
 	}
@@ -137,7 +153,60 @@ func (m *Manager) pick(name string, entries []config.Extension) (Image, error) {
 	case len(elsewhere) > 0:
 		return Image{}, fmt.Errorf("no entry is built for naru %s (stored for: %s)", m.version, strings.Join(elsewhere, ", "))
 	}
+	if entries[0].SHA256 == "" {
+		return Image{}, fmt.Errorf("no image of %q is stored; an upgrade bundle or PUT /v1/extensions delivers it", name)
+	}
 	return Image{}, fmt.Errorf("no image of an entry is stored; PUT /v1/extensions/%s delivers it", entries[0].SHA256)
+}
+
+// ErrStage is an image of a bundle that is not the extension, or not built for the version, it was
+// to be.
+var ErrStage = errors.New("the bundle's extension is not what its manifest says")
+
+// Stage stores the image read from body, whose SHA-256 must be digest, and checks that its manifest
+// names name and the naru version the bundle is for (ADR 0084). An image that fails the check and
+// was not stored before is removed again. added tells whether the image is new to the store.
+func (m *Manager) Stage(body io.Reader, digest, name, version string) (img Image, added bool, err error) {
+	stored, _ := m.store.List()
+	added = !slices.ContainsFunc(stored, func(i Image) bool { return i.SHA256 == digest })
+	img, err = m.store.Put(body, digest)
+	if err != nil {
+		return Image{}, false, err
+	}
+	if img.Name != name || img.Version != version {
+		if added {
+			_ = m.store.Delete(digest)
+		}
+		return Image{}, false, fmt.Errorf("%w: %s holds %q for naru %s, not %q for %s", ErrStage, digest, img.Name, img.Version, name, version)
+	}
+	return img, added, nil
+}
+
+// Prune removes the stored images that are built for another version than init's and that no
+// pinned entry of specs names, and returns their digests. A pinned image is the operator's and
+// stays; so does one that is mounted. It tries every image and returns the failures joined
+// (ADR 0084).
+func (m *Manager) Prune(specs []config.Extension) ([]string, error) {
+	stored, err := m.store.List()
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	var errs []error
+	for _, img := range stored {
+		if img.Version == m.version || slices.ContainsFunc(specs, func(e config.Extension) bool { return e.SHA256 == img.SHA256 }) {
+			continue
+		}
+		switch err := m.Delete(img.SHA256); {
+		case errors.Is(err, ErrMounted):
+		case err != nil:
+			errs = append(errs, fmt.Errorf("remove %s: %w", img.SHA256, err))
+		default:
+			removed = append(removed, img.SHA256)
+			m.log.Info("extension image removed: built for another naru version than this", "name", img.Name, "sha256", img.SHA256, "version", img.Version)
+		}
+	}
+	return removed, errors.Join(errs...)
 }
 
 // Put stores the image read from body, whose SHA-256 must be digest.

@@ -20,6 +20,12 @@ var keyed = map[string]string{
 	"spec.extensions":       "sha256",
 }
 
+// keyedFallback names, for a list, the key of an element that lacks its first key: an entry of
+// spec.extensions with no sha256 is an unpinned entry, identified by its name (ADR 0084).
+var keyedFallback = map[string]string{
+	"spec.extensions": "name",
+}
+
 // merge applies patch to target as a JSON merge patch (RFC 7386) with keyed
 // lists, and returns the result. It changes neither argument. field is the
 // path of target from the document root.
@@ -40,7 +46,7 @@ func merge(target, patch any, field string) (any, error) {
 			delete(out, k)
 		case isList && keyed[path] != "":
 			existing, _ := out[k].([]any)
-			merged, err := mergeKeyed(existing, list, keyed[path], path)
+			merged, err := mergeKeyed(existing, list, keyed[path], keyedFallback[path], path)
 			if err != nil {
 				return nil, err
 			}
@@ -56,15 +62,31 @@ func merge(target, patch any, field string) (any, error) {
 	return out, nil
 }
 
+// ident is what identifies an element of a keyed list: the field that holds it and its value. The
+// field keeps a key and its fallback apart by type, not by what they spell; for spec.extensions
+// they cannot spell the same, since a name is at most 63 characters and a digest 64.
+type ident struct{ field, value string }
+
 // mergeKeyed merges the elements of patch into existing by key. An element
 // with a new key is appended, one with "$patch": "delete" removes its element,
 // and any other is merged into the element with the same key.
-func mergeKeyed(existing, patch []any, key, field string) ([]any, error) {
+func mergeKeyed(existing, patch []any, key, fallback, field string) ([]any, error) {
 	out := slices.Clone(existing)
-	find := func(name string) int {
+	// identity is the key of an element, or the fallback when it has no key; the two never match
+	// each other.
+	identity := func(m map[string]any) ident {
+		if s, _ := m[key].(string); s != "" {
+			return ident{key, s}
+		}
+		if s, _ := m[fallback].(string); s != "" && fallback != "" {
+			return ident{fallback, s}
+		}
+		return ident{}
+	}
+	find := func(id ident) int {
 		return slices.IndexFunc(out, func(e any) bool {
 			m, _ := e.(map[string]any)
-			return m[key] == name
+			return identity(m) == id
 		})
 	}
 	for i, e := range patch {
@@ -73,17 +95,17 @@ func mergeKeyed(existing, patch []any, key, field string) ([]any, error) {
 		if !ok {
 			return nil, &InvalidError{Fields: []string{el}, Message: "must be an object"}
 		}
-		name, ok := m[key].(string)
-		if !ok || name == "" {
-			return nil, &InvalidError{Fields: []string{el + "." + key}, Message: fmt.Sprintf("must be the %s of the element", key)}
+		id := identity(m)
+		if id == (ident{}) {
+			return nil, &InvalidError{Fields: []string{el + "." + key}, Message: missingKey(key, fallback)}
 		}
-		at := find(name)
+		at := find(id)
 		if op, has := m[deleteKey]; has {
 			if op != "delete" {
 				return nil, &InvalidError{Fields: []string{el + "." + deleteKey}, Message: fmt.Sprintf("must be %q, got %v", "delete", op)}
 			}
 			if at < 0 {
-				return nil, &InvalidError{Fields: []string{el}, Message: fmt.Sprintf("deletes %q, which %s does not hold", name, field)}
+				return nil, &InvalidError{Fields: []string{el}, Message: fmt.Sprintf("deletes %q, which %s does not hold", id.value, field)}
 			}
 			out = slices.Delete(out, at, at+1)
 			continue
@@ -129,4 +151,12 @@ func clone(v any) any {
 		return out
 	}
 	return v
+}
+
+// missingKey says what an element without an identity lacks.
+func missingKey(key, fallback string) string {
+	if fallback == "" {
+		return fmt.Sprintf("must be the %s of the element", key)
+	}
+	return fmt.Sprintf("must be the %s of the element, or its %s where it has no %s", key, fallback, key)
 }

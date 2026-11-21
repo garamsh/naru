@@ -60,6 +60,21 @@ func findESP(sysClassBlock, devDir, guid string) (esp, error) {
 	return esp{}, fmt.Errorf("no partition has the GUID %s", guid)
 }
 
+// FindESP returns the device node under devDir of the partition of sysClassBlock whose PARTUUID is
+// guid, and of the disk that holds it, so a caller does not depend on the name the kernel gave the disk.
+func FindESP(sysClassBlock, devDir, guid string) (partition, disk string, err error) {
+	p, err := findESP(sysClassBlock, devDir, guid)
+	if err != nil {
+		return "", "", err
+	}
+	// A partition's sysfs entry lies under its disk's.
+	real, err := filepath.EvalSymlinks(filepath.Join(sysClassBlock, filepath.Base(p.device)))
+	if err != nil {
+		return "", "", err
+	}
+	return p.device, filepath.Join(devDir, filepath.Base(filepath.Dir(real))), nil
+}
+
 // HasPartUUID reports whether a partition's uevent text names guid as its PARTUUID, in either case.
 func HasPartUUID(uevent, guid string) bool {
 	for _, line := range strings.Split(uevent, "\n") {

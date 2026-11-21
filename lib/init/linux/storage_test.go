@@ -92,6 +92,21 @@ func (r *storageRig) prepare(s config.Storage) error {
 	return r.host.PrepareStorage(s, r.log)
 }
 
+func TestHost_PrepareStorageMountsEveryStorageDiskWithProjectQuota(t *testing.T) {
+	dev := disk(t, 64<<20, nil)
+	r := newStorageRig(t, map[string]string{"sdb": dev})
+	var data []string
+	mount := r.host.mount
+	r.host.mount = func(source, target, fstype string, flags uintptr, d string) error {
+		data = append(data, d)
+		return mount(source, target, fstype, flags, d)
+	}
+
+	require.NoError(t, r.prepare(config.Storage{Name: "vmdisks", Device: filepath.Join(r.host.devDir, "sdb")}))
+
+	assert.Equal(t, []string{"prjquota"}, data, "the volume driver sets a limit per directory, which XFS enforces only on a mount with project quota (ADR 0083)")
+}
+
 func TestHost_PrepareStorageFormatsABlankDiskMountsItAndGrowsNothing(t *testing.T) {
 	dev := disk(t, 64<<20, nil)
 	r := newStorageRig(t, map[string]string{"sdb": dev})

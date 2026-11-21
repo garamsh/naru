@@ -52,6 +52,8 @@ type Options struct {
 	NewHosts func(inv inventory.Service) groups.Hosts
 	// GroupInterval is the pause between the engine's passes; it defaults to 200 ms.
 	GroupInterval time.Duration
+	// NewExposureHosts gives the exposures their hosts; without it the exposure endpoints answer 501.
+	NewExposureHosts func(inv inventory.Service) orchd.ExposureHosts
 	// NewNetworkHosts gives the network reconciler its hosts; without it no host is told its
 	// networks. NetworkInterval is the pause between its passes; it defaults to 200 ms.
 	NewNetworkHosts func(inv inventory.Service) netrec.Hosts
@@ -171,7 +173,7 @@ func (c *Cluster) member(t testing.TB, i, peerPort, clientPort int) (orchd.Confi
 		Listen: "127.0.0.1:0", ClientCA: files.CA, SnapshotDir: filepath.Join(dir, "snapshots"),
 		LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval, GroupInterval: o.GroupInterval, NetworkInterval: o.NetworkInterval,
 	}
-	deps := orchd.Deps{Signer: c.Signer, Auth: auth.Revocations{List: &identity.RevocationList{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name), RevocationKey: c.CA.RevocationKey()}
+	deps := orchd.Deps{Signer: c.Signer, Auth: auth.Revocations{List: &identity.RevocationList{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, NewExposureHosts: o.NewExposureHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name), RevocationKey: c.CA.RevocationKey()}
 	if i < len(o.CRLPeers) {
 		deps.CRLPeer = o.CRLPeers[i]
 	}

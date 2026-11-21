@@ -25,6 +25,8 @@ import (
 	"github.com/garamsh/naru/orch/internal/api"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
+	"github.com/garamsh/naru/orch/internal/exposures"
+	exposuresetcd "github.com/garamsh/naru/orch/internal/exposures/etcd"
 	"github.com/garamsh/naru/orch/internal/groups"
 	groupsetcd "github.com/garamsh/naru/orch/internal/groups/etcd"
 	"github.com/garamsh/naru/orch/internal/groupsvc"
@@ -82,6 +84,10 @@ type Deps struct {
 	// NewNetworkHosts returns the network reconciler's view of the hosts. With it the leader runs
 	// the network reconciler beside the groups engine; without it no host is told its networks.
 	NewNetworkHosts func(inv inventory.Service) netrec.Hosts
+	// NewExposureHosts returns the exposures' view of the hosts. With it the API serves address
+	// pools and exposures, and the leader keeps each exposure's lease on a host renewed; without it
+	// those endpoints answer 501.
+	NewExposureHosts func(inv inventory.Service) ExposureHosts
 	// Reconciler replaces the groups engine, for a test of the leader seam.
 	Reconciler Reconciler
 	Clock      inventory.Clock
@@ -92,6 +98,13 @@ type Deps struct {
 	RevocationKey ed25519.PublicKey
 	// Metrics is the registry the API's request counter is registered on; nil counts none.
 	Metrics prometheus.Registerer
+}
+
+// ExposureHosts is what the exposures need of the hosts: a lease on an address, and the addresses
+// of the microVMs a backend may be.
+type ExposureHosts interface {
+	exposures.Hosts
+	exposures.Members
 }
 
 // Orchd is a running member.
@@ -244,7 +257,15 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	if d.NewNetworkHosts != nil {
 		reconcilers = append(reconcilers, netrec.New(netrec.Config{Hosts: d.NewNetworkHosts(svc), Networks: networkStore, Interval: c.NetworkInterval, Log: d.Log}))
 	}
-	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
+	var exposureSvc api.Exposures
+	if d.NewExposureHosts != nil {
+		eh := d.NewExposureHosts(svc)
+		exposureSvc = exposures.New(exposuresetcd.New(m.Client()), networkStore, eh, invStore, d.Clock)
+		reconcilers = append(reconcilers, exposures.NewReconciler(exposures.Config{
+			Hosts: eh, Exposures: exposuresetcd.New(leaderKV), Networks: networkStore, Clock: d.Clock, Log: d.Log,
+		}))
+	}
+	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
 
 	o.wg.Add(3)
 	go func() {

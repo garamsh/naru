@@ -146,6 +146,9 @@ func run(log *slog.Logger, f runFlags) error {
 		NewNetworkHosts: func(inv inventory.Service) netrec.Hosts {
 			return hostclient.NewNetHosts(inv, hostclient.DialNetAPI(hostHTTP, revocations))
 		},
+		NewExposureHosts: func(inv inventory.Service) orchd.ExposureHosts {
+			return hostclient.NewExposureHosts(inv, hostclient.DialExposureAPI(hostHTTP, revocations))
+		},
 	})
 	if err != nil {
 		return err

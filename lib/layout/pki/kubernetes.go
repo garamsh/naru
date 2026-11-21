@@ -19,6 +19,9 @@ const (
 	// tokens with, and the public key that verifies them.
 	ServiceAccountKeyFile = "sa.key"
 	ServiceAccountPubFile = "sa.pub"
+	// DisabledAddonsFile lists, a name to a line, the cluster add-ons the cluster does not run (ADR 0083):
+	// gen kubernetes writes it and gen kubernetes-node reads it.
+	DisabledAddonsFile = "disabled-addons"
 	// AdminKubeconfigFile is the administrator's kubeconfig.
 	AdminKubeconfigFile = "admin.conf"
 	// AdminName and AdminOrganization are the subject of the administrator's certificate; the

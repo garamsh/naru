@@ -30,11 +30,13 @@ endef
 # by the PM with the other pins (.github/workflows/ci.yml).
 GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
-# lint is go vet over every module (the second pass vets the files only the QEMU tests build),
+# lint is go mod tidy -diff over every module (it fails, and changes nothing, when go.mod or go.sum
+# is not tidy), go vet over every module (the second pass vets the files only the QEMU tests build),
 # shellcheck over the scripts of image/ (it must be installed; the GitHub-hosted runner has it), and
 # govulncheck over every module, with the QEMU files included. No golangci-lint is configured: the
 # project holds no //nolint directive (docs/architecture/structure.md).
 lint:
+	$(call each_module, (cd "$$dir" && go mod tidy -diff))
 	$(call each_module, $(count_packages); (cd "$$dir" && go vet ./... && go vet -tags qemu_real ./...))
 	@set -e; \
 	command -v shellcheck >/dev/null || { echo "$@: shellcheck is not installed" >&2; exit 1; }; \
@@ -123,7 +125,7 @@ in_builder = $(BUILDER) make $(1) VERSION='$(VERSION)' TEST_ROOT='$(call contain
 # into $(IMAGE) (image/pkgs/layout.sh): bzImage (the kernel with the initramfs inside it, ADR 0020;
 # bzImage.bare is the kernel before that), initramfs.cpio.gz, node-initrd.cpio.gz, boot-sets.json,
 # inputs.env (the Firecracker pin the tests read), guest/ (guest.json and what it names, which the
-# initramfs carries of the guests), extensions/ (the naru-orch system extension, ADR 0055), and the
+# initramfs carries of the guests), extensions/ (the naru-orch and naru-volumes system extensions, ADR 0055), and the
 # directories of programs the tests and the release take: gaon/, etcd/, k8s/ (Kubernetes, containerd,
 # runc and the CNI plugins) and regtools/ (the credential helpers, ADR 0026, and the root bundle).
 GUEST := $(IMAGE)/guest
@@ -166,7 +168,9 @@ in-builder-image:
 # which the upgrade group of image/pkgs builds from the programs and the kernel of the image:
 # next/bzImage is the same tree with the version $(VERSION)-next stamped in, and refuse/bzImage a
 # naru-init that cannot find its data disk (the linker flag is REFUSE_LDFLAGS of the bake file), so a
-# trial boot of it refuses, with a seed or without, and rolls back by itself.
+# trial boot of it refuses, with a seed or without, and rolls back by itself. next/extensions/ is the
+# naru-orch extension built for that version, which a bundle of it carries (ADR 0084); so does
+# refuse/extensions/.
 UPGRADE := $(BUILD)/upgrade
 in-builder-image-upgrade: in-builder-image
 	@set -e; \
@@ -174,6 +178,8 @@ in-builder-image-upgrade: in-builder-image
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
 	  $(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/bzImage-$$v.tar; \
 	  cp $(PKGROOT)/bzImage-$$v/bzImage $(UPGRADE)/$$v/; \
+	  $(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/extension-$$v.tar; \
+	  cp -r $(PKGROOT)/extension-$$v/extensions $(UPGRADE)/$$v/extensions; \
 	done
 
 # in-builder-disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT

@@ -1,0 +1,156 @@
+# The volume add-on (ADR 0083): the CSI driver naru-volumes, with the external-provisioner and the
+# node-driver-registrar beside it, in one pod per Node that offers a disk (the label the Node's
+# configuration gives the kubelet). The provisioner runs with --node-deployment, so the pod of the Node
+# that holds the disk creates the volume: a Pod's volume is a directory of the Node's first storage
+# disk (naru-local, deleted with its claim) or a whole disk (naru-block, kept).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: naru-volumes
+  namespace: kube-system
+  labels: {app.kubernetes.io/managed-by: naru-addons}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: naru:volumes
+  labels: {app.kubernetes.io/managed-by: naru-addons}
+rules:
+- apiGroups: [""]
+  resources: [persistentvolumes]
+  verbs: [get, list, watch, create, delete]
+- apiGroups: [""]
+  resources: [persistentvolumeclaims]
+  verbs: [get, list, watch, update]
+- apiGroups: [storage.k8s.io]
+  resources: [storageclasses, csinodes]
+  verbs: [get, list, watch]
+- apiGroups: [""]
+  resources: [events]
+  verbs: [list, watch, create, update, patch]
+- apiGroups: [""]
+  resources: [nodes]
+  verbs: [get, list, watch]
+- apiGroups: [snapshot.storage.k8s.io]
+  resources: [volumesnapshots, volumesnapshotcontents]
+  verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naru:volumes
+  labels: {app.kubernetes.io/managed-by: naru-addons}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: naru:volumes}
+subjects:
+- {kind: ServiceAccount, name: naru-volumes, namespace: kube-system}
+---
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: naru-volumes
+  labels: {app.kubernetes.io/managed-by: naru-addons}
+spec:
+  attachRequired: false
+  podInfoOnMount: false
+  volumeLifecycleModes: [Persistent]
+  fsGroupPolicy: None
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: naru-local
+  labels: {app.kubernetes.io/managed-by: naru-addons}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: naru-volumes
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: naru-block
+  labels: {app.kubernetes.io/managed-by: naru-addons}
+provisioner: naru-volumes
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: naru-volumes
+  namespace: kube-system
+  labels: {app.kubernetes.io/managed-by: naru-addons}
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: naru-volumes}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: naru-volumes, app.kubernetes.io/managed-by: naru-addons}
+    spec:
+      serviceAccountName: naru-volumes
+      priorityClassName: system-node-critical
+      nodeSelector: {naru.garam.sh/volumes: "true"}
+      tolerations: [{operator: Exists}]
+      containers:
+      - name: driver
+        image: "@VOLUMES_IMAGE@"
+        imagePullPolicy: IfNotPresent
+        command: [/naru-volumes]
+        args: [--endpoint=unix:///csi/csi.sock, --config=/etc/naru-volumes.json]
+        env:
+        - name: NODE_NAME
+          valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+        securityContext: {privileged: true}
+        volumeMounts:
+        - {name: socket-dir, mountPath: /csi}
+        - {name: config, mountPath: /etc/naru-volumes.json, readOnly: true}
+        - {name: state, mountPath: /var/lib/naru/volumes}
+        - {name: storage, mountPath: /var/lib/naru/storage, mountPropagation: HostToContainer}
+        - {name: pods, mountPath: /var/lib/naru/kubelet/pods, mountPropagation: Bidirectional}
+        - {name: dev, mountPath: /dev}
+      - name: provisioner
+        image: "@VOLUMES_IMAGE@"
+        imagePullPolicy: IfNotPresent
+        command: [/csi-provisioner]
+        args:
+        - --csi-address=/csi/csi.sock
+        - --node-deployment
+        - --node-deployment-immediate-binding=false
+        - --feature-gates=Topology=true
+        - --strict-topology
+        - --default-fstype=xfs
+        env:
+        - name: NODE_NAME
+          valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        volumeMounts:
+        - {name: socket-dir, mountPath: /csi}
+      - name: registrar
+        image: "@VOLUMES_IMAGE@"
+        imagePullPolicy: IfNotPresent
+        command: [/csi-node-driver-registrar]
+        args:
+        - --csi-address=/csi/csi.sock
+        - --kubelet-registration-path=/var/lib/naru/kubelet/plugins/naru-volumes/csi.sock
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        volumeMounts:
+        - {name: socket-dir, mountPath: /csi}
+        - {name: registration, mountPath: /registration}
+      volumes:
+      - name: socket-dir
+        hostPath: {path: /var/lib/naru/kubelet/plugins/naru-volumes, type: DirectoryOrCreate}
+      - name: registration
+        hostPath: {path: /var/lib/naru/kubelet/plugins_registry, type: Directory}
+      - name: pods
+        hostPath: {path: /var/lib/naru/kubelet/pods, type: DirectoryOrCreate}
+      - name: config
+        hostPath: {path: /run/kubernetes/naru-volumes.json, type: File}
+      - name: state
+        hostPath: {path: /var/lib/naru/volumes, type: DirectoryOrCreate}
+      - name: storage
+        hostPath: {path: /var/lib/naru/storage, type: DirectoryOrCreate}
+      - name: dev
+        hostPath: {path: /dev, type: Directory}

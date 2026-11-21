@@ -227,10 +227,10 @@ func spdxID(kind, name, version string) string {
 }
 
 // SBOM returns the SPDX 2.3 JSON document of a release: one package for each component, one for
-// each Go binary with a DEPENDS_ON relationship to each module it was built from, and the Go
+// each add-on image (named by its manifest digest), one for each Go binary with a DEPENDS_ON relationship to each module it was built from, and the Go
 // standard library of each toolchain version. The only time in it is epoch, so equal inputs give
 // equal bytes.
-func SBOM(version string, epoch int64, comps []Component, bins []GoBinary) ([]byte, error) {
+func SBOM(version string, epoch int64, comps []Component, bins []GoBinary, images []AddonImage) ([]byte, error) {
 	if epoch <= 0 {
 		return nil, fmt.Errorf("the SBOM needs SOURCE_DATE_EPOCH, and has %d", epoch)
 	}
@@ -258,6 +258,15 @@ func SBOM(version string, epoch int64, comps []Component, bins []GoBinary) ([]by
 			p.Checksums = []spdxSum{{"SHA256", c.SHA256}}
 		}
 		add(p)
+		rel("SPDXRef-DOCUMENT", "DESCRIBES", id)
+	}
+	for _, im := range images {
+		id := spdxID("Addon", im.Name, im.Digest)
+		add(spdxPackage{
+			Name: "addon-image-" + im.Name, SPDXID: id, DownloadLocation: "NOASSERTION", Checksums: []spdxSum{{"SHA256", strings.TrimPrefix(im.Digest, "sha256:")}},
+			LicenseConcluded: "NOASSERTION", LicenseDeclared: "NOASSERTION", CopyrightText: "NOASSERTION",
+			SourceInfo: "the OCI image of the " + im.Name + " add-on in the initramfs, named by its manifest digest",
+		})
 		rel("SPDXRef-DOCUMENT", "DESCRIBES", id)
 	}
 	seen := map[string]bool{}

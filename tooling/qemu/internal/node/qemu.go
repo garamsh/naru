@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -245,6 +246,35 @@ func (n *Node) Reboot() error {
 	return n.launch()
 }
 
+// RebootGracefully presses Ctrl-Alt-Del on the Node, which init takes as a request to reboot: it
+// stops the services, syncs and unmounts the data disk, and powers the machine down, which ends the
+// QEMU process. It then starts the Node again as Reboot does, so a write the Node completed before
+// the call is on its disks. It gives up, with the Node stopped, when the Node has not shut down
+// within timeout. It must not be called while a WaitFor is in progress.
+func (n *Node) RebootGracefully(timeout time.Duration) error {
+	conn, err := net.DialTimeout("unix", MonitorSocketPath(n.dir), 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("connect to the QEMU monitor: %w", err)
+	}
+	_, err = conn.Write([]byte("sendkey ctrl-alt-del\n"))
+	// The monitor acts on the command when it reads it; closing the connection first loses nothing,
+	// but give it a moment so that a refused command is not cut off.
+	time.Sleep(500 * time.Millisecond)
+	_ = conn.Close()
+	if err != nil {
+		n.Stop()
+		return fmt.Errorf("press Ctrl-Alt-Del: %w", err)
+	}
+	select {
+	case <-n.done:
+	case <-time.After(timeout):
+		n.Stop()
+		return errors.New("the Node did not shut down after Ctrl-Alt-Del")
+	}
+	n.Stop()
+	return n.launch()
+}
+
 // ReplaceUserData writes a new NoCloud drive with the user-data and network-config, which the Node's
 // next boot reads: an operator who edits spec in the hypervisor's console and restarts the machine.
 // The instance ID is the same, so the data disk is kept. A Node that started from an installation seed
@@ -347,7 +377,7 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		args = append(args, "-rtc", "base="+spec.RTCBase+",clock=vm")
 	}
 	args = append(args, serialArgs(spec, console)...)
-	return append(args, "-display", "none", "-monitor", "none", "-no-reboot"), nil
+	return append(args, "-display", "none", "-monitor", "unix:"+MonitorSocketPath(spec.Dir)+",server=on,wait=off", "-no-reboot"), nil
 }
 
 // serialArgs is QEMU's serial port: written to the file console, or a server socket nobody reads.
@@ -365,9 +395,15 @@ func CapturePath(dir string) string { return filepath.Join(dir, "net0.pcap") }
 // the temporary directory and named for dir, not inside dir: dir carries the test's name, and a unix
 // socket path may have no more than 107 bytes, which a long test name and TMPDIR pass, and QEMU then
 // never starts.
-func SerialSocketPath(dir string) string {
+func SerialSocketPath(dir string) string { return socketPath("serial", dir) }
+
+// MonitorSocketPath is the socket of a Node's QEMU monitor, which RebootGracefully types a key into. It is
+// named as SerialSocketPath is, for the same limit.
+func MonitorSocketPath(dir string) string { return socketPath("monitor", dir) }
+
+func socketPath(kind, dir string) string {
 	sum := sha256.Sum256([]byte(dir))
-	return filepath.Join(os.TempDir(), "naru-serial-"+hex.EncodeToString(sum[:8])+".sock")
+	return filepath.Join(os.TempDir(), "naru-"+kind+"-"+hex.EncodeToString(sum[:8])+".sock")
 }
 
 // dataAndExtraDisks is the drives and devices of the data disk and, when the Node has one, the extra
@@ -467,6 +503,7 @@ func (n *Node) Stop() {
 		_ = n.cmd.Process.Kill()
 		<-n.done
 		_ = os.Remove(SerialSocketPath(n.dir))
+		_ = os.Remove(MonitorSocketPath(n.dir))
 	})
 }
 

@@ -80,3 +80,46 @@ func TestGroupGetListDelete(t *testing.T) {
 	_, err = run(t, op.args(f, "group", "get")...)
 	require.Error(t, err)
 }
+
+func TestGroupGetAndListShowWhyAGroupIsNotPlaced(t *testing.T) {
+	f := newFakeOrch(t)
+	op := newOperator(t, f, "operator")
+
+	out, err := run(t, op.args(f, "group", "get", "stuck")...)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "held at 1970-01-01T00:16:40Z: no host can take it")
+
+	out, err = run(t, op.args(f, "group", "get", "web")...)
+	require.NoError(t, err, out)
+	assert.NotContains(t, out, "held", "control: a group with no hold prints none")
+
+	out, err = run(t, op.args(f, "group", "list")...)
+	require.NoError(t, err, out)
+	assert.Regexp(t, `stuck\s+kr-seoul\s+1\s+0\s+0\s+yes`, out)
+	assert.Regexp(t, `web\s+kr-seoul\s+2\s+1\s+2\s+-`, out)
+}
+
+func TestEvents_ListTheNewestAndFilterToAGroup(t *testing.T) {
+	f := newFakeOrch(t)
+	op := newOperator(t, f, "operator")
+
+	out, err := run(t, op.args(f, "events")...)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "host.admitted")
+	assert.Contains(t, out, "group=stuck no host can take it")
+
+	out, err = run(t, op.args(f, "events", "--limit", "2")...)
+	require.NoError(t, err, out)
+	assert.NotContains(t, out, "host.admitted", "only the two newest")
+	assert.Contains(t, out, "group.create")
+
+	out, err = run(t, op.args(f, "events", "--group", "stuck")...)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "group.hold")
+	assert.Contains(t, out, "group.applied")
+	assert.NotContains(t, out, "group.create", "control: another group's event is left out")
+	assert.NotContains(t, out, "host.admitted")
+
+	_, err = run(t, op.args(f, "events", "--limit", "-1")...)
+	require.Error(t, err)
+}

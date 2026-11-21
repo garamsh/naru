@@ -105,6 +105,8 @@ func newRoot() *cobra.Command {
 			leaf("restore", "open a sealed snapshot, and write or push the plain one", orchRestore),
 			leaf("csr", "make orch's key and certificate request", orchCSR),
 			leaf("issue", "issue orch's certificate through the signer", orchIssue)),
+		parent("ccm", "issue the credential of a network's cloud-controller-manager",
+			leaf("credential", "issue the exposer certificate and key of one network through the signer", ccmCredential)),
 		parent("enroll-key", "create and revoke the keys that enroll hosts",
 			leaf("create", "create an enrollment key", enrollKeyCreate),
 			leaf("revoke <id>", "revoke an enrollment key", enrollKeyRevoke)),
@@ -135,6 +137,7 @@ func newRoot() *cobra.Command {
 			leaf("add <naru-orch-ext-tag.sqfs>", "store a system extension image on the Node (the admin role)", extensionAdd),
 			leaf("list", "list the images the Node stores and whether each is mounted", extensionList),
 			leaf("remove <sha256>", "remove an image that is not mounted", extensionRemove)),
+		leaf("events", "list orch's newest events, or one group's", events),
 		leaf("console", "serve a web console on this workstation", consoleCmd),
 	)
 	return root
