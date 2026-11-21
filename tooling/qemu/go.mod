@@ -10,7 +10,10 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
-require golang.org/x/crypto v0.58.0 // indirect
+require (
+	go.yaml.in/yaml/v4 v4.0.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+)
 
 require (
 	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000
