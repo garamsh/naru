@@ -52,6 +52,32 @@ func TestAddBootSetRefusesAHostTheListDidNotRead(t *testing.T) {
 	require.NotContains(t, h.requests, "POST /v1/boot-sets")
 }
 
+type closeCounter struct {
+	io.Reader
+	closed int
+}
+
+func (c *closeCounter) Close() error { c.closed++; return nil }
+
+func TestAddBootSetClosesTheFileItWasGivenWhenTheOtherIsMissing(t *testing.T) {
+	h := newHost(t)
+	c := client(inventory{{ID: "h1", Address: h.addr()}})
+	kernel := &closeCounter{Reader: strings.NewReader("K")}
+	set := groups.BootSet{Name: "naru-node-v1", Open: func(context.Context) (io.ReadCloser, io.ReadCloser, error) {
+		return kernel, nil, nil
+	}}
+
+	require.Error(t, c.AddBootSet(t.Context(), "h1", set), "a set that opens one file is refused, not a nil dereference")
+	require.Equal(t, 1, kernel.closed)
+
+	both := groups.BootSet{Name: "naru-node-v1", KernelSHA256: "k", InitramfsSHA256: "i", Open: func(context.Context) (io.ReadCloser, io.ReadCloser, error) {
+		return kernel, io.NopCloser(strings.NewReader("I")), nil
+	}}
+	kernel.closed = 0
+	require.NoError(t, c.AddBootSet(t.Context(), "h1", both))
+	require.Equal(t, 1, kernel.closed, "control: the files of a whole set are closed once")
+}
+
 type errReader struct{ err error }
 
 func (e errReader) Read([]byte) (int, error) { return 0, e.err }

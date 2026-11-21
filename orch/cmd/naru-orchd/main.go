@@ -66,7 +66,7 @@ func main() {
 		etcdKeep    = flag.String("etcd-compaction-retention", "", "how much history etcd keeps, as a duration; empty keeps "+member.CompactionRetention)
 		bsStore     = flag.String("boot-set-store", "", "https URL or directory of the release assets the Node boot sets are added from; empty adds none")
 		bsRoot      = flag.String("boot-set-trust-root", "", "the Sigstore trusted_root.json that verifies a release; defaults to the public-good root built in")
-		bsIdentity  = flag.String("boot-set-identity", "", "the certificate identity a release is signed by; a trailing * is a prefix; required with --boot-set-store")
+		bsIdentity  = flag.String("boot-set-identity", "", "the certificate identity a release is signed by; a trailing * is a prefix of at least https://github.com/<owner>/<repo>/; defaults to the release workflow of garamsh/naru at the version's tag")
 		bsIssuer    = flag.String("boot-set-issuer", release.DefaultIssuer, "the OIDC issuer of the certificate a release is signed with")
 		metricsAddr = flag.String("metrics-addr", "", "address that serves /metrics over plain HTTP; empty serves none")
 	)
@@ -175,8 +175,8 @@ func run(log *slog.Logger, f runFlags) error {
 	return o.Stop()
 }
 
-// newBootSets is the store the boot sets are added from, or nil when none is set. A store with no
-// identity to verify its releases against is an error at start and not a store that trusts them.
+// newBootSets is the store the boot sets are added from, or nil when none is set. A store whose
+// identity or trust root cannot be built is an error at start and not a store that trusts its releases.
 func newBootSets(c release.Config) (groups.ReleaseStore, error) {
 	if c.Location == "" {
 		return nil, nil

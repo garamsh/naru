@@ -22,3 +22,9 @@ type BootSet struct {
 type ReleaseStore interface {
 	Fetch(ctx context.Context, version string) (BootSet, error)
 }
+
+// Failure is a release store's refusal by class. Two errors of one class are one failure to the
+// reconciler however their details read, so it records and backs off by the class.
+type Failure struct{ Class string }
+
+func (f *Failure) Error() string { return f.Class }

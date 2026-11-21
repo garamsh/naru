@@ -21,14 +21,15 @@ import (
 	"github.com/garamsh/naru/orch/internal/groups"
 )
 
-// The reasons a release does not verify. Each wraps the detail and names one check.
+// The reasons a release does not verify. Each is a groups.Failure naming one check, and an error
+// that wraps it carries the detail.
 var (
-	ErrNotFound  = errors.New("release asset not found")
-	ErrStore     = errors.New("release store unreadable")
-	ErrSignature = errors.New("signature check failed")
-	ErrIdentity  = errors.New("signer identity check failed")
-	ErrChecksum  = errors.New("checksum check failed")
-	ErrManifest  = errors.New("manifest check failed")
+	ErrNotFound  = &groups.Failure{Class: "release asset not found"}
+	ErrStore     = &groups.Failure{Class: "release store unreadable"}
+	ErrSignature = &groups.Failure{Class: "signature check failed"}
+	ErrIdentity  = &groups.Failure{Class: "signer identity check failed"}
+	ErrChecksum  = &groups.Failure{Class: "checksum check failed"}
+	ErrManifest  = &groups.Failure{Class: "manifest check failed"}
 )
 
 const (
@@ -49,10 +50,13 @@ type Config struct {
 	Location string
 	// TrustRoot is a trusted_root.json; empty means the one embedded.
 	TrustRoot string
-	// Issuer and Identity are the OIDC issuer and the certificate identity of the signer. An
-	// Identity ending in "*" is a prefix.
-	Issuer, Identity string
-	// Client reads an https store; nil means http.DefaultClient.
+	// Issuer is the OIDC issuer of the signer's certificate.
+	Issuer string
+	// Identity is the certificate identity of the signer. One ending in "*" is a prefix, which
+	// must name a repository: https://github.com/<owner>/<repo>/. Empty means the release
+	// workflow of this repository at the tag of the version fetched.
+	Identity string
+	// Client reads an https store; nil means a client with the default transport.
 	Client *http.Client
 }
 
@@ -106,7 +110,7 @@ func (s *Store) Fetch(ctx context.Context, version string) (groups.BootSet, erro
 	if err != nil {
 		return groups.BootSet{}, err
 	}
-	if err := s.sig.check(raw, sums); err != nil {
+	if err := s.sig.check(raw, sums, version); err != nil {
 		return groups.BootSet{}, err
 	}
 	digests, err := parseSums(sums)

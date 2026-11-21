@@ -27,7 +27,7 @@ type Appender interface {
 }
 
 // Events writes the engine's events to the inventory's log. A hold the engine reports on every
-// pass, and a boot set that fails again for the same reason on the same host, is written once per
+// pass, and a boot set that fails again in the same class on the same host, is written once per
 // HoldRepeat.
 type Events struct {
 	log Appender
@@ -37,8 +37,8 @@ type Events struct {
 }
 
 type holdKey struct {
-	kind                         groups.EventKind
-	group, member, host, message string
+	kind                       groups.EventKind
+	group, member, host, class string
 }
 
 var _ groups.Events = (*Events)(nil)
@@ -72,7 +72,11 @@ func (e *Events) Record(ctx context.Context, ev groups.Event) error {
 }
 
 func (e *Events) repeated(ev groups.Event) bool {
-	k := holdKey{ev.Kind, ev.Group, ev.Member, ev.Host, ev.Message}
+	what := ev.Message
+	if ev.Class != "" {
+		what = ev.Class
+	}
+	k := holdKey{ev.Kind, ev.Group, ev.Member, ev.Host, what}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if at, ok := e.held[k]; ok && ev.Time.Sub(at) < HoldRepeat {
