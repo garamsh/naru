@@ -65,6 +65,9 @@ type Config struct {
 	Mount   func(source, target, fstype string, flags uintptr, data string) error
 	Unmount func(target string, flags int) error
 	Sync    func(dir string) error
+	// Extensions returns spec.extensions of the stored configuration and the stored images, for the
+	// check that the bundle's version can mount them. Nil checks nothing.
+	Extensions func() ([]Entry, []Image, error)
 	// Now and After are the clock and a timer.
 	Now   func() time.Time
 	After func(time.Duration) <-chan time.Time
@@ -199,6 +202,9 @@ func (u *Upgrader) Install(body io.Reader, wantSHA string) (Staged, error) {
 			return err
 		}
 		m, err = receive(body, u.cfg.MaxBytes, wantSHA, f)
+		if err == nil {
+			err = u.checkExtensions(m.Version)
+		}
 		if err == nil {
 			err = f.Sync()
 		}
@@ -370,16 +376,17 @@ type Services interface {
 	Status() []service.Status
 }
 
-// Watch judges a trial boot and acts on it, and returns once it has. booted is whether the boot
-// sequence finished without a refusal. A refusal gives up at once. Otherwise the trial is healthy
+// Watch judges a trial boot and acts on it, and returns once it has. refusal is the one-line
+// reason the boot sequence refused, and empty when it finished. A refusal gives up at once, with
+// that reason. Otherwise the trial is healthy
 // when every started service has been running, or has exited with status 0 and stays stopped
 // (service.StateExited), and has not restarted, for Settle; a healthy trial
 // is promoted. A trial that is not healthy Bound after init started, or whose promotion fails,
 // gives up. To give up is to record the reason and call reboot, which must reboot without
 // promoting. Watch ends early when ctx does.
-func (u *Upgrader) Watch(ctx context.Context, booted bool, svcs Services, reboot func()) {
-	if !booted {
-		u.giveUp("the boot sequence refused")
+func (u *Upgrader) Watch(ctx context.Context, refusal string, svcs Services, reboot func()) {
+	if refusal != "" {
+		u.giveUp("the boot sequence refused: " + refusal)
 		reboot()
 		return
 	}

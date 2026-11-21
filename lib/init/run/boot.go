@@ -47,9 +47,8 @@ type timeAPI interface {
 // sequence finished or refused: a service that started before the refusal keeps
 // running and keeps reading its certificate. It returns the function that stops
 // the renewal and the clock and waits for a renewal in flight to end, and the
-// effective configuration when the sequence finished, which is nil when it
-// refused.
-func bootAndRenew(host timedHost, issuer *pki.Issuer, services boot.Services, configs boot.Configs, api timeAPI, log *slog.Logger) (stop func(), booted *store.Stored) {
+// effective configuration when the sequence finished, or else the refusal.
+func bootAndRenew(host timedHost, issuer *pki.Issuer, services boot.Services, configs boot.Configs, api timeAPI, log *slog.Logger) (stop func(), booted *store.Stored, refusal error) {
 	api.UseTime(host.TimeStatus)
 	// A certificate issued on a clock that is later stepped is judged against the new time.
 	host.OnTimeStep(func(res timesync.Result) {
@@ -58,6 +57,7 @@ func bootAndRenew(host timedHost, issuer *pki.Issuer, services boot.Services, co
 	})
 	stored, err := boot.Run(host, issuer, services, configs, api, log)
 	if err != nil {
+		refusal = err
 		// Stay up so the reason stays on the console, and start nothing more.
 		log.Error("boot refused; no service of the configuration will start", "err", err)
 	} else {
@@ -86,7 +86,7 @@ func bootAndRenew(host timedHost, issuer *pki.Issuer, services boot.Services, co
 		<-renewed
 		<-ticked
 		<-leased
-	}, booted
+	}, booted, refusal
 }
 
 // hostParts is the machine as the apply engine reaches it.

@@ -237,7 +237,46 @@ func TestNode_UpgradeToAKernelThatRefusesIsRolledBackByTheNodeToTheVersionBefore
 	assert.Equal(t, "default", after.Slot)
 	assert.NotEqual(t, before.BootID, after.BootID, "the trial and the boot after it are new boots")
 	assert.Contains(t, after.Outcome, want+" -> "+refusing+", rolled back")
-	assert.NotEmpty(t, after.Reason, "the outcome says why")
+	assert.Contains(t, after.Reason, "the boot sequence refused: ", "the outcome says why, in init's words")
 	assert.Contains(t, nd.Console(), "upgrade rolled back")
 	assert.Equal(t, stored, storeOf(t, nd), "the data disk is as it was")
+}
+
+// startUpgradeNodeMounting is startUpgradeNode for a Node whose spec.extensions names the
+// extension the data disk stores, which is built for the version the Node runs: the entry of a
+// control host before its upgrade (ADR 0055).
+func startUpgradeNodeMounting(t *testing.T) (*node.Node, string) {
+	t.Helper()
+	nd, admin := startUpgradeNode(t)
+	ext := inputs.Extension
+	patch := "spec:\n  extensions:\n    - {name: naru-orch, sha256: " + ext.SHA256 + "}\n"
+	r := ctl(admin, "apply", "-f", patchFile(t, patch), "--mode", "staged")
+	require.NoError(t, r.Err, r.refusal())
+	require.NoError(t, nd.Reboot())
+	eventually(t, "the Node mounts the extension at its boot", func() bool {
+		row := extensionRows(t, admin)[ext.SHA256]
+		return row != nil && row[len(row)-1] == "/usr/lib/naru/extensions/naru-orch"
+	})
+	return nd, admin
+}
+
+func TestNode_UpgradeIsRefusedByTheNodeWith422WhenAnExtensionEntryHasNoImageForTheBundlesVersion(t *testing.T) {
+	want := os.Getenv("NARU_VERSION")
+	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
+	nd, admin := startUpgradeNodeMounting(t)
+	before, err := statusOf(tool, admin)
+	require.NoError(t, err)
+	bundle, sums := bundleFor(t, "next", want+"-next")
+
+	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
+
+	require.Error(t, r.Err)
+	assert.Contains(t, r.refusal(), "422", "the Node answers before it writes the slot")
+	assert.Contains(t, r.refusal(), "naru-orch", "the refusal names the extension")
+	assert.Contains(t, r.refusal(), "ADR 0055", "and the steps")
+	after, err := statusOf(tool, admin)
+	require.NoError(t, err)
+	assert.Equal(t, before.BootID, after.BootID, "the Node was not rebooted")
+	assert.Contains(t, after.Outcome, "none has ended", "and no upgrade started")
+	assert.NotContains(t, nd.Console(), "upgrade staged")
 }

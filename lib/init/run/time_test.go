@@ -49,7 +49,7 @@ func TestBootAndRenew_KeepsTheClockForAsLongAsTheNodeRunsAndGivesTheAPIItsStatus
 	issuer := pki.New(t.TempDir(), clk, n, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	api := &statusAPI{}
 
-	stop, booted := bootAndRenew(n, issuer, n, store.New(t.TempDir()), api, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	stop, booted, _ := bootAndRenew(n, issuer, n, store.New(t.TempDir()), api, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	require.NotNil(t, booted)
 	select {

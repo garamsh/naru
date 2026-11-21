@@ -137,7 +137,7 @@ spec:
 	clk := &clock{now: epoch, timers: make(chan chan time.Time, 4)}
 	issuer := pki.New(t.TempDir(), clk, n, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	stop, booted := bootAndRenew(n, issuer, n, store.New(t.TempDir()), noAPI{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	stop, booted, _ := bootAndRenew(n, issuer, n, store.New(t.TempDir()), noAPI{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(stop)
 	assert.Nil(t, booted, "the boot was refused, so there is no effective configuration")
 
@@ -190,7 +190,7 @@ spec:
 	clk := &clock{now: epoch, timers: make(chan chan time.Time, 4)}
 	issuer := pki.New(t.TempDir(), clk, n, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	stop, booted := bootAndRenew(n, issuer, n, store.New(t.TempDir()), noAPI{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	stop, booted, _ := bootAndRenew(n, issuer, n, store.New(t.TempDir()), noAPI{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(stop)
 	assert.Nil(t, booted, "the boot was refused, so there is no effective configuration")
 

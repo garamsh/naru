@@ -496,7 +496,7 @@ func TestUpgrader_ReconcileReportsTheReasonTheTrialBootGaveUp(t *testing.T) {
 	n := newNode(t)
 	trial := stage(t, n)
 	// The trial boot gave up, rebooted, and the firmware came back to the default.
-	trial.Watch(context.Background(), false, &counting{script: func(int) []service.Status { return nil }}, func() {})
+	trial.Watch(context.Background(), "mount the system extensions: no entry is built for naru v2", &counting{script: func(int) []service.Status { return nil }}, func() {})
 	require.NoError(t, os.Remove(filepath.Join(n.efivars(), "BootCurrent-"+efiGUID)))
 	u := n.upgrader("v1")
 	u.Detect()
@@ -506,8 +506,8 @@ func TestUpgrader_ReconcileReportsTheReasonTheTrialBootGaveUp(t *testing.T) {
 	last, ok := u.Last()
 	require.True(t, ok)
 	assert.Equal(t, "rolled back", last.Result)
-	assert.Equal(t, "the boot sequence refused", last.Reason)
-	assert.Contains(t, n.logs.String(), "reason=\"the boot sequence refused\"")
+	assert.Equal(t, "the boot sequence refused: mount the system extensions: no entry is built for naru v2", last.Reason)
+	assert.Contains(t, n.logs.String(), "no entry is built for naru v2")
 }
 
 func TestUpgrader_ReconcileDoesNothingWhenNoUpgradeIsUnfinishedAndDoesNotMountTheESP(t *testing.T) {
@@ -579,7 +579,7 @@ func TestUpgrader_WatchPromotesATrialWhoseServicesRanSteadyForTheSettleTime(t *t
 	u := stage(t, n)
 	rebooted := false
 
-	u.Watch(context.Background(), true, &counting{script: func(int) []service.Status { return running(0, 0) }}, func() { rebooted = true })
+	u.Watch(context.Background(), "", &counting{script: func(int) []service.Status { return running(0, 0) }}, func() { rebooted = true })
 
 	a, _ := n.slot("BOOTX64.EFI")
 	assert.Equal(t, "kernel-B", a)
@@ -592,7 +592,7 @@ func TestUpgrader_WatchPromotesATrialThatStartedNoService(t *testing.T) {
 	n := newNode(t)
 	u := stage(t, n)
 
-	u.Watch(context.Background(), true, &counting{script: func(int) []service.Status { return nil }}, func() { t.Fatal("rebooted") })
+	u.Watch(context.Background(), "", &counting{script: func(int) []service.Status { return nil }}, func() { t.Fatal("rebooted") })
 
 	a, _ := n.slot("BOOTX64.EFI")
 	assert.Equal(t, "kernel-B", a)
@@ -614,7 +614,7 @@ func TestUpgrader_WatchDoesNotPromoteBeforeTheSettleTimeHasPassedSinceTheLastRes
 		return running(0, 0)
 	}}
 
-	u.Watch(context.Background(), true, svcs, func() { t.Fatal("rebooted") })
+	u.Watch(context.Background(), "", svcs, func() { t.Fatal("rebooted") })
 
 	a, _ := n.slot("BOOTX64.EFI")
 	require.Equal(t, "kernel-B", a, "the control: the trial is promoted in the end")
@@ -626,7 +626,7 @@ func TestUpgrader_WatchGivesUpAtOnceOnABootThatRefused(t *testing.T) {
 	u := stage(t, n)
 	rebooted := 0
 
-	u.Watch(context.Background(), false, &counting{script: func(int) []service.Status { return running(0) }}, func() { rebooted++ })
+	u.Watch(context.Background(), "the data disk is refused", &counting{script: func(int) []service.Status { return running(0) }}, func() { rebooted++ })
 
 	assert.Equal(t, 1, rebooted)
 	a, _ := n.slot("BOOTX64.EFI")
@@ -643,7 +643,7 @@ func TestUpgrader_WatchPromotesATrialWhoseServiceExitedCleanlyAndStaysStopped(t 
 	n := newNode(t)
 	u := stage(t, n)
 
-	u.Watch(context.Background(), true, &counting{script: func(int) []service.Status {
+	u.Watch(context.Background(), "", &counting{script: func(int) []service.Status {
 		return []service.Status{{Name: "a", State: service.StateRunning}, {Name: "once", State: service.StateExited}}
 	}}, func() { t.Fatal("rebooted") })
 
@@ -660,7 +660,7 @@ func TestUpgrader_WatchGivesUpWhenAServiceIsNotRunningWithinTheBound(t *testing.
 		return []service.Status{{Name: "a", State: service.StateRunning}, {Name: "b", State: service.StateBackoff}}
 	}}
 
-	u.Watch(context.Background(), true, svcs, func() { rebooted++ })
+	u.Watch(context.Background(), "", svcs, func() { rebooted++ })
 
 	assert.Equal(t, 1, rebooted)
 	a, _ := n.slot("BOOTX64.EFI")
@@ -675,7 +675,7 @@ func TestUpgrader_WatchGivesUpWhenAServiceKeepsRestarting(t *testing.T) {
 	rebooted := 0
 	svcs := &counting{script: func(call int) []service.Status { return running(call) }}
 
-	u.Watch(context.Background(), true, svcs, func() { rebooted++ })
+	u.Watch(context.Background(), "", svcs, func() { rebooted++ })
 
 	assert.Equal(t, 1, rebooted)
 	a, _ := n.slot("BOOTX64.EFI")
@@ -691,7 +691,7 @@ func TestUpgrader_WatchEndsWhenItsContextDoes(t *testing.T) {
 		return []service.Status{{Name: "a", State: service.StateBackoff}}
 	}}
 
-	u.Watch(ctx, true, svcs, func() { t.Fatal("rebooted") })
+	u.Watch(ctx, "", svcs, func() { t.Fatal("rebooted") })
 
 	a, _ := n.slot("BOOTX64.EFI")
 	assert.Equal(t, "kernel-A", a)
@@ -703,9 +703,69 @@ func TestUpgrader_WatchGivesUpWhenThePromotionFails(t *testing.T) {
 	require.NoError(t, os.Remove(filepath.Join(n.slots(), "TRIAL.EFI")))
 	rebooted := 0
 
-	u.Watch(context.Background(), true, &counting{script: func(int) []service.Status { return running(0) }}, func() { rebooted++ })
+	u.Watch(context.Background(), "", &counting{script: func(int) []service.Status { return running(0) }}, func() { rebooted++ })
 
 	assert.Equal(t, 1, rebooted)
 	a, _ := n.slot("BOOTX64.EFI")
 	assert.Equal(t, "kernel-A", a)
+}
+
+func TestMissingExtensions_NamesTheEntriesWithNoStoredImageBuiltForTheVersion(t *testing.T) {
+	old := upgrade.Image{Name: "orch", SHA256: "a", Version: "v1"}
+	next := upgrade.Image{Name: "orch", SHA256: "b", Version: "v2"}
+	entries := func(sums ...string) []upgrade.Entry {
+		var out []upgrade.Entry
+		for _, s := range sums {
+			out = append(out, upgrade.Entry{Name: "orch", SHA256: s})
+		}
+		return out
+	}
+	tests := map[string]struct {
+		entries []upgrade.Entry
+		stored  []upgrade.Image
+		want    []string
+	}{
+		"no entries":                      {nil, []upgrade.Image{old}, nil},
+		"an entry for the old version":    {entries("a"), []upgrade.Image{old}, []string{"orch"}},
+		"an entry whose image is missing": {entries("a", "b"), []upgrade.Image{old}, []string{"orch"}},
+		"an entry beside the old one":     {entries("a", "b"), []upgrade.Image{old, next}, nil},
+		"another extension's image":       {entries("b"), []upgrade.Image{{Name: "other", SHA256: "b", Version: "v2"}}, []string{"orch"}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, upgrade.MissingExtensions(tt.entries, tt.stored, "v2"))
+		})
+	}
+}
+
+func TestUpgrader_InstallRefusesABundleWhoseVersionHasNoImageForAnExtensionEntryAndTouchesNothing(t *testing.T) {
+	n := newNode(t)
+	u := n.upgrader("v1", func(c *upgrade.Config) {
+		c.Extensions = func() ([]upgrade.Entry, []upgrade.Image, error) {
+			return []upgrade.Entry{{Name: "orch", SHA256: "a"}}, []upgrade.Image{{Name: "orch", SHA256: "a", Version: "v1"}}, nil
+		}
+	})
+	b, sum := bundle(t, "v2", "kernel-B")
+
+	_, err := u.Install(bytes.NewReader(b), sum)
+
+	require.ErrorIs(t, err, upgrade.ErrExtensions)
+	assert.ErrorContains(t, err, "orch")
+	assert.ErrorContains(t, err, "ADR 0055")
+	n.untouched()
+}
+
+func TestUpgrader_InstallStagesABundleWhoseVersionHasItsExtensionImage(t *testing.T) {
+	n := newNode(t)
+	u := n.upgrader("v1", func(c *upgrade.Config) {
+		c.Extensions = func() ([]upgrade.Entry, []upgrade.Image, error) {
+			return []upgrade.Entry{{Name: "orch", SHA256: "a"}, {Name: "orch", SHA256: "b"}},
+				[]upgrade.Image{{Name: "orch", SHA256: "a", Version: "v1"}, {Name: "orch", SHA256: "b", Version: "v2"}}, nil
+		}
+	})
+	b, sum := bundle(t, "v2", "kernel-B")
+
+	_, err := u.Install(bytes.NewReader(b), sum)
+
+	require.NoError(t, err)
 }

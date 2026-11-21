@@ -27,17 +27,19 @@ func (s *Server) postUpgrade(w http.ResponseWriter, r *http.Request) {
 }
 
 // upgradeRefused answers an upgrade that was not staged. A bundle the caller got wrong is 400, one
-// that is too large 413, a Node that cannot take one now 409, and anything else 500 with the
+// that is too large 413, a bundle the Node could not mount its extensions on 422, a Node that cannot take one now 409, and anything else 500 with the
 // reason left to the log. The unread rest of a bad body is read first, within the cap, so the
 // client that is still sending it receives the answer.
 func (s *Server) upgradeRefused(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
-	case errors.Is(err, upgrade.ErrBundle), errors.Is(err, upgrade.ErrTooLarge):
+	case errors.Is(err, upgrade.ErrBundle), errors.Is(err, upgrade.ErrTooLarge), errors.Is(err, upgrade.ErrExtensions):
 		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, upgrade.MaxBundleBytes))
 	}
 	switch {
 	case errors.Is(err, upgrade.ErrBundle):
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
+	case errors.Is(err, upgrade.ErrExtensions):
+		writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: err.Error()})
 	case errors.Is(err, upgrade.ErrTooLarge):
 		writeJSON(w, http.StatusRequestEntityTooLarge, errorBody{Error: err.Error()})
 	case errors.Is(err, upgrade.ErrBusy):
