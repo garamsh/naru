@@ -19,7 +19,7 @@ const newRoot = "/newroot"
 // rootfs, and mvmd's supervisor pivots into a root of its own for every VMM
 // (mvmd daemon/internal/supervisor/root.go), so a service could not start a
 // Machine from the rootfs itself. It must run first, as PID 1, with nothing
-// else mounted.
+// else mounted. It then makes the root shared (shareMount), so that every mount made later is.
 func LeaveRootfs() error {
 	if err := os.MkdirAll(newRoot, 0o755); err != nil {
 		return err
@@ -39,7 +39,21 @@ func LeaveRootfs() error {
 	if err := syscall.Chroot("."); err != nil {
 		return fmt.Errorf("chroot into the new root: %w", err)
 	}
-	return os.Chdir("/")
+	if err := os.Chdir("/"); err != nil {
+		return err
+	}
+	return shareMount("/")
+}
+
+// shareMount makes the mount at dir and every mount under it shared, so that a container's
+// Bidirectional volume takes its mounts to the kubelet and back (ADR 0090). mvmd's supervisor makes
+// its own namespace private before its pivot_root (supervisor/root.go buildRoot), which a shared
+// mount would refuse.
+func shareMount(dir string) error {
+	if err := syscall.Mount("", dir, "", syscall.MS_SHARED|syscall.MS_REC, ""); err != nil {
+		return fmt.Errorf("make %s shared: %w", dir, err)
+	}
+	return nil
 }
 
 // moveContents copies each entry of the directory from into the directory to

@@ -44,7 +44,20 @@ type KubeSpec struct {
 	// which `naructl token create --kubernetes` adds a Late worker's token live (ADR 0081); the
 	// authority's directory stays until Stop.
 	Late []int
+	// VolumeDisk, when "storage" or "block", gives every Node a blank extra disk of KubeVolumeDiskBytes
+	// with the serial KubeVolumeSerial, which the Node's configuration makes the disk of the local
+	// volumes (naru-local: XFS, mounted by init, the first storage disk) or offers whole as a block
+	// volume (naru-block), so that the volume add-on has a disk to serve (ADR 0083).
+	VolumeDisk string
 }
+
+// The extra disk of a cluster that serves volumes (KubeSpec.VolumeDisk).
+const (
+	KubeVolumeDiskBytes = 1 << 30
+	KubeVolumeSerial    = "NARUVOL0001"
+	VolumeDiskStorage   = "storage"
+	VolumeDiskBlock     = "block"
+)
 
 // KubeCluster is the two Nodes and the administrator's kubeconfig, which dials the control-plane
 // Node's API server through the forward on the test host.
@@ -156,6 +169,9 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 // Node API, when the cluster has one.
 func (c *KubeCluster) startNode(i, apiPort int) error {
 	cfg := Config{Name: fmt.Sprintf("node-%d", i), Index: i, Total: c.total, ControlPlane: i == 1, Inputs: c.spec.Inputs, MemoryMiB: KubeNodeMemoryMiB}
+	if c.spec.VolumeDisk != "" {
+		cfg.ExtraDisk, cfg.VirtioDisks, cfg.ExtraDiskSerial = KubeVolumeDiskBytes, true, KubeVolumeSerial
+	}
 	if i == 1 {
 		cfg.HostPort = c.hostPort // only the control-plane Node has the second NIC
 		cfg.APIHostPort = apiPort
@@ -218,6 +234,15 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	k.Token = slices.Contains(spec.Late, c.Index)
 	if c.hostNIC() {
 		k.ExtraNIC = c.HostMAC() + "=" + HostNICPrefix
+	}
+	switch spec.VolumeDisk {
+	case "":
+	case VolumeDiskStorage:
+		k.Storage = []string{"data1=serial:" + KubeVolumeSerial}
+	case VolumeDiskBlock:
+		k.BlockSerials = []string{KubeVolumeSerial}
+	default:
+		return nil, nil, fmt.Errorf("VolumeDisk is %q, not %q or %q", spec.VolumeDisk, VolumeDiskStorage, VolumeDiskBlock)
 	}
 	if err := spec.Naructl.GenKubernetesNode(k); err != nil {
 		return nil, nil, err

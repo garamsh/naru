@@ -123,7 +123,7 @@ in_builder = $(BUILDER) make $(1) VERSION='$(VERSION)' TEST_ROOT='$(call contain
 # into $(IMAGE) (image/pkgs/layout.sh): bzImage (the kernel with the initramfs inside it, ADR 0020;
 # bzImage.bare is the kernel before that), initramfs.cpio.gz, node-initrd.cpio.gz, boot-sets.json,
 # inputs.env (the Firecracker pin the tests read), guest/ (guest.json and what it names, which the
-# initramfs carries of the guests), extensions/ (the naru-orch system extension, ADR 0055), and the
+# initramfs carries of the guests), extensions/ (the naru-orch and naru-volumes system extensions, ADR 0055), and the
 # directories of programs the tests and the release take: gaon/, etcd/, k8s/ (Kubernetes, containerd,
 # runc and the CNI plugins) and regtools/ (the credential helpers, ADR 0026, and the root bundle).
 GUEST := $(IMAGE)/guest

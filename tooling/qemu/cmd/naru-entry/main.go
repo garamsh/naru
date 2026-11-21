@@ -12,6 +12,11 @@
 //	naru-entry dns <address> <name>=<ip>...
 //	                                 answer an A query for each name with its address on UDP <address>, as the
 //	                                 resolver the Nodes' network-config names for the DNS test
+//	naru-entry volume <dir> <text>   write <text> to <dir>/data, or when that file is there read it, print which and what, and stay
+//	                                 running (the volume test, ADR 0083)
+//	naru-entry fill <dir>            write 1 MiB blocks to <dir>/fill until the write fails, print the error and how much
+//	                                 was written, and stay running (the quota of a local volume)
+//	naru-entry block <device>        write a pattern to the block device, read it back, print the result, and stay running
 //	naru-entry idle                  print one line and stay running: the command of the sandbox image
 //	                                 (fixture.WriteRegistry), which a Pod's sandbox container runs
 package main
@@ -55,6 +60,12 @@ func main() {
 		}
 	case len(os.Args) > 3 && os.Args[1] == "dns":
 		answerDNS(os.Args[2], os.Args[3:])
+	case len(os.Args) == 4 && os.Args[1] == "volume":
+		volume(os.Args[2], os.Args[3])
+	case len(os.Args) == 3 && os.Args[1] == "fill":
+		fill(os.Args[2])
+	case len(os.Args) == 3 && os.Args[1] == "block":
+		block(os.Args[2])
 	}
 	time.Sleep(time.Hour)
 }
