@@ -44,7 +44,7 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := hostapi.Host{
-		HostID: s.deps.HostID, Region: info.Region, Labels: info.Labels,
+		HostID: s.deps.HostID, LANInterface: s.deps.LANInterface, Region: info.Region, Labels: info.Labels,
 		Capacity: hostapi.Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateTotalBytes},
 		Mvmd:     hostapi.MvmdInfo{Version: rt.APIVersion, Driver: rt.Driver, Kernels: rt.Kernels},
 	}

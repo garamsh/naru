@@ -54,6 +54,11 @@ type Config struct {
 	// Egress is the interface a network's traffic leaves the cluster by. Empty means a network has
 	// no egress.
 	Egress string
+	// LAN is the interface the host announces exposed addresses on; empty means the host exposes
+	// none.
+	LAN string
+	// Exposures are the leases the host holds; the ruleset forwards their ports.
+	Exposures []Exposure
 }
 
 func sortedNetworks(in []Network) []Network {
