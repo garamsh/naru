@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Errors a Manager answers; the API maps them to statuses.
@@ -52,6 +53,8 @@ type Manager struct {
 	Base   Config // Management, TapPrefix and Egress, which do not change
 	// State is the file the state is kept in; empty keeps it in memory only.
 	State string
+	// Now is the clock the leases' deadlines are read against; nil is time.Now.
+	Now func() time.Time
 
 	mu  sync.Mutex
 	c   Config
@@ -63,6 +66,8 @@ type state struct {
 	Networks []Network `json:"networks"`
 	Members  []Member  `json:"members"`
 	Peers    []Peer    `json:"peers"`
+	// Exposures are the leases with their deadlines, which a restart restores unless they ran out.
+	Exposures []Exposure `json:"exposures,omitempty"`
 }
 
 // Load reads State, when it exists, and applies it, so the host is closed by the ruleset before
@@ -80,6 +85,11 @@ func (m *Manager) Load(ctx context.Context) error {
 				return fmt.Errorf("%s: %w", m.State, err)
 			}
 			next.Networks, next.Members, next.Peers = s.Networks, s.Members, s.Peers
+			for _, e := range s.Exposures {
+				if !m.expired(e) {
+					next.Exposures = append(next.Exposures, e)
+				}
+			}
 		case !errors.Is(err, os.ErrNotExist):
 			return err
 		}
@@ -154,10 +164,15 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	next := m.c
-	next.Networks, next.Members = nil, nil
+	next.Networks, next.Members, next.Exposures = nil, nil, nil
 	for _, o := range m.c.Networks {
 		if o.Name != name {
 			next.Networks = append(next.Networks, o)
+		}
+	}
+	for _, x := range m.c.Exposures {
+		if x.Network != name {
+			next.Exposures = append(next.Exposures, x)
 		}
 	}
 	for _, x := range m.c.Members {
@@ -272,7 +287,7 @@ func (m *Manager) run(ctx context.Context, next Config) error {
 }
 
 func (m *Manager) withBase(c Config) Config {
-	c.Management, c.TapPrefix, c.Egress = m.Base.Management, m.Base.TapPrefix, m.Base.Egress
+	c.Management, c.TapPrefix, c.Egress, c.LAN = m.Base.Management, m.Base.TapPrefix, m.Base.Egress, m.Base.LAN
 	return c
 }
 
@@ -310,22 +325,53 @@ func (m *Manager) apply(ctx context.Context, next Config) error {
 	// Orch declares its networks and peers again every few seconds. A declaration that changes nothing
 	// replaces nothing: the table is replaced whole, which would reset the counters of its drop rules.
 	if m.ran && stateOf(next) == stateOf(prev) {
-		return nil
+		// A renewal changes a deadline, which no rule holds; the file does.
+		if sameDeadlines(next.Exposures, prev.Exposures) {
+			return nil
+		}
+		m.c.Exposures = next.Exposures
+		return m.save()
 	}
 	if err := m.run(ctx, next); err != nil {
 		return err
 	}
+	if err := m.save(); err != nil {
+		return m.undo(ctx, prev, err)
+	}
+	return nil
+}
+
+// save writes the state to State.
+func (m *Manager) save() error {
 	if m.State == "" {
 		return nil
 	}
-	raw, err := json.Marshal(state{Networks: sortedNetworks(m.c.Networks), Members: m.c.Members, Peers: sortedPeers(m.c.Peers)})
+	raw, err := json.Marshal(state{Networks: sortedNetworks(m.c.Networks), Members: m.c.Members, Peers: sortedPeers(m.c.Peers), Exposures: sortedExposures(m.c.Exposures)})
 	if err == nil {
 		err = writeFile(m.State, raw)
 	}
 	if err != nil {
-		return m.undo(ctx, prev, fmt.Errorf("write %s: %w", m.State, err))
+		return fmt.Errorf("write %s: %w", m.State, err)
 	}
 	return nil
+}
+
+// sameDeadlines reports whether two lists of exposures that make the same rules also hold the same
+// deadlines.
+func sameDeadlines(a, b []Exposure) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	at := map[netip.Addr]time.Time{}
+	for _, e := range a {
+		at[e.Address] = e.Deadline
+	}
+	for _, e := range b {
+		if d, ok := at[e.Address]; !ok || !d.Equal(e.Deadline) {
+			return false
+		}
+	}
+	return true
 }
 
 // stateOf is the state of c as a canonical string: equal for two configurations that make the same
@@ -340,6 +386,10 @@ func stateOf(c Config) string {
 	}
 	members := append([]Member(nil), c.Members...)
 	sort.Slice(members, func(i, j int) bool { return members[i].Address.Less(members[j].Address) })
-	raw, _ := json.Marshal(state{Networks: nets, Members: members, Peers: peers})
+	exposures := sortedExposures(c.Exposures)
+	for i := range exposures {
+		exposures[i].Deadline = time.Time{}
+	}
+	raw, _ := json.Marshal(state{Networks: nets, Members: members, Peers: peers, Exposures: exposures})
 	return string(raw)
 }

@@ -17,6 +17,7 @@ type networkConfig struct {
 	tunnel, tunnelKey             string
 	tunnelPort                    int
 	state                         string
+	lan                           string
 }
 
 // networkManager builds the manager of the virtual networks from the flags, makes the tunnel
@@ -29,7 +30,7 @@ func networkManager(ctx context.Context, c networkConfig) (*network.Manager, err
 	}
 	m := &network.Manager{
 		Run: network.ExecRunner{}, State: c.state,
-		Base: network.Config{Management: mgmt, TapPrefix: c.tapPrefix, Egress: c.egress},
+		Base: network.Config{Management: mgmt, TapPrefix: c.tapPrefix, Egress: c.egress, LAN: c.lan},
 	}
 	if c.tunnel != "" {
 		if m.Tunnel, err = network.NewWireGuard(c.tunnel, c.tunnelKey, c.tunnelPort); err != nil {
@@ -77,4 +78,20 @@ func machineAddresses(rt mvmd.Runtime) func(context.Context) ([]netip.Addr, erro
 		}
 		return out, nil
 	}
+}
+
+// startExposer brings up the host's side of the exposures: it takes off the LAN interface the
+// addresses an earlier run left that no lease holds, brings up those that do, and then drops the
+// leases that run out and announces the addresses every second. It runs once before the API serves.
+func startExposer(ctx context.Context, m *network.Manager, lan string, log *slog.Logger) (*network.Exposer, error) {
+	link, err := network.NewLAN(lan)
+	if err != nil {
+		return nil, fmt.Errorf("--lan-interface: %w", err)
+	}
+	x := &network.Exposer{Manager: m, Link: link, Log: log}
+	if err := x.Restore(ctx); err != nil {
+		return nil, err
+	}
+	go x.Run(ctx)
+	return x, nil
 }
