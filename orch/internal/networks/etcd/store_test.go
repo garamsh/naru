@@ -30,8 +30,8 @@ func TestNetworksRoundTripThroughTheStore(t *testing.T) {
 	require.Empty(t, none)
 
 	lab := orchapi.Network{Name: "lab", Prefix: "10.9.0.0/24", APIEndpoint: "10.9.0.2"}
-	require.NoError(t, s.Put(t.Context(), lab, nil))
-	require.NoError(t, s.Put(t.Context(), orchapi.Network{Name: "edge", Prefix: "10.8.0.0/24"}, nil))
+	require.NoError(t, s.Put(t.Context(), lab, nil, nil))
+	require.NoError(t, s.Put(t.Context(), orchapi.Network{Name: "edge", Prefix: "10.8.0.0/24"}, nil, nil))
 	got, err := s.Get(t.Context(), "lab")
 	require.NoError(t, err)
 	require.Equal(t, lab, got)
@@ -42,7 +42,7 @@ func TestNetworksRoundTripThroughTheStore(t *testing.T) {
 
 	old := lab
 	lab.Prefix = "10.7.0.0/24"
-	require.NoError(t, s.Put(t.Context(), lab, &old))
+	require.NoError(t, s.Put(t.Context(), lab, &old, nil))
 	got, err = s.Get(t.Context(), "lab")
 	require.NoError(t, err)
 	require.Equal(t, "10.7.0.0/24", got.Prefix, "a put replaces")
@@ -64,7 +64,7 @@ func TestOnlyOneOfManyCreatesOfANetworkWins(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := s.Put(t.Context(), orchapi.Network{Name: "lab", Prefix: fmt.Sprintf("10.%d.0.0/24", i)}, nil)
+			err := s.Put(t.Context(), orchapi.Network{Name: "lab", Prefix: fmt.Sprintf("10.%d.0.0/24", i)}, nil, nil)
 			switch {
 			case err == nil:
 				wins.Add(1)
@@ -83,12 +83,12 @@ func TestOnlyOneOfManyCreatesOfANetworkWins(t *testing.T) {
 func TestAReplaceOfANetworkThatChangedMeanwhileIsRefused(t *testing.T) {
 	s := newStore(t)
 	a := orchapi.Network{Name: "lab", Prefix: "10.9.0.0/24"}
-	require.NoError(t, s.Put(t.Context(), a, nil))
+	require.NoError(t, s.Put(t.Context(), a, nil, nil))
 	b := a
 	b.Prefix = "10.8.0.0/24"
-	require.NoError(t, s.Put(t.Context(), b, &a))
+	require.NoError(t, s.Put(t.Context(), b, &a, nil))
 	c := a
 	c.Prefix = "10.7.0.0/24"
-	require.ErrorIs(t, s.Put(t.Context(), c, &a), inventory.ErrConflict, "a was read before b replaced it")
-	require.ErrorIs(t, s.Put(t.Context(), c, nil), inventory.ErrConflict, "the network exists")
+	require.ErrorIs(t, s.Put(t.Context(), c, &a, nil), inventory.ErrConflict, "a was read before b replaced it")
+	require.ErrorIs(t, s.Put(t.Context(), c, nil, nil), inventory.ErrConflict, "the network exists")
 }

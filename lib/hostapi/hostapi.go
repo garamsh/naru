@@ -67,6 +67,9 @@ type Host struct {
 	Capacity Resources         `json:"capacity"`
 	Free     Resources         `json:"free"`
 	Mvmd     MvmdInfo          `json:"mvmd"`
+	// LANInterface is the interface the host announces exposed addresses on; empty when it
+	// announces none (ADR 0085 item 5).
+	LANInterface string `json:"lanInterface,omitempty"`
 }
 
 // DiskSpec is a disk of a microVM, created with it and deleted with it.

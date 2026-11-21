@@ -369,3 +369,25 @@ func TestRecoveryKey(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+func TestExposerNetwork(t *testing.T) {
+	n, ok := identity.ExposerNetwork(identity.Identity{Role: identity.RoleExposer, Subject: "exposer.lab"})
+	require.True(t, ok)
+	assert.Equal(t, "lab", n)
+	for _, who := range []identity.Identity{
+		{Role: identity.RoleExposer, Subject: "exposer."},
+		{Role: identity.RoleExposer, Subject: "lab"},
+		{Role: identity.RoleOperator, Subject: "exposer.lab"},
+		{Role: identity.RoleExposer, Subject: "exposer.a/b"},
+		{Role: identity.RoleExposer, Subject: "exposer.Lab"},
+		{Role: identity.RoleExposer, Subject: "exposer.-lab"},
+	} {
+		_, ok := identity.ExposerNetwork(who)
+		assert.False(t, ok, "%+v", who)
+	}
+	assert.True(t, identity.RoleExposer.Valid())
+	cert, _ := newCA(t).issue(t, "exposer.lab", 10, now.Add(time.Hour), "exposer")
+	role, err := identity.RoleOf(cert)
+	require.NoError(t, err)
+	assert.Equal(t, identity.RoleExposer, role)
+}

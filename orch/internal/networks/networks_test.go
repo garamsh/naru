@@ -16,7 +16,12 @@ import (
 
 type store struct{ nets map[string]orchapi.Network }
 
-func (s *store) Put(_ context.Context, n orchapi.Network, _ *orchapi.Network) error {
+func (s *store) Put(_ context.Context, n orchapi.Network, _ *orchapi.Network, check func() error) error {
+	if check != nil {
+		if err := check(); err != nil {
+			return err
+		}
+	}
 	s.nets[n.Name] = n
 	return nil
 }
@@ -60,10 +65,18 @@ type clock struct{}
 
 func (clock) Now() time.Time { return time.Unix(7000, 0).UTC() }
 
+type poolList []orchapi.AddressPool
+
+func (p poolList) ListPools(context.Context) ([]orchapi.AddressPool, error) { return p, nil }
+
 func newSvc(gs ...groups.GroupSpec) (*networks.Service, *store, *log) {
+	return newSvcWithPools(poolList{}, gs...)
+}
+
+func newSvcWithPools(p poolList, gs ...groups.GroupSpec) (*networks.Service, *store, *log) {
 	st := &store{nets: map[string]orchapi.Network{}}
 	l := &log{}
-	return networks.New(st, groupList(gs), l, clock{}), st, l
+	return networks.New(st, groupList(gs), p, l, clock{}), st, l
 }
 
 func TestApplyStoresAndLogsAValidNetwork(t *testing.T) {
@@ -145,4 +158,14 @@ func TestAGroupsNetworkKeepsItsPrefixAndCannotBeDeleted(t *testing.T) {
 	require.Greater(t, len(l.events), events)
 
 	require.ErrorIs(t, svc.Delete(t.Context(), "alice", "free"), inventory.ErrNotFound)
+}
+
+func TestAPrefixMayNotOverlapAnAddressPool(t *testing.T) {
+	svc, _, _ := newSvcWithPools(poolList{{Name: "lan", CIDRs: []string{"192.168.0.80/29", "10.20.0.0/24"}, Networks: []string{"a"}}})
+	_, err := svc.Apply(t.Context(), "alice", "lab", orchapi.NetworkSpec{Prefix: "10.20.0.0/16"})
+	require.ErrorIs(t, err, inventory.ErrConflict, "a prefix that contains the pool's CIDR")
+	_, err = svc.Apply(t.Context(), "alice", "lab", orchapi.NetworkSpec{Prefix: "192.168.0.0/24"})
+	require.ErrorIs(t, err, inventory.ErrConflict, "a prefix inside which the pool lies")
+	_, err = svc.Apply(t.Context(), "alice", "lab", orchapi.NetworkSpec{Prefix: "10.9.0.0/24"})
+	require.NoError(t, err, "control: a prefix clear of the pool")
 }
