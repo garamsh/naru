@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
@@ -55,6 +54,10 @@ type KubeSpec struct {
 	// keeps the authority's directory until Stop, as CADir, so that a test reads the signing key.
 	ServiceAccountIssuers   []string
 	ServiceAccountAlgorithm string
+	// RotateServiceAccountKey makes gen kubernetes rotate the ServiceAccount key once before the Nodes
+	// boot, and keeps the key it replaced as <CADir>/sa.key.previous, so that a test signs as the old
+	// key. It needs ServiceAccountIssuers.
+	RotateServiceAccountKey bool
 }
 
 // The extra disk of a cluster that serves volumes (KubeSpec.VolumeDisk).
@@ -87,7 +90,7 @@ func KubePodPrefix(index int) string { return fmt.Sprintf("10.64.%d.0/24", index
 
 // StartKubernetes boots node-1 as the control-plane Node and node-2 as a worker, and returns them as
 // soon as QEMU has started each. The caller must Stop it.
-func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
+func StartKubernetes(spec KubeSpec) (cluster *KubeCluster, err error) {
 	if spec.Inputs.Image.Digest == "" {
 		return nil, errors.New("a Kubernetes cluster needs the test image, which its Pods run")
 	}
@@ -95,6 +98,9 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 		if i < 3 {
 			return nil, errors.New("Late numbers workers after node-2")
 		}
+	}
+	if spec.RotateServiceAccountKey && len(spec.ServiceAccountIssuers) == 0 {
+		return nil, errors.New("RotateServiceAccountKey needs ServiceAccountIssuers, whose key id naructl prints")
 	}
 	total := 2 + len(spec.Late)
 	port, err := freePort()
@@ -106,31 +112,40 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 		return nil, err
 	}
 	// The CA's directory goes once the Nodes' user-data is written: it holds the authority's key, the
-	// ServiceAccount key and admin.conf. The administrator keeps a copy of admin.conf.
+	// ServiceAccount key and admin.conf. The administrator keeps a copy of admin.conf. It stays until
+	// Stop for a cluster the test reads it of, and goes at once when StartKubernetes fails.
 	keep := len(spec.Late) > 0 || len(spec.ServiceAccountIssuers) > 0
-	if !keep {
-		defer func() { _ = os.RemoveAll(caDir) }()
-	}
+	defer func() {
+		if !keep || err != nil {
+			_ = os.RemoveAll(caDir)
+		}
+	}()
 	if err := spec.Naructl.GenCA(caDir); err != nil {
 		return nil, err
 	}
 	apiServer := QEMUNetwork(1, total).IP
-	if len(spec.ServiceAccountIssuers) > 0 {
-		args := []string{"gen", "kubernetes", "--ca-dir", caDir, "--endpoint", apiServer, "--admin-address", "127.0.0.1:" + strconv.Itoa(port)}
-		for _, name := range spec.DisableAddons {
-			args = append(args, "--disable-addon", name)
-		}
-		for _, issuer := range spec.ServiceAccountIssuers {
-			args = append(args, "--service-account-issuer", issuer)
-		}
-		if spec.ServiceAccountAlgorithm != "" {
-			args = append(args, "--service-account-algorithm", spec.ServiceAccountAlgorithm)
-		}
-		if r := spec.Naructl.Run(args...); r.Err != nil {
-			return nil, fmt.Errorf("naructl %s: %w: %s", strings.Join(args, " "), r.Err, r.Stderr)
-		}
-	} else if err := spec.Naructl.GenKubernetes(caDir, apiServer, "127.0.0.1:"+strconv.Itoa(port), spec.DisableAddons...); err != nil {
+	gen := naructl.KubernetesCluster{
+		CADir: caDir, Endpoint: apiServer, AdminAddress: "127.0.0.1:" + strconv.Itoa(port), DisableAddons: spec.DisableAddons,
+		ServiceAccountIssuers: spec.ServiceAccountIssuers, ServiceAccountAlgorithm: spec.ServiceAccountAlgorithm,
+	}
+	if err := spec.Naructl.GenKubernetesCluster(gen); err != nil {
 		return nil, err
+	}
+	if spec.RotateServiceAccountKey {
+		kid, err := spec.Naructl.SigningKeyID(caDir)
+		if err != nil {
+			return nil, err
+		}
+		key, err := os.ReadFile(filepath.Join(caDir, "sa.key"))
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(caDir, "sa.key.previous"), key, 0o600); err != nil {
+			return nil, err
+		}
+		if err := spec.Naructl.GenKubernetesCluster(naructl.KubernetesCluster{CADir: caDir, Endpoint: apiServer, AdminAddress: gen.AdminAddress, DisableAddons: spec.DisableAddons, RotateServiceAccountKey: kid}); err != nil {
+			return nil, err
+		}
 	}
 	var apiPort int
 	var apiAdmin string

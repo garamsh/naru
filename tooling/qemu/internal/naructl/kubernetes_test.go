@@ -2,6 +2,7 @@ package naructl_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -52,4 +53,28 @@ func TestGenKubernetes_NamesTheAdminAddressOnlyWhenThereIsOne(t *testing.T) {
 
 	require.NoError(t, tool.GenKubernetes("/ca", "10.78.0.1", ""))
 	assert.Equal(t, "gen kubernetes --ca-dir /ca --endpoint 10.78.0.1", argsOf(t, out))
+}
+
+func TestGenKubernetesCluster_PassesTheServiceAccountSettingsAsTheirFlagsAndNothingElseWhenUnset(t *testing.T) {
+	tool, out := recorder(t)
+
+	require.NoError(t, tool.GenKubernetesCluster(naructl.KubernetesCluster{
+		CADir: "/ca", Endpoint: "10.78.0.1", ServiceAccountIssuers: []string{"https://a.example.com", "https://b.example.com"},
+		ServiceAccountAlgorithm: "ES256", RotateServiceAccountKey: "kid1",
+	}))
+
+	assert.Equal(t, "gen kubernetes --ca-dir /ca --endpoint 10.78.0.1 --service-account-issuer https://a.example.com --service-account-issuer https://b.example.com --service-account-algorithm ES256 --rotate-service-account-key kid1", argsOf(t, out))
+}
+
+func TestSigningKeyID_IsWhatGenKubernetesJWKSPrints(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "naructl")
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\necho 'an other key id is decoy'\necho 'naructl: the signing ServiceAccount key id is abc-DEF_1 (--rotate-service-account-key takes it)'\n"), 0o755))
+
+	kid, err := naructl.Tool{Bin: bin}.SigningKeyID("/ca")
+
+	require.NoError(t, err)
+	assert.Equal(t, "abc-DEF_1", kid)
+	_, err = naructl.Tool{Bin: "/bin/true"}.SigningKeyID("/ca")
+	assert.ErrorContains(t, err, "no signing key id")
 }

@@ -623,7 +623,11 @@ func TestKubernetesUserData_AnIssuerThatNamesTheInClusterOneIsNotRepeated(t *tes
 }
 
 func TestKubernetesUserData_RefusesAnIssuerOpenIDConnectDoesNotAllow(t *testing.T) {
-	for _, bad := range []string{"http://oidc.example.com", "https://oidc.example.com?a=b", "https://oidc.example.com#f", "https://oidc.example.com/", "oidc.example.com", "https://"} {
+	for _, bad := range []string{"http://oidc.example.com", "https://oidc.example.com?a=b", "https://oidc.example.com#f", "https://oidc.example.com/", "oidc.example.com", "https://",
+		"https://oidc.example.com/..", "https://oidc.example.com/a/../b", "https://oidc.example.com/./a", "https://oidc.example.com//a",
+		"https://oidc.example.com/%2e%2e/a", "https://oidc.example.com/%2E/a", "https://u:p@oidc.example.com", "https://@oidc.example.com",
+		"https://oidc.example.com/a b", "https://oidc.example.com/a\nb", "https://oidc.example.com /a", "HTTPS://oidc.example.com", "Https://oidc.example.com",
+		"https://oidc.example.com/a\\b", "https://oidc.example.com\\@evil.example.com"} {
 		n := kubeNode(t, true, func(n *layout.Node) { n.Kube.ServiceAccountIssuers = []string{bad} })
 		_, err := n.UserData()
 		assert.ErrorContains(t, err, "ServiceAccount issuer", bad)
@@ -636,6 +640,11 @@ func TestKubernetesUserData_RefusesAnIssuerOpenIDConnectDoesNotAllow(t *testing.
 	ok := kubeNode(t, true, func(n *layout.Node) { n.Kube.ServiceAccountIssuers = []string{"https://a.example.com/path"} })
 	_, err = ok.UserData()
 	assert.NoError(t, err, "control: a valid issuer with a path")
+	for _, good := range []string{"https://oidc.example.com", "https://oidc.example.com:8443/v1.2/a_b-c~d", "https://OIDC.example.com/Tenant"} {
+		n := kubeNode(t, true, func(n *layout.Node) { n.Kube.ServiceAccountIssuers = []string{good} })
+		_, err := n.UserData()
+		assert.NoError(t, err, "control: "+good)
+	}
 }
 
 func TestKubernetesUserData_AnAppliedKeyChangeRestartsTheServicesThatReadTheKeys(t *testing.T) {

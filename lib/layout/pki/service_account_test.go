@@ -3,6 +3,8 @@ package pki_test
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -145,6 +147,46 @@ func TestPublicKeys_RefusesAWeakOrUnsupportedKeyAndAnEmptyFile(t *testing.T) {
 	_, err := pki.PublicKeys(nil)
 	assert.Error(t, err)
 	_, err = pki.PublicKeys([]byte("pub"))
+	assert.Error(t, err)
+
+	weakRSA, err := rsa.GenerateKey(rand.Reader, 1024)
+	require.NoError(t, err)
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	require.NoError(t, err)
+	_, err = pki.PublicKeys(pubPEM(t, &weakRSA.PublicKey))
+	assert.ErrorContains(t, err, "1024 bits")
+	_, err = pki.PublicKeys(pubPEM(t, &p384.PublicKey))
+	assert.ErrorContains(t, err, "RSA or ECDSA P-256")
+	ok, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	p256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	_, err = pki.PublicKeys(pubPEM(t, &ok.PublicKey))
+	assert.NoError(t, err, "control: RSA 2048")
+	_, err = pki.PublicKeys(pubPEM(t, &p256.PublicKey))
+	assert.NoError(t, err, "control: P-256")
+}
+
+func pubPEM(t *testing.T, pub crypto.PublicKey) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+}
+
+func TestSigningPublicKey_IsTheSigningKeysPublicKeyAndRefusesAWeakOrForeignKey(t *testing.T) {
+	for _, alg := range []pki.Algorithm{pki.RS256, pki.ES256} {
+		key, pub, err := pki.ServiceAccountKey(alg)
+		require.NoError(t, err)
+		got, err := pki.SigningPublicKey(key)
+		require.NoError(t, err)
+		assert.Equal(t, pub, got, string(alg))
+	}
+	weak, err := rsa.GenerateKey(rand.Reader, 1024)
+	require.NoError(t, err)
+	_, err = pki.SigningPublicKey(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(weak)}))
+	assert.ErrorContains(t, err, "1024 bits")
+	_, err = pki.SigningPublicKey([]byte("key"))
 	assert.Error(t, err)
 }
 

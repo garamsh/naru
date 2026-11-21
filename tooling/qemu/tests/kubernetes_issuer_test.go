@@ -142,6 +142,16 @@ func resign(t *testing.T, token string, signer crypto.Signer, iss string) string
 	t.Helper()
 	header, claims := jwtParts(t, token)
 	claims["iss"] = iss
+	// The header names the signer's own key, as the API server's would.
+	der, err := x509.MarshalPKIXPublicKey(signer.Public())
+	require.NoError(t, err)
+	sum := sha256.Sum256(der)
+	header["kid"] = b64(sum[:])
+	if _, ok := signer.(*rsa.PrivateKey); ok {
+		header["alg"] = "RS256"
+	} else {
+		header["alg"] = "ES256"
+	}
 	rawHeader, err := json.Marshal(header)
 	require.NoError(t, err)
 	rawClaims, err := json.Marshal(claims)
@@ -217,3 +227,51 @@ const (
 	errBadSignature = testError("the signature does not verify")
 	errNoKey        = testError("the key set has no key of the token's kid")
 )
+
+// TestNode_ATokenOfTheKeyBeforeARotationStillVerifiesAndOneOfTheNewKeyDoes starts a cluster whose
+// ServiceAccount key was rotated once before it booted (ADR 0087): sa.pub holds the new key and the
+// old one. A token signed by the old key is accepted by the API server and verifies against naructl's key
+// set, as does the token the API server issues now, and one signed by a key the cluster never had is
+// refused.
+func TestNode_ATokenOfTheKeyBeforeARotationStillVerifiesAndOneOfTheNewKeyDoes(t *testing.T) {
+	_, err := exec.LookPath("kubectl")
+	require.NoError(t, err, "kubectl is a precondition of make test-qemu")
+	spec := node.KubeSpec{
+		Disk: filepath.Join(os.Getenv("NARU_IMAGE_DIR"), "naru.img"), Dir: t.TempDir(), Inputs: inputs, Naructl: tool,
+		ServiceAccountIssuers: []string{testIssuer}, RotateServiceAccountKey: true,
+	}
+	c, err := node.StartKubernetes(spec)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		c.Stop()
+		for _, nd := range c.Nodes {
+			t.Logf("console of %s:\n%s", nd.Name, nd.Console())
+		}
+	})
+	require.Eventually(t, func() bool { return len(readyNodes(t, c)) == 2 }, kubeTimeout, 3*time.Second, "node-1 and node-2 are Ready")
+
+	var token string
+	require.Eventually(t, func() bool {
+		out, err := kubectl(t, c, "", "create", "token", "default", "-n", "default")
+		token = out
+		return err == nil && strings.Count(out, ".") == 2
+	}, kubeTimeout, 3*time.Second, "the API server issues a token")
+	out := t.TempDir()
+	res := tool.Run("gen", "kubernetes-jwks", "--ca-dir", c.CADir, "--out-dir", out)
+	require.NoError(t, res.Err, res.Stderr)
+	set, err := os.ReadFile(filepath.Join(out, "naru", "openid", "v1", "jwks"))
+	require.NoError(t, err)
+	var keys struct{ Keys []json.RawMessage }
+	require.NoError(t, json.Unmarshal(set, &keys))
+	assert.Len(t, keys.Keys, 2, "the key set holds the new key and the old one")
+
+	old := signingKey(t, filepath.Join(c.CADir, "sa.key.previous"))
+	oldToken := resign(t, token, old, testIssuer)
+	assert.NoError(t, verifyAgainstJWKS(token, set), "the new key's token verifies against the key set")
+	assert.NoError(t, verifyAgainstJWKS(oldToken, set), "the old key's token verifies against the key set")
+	assert.True(t, reviewed(t, c, token), "the API server accepts the new key's token")
+	assert.True(t, reviewed(t, c, oldToken), "the API server accepts the token the old key signed")
+	stranger, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	assert.False(t, reviewed(t, c, resign(t, token, stranger, testIssuer)), "control: a key the cluster never had is refused")
+}

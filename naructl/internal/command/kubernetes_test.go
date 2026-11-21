@@ -239,6 +239,16 @@ func TestGenKubernetes_AKeyThereIsKeptAndANamedAlgorithmThatDiffersIsRefusedUnle
 	assert.Equal(t, before, still, "the refusal changed nothing")
 }
 
+// signingKid is the key id of the key that signs, from sa.key.
+func signingKid(t *testing.T, dep deployment) string {
+	t.Helper()
+	pub, err := pki.SigningPublicKey(readFile(t, filepath.Join(dep.ca, "sa.key")))
+	require.NoError(t, err)
+	kid, err := pki.SigningKeyID(pub)
+	require.NoError(t, err)
+	return kid
+}
+
 func TestGenKubernetes_RotatingMakesANewSigningKeyAndKeepsOnlyThePublicKeyOfTheOneBefore(t *testing.T) {
 	dep := newDeployment(t)
 	_, err := genKubernetesWith(t, dep, "--service-account-algorithm", "ES256")
@@ -246,7 +256,7 @@ func TestGenKubernetes_RotatingMakesANewSigningKeyAndKeepsOnlyThePublicKeyOfTheO
 	oldKey, _ := os.ReadFile(filepath.Join(dep.ca, "sa.key"))
 	oldPub, _ := os.ReadFile(filepath.Join(dep.ca, "sa.pub"))
 
-	_, err = genKubernetesWith(t, dep, "--rotate-service-account-key", "--service-account-algorithm", "RS256")
+	_, err = genKubernetesWith(t, dep, "--rotate-service-account-key", signingKid(t, dep), "--service-account-algorithm", "RS256")
 	require.NoError(t, err)
 
 	newKey, _ := os.ReadFile(filepath.Join(dep.ca, "sa.key"))
@@ -261,12 +271,59 @@ func TestGenKubernetes_RotatingMakesANewSigningKeyAndKeepsOnlyThePublicKeyOfTheO
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 
-	_, err = genKubernetesWith(t, dep, "--rotate-service-account-key")
+	_, err = genKubernetesWith(t, dep, "--rotate-service-account-key", signingKid(t, dep))
 	require.NoError(t, err)
 	keys, err = pki.PublicKeys(readFile(t, filepath.Join(dep.ca, "sa.pub")))
 	require.NoError(t, err)
 	assert.Len(t, keys, 2, "a second rotation drops the first key")
 	assert.NotContains(t, string(readFile(t, filepath.Join(dep.ca, "sa.pub"))), string(oldPub))
+	assert.Equal(t, pki.RS256, saAlgorithm(t, dep.ca), "a rotation that names no algorithm keeps the cluster's")
+}
+
+func TestGenKubernetes_ARotationRepeatedWithTheSameKeyIdIsRefusedAndChangesNothing(t *testing.T) {
+	dep := newDeployment(t)
+	dep.kubernetes(t)
+	kid := signingKid(t, dep)
+	_, err := genKubernetesWith(t, dep, "--rotate-service-account-key", kid)
+	require.NoError(t, err, "control: the first run rotates")
+	afterOne := readFile(t, filepath.Join(dep.ca, "sa.pub"))
+	keyAfterOne := readFile(t, filepath.Join(dep.ca, "sa.key"))
+
+	_, err = genKubernetesWith(t, dep, "--rotate-service-account-key", kid)
+
+	assert.ErrorContains(t, err, "rotated already")
+	assert.Equal(t, afterOne, readFile(t, filepath.Join(dep.ca, "sa.pub")))
+	assert.Equal(t, keyAfterOne, readFile(t, filepath.Join(dep.ca, "sa.key")))
+}
+
+func TestGenKubernetes_ARotationNeedsAKeyIdAndAKeyToRotate(t *testing.T) {
+	dep := newDeployment(t)
+	_, err := genKubernetesWith(t, dep, "--rotate-service-account-key", "x")
+	assert.ErrorContains(t, err, "no ServiceAccount key to rotate", "a new cluster has none")
+	dep.kubernetes(t)
+
+	_, err = genKubernetesWith(t, dep, "--rotate-service-account-key", "")
+	assert.ErrorContains(t, err, "names the key id")
+	_, err = genKubernetesWith(t, dep, "--rotate-service-account-key", "x", "--drop-previous-service-account-key")
+	assert.ErrorContains(t, err, "exclusive")
+}
+
+func TestGenKubernetes_DroppingThePreviousKeyKeepsTheSigningKeyOnly(t *testing.T) {
+	dep := newDeployment(t)
+	dep.kubernetes(t)
+	_, err := genKubernetesWith(t, dep, "--rotate-service-account-key", signingKid(t, dep))
+	require.NoError(t, err)
+	key := readFile(t, filepath.Join(dep.ca, "sa.key"))
+	keys, _ := pki.PublicKeys(readFile(t, filepath.Join(dep.ca, "sa.pub")))
+	require.Len(t, keys, 2, "setup")
+
+	_, err = genKubernetesWith(t, dep, "--drop-previous-service-account-key")
+	require.NoError(t, err)
+
+	keys, err = pki.PublicKeys(readFile(t, filepath.Join(dep.ca, "sa.pub")))
+	require.NoError(t, err)
+	assert.Len(t, keys, 1)
+	assert.Equal(t, key, readFile(t, filepath.Join(dep.ca, "sa.key")), "no new key is made")
 }
 
 func readFile(t *testing.T, path string) []byte {
@@ -290,21 +347,28 @@ func TestGenKubernetes_IssuersReachTheAPIServerInOrderWithTheInClusterIssuerLast
 	assert.Contains(t, cp, "--service-account-jwks-uri=https://oidc.example.com/naru/openid/v1/jwks")
 }
 
-func TestGenKubernetes_AGenWithoutIssuersReturnsToTheInClusterIssuerAlone(t *testing.T) {
+func TestGenKubernetes_AGenWithoutIssuerFlagsKeepsTheIssuersAndOnlyAnExplicitClearRemovesThem(t *testing.T) {
 	dep := newDeployment(t)
 	_, err := genKubernetesWith(t, dep, "--service-account-issuer", "https://oidc.example.com")
 	require.NoError(t, err)
-	_, err = genKubernetesWith(t, dep)
+	_, err = genKubernetesWith(t, dep, "--rotate-service-account-key", signingKid(t, dep))
 	require.NoError(t, err)
 
 	cp := string(readFile(t, dep.kubeNode(t, "control-plane")))
+	assert.Contains(t, cp, "--service-account-issuer=https://oidc.example.com", "a rotation without the flag keeps the issuer")
 
+	_, err = genKubernetesWith(t, dep, "--clear-service-account-issuers")
+	require.NoError(t, err)
+	cp = string(readFile(t, dep.kubeNode(t, "control-plane")))
 	assert.NotContains(t, cp, "oidc.example.com")
 	assert.Contains(t, cp, "--service-account-issuer=https://kubernetes.default.svc.cluster.local")
+
+	_, err = genKubernetesWith(t, dep, "--clear-service-account-issuers", "--service-account-issuer", "https://oidc.example.com")
+	assert.ErrorContains(t, err, "exclusive")
 }
 
 func TestGenKubernetes_RefusesAnIssuerThatIsNotAnHTTPSURL(t *testing.T) {
-	for _, bad := range []string{"http://oidc.example.com", "oidc.example.com", "https://oidc.example.com/"} {
+	for _, bad := range []string{"http://oidc.example.com", "oidc.example.com", "https://oidc.example.com/", "https://oidc.example.com/../x", "https://oidc.example.com/%2e%2e/x", "https://u:p@oidc.example.com", "HTTPS://oidc.example.com", "https://oidc.example.com/a b"} {
 		_, err := genKubernetesWith(t, newDeployment(t), "--service-account-issuer", bad)
 		assert.ErrorContains(t, err, "--service-account-issuer", bad)
 	}
@@ -339,7 +403,7 @@ func TestGenKubernetesJWKS_APublishedKeySetCarriesTheKeyBeforeARotationToo(t *te
 	dep := newDeployment(t)
 	_, err := genKubernetesWith(t, dep, "--service-account-issuer", "https://oidc.example.com", "--service-account-algorithm", "ES256")
 	require.NoError(t, err)
-	_, err = genKubernetesWith(t, dep, "--service-account-issuer", "https://oidc.example.com", "--rotate-service-account-key")
+	_, err = genKubernetesWith(t, dep, "--rotate-service-account-key", signingKid(t, dep), "--service-account-algorithm", "RS256")
 	require.NoError(t, err)
 	out := t.TempDir()
 
@@ -360,4 +424,36 @@ func TestGenKubernetesJWKS_RefusesAClusterWithNoIssuerToPublishFor(t *testing.T)
 	_, err := run(t, "gen", "kubernetes-jwks", "--ca-dir", dep.ca, "--out-dir", t.TempDir())
 
 	assert.ErrorContains(t, err, "no ServiceAccount issuer")
+}
+
+func TestGenKubernetesJWKS_PrintsTheSigningKeyIDThatARotationNames(t *testing.T) {
+	dep := newDeployment(t)
+	_, err := genKubernetesWith(t, dep, "--service-account-issuer", "https://oidc.example.com")
+	require.NoError(t, err)
+
+	out, err := run(t, "gen", "kubernetes-jwks", "--ca-dir", dep.ca, "--out-dir", t.TempDir())
+
+	require.NoError(t, err)
+	assert.Contains(t, out, "the signing ServiceAccount key id is "+signingKid(t, dep))
+}
+
+func TestGenKubernetesJWKS_RefusesAnIssuersFileThatNamesAPathOutsideOutDir(t *testing.T) {
+	dep := newDeployment(t)
+	_, err := genKubernetesWith(t, dep, "--service-account-issuer", "https://oidc.example.com/ok")
+	require.NoError(t, err)
+	out := t.TempDir()
+	issuers := filepath.Join(dep.ca, "service-account-issuers")
+
+	require.NoError(t, os.WriteFile(issuers, []byte("https://oidc.example.com/../../escape\n"), 0o644))
+	_, err = run(t, "gen", "kubernetes-jwks", "--ca-dir", dep.ca, "--out-dir", filepath.Join(out, "site"))
+	assert.ErrorContains(t, err, "not a plain https URL")
+	require.NoError(t, os.WriteFile(issuers, []byte("https://oidc.example.com/a b\n"), 0o644))
+	_, err = run(t, "gen", "kubernetes-jwks", "--ca-dir", dep.ca, "--out-dir", filepath.Join(out, "site"))
+	assert.ErrorContains(t, err, "not a plain https URL", "a space does not split one issuer into two")
+	_, statErr := os.Stat(filepath.Join(out, "escape"))
+	assert.True(t, os.IsNotExist(statErr), "nothing was written outside")
+
+	require.NoError(t, os.WriteFile(issuers, []byte("https://oidc.example.com/ok\n"), 0o644))
+	_, err = run(t, "gen", "kubernetes-jwks", "--ca-dir", dep.ca, "--out-dir", filepath.Join(out, "site"))
+	assert.NoError(t, err, "control: a plain issuer")
 }

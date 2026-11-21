@@ -136,6 +136,45 @@ func RotatedPublicKeys(newPub, oldPub []byte) ([]byte, error) {
 	return append(append([]byte{}, newPub...), pem.EncodeToMemory(block)...), nil
 }
 
+// SigningPublicKey returns the PEM public key of the private key keyPEM, a ServiceAccount signing key
+// as ServiceAccountKey writes it, and refuses a key of another type or a weak one.
+func SigningPublicKey(keyPEM []byte) ([]byte, error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return nil, errors.New("the private key is not PEM")
+	}
+	var key crypto.Signer
+	var err error
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+	case "EC PRIVATE KEY":
+		key, err = x509.ParseECPrivateKey(block.Bytes)
+	default:
+		return nil, fmt.Errorf("a ServiceAccount key is an RSA or EC private key, not %q", block.Type)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if _, err := algorithmOf(key.Public()); err != nil {
+		return nil, err
+	}
+	der, err := x509.MarshalPKIXPublicKey(key.Public())
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), nil
+}
+
+// SigningKeyID returns the KeyID of the first public key of pubPEM, the signing key's.
+func SigningKeyID(pubPEM []byte) (string, error) {
+	keys, err := PublicKeys(pubPEM)
+	if err != nil {
+		return "", err
+	}
+	return KeyID(keys[0])
+}
+
 // KeyID is the "kid" the API server puts in the header of a token the key signs: the unpadded
 // base64url of the SHA-256 of the key's PKIX encoding.
 func KeyID(pub crypto.PublicKey) (string, error) {

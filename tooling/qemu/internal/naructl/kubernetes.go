@@ -3,6 +3,8 @@ package naructl
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -27,15 +29,62 @@ func (t Tool) KubernetesTopology() (Topology, error) {
 // the front-proxy authority, the ServiceAccount keys and admin.conf, which dials adminAddress
 // (host:port) when that is set.
 func (t Tool) GenKubernetes(caDir, endpoint, adminAddress string, disableAddons ...string) error {
-	args := []string{"gen", "kubernetes", t.caDirFlag(), caDir, "--endpoint", endpoint}
-	if adminAddress != "" {
-		args = append(args, "--admin-address", adminAddress)
+	return t.GenKubernetesCluster(KubernetesCluster{CADir: caDir, Endpoint: endpoint, AdminAddress: adminAddress, DisableAddons: disableAddons})
+}
+
+// KubernetesCluster is the arguments of gen kubernetes; empty ones are left to naructl's default.
+type KubernetesCluster struct {
+	CADir, Endpoint, AdminAddress string
+	DisableAddons                 []string
+	// ServiceAccountIssuers are --service-account-issuer, the first of which signs, and
+	// ServiceAccountAlgorithm is --service-account-algorithm.
+	ServiceAccountIssuers   []string
+	ServiceAccountAlgorithm string
+	// RotateServiceAccountKey is --rotate-service-account-key: the key id of the signing key it replaces.
+	RotateServiceAccountKey string
+}
+
+// GenKubernetesCluster has naructl run gen kubernetes with k.
+func (t Tool) GenKubernetesCluster(k KubernetesCluster) error {
+	args := []string{"gen", "kubernetes", t.caDirFlag(), k.CADir, "--endpoint", k.Endpoint}
+	if k.AdminAddress != "" {
+		args = append(args, "--admin-address", k.AdminAddress)
 	}
-	for _, name := range disableAddons {
+	for _, name := range k.DisableAddons {
 		args = append(args, "--disable-addon", name)
+	}
+	for _, issuer := range k.ServiceAccountIssuers {
+		args = append(args, "--service-account-issuer", issuer)
+	}
+	if k.ServiceAccountAlgorithm != "" {
+		args = append(args, "--service-account-algorithm", k.ServiceAccountAlgorithm)
+	}
+	if k.RotateServiceAccountKey != "" {
+		args = append(args, "--rotate-service-account-key", k.RotateServiceAccountKey)
 	}
 	return t.run(args...)
 }
+
+// SigningKeyID returns the key id of the ServiceAccount key that signs, which `gen kubernetes-jwks` prints
+// for the cluster of caDir whose first issuer is set.
+func (t Tool) SigningKeyID(caDir string) (string, error) {
+	out, err := os.MkdirTemp("", "jwks-")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(out) }()
+	r := t.Run("gen", "kubernetes-jwks", t.caDirFlag(), caDir, "--out-dir", out)
+	if r.Err != nil {
+		return "", fmt.Errorf("gen kubernetes-jwks: %w: %s", r.Err, r.Stderr)
+	}
+	m := signingKeyID.FindStringSubmatch(r.Stdout)
+	if m == nil {
+		return "", fmt.Errorf("gen kubernetes-jwks printed no signing key id: %s", r.Stdout)
+	}
+	return m[1], nil
+}
+
+var signingKeyID = regexp.MustCompile(`signing ServiceAccount key id is (\S+)`)
 
 // KubernetesNode is the arguments of gen kubernetes-node.
 type KubernetesNode struct {
