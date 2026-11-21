@@ -38,7 +38,7 @@ RUN . /pin.env \
  && printf '{"imageLayoutVersion":"1.0.0"}' >/oci/oci-layout \
  && tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner --format=gnu -cf /out/usr/lib/naru/addons/images/coredns.tar -C /oci . \
  && sed "s#@COREDNS_IMAGE@#naru.local/coredns@sha256:$digest#" /dns.yaml.in >/out/usr/lib/naru/addons/manifests/dns.yaml \
- && ! grep -q '@' /out/usr/lib/naru/addons/manifests/dns.yaml
+ && ! grep -q '@[A-Z_]*@' /out/usr/lib/naru/addons/manifests/dns.yaml
 
 FROM scratch
 COPY --from=build /out /
