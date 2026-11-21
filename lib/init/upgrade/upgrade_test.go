@@ -989,31 +989,29 @@ func TestUpgrader_ReconcileOnATrialBootDoesNotPruneTheImagesTheRollbackNeeds(t *
 	assert.Zero(t, st.pruned)
 }
 
-func TestUpgrader_ReconcileDoesNothingWhileABundleIsBeingReceived(t *testing.T) {
+func TestUpgrader_InstallIsRefusedAsBusyUntilTheDefaultBootHasSettledTheLastUpgrade(t *testing.T) {
 	n := newNode(t)
 	var st staging
 	u := n.upgrader("v1", func(c *upgrade.Config) { st.apply(c, []upgrade.Entry{{Name: "orch"}}) })
+	u.Detect()
 	b, sum := bundleWith(t, "v2", "kernel-B", []string{"orch"}, map[string]string{"orch": "ORCH"})
-	pr, pw := io.Pipe()
-	done := make(chan error, 1)
-	go func() {
-		_, err := u.Install(pr, sum)
-		done <- err
-	}()
-	_, err := pw.Write(b[:512])
-	require.NoError(t, err)
+
+	_, err := u.Install(bytes.NewReader(b), sum)
+
+	require.ErrorIs(t, err, upgrade.ErrBusy, "a bundle armed before Reconcile would be taken for the last upgrade's leftovers")
+	assert.Empty(t, st.staged)
+	n.untouched()
 
 	u.Reconcile()
+	_, err = u.Install(bytes.NewReader(b), sum)
 
-	assert.Zero(t, st.pruned, "the images the receiving Install has staged are not pruned from under it")
-	_, err = pw.Write(b[512:])
-	require.NoError(t, err)
-	require.NoError(t, pw.Close())
-	require.NoError(t, <-done)
+	require.NoError(t, err, "control: the same bundle is received once Reconcile has run")
 	assert.Equal(t, []string{"orch@v2=ORCH"}, st.staged)
+	_, armed := u.Last()
+	assert.False(t, armed, "Reconcile ran before the upgrade was armed and recorded nothing of it")
 }
 
-func TestUpgrader_ReconcileOnADefaultBootWithNoBundleBeingReceivedPrunesOnce(t *testing.T) {
+func TestUpgrader_ReconcileOnADefaultBootPrunesOnce(t *testing.T) {
 	n := newNode(t)
 	var st staging
 	u := n.upgrader("v1", func(c *upgrade.Config) { st.apply(c, nil) })

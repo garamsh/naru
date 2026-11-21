@@ -62,7 +62,9 @@ func merge(target, patch any, field string) (any, error) {
 	return out, nil
 }
 
-// ident is what identifies an element of a keyed list: the field that holds it and its value.
+// ident is what identifies an element of a keyed list: the field that holds it and its value. The
+// field keeps a key and its fallback apart by type, not by what they spell; for spec.extensions
+// they cannot spell the same, since a name is at most 63 characters and a digest 64.
 type ident struct{ field, value string }
 
 // mergeKeyed merges the elements of patch into existing by key. An element

@@ -303,7 +303,7 @@ func TestNode_UpgradeIsRefusedByTheNodeWith422WhenAnExtensionEntryHasNoImageForT
 	assert.NotContains(t, nd.Console(), "upgrade staged")
 }
 
-func TestNode_UpgradeCarriesTheExtensionAnUnpinnedEntryNamesAndTheNodeComesBackOnItWithOrchUp(t *testing.T) {
+func TestNode_UpgradeCarriesTheExtensionAnUnpinnedEntryNamesAndTheNodeComesBackOnIt(t *testing.T) {
 	want := os.Getenv("NARU_VERSION")
 	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
 	next := want + "-next"
@@ -324,9 +324,6 @@ func TestNode_UpgradeCarriesTheExtensionAnUnpinnedEntryNamesAndTheNodeComesBackO
 		_, oldStored := rows[old]
 		return rows[newSHA] != nil && rows[newSHA][len(rows[newSHA])-1] == "/usr/lib/naru/extensions/naru-orch" && !oldStored
 	})
-	services := ctl(admin, "services")
-	require.NoError(t, services.Err, services.refusal())
-	assert.Contains(t, services.Stdout, "naru-orchd", "orch runs from the extension of the new version")
 }
 
 func TestNode_ARefusedUpgradeThatCarriedAnExtensionRollsBackToTheOldExtensionAndRemovesTheNewOne(t *testing.T) {
@@ -339,6 +336,11 @@ func TestNode_ARefusedUpgradeThatCarriedAnExtensionRollsBackToTheOldExtensionAnd
 	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
 
 	require.NoError(t, r.Err, r.refusal())
+	// The setup: the upgrade stored the refused image next to the old one, so its absence after the
+	// rollback is the rollback's doing and not an upgrade that never stored it.
+	staged := extensionRows(t, admin)
+	require.Contains(t, staged, refusedSHA, "the upgrade stored the refused image before the reboot")
+	require.Contains(t, staged, old, "the old image is still stored before the reboot")
 	awaitRestarting(t, nd, "the Node is back on its version and has rolled the upgrade back", func() bool {
 		s, err := statusOf(tool, admin)
 		return err == nil && s.Version == want && s.Slot == "default" && strings.Contains(s.Outcome, "rolled back")

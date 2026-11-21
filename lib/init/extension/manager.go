@@ -141,7 +141,7 @@ func (m *Manager) pick(name string, entries []config.Extension) (Image, error) {
 		case stored[i].Version != m.version:
 			elsewhere = append(elsewhere, stored[i].Version)
 			m.log.Info("extension entry skipped: its image is built for another naru version", "name", name, "sha256", e.SHA256, "version", stored[i].Version)
-		default:
+		case !slices.ContainsFunc(found, func(f Image) bool { return f.SHA256 == e.SHA256 }):
 			found = append(found, stored[i])
 		}
 	}

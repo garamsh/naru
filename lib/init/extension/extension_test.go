@@ -271,6 +271,26 @@ func TestManager_MountMountsTheEntryOfInitsOwnVersionWhenTwoVersionsAreConfigure
 	assert.Equal(t, manifest("naru-orch", "v0.9.0"), older.m.mounted[filepath.Join(older.root, "naru-orch")])
 }
 
+func TestManager_MountTakesOneImageWhenAPinnedEntryAndAnUnpinnedEntryNameTheSameOne(t *testing.T) {
+	for name, order := range map[string]func(sha string) []config.Extension{
+		"pinned first": func(sha string) []config.Extension {
+			return []config.Extension{{Name: "naru-orch", SHA256: sha}, {Name: "naru-orch"}}
+		},
+		"unpinned first": func(sha string) []config.Extension {
+			return []config.Extension{{Name: "naru-orch"}, {Name: "naru-orch", SHA256: sha}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			n := newNode(t)
+			sha := n.put(t, manifest("naru-orch", version))
+
+			require.NoError(t, n.mgr.Mount(order(sha)), "one image answers both entries")
+
+			assert.Equal(t, manifest("naru-orch", version), n.m.mounted[filepath.Join(n.root, "naru-orch")])
+		})
+	}
+}
+
 func TestManager_MountSkipsAnEntryWhoseImageIsNotStoredAndRefusesAmbiguityOrNoMatch(t *testing.T) {
 	good := manifest("naru-orch", version)
 	missing := config.Extension{Name: "naru-orch", SHA256: digestOf("not stored")}

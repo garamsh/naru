@@ -92,6 +92,10 @@ type Upgrader struct {
 
 	mu   sync.Mutex
 	slot string
+	// settling is set by Detect on a default boot and cleared when Reconcile has run: until then
+	// the last upgrade is not settled, and an Install would arm a new one that Reconcile takes for
+	// the last one's leftovers and rolls back.
+	settling bool
 }
 
 // New returns the Upgrader of the running machine for the naru-init of version.
@@ -161,7 +165,20 @@ func (u *Upgrader) Detect() {
 	if err == nil && cur == trialEntry {
 		u.slot = SlotTrial
 	}
+	u.settling = u.slot == SlotDefault
 	u.cfg.Log.Info("the boot slot", "slot", u.slot)
+}
+
+func (u *Upgrader) isSettling() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.settling
+}
+
+func (u *Upgrader) setSettling(v bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.settling = v
 }
 
 // Slot is "trial" on a boot that the trial entry made, and "default" otherwise.
@@ -186,6 +203,9 @@ func (u *Upgrader) Install(body io.Reader, wantSHA string) (Staged, error) {
 	defer u.installing.Unlock()
 	if u.Slot() == SlotTrial {
 		return Staged{}, fmt.Errorf("%w: this boot is a trial of an upgrade that has not ended", ErrBusy)
+	}
+	if u.isSettling() {
+		return Staged{}, fmt.Errorf("%w: the last upgrade is still being settled; try again", ErrBusy)
 	}
 	if _, ok := u.readPending(); ok {
 		return Staged{}, fmt.Errorf("%w: an upgrade is staged and has not ended", ErrBusy)
@@ -320,12 +340,12 @@ func (u *Upgrader) Reconcile() {
 	if u.Slot() == SlotTrial {
 		return
 	}
-	// A bundle being received is a new upgrade and nothing unfinished; the image it stores is built
-	// for another version and must outlive a prune until that version has booted (ADR 0084).
-	if !u.installing.TryLock() {
-		return
-	}
+	// Install refuses until this has run, so no bundle is being received now and none is armed that
+	// this could take for an unfinished upgrade; and a prune cannot remove an image a bundle has
+	// just staged (ADR 0084).
+	u.installing.Lock()
 	defer u.installing.Unlock()
+	defer u.setSettling(false)
 	if u.cfg.Prune != nil {
 		defer u.cfg.Prune()
 	}
