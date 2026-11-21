@@ -73,6 +73,9 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	if block != (r.Kind == kindBlock) {
 		return nil, status.Errorf(codes.InvalidArgument, "the volume %s is not of the requested mode", id)
 	}
+	if block && req.GetReadonly() {
+		return nil, status.Error(codes.InvalidArgument, "a block volume cannot be published read-only: a bind of a device does not stop writes to it")
+	}
 	source := d.dataDir(id)
 	if !block {
 		// The mount may have lost prjquota since the volume was made; a Pod must not write past its size.
@@ -105,6 +108,12 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 	if err := d.mnt.Bind(source, target, req.GetReadonly()); err != nil {
+		// A bind left mounted by a failed remount would answer a retry with success, unrestricted.
+		if mounted, merr := d.mnt.Mounted(target); merr == nil && mounted {
+			if uerr := d.mnt.Unmount(target); uerr != nil {
+				return nil, status.Errorf(codes.Internal, "bind %s at %s: %v; and its undo failed: %v", source, target, err, uerr)
+			}
+		}
 		return nil, status.Errorf(codes.Internal, "bind %s at %s: %v", source, target, err)
 	}
 	return &csi.NodePublishVolumeResponse{}, nil

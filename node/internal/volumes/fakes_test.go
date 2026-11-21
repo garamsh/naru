@@ -33,11 +33,15 @@ func (q *fakeQuota) Set(dir string, project uint32, bytes int64) error {
 	return nil
 }
 
-type fakeMounts struct{ mounted map[string]string }
+type fakeMounts struct {
+	mounted map[string]string
+	// bindErr fails a Bind after it mounted, as a remount that fails does.
+	bindErr error
+}
 
 func (m *fakeMounts) Bind(source, target string, ro bool) error {
 	m.mounted[target] = source
-	return nil
+	return m.bindErr
 }
 func (m *fakeMounts) Unmount(target string) error { delete(m.mounted, target); return nil }
 func (m *fakeMounts) Mounted(target string) (bool, error) {
@@ -129,6 +133,11 @@ func remove(r *rig, id string) error {
 
 func publish(r *rig, id, target string, c *csi.VolumeCapability) error {
 	_, err := r.d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{VolumeId: id, TargetPath: target, VolumeCapability: c})
+	return err
+}
+
+func publishReadOnly(r *rig, id, target string, c *csi.VolumeCapability) error {
+	_, err := r.d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{VolumeId: id, TargetPath: target, VolumeCapability: c, Readonly: true})
 	return err
 }
 
