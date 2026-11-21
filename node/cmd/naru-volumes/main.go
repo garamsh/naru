@@ -57,7 +57,7 @@ func run(endpoint, config, node string, log *slog.Logger) error {
 		return err
 	}
 	d := volumes.New(node, cfg, volumes.XFSQuota{}, volumes.BindMounter{}, volumes.SysDisks{})
-	s := grpc.NewServer()
+	s := grpc.NewServer(grpc.ChainUnaryInterceptor(logCalls(log)))
 	csi.RegisterIdentityServer(s, d)
 	csi.RegisterControllerServer(s, d)
 	csi.RegisterNodeServer(s, d)

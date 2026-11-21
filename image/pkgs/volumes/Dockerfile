@@ -20,7 +20,7 @@ COPY volumes.yaml.in /volumes.yaml.in
 WORKDIR /build
 # naru-volumes, from the repository (the `src` context, which /.dockerignore narrows to the Go workspace).
 COPY --from=src / /src
-RUN (cd /src/node && go build -trimpath -buildvcs=false -ldflags='-s -w' -o /build/naru-volumes ./cmd/naru-volumes) \
+RUN (cd /src/node && go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o /build/naru-volumes ./cmd/naru-volumes) \
  && install-go.sh "$NARU_GO_VERSION" /build/naru-volumes /build/naru-volumes.checked
 # The sidecars: each is built with the Go its go.mod asks for, and checked to be that Go's static program.
 RUN . /pin.env && gitfetch.sh "$PROVISIONER_REPO" "$PROVISIONER_COMMIT" provisioner \
