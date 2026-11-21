@@ -1,6 +1,6 @@
 # ADR 0089: orch adds the boot set a group needs to the hosts that place it, from a release store it is configured with
 
-> Status: proposed
+> Status: accepted
 > Date: 2026-11-21
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
