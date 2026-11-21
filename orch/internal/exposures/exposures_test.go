@@ -1,6 +1,7 @@
 package exposures_test
 
 import (
+	"context"
 	"net/netip"
 	"testing"
 	"time"
@@ -331,4 +332,64 @@ func TestAPoolRefusesAnInvalidNetworkName(t *testing.T) {
 	require.ErrorIs(t, err, inventory.ErrInvalid)
 	_, err = s.ApplyPool(t.Context(), "op", "p", orchapi.AddressPoolSpec{CIDRs: []string{"192.168.1.0/28"}, Networks: []string{"a"}})
 	require.NoError(t, err, "control")
+}
+
+// renewing renews the record, as the reconciler does, just before the first n updates reach the store.
+type renewing struct {
+	*exposurestest.Store
+	n int
+}
+
+func (r *renewing) UpdateExposure(ctx context.Context, next, prev exposures.Record) error {
+	if r.n > 0 {
+		r.n--
+		cur, _ := r.Store.GetExposure(ctx, prev.Network, prev.ID)
+		renewed := cur
+		renewed.Host, renewed.LeaseUntil = "h1", cur.LeaseUntil.Add(time.Second)
+		if err := r.Store.UpdateExposure(ctx, renewed, cur); err != nil {
+			panic(err)
+		}
+	}
+	return r.Store.UpdateExposure(ctx, next, prev)
+}
+
+func TestAnApplyOverARenewalIsReadAgainAndKeepsTheRenewal(t *testing.T) {
+	for _, tc := range []struct {
+		renewals int
+		ok       bool
+	}{{0, true}, {1, true}, {2, true}, {3, false}} {
+		st := &renewing{Store: exposurestest.NewStore(), n: 0}
+		nets := exposurestest.Networks{{Name: "a", Prefix: "10.1.0.0/24"}}
+		members := exposurestest.Members{"a": {"10.1.0.5", "10.1.0.6"}}
+		s := exposures.New(st, nets, members, &exposurestest.Log{}, &exposurestest.Clock{T: time.Unix(1000, 0)})
+		_, err := s.ApplyPool(t.Context(), "op", "lan", orchapi.AddressPoolSpec{CIDRs: []string{"192.168.0.80/29"}, Networks: []string{"a"}})
+		require.NoError(t, err)
+		_, err = s.ApplyExposure(t.Context(), "ccm", "a", "web", spec("a", "10.1.0.5"))
+		require.NoError(t, err)
+		st.n = tc.renewals
+		got, err := s.ApplyExposure(t.Context(), "ccm", "a", "web", spec("a", "10.1.0.5", "10.1.0.6"))
+		if !tc.ok {
+			require.ErrorIs(t, err, inventory.ErrConflict, "%d renewals in a row exceed the tries", tc.renewals)
+			continue
+		}
+		require.NoError(t, err, "%d renewals", tc.renewals)
+		require.Len(t, got.Backends, 2)
+		rec, err := st.GetExposure(t.Context(), "a", "web")
+		require.NoError(t, err)
+		require.Len(t, rec.Backends, 2, "the change was written")
+		require.Equal(t, tc.renewals > 0, rec.Host == "h1", "over the renewal, which it kept")
+	}
+}
+
+func TestANetworkNameThatIsNoDNSLabelNamesNoNetwork(t *testing.T) {
+	s, _ := fixture(t)
+	ctx := t.Context()
+	_, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5"))
+	require.NoError(t, err)
+	for _, bad := range []string{"a/b", "A", "-a", "a b"} {
+		require.ErrorIs(t, s.DeleteExposure(ctx, "op", bad, "web"), inventory.ErrInvalid, bad)
+		_, err := s.Exposure(ctx, bad, "web")
+		require.ErrorIs(t, err, inventory.ErrInvalid, bad)
+	}
+	require.NoError(t, s.DeleteExposure(ctx, "op", "a", "web"), "control: the network's own name")
 }

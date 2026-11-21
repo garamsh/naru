@@ -19,6 +19,7 @@ import (
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/exposures"
 	"github.com/garamsh/naru/orch/internal/inventory"
+	netetcd "github.com/garamsh/naru/orch/internal/networks/etcd"
 )
 
 // The keys' prefixes.
@@ -55,7 +56,8 @@ func claimValue(r exposures.Record) string  { return r.Network + "/" + r.ID }
 func exposureKey(network, id string) string { return ExposurePrefix + network + "/" + id }
 
 // PutPool writes p only while the stored pool is still prev, or absent when prev is nil, and
-// while no address of the pool has been claimed since check saw the claims.
+// while no address of the pool has been claimed since check saw the claims and no network or pool
+// has been written since the guard was read, which is before check runs.
 func (s *Store) PutPool(ctx context.Context, p orchapi.AddressPool, prev *orchapi.AddressPool, check func([]exposures.Claim) error) error {
 	key := PoolPrefix + p.Name
 	resp, err := s.kv.Get(ctx, key)
@@ -74,6 +76,10 @@ func (s *Store) PutPool(ctx context.Context, p orchapi.AddressPool, prev *orchap
 		}
 		cond = clientv3.Compare(clientv3.ModRevision(key), "=", resp.Kvs[0].ModRevision)
 	}
+	guard, err := netetcd.Guard(ctx, s.kv)
+	if err != nil {
+		return err
+	}
 	claims, err := s.kv.Get(ctx, ClaimPrefix+p.Name+"/", clientv3.WithPrefix())
 	if err != nil {
 		return err
@@ -90,7 +96,7 @@ func (s *Store) PutPool(ctx context.Context, p orchapi.AddressPool, prev *orchap
 		return err
 	}
 	unclaimed := clientv3.Compare(clientv3.CreateRevision(ClaimPrefix+p.Name+"/"), "<", claims.Header.Revision+1).WithPrefix()
-	t, err := s.kv.Txn(ctx).If(cond, unclaimed).Then(clientv3.OpPut(key, marshal(p))).Commit()
+	t, err := s.kv.Txn(ctx).If(cond, unclaimed, guard).Then(clientv3.OpPut(key, marshal(p)), netetcd.MoveGuard()).Commit()
 	if err != nil {
 		return err
 	}

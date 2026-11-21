@@ -45,8 +45,23 @@ func (s *Store) PutPool(_ context.Context, p orchapi.AddressPool, prev *orchapi.
 			held = append(held, c)
 		}
 	}
-	if err := check(held); err != nil {
+	// check reads the store, so it runs without the lock; the write holds only while the pool and
+	// its claims are as they were.
+	s.mu.Unlock()
+	err := check(held)
+	s.mu.Lock()
+	if err != nil {
 		return err
+	}
+	again, ok2 := s.pools[p.Name]
+	n := 0
+	for k := range s.claims {
+		if strings.HasPrefix(k, p.Name+"/") {
+			n++
+		}
+	}
+	if ok2 != ok || ok && !reflect.DeepEqual(again, cur) || n != len(held) {
+		return inventory.ErrConflict
 	}
 	s.pools[p.Name] = p
 	return nil

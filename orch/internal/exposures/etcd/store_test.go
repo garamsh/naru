@@ -13,6 +13,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/exposures"
 	exposuresetcd "github.com/garamsh/naru/orch/internal/exposures/etcd"
 	"github.com/garamsh/naru/orch/internal/inventory"
+	netetcd "github.com/garamsh/naru/orch/internal/networks/etcd"
 	"github.com/garamsh/naru/orch/internal/orchtest"
 )
 
@@ -223,4 +224,34 @@ func TestAPoolIsNotDeletedUnderAClaimMadeJustBefore(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, s.DeleteExposure(ctx, rec("web", "192.168.0.80")))
 	require.NoError(t, s.DeletePool(ctx, "lan"), "control: no claim")
+}
+
+// A network and a pool that overlap, each checked against the other's absence, are never both kept:
+// the one that commits second finds the address-space guard moved.
+func TestAPoolAndANetworkWrittenFromTheSameReadingAreNotBothKept(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	kv := c.Members[0].Etcd()
+	ctx := t.Context()
+	ps, ns := exposuresetcd.New(kv), netetcd.New(kv)
+	net := orchapi.Network{Name: "lab", Prefix: "192.168.0.0/24"}
+	other := orchapi.Network{Name: "far", Prefix: "10.9.0.0/24"}
+	pass := func() error { return nil }
+
+	// A network is written while the pool is between its check and its commit.
+	err := ps.PutPool(ctx, lan, nil, func([]exposures.Claim) error { return ns.Put(ctx, net, nil, pass) })
+	require.ErrorIs(t, err, inventory.ErrConflict, "the network moved the guard after the pool read it")
+	_, err = ps.GetPool(ctx, "lan")
+	require.ErrorIs(t, err, inventory.ErrNotFound, "so the pool was not kept")
+	_, err = ns.Get(ctx, "lab")
+	require.NoError(t, err, "and the network was")
+
+	// A pool is written while the network is between its check and its commit.
+	err = ns.Put(ctx, other, nil, func() error { return ps.PutPool(ctx, lan, nil, noCheck) })
+	require.ErrorIs(t, err, inventory.ErrConflict, "the pool moved the guard after the network read it")
+	_, err = ns.Get(ctx, "far")
+	require.ErrorIs(t, err, inventory.ErrNotFound)
+
+	// Control: with nothing between a check and its commit both are kept.
+	require.NoError(t, ns.Put(ctx, other, nil, pass))
+	require.NoError(t, ps.PutPool(ctx, orchapi.AddressPool{Name: "wan", CIDRs: []string{"172.16.0.0/24"}, Networks: []string{"a"}}, nil, noCheck))
 }

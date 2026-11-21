@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -95,11 +96,14 @@ func Authenticate(chains [][]*x509.Certificate, crl *CRL) (Identity, error) {
 // ExposerPrefix starts the Subject of a RoleExposer certificate; the rest is the network it serves.
 const ExposerPrefix = "exposer."
 
+// networkName is what a network is called: a DNS label.
+var networkName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
 // ExposerNetwork returns the network an exposer identity serves. ok is false for any other role,
-// or for a Subject that does not name a network.
+// or for a Subject that does not name a network by a DNS label.
 func ExposerNetwork(who Identity) (network string, ok bool) {
 	n, found := strings.CutPrefix(who.Subject, ExposerPrefix)
-	if who.Role != RoleExposer || !found || n == "" {
+	if who.Role != RoleExposer || !found || !networkName.MatchString(n) {
 		return "", false
 	}
 	return n, true

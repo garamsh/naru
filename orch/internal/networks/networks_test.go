@@ -16,7 +16,12 @@ import (
 
 type store struct{ nets map[string]orchapi.Network }
 
-func (s *store) Put(_ context.Context, n orchapi.Network, _ *orchapi.Network) error {
+func (s *store) Put(_ context.Context, n orchapi.Network, _ *orchapi.Network, check func() error) error {
+	if check != nil {
+		if err := check(); err != nil {
+			return err
+		}
+	}
 	s.nets[n.Name] = n
 	return nil
 }

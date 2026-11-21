@@ -210,17 +210,6 @@ func (s *Service) ApplyPool(ctx context.Context, by, name string, spec orchapi.A
 	if len(slices.Compact(slices.Clone(nets))) != len(nets) {
 		return orchapi.AddressPool{}, bad("a network is listed twice")
 	}
-	all, err := s.networks.List(ctx)
-	if err != nil {
-		return orchapi.AddressPool{}, err
-	}
-	for _, n := range all {
-		if p, err := netip.ParsePrefix(n.Prefix); err == nil {
-			if c, _, hit := overlapsAny(cidrs, []netip.Prefix{p}); hit {
-				return orchapi.AddressPool{}, bad("cidr %s overlaps network %s (%s)", c, n.Name, n.Prefix)
-			}
-		}
-	}
 	pools, err := s.store.ListPools(ctx)
 	if err != nil {
 		return orchapi.AddressPool{}, err
@@ -229,15 +218,13 @@ func (s *Service) ApplyPool(ctx context.Context, by, name string, spec orchapi.A
 	for _, o := range pools {
 		if o.Name == name {
 			prev = &o
-			continue
-		}
-		oc, _ := parseCIDRs(o.CIDRs)
-		if a, b, hit := overlapsAny(cidrs, oc); hit {
-			return orchapi.AddressPool{}, bad("cidr %s overlaps %s of pool %s", a, b, o.Name)
 		}
 	}
 	p := orchapi.AddressPool{Name: name, CIDRs: spec.CIDRs, Networks: nets}
 	fits := func(held []Claim) error {
+		if err := s.clear(ctx, name, cidrs); err != nil {
+			return err
+		}
 		for _, c := range held {
 			a, _ := netip.ParseAddr(c.Address)
 			in := false
@@ -254,6 +241,37 @@ func (s *Service) ApplyPool(ctx context.Context, by, name string, spec orchapi.A
 		return orchapi.AddressPool{}, err
 	}
 	return p, s.log.AppendEvent(ctx, orchapi.Event{Time: s.clock.Now(), Type: EventPoolApplied, Subject: name, Detail: map[string]string{"by": by}})
+}
+
+// clear refuses a pool whose ranges overlap a network's prefix or another pool. The store runs it
+// after it noted the address-space guard that a network write also moves, and writes the pool only
+// while that guard is unchanged.
+func (s *Service) clear(ctx context.Context, name string, cidrs []netip.Prefix) error {
+	all, err := s.networks.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range all {
+		if p, err := netip.ParsePrefix(n.Prefix); err == nil {
+			if c, _, hit := overlapsAny(cidrs, []netip.Prefix{p}); hit {
+				return bad("cidr %s overlaps network %s (%s)", c, n.Name, n.Prefix)
+			}
+		}
+	}
+	pools, err := s.store.ListPools(ctx)
+	if err != nil {
+		return err
+	}
+	for _, o := range pools {
+		if o.Name == name {
+			continue
+		}
+		oc, _ := parseCIDRs(o.CIDRs)
+		if a, b, hit := overlapsAny(cidrs, oc); hit {
+			return bad("cidr %s overlaps %s of pool %s", a, b, o.Name)
+		}
+	}
+	return nil
 }
 
 // Pools lists every pool.
@@ -309,10 +327,14 @@ func validateSpec(spec orchapi.ExposureSpec) error {
 	return nil
 }
 
-// own refuses an empty network: the exposer calls act on one network, never on every one.
+// own refuses an empty network: the exposer calls act on one network, never on every one. A name
+// that is no DNS label names no network, so it never reaches a key.
 func own(network string) error {
 	if network == "" {
 		return forbidden("the call names no network")
+	}
+	if !nameRe.MatchString(network) {
+		return bad("network name %q is not a DNS label", network)
 	}
 	return nil
 }
@@ -365,24 +387,35 @@ func (s *Service) ApplyExposure(ctx context.Context, by, network, id string, spe
 	return s.create(ctx, by, id, spec, pool)
 }
 
+// update changes the ports, backends and proxy protocol of cur. The reconciler rewrites the record
+// on every pass, so a write over a record that has just been renewed is read again and tried again.
 func (s *Service) update(ctx context.Context, by string, cur Record, spec orchapi.ExposureSpec) (orchapi.Exposure, error) {
-	if cur.Phase == PhaseReleasing {
-		return orchapi.Exposure{}, fmt.Errorf("%w: exposure %s is being released; apply it again once it is gone", inventory.ErrConflict, cur.ID)
-	}
-	if cur.Pool != spec.Pool || spec.RequestedAddress != "" && spec.RequestedAddress != cur.Address {
-		return orchapi.Exposure{}, fmt.Errorf("%w: exposure %s keeps its pool and address; delete it to change them", inventory.ErrConflict, cur.ID)
-	}
-	next := cur
-	next.Ports, next.Backends, next.ProxyProtocol = spec.Ports, slices.Clone(spec.Backends), spec.ProxyProtocol
-	if !next.Equal(cur) {
-		if err := s.store.UpdateExposure(ctx, next, cur); err != nil {
+	var err error
+	for try := range deleteTries {
+		if try > 0 {
+			if cur, err = s.store.GetExposure(ctx, cur.Network, cur.ID); err != nil {
+				return orchapi.Exposure{}, err
+			}
+		}
+		if cur.Phase == PhaseReleasing {
+			return orchapi.Exposure{}, fmt.Errorf("%w: exposure %s is being released; apply it again once it is gone", inventory.ErrConflict, cur.ID)
+		}
+		if cur.Pool != spec.Pool || spec.RequestedAddress != "" && spec.RequestedAddress != cur.Address {
+			return orchapi.Exposure{}, fmt.Errorf("%w: exposure %s keeps its pool and address; delete it to change them", inventory.ErrConflict, cur.ID)
+		}
+		next := cur
+		next.Ports, next.Backends, next.ProxyProtocol = spec.Ports, slices.Clone(spec.Backends), spec.ProxyProtocol
+		if next.Equal(cur) {
+			return next.Exposure, nil
+		}
+		if err = s.store.UpdateExposure(ctx, next, cur); err == nil {
+			return next.Exposure, s.event(ctx, EventExposureApplied, by, next)
+		}
+		if !errors.Is(err, inventory.ErrConflict) {
 			return orchapi.Exposure{}, err
 		}
-		if err := s.event(ctx, EventExposureApplied, by, next); err != nil {
-			return orchapi.Exposure{}, err
-		}
 	}
-	return next.Exposure, nil
+	return orchapi.Exposure{}, err
 }
 
 func (s *Service) create(ctx context.Context, by, id string, spec orchapi.ExposureSpec, pool orchapi.AddressPool) (orchapi.Exposure, error) {
@@ -499,7 +532,7 @@ func (s *Service) AllExposures(ctx context.Context) ([]orchapi.Exposure, error) 
 	return out, nil
 }
 
-// deleteTries bounds how often a delete re-reads the record the reconciler renewed under it.
+// deleteTries bounds how often a delete or an update re-reads the record the reconciler renewed under it.
 const deleteTries = 3
 
 // DeleteExposure starts the release of the caller's exposure: the address stays claimed, and so
