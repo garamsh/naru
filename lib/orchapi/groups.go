@@ -99,6 +99,12 @@ type GroupMember struct {
 	PodPrefix string `json:"podPrefix,omitempty"`
 }
 
+// GroupHold is the latest reason the engine recorded for placing nothing.
+type GroupHold struct {
+	Time    time.Time `json:"time"`
+	Message string    `json:"message"`
+}
+
 // Group is a group with its members.
 type Group struct {
 	Spec GroupSpec `json:"spec"`
@@ -109,6 +115,9 @@ type Group struct {
 	// Observed is whether the members' phases were computed from the hosts just now.
 	Observed bool          `json:"observed"`
 	Members  []GroupMember `json:"members"`
+	// Hold is the latest hold the engine recorded for the group while it has fewer live members
+	// than its count, or nil.
+	Hold *GroupHold `json:"hold,omitempty"`
 }
 
 // ApplyGroup creates the group or replaces its spec. spec.Name names it.

@@ -135,6 +135,7 @@ func newRoot() *cobra.Command {
 			leaf("add <naru-orch-ext-tag.sqfs>", "store a system extension image on the Node (the admin role)", extensionAdd),
 			leaf("list", "list the images the Node stores and whether each is mounted", extensionList),
 			leaf("remove <sha256>", "remove an image that is not mounted", extensionRemove)),
+		leaf("events", "list orch's newest events, or one group's", events),
 		leaf("console", "serve a web console on this workstation", consoleCmd),
 	)
 	return root

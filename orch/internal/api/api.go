@@ -374,11 +374,20 @@ func (h *handler) microVMs(w http.ResponseWriter, r *http.Request, _ identity.Id
 
 func (h *handler) groupList(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
 	out, err := h.Groups.List(r.Context())
+	if err == nil {
+		err = h.withHold(r.Context(), out)
+	}
 	reply(w, r, out, err)
 }
 
 func (h *handler) groupGet(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
 	out, err := h.Groups.Get(r.Context(), r.PathValue("name"))
+	if err == nil {
+		one := []orchapi.Group{out}
+		if err = h.withHold(r.Context(), one); err == nil {
+			out = one[0]
+		}
+	}
 	reply(w, r, out, err)
 }
 
