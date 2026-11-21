@@ -297,7 +297,7 @@ func TestDefaultIdentityIsTheReleaseWorkflowAtTheVersionsTag(t *testing.T) {
 		return "https://github.com/garamsh/naru/.github/workflows/release.yml@refs/tags/" + v
 	}
 	r := newRelease(t, nil)
-	if err := signedBy(t, r, tag(version), ""); err != nil {
+	if err := signedBy(t, r, tag(version), DefaultIdentity); err != nil {
 		t.Fatalf("control: the workflow at the version's tag = %v", err)
 	}
 	for _, signer := range []string{
@@ -305,7 +305,7 @@ func TestDefaultIdentityIsTheReleaseWorkflowAtTheVersionsTag(t *testing.T) {
 		"https://github.com/garamsh/naru/.github/workflows/other.yml@refs/tags/" + version,
 		"https://github.com/garamsh/naru/.github/workflows/release.yml@refs/heads/main",
 	} {
-		if err := signedBy(t, r, signer, ""); !errors.Is(err, ErrIdentity) {
+		if err := signedBy(t, r, signer, DefaultIdentity); !errors.Is(err, ErrIdentity) {
 			t.Errorf("signer %s = %v, want ErrIdentity", signer, err)
 		}
 	}
@@ -314,6 +314,7 @@ func TestDefaultIdentityIsTheReleaseWorkflowAtTheVersionsTag(t *testing.T) {
 func TestNewRefuses(t *testing.T) {
 	dir := t.TempDir()
 	for name, c := range map[string]Config{
+		"an empty identity":          {Location: dir, Issuer: issuer},
 		"no issuer":                  {Location: dir, Identity: identity},
 		"plain http":                 {Location: "http://example.com/r", Issuer: issuer, Identity: identity},
 		"no directory":               {Location: filepath.Join(dir, "missing"), Issuer: issuer, Identity: identity},
@@ -324,7 +325,7 @@ func TestNewRefuses(t *testing.T) {
 			t.Errorf("%s: New succeeded", name)
 		}
 	}
-	for _, identity := range []string{identity, "", "https://github.com/garamsh/naru/*"} {
+	for _, identity := range []string{identity, DefaultIdentity, "https://github.com/garamsh/naru/*"} {
 		if _, err := New(Config{Location: dir, Issuer: issuer, Identity: identity}); err != nil {
 			t.Fatalf("control, the embedded trust root and a directory with identity %q: %v", identity, err)
 		}

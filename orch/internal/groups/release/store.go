@@ -53,8 +53,8 @@ type Config struct {
 	// Issuer is the OIDC issuer of the signer's certificate.
 	Issuer string
 	// Identity is the certificate identity of the signer. One ending in "*" is a prefix, which
-	// must name a repository: https://github.com/<owner>/<repo>/. Empty means the release
-	// workflow of this repository at the tag of the version fetched.
+	// must name a repository: https://github.com/<owner>/<repo>/. "{version}" in it is the version
+	// fetched, as in DefaultIdentity. Empty is an error.
 	Identity string
 	// Client reads an https store; nil means a client with the default transport.
 	Client *http.Client
