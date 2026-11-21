@@ -225,6 +225,9 @@ func (c *Cluster) Restart(t testing.TB, i int) *orchd.Orchd {
 	return m
 }
 
+// MemberConfig is the etcd configuration member i first started with.
+func (c *Cluster) MemberConfig(i int) member.Config { return c.cfgs[i].Config }
+
 // Client returns a client of member i's API that presents id, or no certificate when id is nil.
 func (c *Cluster) Client(t testing.TB, i int, id *Identity) *orchapi.Client {
 	t.Helper()

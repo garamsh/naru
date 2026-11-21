@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -129,10 +131,17 @@ type Housekeeper struct {
 	// Fence, when set, is called just before a removal and fails it when the pass no longer leads
 	// (ADR 0071), so a leader that paused past the end of its term removes nothing.
 	Fence func(ctx context.Context) error
+	// Report, when set, records that the live data of the named member is over a DisarmShare of the
+	// quota, which no defragmentation can free: the quota is to be raised (ADR 0088). It is called
+	// once per member for as long as the pass leads; a cluster whose no-space alarm is armed accepts
+	// no write, so there the record fails and only the log says so.
+	Report func(ctx context.Context, member string, detail map[string]string) error
 
 	// since is when each unreachable member was first seen so, by ID. It starts empty on every
 	// leader, which only delays a removal.
 	since map[uint64]time.Time
+	// reported is the members Report has been called for, by ID.
+	reported map[uint64]bool
 }
 
 type probe struct {
@@ -167,15 +176,26 @@ func (h *Housekeeper) Pass(ctx context.Context) error {
 	}
 	h.note(list.Members, down)
 
+	var errs []error
+	alarms, err := h.Client.AlarmList(ctx)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list the alarms: %w", err))
+		alarms = &clientv3.AlarmResponse{}
+	}
 	// A defragmentation blocks its member, so it runs only while every member answers. Clearing an
 	// alarm does not, and is the one thing a cluster with a member out needs from a member that
 	// answers.
-	var errs []error
 	for _, p := range up {
+		armed := slices.IndexFunc(alarms.Alarms, func(a *etcdserverpb.AlarmMember) bool {
+			return a.Alarm == etcdserverpb.AlarmType_NOSPACE && a.MemberID == p.member.ID
+		})
 		if len(down) == 0 {
-			errs = append(errs, h.defrag(ctx, p))
+			errs = append(errs, h.defrag(ctx, p, armed >= 0))
 		}
-		errs = append(errs, h.disarm(ctx, p))
+		if armed >= 0 {
+			errs = append(errs, h.disarm(ctx, p, alarms.Alarms[armed]))
+		}
+		h.checkFit(ctx, p)
 	}
 	if len(down) > 0 {
 		errs = append(errs, h.depart(ctx, list.Members, down))
@@ -184,8 +204,8 @@ func (h *Housekeeper) Pass(ctx context.Context) error {
 }
 
 // Forget drops what the housekeeper has seen of the members, for a member that no longer leads: a
-// later term starts its own count of how long a member has been out.
-func (h *Housekeeper) Forget() { h.since = nil }
+// later term starts its own count of how long a member has been out, and reports again.
+func (h *Housekeeper) Forget() { h.since, h.reported = nil, nil }
 
 // note remembers when each unreachable member first was, and forgets those that answer.
 func (h *Housekeeper) note(all, down []*etcdserverpb.Member) {
@@ -208,8 +228,13 @@ func (h *Housekeeper) note(all, down []*etcdserverpb.Member) {
 	}
 }
 
-func (h *Housekeeper) defrag(ctx context.Context, p probe) error {
-	if !ShouldDefrag(h.Quota, p.status.DbSize, p.status.DbSizeInUse) {
+// defrag defragments a member whose database ShouldDefrag, or whose no-space alarm is armed and
+// whose database is over the line for disarming it while its data is under: freeing the pages is
+// what lets the alarm be cleared.
+func (h *Housekeeper) defrag(ctx context.Context, p probe, armed bool) error {
+	line := h.Quota / DisarmShare
+	frees := armed && p.status.DbSize >= line && p.status.DbSizeInUse < line
+	if !frees && !ShouldDefrag(h.Quota, p.status.DbSize, p.status.DbSizeInUse) {
 		return nil
 	}
 	dctx, cancel := context.WithTimeout(ctx, defragTimeout)
@@ -223,27 +248,41 @@ func (h *Housekeeper) defrag(ctx context.Context, p probe) error {
 
 // disarm clears the no-space alarm raised by a member whose database, as it is now, is under a
 // DisarmShare of the quota. etcd keeps the whole cluster read-only until someone does.
-func (h *Housekeeper) disarm(ctx context.Context, p probe) error {
-	alarms, err := h.Client.AlarmList(ctx)
-	if err != nil {
-		return fmt.Errorf("list the alarms: %w", err)
+func (h *Housekeeper) disarm(ctx context.Context, p probe, alarm *etcdserverpb.AlarmMember) error {
+	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	st, err := h.Client.Status(pctx, p.member.ClientURLs[0])
+	cancel()
+	if err != nil || st.DbSize >= h.Quota/DisarmShare {
+		return nil
 	}
-	for _, a := range alarms.Alarms {
-		if a.Alarm != etcdserverpb.AlarmType_NOSPACE || a.MemberID != p.member.ID {
-			continue
-		}
-		pctx, cancel := context.WithTimeout(ctx, probeTimeout)
-		st, err := h.Client.Status(pctx, p.member.ClientURLs[0])
-		cancel()
-		if err != nil || st.DbSize >= h.Quota/DisarmShare {
-			continue
-		}
-		if _, err := h.Client.AlarmDisarm(ctx, (*clientv3.AlarmMember)(a)); err != nil {
-			return fmt.Errorf("disarm the no-space alarm of %s: %w", p.member.Name, err)
-		}
-		h.Log.Info("disarmed the no-space alarm of a member", "member", p.member.Name, "dbBytes", st.DbSize)
+	if _, err := h.Client.AlarmDisarm(ctx, (*clientv3.AlarmMember)(alarm)); err != nil {
+		return fmt.Errorf("disarm the no-space alarm of %s: %w", p.member.Name, err)
 	}
+	h.Log.Info("disarmed the no-space alarm of a member", "member", p.member.Name, "dbBytes", st.DbSize)
 	return nil
+}
+
+// checkFit logs at error level, and reports once, that the live data of a member is over the line
+// the alarm is disarmed under. Compaction and defragmentation cannot free it, so once the database
+// fills the quota the cluster stays read-only until the quota is raised.
+func (h *Housekeeper) checkFit(ctx context.Context, p probe) {
+	if p.status.DbSizeInUse < h.Quota/DisarmShare {
+		return
+	}
+	h.Log.Error("the data in a member's etcd database is over half its quota, which compaction and defragmentation cannot free; raise etcdQuotaBytes in spec.orch and reboot the control hosts",
+		"member", p.member.Name, "inUseBytes", p.status.DbSizeInUse, "quotaBytes", h.Quota)
+	if h.Report == nil || h.reported[p.member.ID] {
+		return
+	}
+	detail := map[string]string{"inUseBytes": strconv.FormatInt(p.status.DbSizeInUse, 10), "quotaBytes": strconv.FormatInt(h.Quota, 10)}
+	if err := h.Report(ctx, p.member.Name, detail); err != nil {
+		h.Log.Warn("the quota event was not recorded", "member", p.member.Name, "err", err.Error())
+		return
+	}
+	if h.reported == nil {
+		h.reported = map[uint64]bool{}
+	}
+	h.reported[p.member.ID] = true
 }
 
 // depart removes the first member that has been unreachable for the departure time, when it is

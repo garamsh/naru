@@ -80,7 +80,8 @@ type fleetOpts struct {
 	// seam for what orch's restore adds.
 	orchExtra func(i int) map[string]any
 	// orchJoin makes control Nodes 2 and up join Node 1's orch with spec.orch.join in place of a static
-	// initial cluster, as an image does for a cluster that grows, so each runs naru-orchd with --join.
+	// initial cluster, as an image does for a cluster that grows, so each runs naru-orchd with --join,
+	// and has Node 1 start alone, its initial cluster itself.
 	orchJoin bool
 }
 
@@ -319,6 +320,9 @@ func joinKeyOn(console string) string {
 // private key is the spec.files entry orchKeyFile makes.
 func (f *fleet) orchSpec(i int, members []int, state string, crt string) map[string]any {
 	cluster := map[string]string{}
+	if f.opts.orchJoin && i == 1 {
+		members = []int{1}
+	}
 	for _, m := range members {
 		cluster[orchName(m)] = "https://" + nodeIP(m) + ":" + orchPeerPort
 	}

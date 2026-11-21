@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -294,109 +292,89 @@ func TestHousekeeper_RemovesNothingWhenItsFenceFails(t *testing.T) {
 	assert.Empty(t, cl.removed, "a leader that lost its term removes no member")
 }
 
-// startOutside runs a member that is not part of the cluster c, from a data directory the test
-// fills with what a removed member would hold, and returns its config.
-func rejoinConfig(t *testing.T, c *orchtest.Cluster, name, peer string) member.Config {
-	t.Helper()
-	files := c.CA.IssueFiles(t, t.TempDir(), name)
-	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "member", "snap"), 0o755))
-	return member.Config{Name: name, DataDir: dir, PeerURL: peer, Cert: files.Cert, Key: files.Key, CA: files.CA}
+func TestHousekeeper_ReportsOnceAndLogsAnErrorWhenTheLiveDataIsOverTheLineTheAlarmIsDisarmedUnder(t *testing.T) {
+	const quota = 512 << 20
+	tests := []struct {
+		name   string
+		inUse  int64
+		alarm  bool
+		report int
+	}{
+		{"live data over half the quota with the alarm armed", quota / member.DisarmShare, true, 1},
+		{"live data over half the quota before the alarm is armed", quota / member.DisarmShare, false, 1},
+		{"live data just under half the quota", quota/member.DisarmShare - 1, true, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cl := fakeMembers(3)
+			cl.dbSize, cl.inUse = quota, tt.inUse
+			if tt.alarm {
+				cl.alarms = []*etcdserverpb.AlarmMember{{MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}}
+			}
+			var logged strings.Builder
+			var reports []string
+			h := &member.Housekeeper{Client: cl, Quota: quota, Now: time.Now, Log: slog.New(slog.NewTextHandler(&logged, nil)),
+				Report: func(_ context.Context, name string, detail map[string]string) error {
+					reports = append(reports, name+" "+detail["inUseBytes"])
+					return nil
+				}}
+
+			require.NoError(t, h.Pass(t.Context()))
+			require.NoError(t, h.Pass(t.Context()))
+
+			assert.Len(t, reports, 3*tt.report, "once for each of the three members, not once per pass")
+			assert.Equal(t, tt.report > 0, strings.Contains(logged.String(), "level=ERROR"))
+			assert.Empty(t, cl.disarmed, "the live data is over the line, so the alarm stays")
+		})
+	}
 }
 
-func TestDiscardIfRemoved_AsksTheClusterByTheMembersNameWhateverWayItStarted(t *testing.T) {
-	c := orchtest.Start(t, orchtest.Options{Members: 3})
-	cl := c.Members[0].Etcd()
-	list, err := cl.MemberList(t.Context())
-	require.NoError(t, err)
-	var peers []string
-	for _, m := range list.Members {
-		peers = append(peers, m.Name+"="+m.PeerURLs[0])
-	}
-	initial := strings.Join(peers, ",")
-	log := slog.New(slog.DiscardHandler)
+func TestHousekeeper_ARefusedReportIsLoggedAndTriedAtTheNextPass(t *testing.T) {
+	const quota = 512 << 20
+	cl := fakeMembers(3)
+	cl.dbSize, cl.inUse = quota, quota
+	calls := 0
+	var logged strings.Builder
+	h := &member.Housekeeper{Client: cl, Quota: quota, Now: time.Now, Log: slog.New(slog.NewTextHandler(&logged, nil)),
+		Report: func(context.Context, string, map[string]string) error {
+			calls++
+			return errors.New("etcdserver: no space")
+		}}
 
-	t.Run("joining: a member the cluster does not list", func(t *testing.T) {
-		cfg := rejoinConfig(t, c, "m9", "https://127.0.0.1:1")
-		cfg.Join = cl.Endpoints()[0]
-		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
-		require.NoError(t, err)
-		assert.Equal(t, cl.Endpoints()[0], via)
-		assert.False(t, member.HasData(cfg.DataDir))
-	})
-	t.Run("joining: a listed member keeps its directory", func(t *testing.T) {
-		cfg := rejoinConfig(t, c, list.Members[1].Name, list.Members[1].PeerURLs[0])
-		cfg.Join = cl.Endpoints()[0]
-		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
-		require.NoError(t, err)
-		assert.Empty(t, via)
-		assert.True(t, member.HasData(cfg.DataDir))
-	})
-	t.Run("joining: a cluster that cannot be asked leaves the directory", func(t *testing.T) {
-		cfg := rejoinConfig(t, c, "m9", "https://127.0.0.1:1")
-		cfg.Join = "https://127.0.0.1:1"
-		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
-		require.NoError(t, err)
-		assert.Empty(t, via)
-		assert.True(t, member.HasData(cfg.DataDir))
-	})
-	t.Run("static: a member the peers do not list", func(t *testing.T) {
-		cfg := rejoinConfig(t, c, "m9", "https://127.0.0.1:1")
-		cfg.InitialCluster = initial + ",m9=https://127.0.0.1:1"
-		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
-		require.NoError(t, err)
-		assert.NotEmpty(t, via)
-		assert.False(t, member.HasData(cfg.DataDir))
-	})
-	t.Run("static: a listed member keeps its directory even when its peer URL changed", func(t *testing.T) {
-		cfg := rejoinConfig(t, c, list.Members[1].Name, "https://127.0.0.1:1")
-		cfg.InitialCluster = initial
-		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
-		require.NoError(t, err)
-		assert.Empty(t, via)
-		assert.True(t, member.HasData(cfg.DataDir), "matched by name, not by URL")
-	})
-	t.Run("static: peers that do not answer leave the directory", func(t *testing.T) {
-		cfg := rejoinConfig(t, c, "m9", "https://127.0.0.1:1")
-		cfg.InitialCluster = "m9=https://127.0.0.1:1,m8=https://127.0.0.1:2"
-		via, err := member.DiscardIfRemoved(t.Context(), cfg, log)
-		require.NoError(t, err)
-		assert.Empty(t, via)
-		assert.True(t, member.HasData(cfg.DataDir))
-	})
+	require.NoError(t, h.Pass(t.Context()))
+	require.NoError(t, h.Pass(t.Context()))
+
+	assert.Equal(t, 6, calls, "a record that failed is tried again")
+	assert.Contains(t, logged.String(), "the quota event was not recorded")
 }
 
-func TestStart_RejoinsAStaticMemberTheHousekeeperRemoved(t *testing.T) {
-	c := orchtest.Start(t, orchtest.Options{Members: 3})
-	lead := c.Leader(t, []int{0, 1, 2}, 30*time.Second)
-	out := (lead + 1) % 3
-	cl := c.Members[lead].Etcd()
-	before, err := cl.MemberList(t.Context())
-	require.NoError(t, err)
-	require.NoError(t, c.Members[out].Stop())
-	now := time.Now()
-	h := &member.Housekeeper{Client: cl, Quota: member.MaxQuota, Departure: time.Hour, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
-	require.NoError(t, h.Pass(t.Context()))
-	now = now.Add(2 * time.Hour)
-	require.NoError(t, h.Pass(t.Context()))
-	gone, err := cl.MemberList(t.Context())
-	require.NoError(t, err)
-	require.Len(t, gone.Members, 2, "the housekeeper removed the member")
-
-	c.Restart(t, out)
-
-	after, err := cl.MemberList(t.Context())
-	require.NoError(t, err)
-	assert.Len(t, after.Members, 3, "the member, started with a static initial cluster, joined the cluster again")
-	oldIDs := map[uint64]bool{}
-	for _, m := range before.Members {
-		oldIDs[m.ID] = true
+func TestHousekeeper_DefragmentsAMemberWhoseAlarmItsFreePagesKeepArmed(t *testing.T) {
+	const quota = 512 << 20
+	line := int64(quota / member.DisarmShare)
+	tests := []struct {
+		name          string
+		dbSize, inUse int64
+		alarm         bool
+		defragged     bool
+	}{
+		{"armed, over the line but its data under it, with few free pages", line + 10<<20, line - 10<<20, true, true},
+		{"the same database with no alarm armed", line + 10<<20, line - 10<<20, false, false},
+		{"armed, and its data over the line, which a defragmentation cannot free", line + 10<<20, line + 5<<20, true, false},
+		{"armed, and the database already under the line", line - 1, line - 1, true, false},
 	}
-	fresh := 0
-	for _, m := range after.Members {
-		if !oldIDs[m.ID] {
-			fresh++
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cl := fakeMembers(3)
+			cl.dbSize, cl.inUse = tt.dbSize, tt.inUse
+			if tt.alarm {
+				cl.alarms = []*etcdserverpb.AlarmMember{{MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}}
+			}
+			require.False(t, member.ShouldDefrag(quota, tt.dbSize, tt.inUse), "ShouldDefrag alone would not defragment it")
+			h := &member.Housekeeper{Client: cl, Quota: quota, Now: time.Now, Log: slog.New(slog.DiscardHandler)}
+
+			require.NoError(t, h.Pass(t.Context()))
+
+			assert.Equal(t, tt.defragged, len(cl.defragged) > 0)
+		})
 	}
-	assert.Equal(t, 1, fresh, "it came back as a new member")
 }

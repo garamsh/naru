@@ -76,19 +76,19 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 	if c.Join != "" && c.State != StateExisting {
 		return nil, fmt.Errorf("--join needs the cluster state %q", StateExisting)
 	}
-	if HasData(c.DataDir) {
-		via, err := DiscardIfRemoved(ctx, c, cmp.Or(c.Log, slog.New(slog.DiscardHandler)))
-		if err != nil {
-			return nil, err
-		}
-		if via != "" {
-			c.Join, c.State = via, StateExisting
-		}
+	via, err := RejoinPeers(ctx, c, cmp.Or(c.Log, slog.New(slog.DiscardHandler)))
+	if err != nil {
+		return nil, err
 	}
-	if c.Join != "" && !HasData(c.DataDir) {
-		initial, err := join(ctx, c)
+	if len(via) > 0 {
+		c.State = StateExisting
+	} else if c.Join != "" {
+		via = []string{c.Join}
+	}
+	if len(via) > 0 && !HasData(c.DataDir) {
+		initial, err := join(ctx, c, via)
 		if err != nil {
-			return nil, fmt.Errorf("join %s: %w", c.Join, err)
+			return nil, fmt.Errorf("join: %w", err)
 		}
 		c.InitialCluster = initial
 	}
@@ -140,6 +140,11 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 		e.Close()
 		return nil, fmt.Errorf("etcd client: %w", err)
 	}
+	if err := removeMarker(c); err != nil {
+		_ = cl.Close()
+		e.Close()
+		return nil, fmt.Errorf("remove the rejoin marker: %w", err)
+	}
 	return &Member{etcd: e, client: cl}, nil
 }
 
@@ -150,20 +155,32 @@ func HasData(dir string) bool {
 	return err == nil
 }
 
-// join adds this member to the cluster the member at c.Join belongs to, unless an earlier attempt
-// already did, and returns the initial cluster this member starts with: every member that has a
-// name, and this one.
-func join(ctx context.Context, c Config) (string, error) {
+// join adds this member to the cluster the first of via that answers belongs to, unless an earlier
+// attempt already did, and returns the initial cluster this member starts with: every member that
+// has a name, and this one. Each peer has an equal share of a minute.
+func join(ctx context.Context, c Config, via []string) (string, error) {
+	var errs []error
+	for _, u := range via {
+		initial, err := joinVia(ctx, c, u, time.Minute/time.Duration(len(via)))
+		if err == nil {
+			return initial, nil
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", u, err))
+	}
+	return "", errors.Join(errs...)
+}
+
+func joinVia(ctx context.Context, c Config, via string, within time.Duration) (string, error) {
 	conf, err := clientTLS(c)
 	if err != nil {
 		return "", err
 	}
-	cl, err := clientv3.New(clientv3.Config{Endpoints: []string{c.Join}, DialTimeout: 10 * time.Second, TLS: conf})
+	cl, err := clientv3.New(clientv3.Config{Endpoints: []string{via}, DialTimeout: 10 * time.Second, TLS: conf})
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = cl.Close() }()
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, within)
 	defer cancel()
 	list, err := cl.MemberList(ctx)
 	if err != nil {

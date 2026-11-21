@@ -7,6 +7,8 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"github.com/garamsh/naru/lib/orchapi"
+	invetcd "github.com/garamsh/naru/orch/internal/inventory/etcd"
 	"github.com/garamsh/naru/orch/internal/leader"
 	"github.com/garamsh/naru/orch/internal/member"
 	"github.com/garamsh/naru/orch/internal/orchd"
@@ -14,6 +16,9 @@ import (
 
 // housekeepEvery is the default pause between the leader's housekeeping passes.
 const housekeepEvery = time.Minute
+
+// quotaEvent is the event type of a member whose live data is over half its quota.
+const quotaEvent = "etcd.quota"
 
 // housekeep runs the leader's etcd housekeeping (ADR 0088) every `every` until ctx ends. A
 // member that does not lead does nothing, so one member at a time is defragmented or removed.
@@ -24,6 +29,9 @@ func housekeep(ctx context.Context, log *slog.Logger, o *orchd.Orchd, quota int6
 	h.Fence = func(ctx context.Context) error {
 		_, err := leader.Guard(kv).Txn(ctx).Commit()
 		return err
+	}
+	h.Report = func(ctx context.Context, name string, detail map[string]string) error {
+		return invetcd.New(leader.Guard(kv)).AppendEvent(ctx, orchapi.Event{Time: time.Now(), Type: quotaEvent, Subject: name, Detail: detail})
 	}
 	t := time.NewTicker(every)
 	defer t.Stop()
