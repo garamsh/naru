@@ -125,6 +125,7 @@ func Start(t testing.TB, o Options) *Cluster {
 		initial = append(initial, fmt.Sprintf("m%d=https://127.0.0.1:%d", i, ports[2*i]))
 	}
 	type result struct {
+		i   int
 		o   *orchd.Orchd
 		err error
 	}
@@ -136,16 +137,17 @@ func Start(t testing.TB, o Options) *Cluster {
 		c.cfgs, c.deps = append(c.cfgs, cfg), append(c.deps, deps)
 		go func() {
 			m, err := orchd.Start(context.Background(), cfg, deps)
-			results <- result{m, err}
+			results <- result{i, m, err}
 		}()
 	}
 	// A member of a new cluster returns once a quorum exists, so all start together.
+	c.Members = make([]*orchd.Orchd, o.Members)
 	for range o.Members {
 		r := <-results
 		if r.err != nil {
 			t.Fatalf("start member: %v", r.err)
 		}
-		c.Members = append(c.Members, r.o)
+		c.Members[r.i] = r.o
 	}
 	t.Cleanup(func() {
 		for _, m := range c.Members {
@@ -212,6 +214,21 @@ func (c *Cluster) RestartRestoring(t testing.TB, i int) *orchd.Orchd {
 	c.Members[i] = m
 	return m
 }
+
+// Restart starts member i again, which must be stopped, on its data directory with the flags it
+// first started with, and returns it.
+func (c *Cluster) Restart(t testing.TB, i int) *orchd.Orchd {
+	t.Helper()
+	m, err := orchd.Start(context.Background(), c.cfgs[i], c.deps[i])
+	if err != nil {
+		t.Fatalf("restart member: %v", err)
+	}
+	c.Members[i] = m
+	return m
+}
+
+// MemberConfig is the etcd configuration member i first started with.
+func (c *Cluster) MemberConfig(i int) member.Config { return c.cfgs[i].Config }
 
 // Client returns a client of member i's API that presents id, or no certificate when id is nil.
 func (c *Cluster) Client(t testing.TB, i int, id *Identity) *orchapi.Client {

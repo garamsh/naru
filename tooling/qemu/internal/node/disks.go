@@ -19,7 +19,7 @@ import (
 // Size of the data disk of a Node (docs/architecture/config.md).
 const (
 	// The data disk is sparse. It holds the staged inputs, the Machines' root disks and mvmd's state.
-	dataDiskBytes = 2 << 30
+	dataDiskBytes = 8 << 30
 	mkfs          = "/sbin/mkfs.ext4"
 )
 

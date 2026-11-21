@@ -2,11 +2,13 @@
 package member
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,7 +18,6 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 )
@@ -45,6 +46,12 @@ type Config struct {
 	Join string
 	// Cert, Key and CA are orch's own pair and the authority etcd trusts on both ports.
 	Cert, Key, CA string
+	// QuotaBytes overrides the backend quota, which is otherwise derived from the data disk.
+	QuotaBytes int64
+	// CompactionRetention overrides CompactionRetention (a duration such as "10m").
+	CompactionRetention string
+	// Log receives what Start decides about the data directory; nil discards it.
+	Log *slog.Logger
 }
 
 // Member is a running etcd member.
@@ -69,14 +76,23 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 	if c.Join != "" && c.State != StateExisting {
 		return nil, fmt.Errorf("--join needs the cluster state %q", StateExisting)
 	}
-	if c.Join != "" && !HasData(c.DataDir) {
-		initial, err := join(ctx, c)
+	via, err := RejoinPeers(ctx, c, cmp.Or(c.Log, slog.New(slog.DiscardHandler)))
+	if err != nil {
+		return nil, err
+	}
+	if len(via) > 0 {
+		c.State = StateExisting
+	} else if c.Join != "" {
+		via = []string{c.Join}
+	}
+	if len(via) > 0 && !HasData(c.DataDir) {
+		initial, err := join(ctx, c, via)
 		if err != nil {
-			return nil, fmt.Errorf("join %s: %w", c.Join, err)
+			return nil, fmt.Errorf("join: %w", err)
 		}
 		c.InitialCluster = initial
 	}
-	tlsInfo := transport.TLSInfo{CertFile: c.Cert, KeyFile: c.Key, TrustedCAFile: c.CA, ClientCertAuth: true}
+	tlsInfo := peerTLS(c)
 
 	cfg := embed.NewConfig()
 	cfg.Name = c.Name
@@ -90,6 +106,15 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 	cfg.PeerTLSInfo = tlsInfo
 	cfg.ClientTLSInfo = tlsInfo
 	cfg.LogLevel = "error"
+	cfg.AutoCompactionMode = embed.CompactorModePeriodic
+	cfg.AutoCompactionRetention = cmp.Or(c.CompactionRetention, CompactionRetention)
+	cfg.MaxWalFiles = maxFiles
+	cfg.MaxSnapFiles = maxFiles
+	quota, err := c.BackendQuota()
+	if err != nil {
+		return nil, err
+	}
+	cfg.QuotaBackendBytes = quota
 
 	e, err := embed.StartEtcd(cfg)
 	if err != nil {
@@ -115,6 +140,11 @@ func Start(ctx context.Context, c Config) (*Member, error) {
 		e.Close()
 		return nil, fmt.Errorf("etcd client: %w", err)
 	}
+	if err := removeMarker(c); err != nil {
+		_ = cl.Close()
+		e.Close()
+		return nil, fmt.Errorf("remove the rejoin marker: %w", err)
+	}
 	return &Member{etcd: e, client: cl}, nil
 }
 
@@ -125,20 +155,32 @@ func HasData(dir string) bool {
 	return err == nil
 }
 
-// join adds this member to the cluster the member at c.Join belongs to, unless an earlier attempt
-// already did, and returns the initial cluster this member starts with: every member that has a
-// name, and this one.
-func join(ctx context.Context, c Config) (string, error) {
+// join adds this member to the cluster the first of via that answers belongs to, unless an earlier
+// attempt already did, and returns the initial cluster this member starts with: every member that
+// has a name, and this one. Each peer has an equal share of a minute.
+func join(ctx context.Context, c Config, via []string) (string, error) {
+	var errs []error
+	for _, u := range via {
+		initial, err := joinVia(ctx, c, u, time.Minute/time.Duration(len(via)))
+		if err == nil {
+			return initial, nil
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", u, err))
+	}
+	return "", errors.Join(errs...)
+}
+
+func joinVia(ctx context.Context, c Config, via string, within time.Duration) (string, error) {
 	conf, err := clientTLS(c)
 	if err != nil {
 		return "", err
 	}
-	cl, err := clientv3.New(clientv3.Config{Endpoints: []string{c.Join}, DialTimeout: 10 * time.Second, TLS: conf})
+	cl, err := clientv3.New(clientv3.Config{Endpoints: []string{via}, DialTimeout: 10 * time.Second, TLS: conf})
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = cl.Close() }()
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, within)
 	defer cancel()
 	list, err := cl.MemberList(ctx)
 	if err != nil {

@@ -37,6 +37,10 @@ const (
 // are dropped, oldest first.
 const maxEvents = 20000
 
+// maxEventAge is how old an event may be before it is dropped, whatever the log's count: a quiet
+// fleet's events stay as relevant as a week, and no longer.
+const maxEventAge = 7 * 24 * time.Hour
+
 // trimBatch is how many events one trim transaction deletes. etcd refuses a transaction of more
 // than --max-txn-ops operations (128 by default), so a log far past its bound is trimmed in
 // batches below that.
@@ -50,12 +54,14 @@ type Store struct {
 	kv clientv3.KV
 	// keepEvents is how many events the log keeps; maxEvents unless a test says less.
 	keepEvents int
+	// now dates the age bound of the event log.
+	now func() time.Time
 }
 
 var _ inventory.Store = (*Store)(nil)
 
 // New returns a store over kv.
-func New(kv clientv3.KV) *Store { return &Store{kv: kv, keepEvents: maxEvents} }
+func New(kv clientv3.KV) *Store { return &Store{kv: kv, keepEvents: maxEvents, now: time.Now} }
 
 func encode(v any) string {
 	b, err := json.Marshal(v)
@@ -65,10 +71,19 @@ func encode(v any) string {
 	return string(b)
 }
 
-func eventOp(ev orchapi.Event) clientv3.Op {
+// eventOps are the operations that record ev: its put, and the deletion of the events older than
+// maxEventAge by this store's clock, in the transaction of the write that makes the log grow. The
+// keys sort by time, so one range covers them; it ends before ev's own key, which a transaction may
+// not both delete and put.
+func (s *Store) eventOps(ev orchapi.Event) []clientv3.Op {
 	var salt [4]byte
 	_, _ = rand.Read(salt[:])
-	return clientv3.OpPut(fmt.Sprintf("%s%020d-%s", eventPrefix, ev.Time.UnixNano(), hex.EncodeToString(salt[:])), encode(ev))
+	at := ev.Time.UnixNano()
+	ops := []clientv3.Op{clientv3.OpPut(fmt.Sprintf("%s%020d-%s", eventPrefix, at, hex.EncodeToString(salt[:])), encode(ev))}
+	if cutoff := min(s.now().Add(-maxEventAge).UnixNano(), at); cutoff > 0 {
+		ops = append(ops, clientv3.OpDelete(eventPrefix, clientv3.WithRange(fmt.Sprintf("%s%020d", eventPrefix, cutoff))))
+	}
+	return ops
 }
 
 // get reads one record into out and returns its modification revision.
@@ -138,7 +153,7 @@ func (s *Store) GetKey(ctx context.Context, id string) (inventory.Key, error) {
 }
 
 func (s *Store) RevokeKey(ctx context.Context, id string, ev orchapi.Event) error {
-	_, err := update(ctx, s, keyPrefix+id, func(k *inventory.Key) error { k.Revoked = true; return nil }, eventOp(ev))
+	_, err := update(ctx, s, keyPrefix+id, func(k *inventory.Key) error { k.Revoked = true; return nil }, s.eventOps(ev)...)
 	return err
 }
 
@@ -150,7 +165,7 @@ func (s *Store) PutPending(ctx context.Context, p inventory.Pending, ev *orchapi
 	}
 	ops := []clientv3.Op{clientv3.OpPut(key, encode(p))}
 	if ev != nil {
-		ops = append(ops, eventOp(*ev))
+		ops = append(ops, s.eventOps(*ev)...)
 	}
 	resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(hostPrefix+p.HostID), "=", 0), pend).Then(ops...).Commit()
 	if err != nil {
@@ -249,7 +264,7 @@ func (s *Store) Admit(ctx context.Context, p inventory.Pending, h inventory.Host
 		clientv3.Compare(clientv3.CreateRevision(key), ">", 0),
 		clientv3.Compare(clientv3.CreateRevision(hostPrefix+h.ID), "=", 0),
 	}
-	ops := []clientv3.Op{clientv3.OpDelete(key), clientv3.OpPut(hostPrefix+h.ID, encode(h)), eventOp(ev)}
+	ops := append([]clientv3.Op{clientv3.OpDelete(key), clientv3.OpPut(hostPrefix+h.ID, encode(h))}, s.eventOps(ev)...)
 	if alloc != nil {
 		confirmed := *alloc
 		confirmed.ReservedUntil = time.Time{}
@@ -315,7 +330,7 @@ func (s *Store) RemoveHost(ctx context.Context, id string, ev orchapi.Event) (in
 		if err != nil {
 			return h, err
 		}
-		ops := []clientv3.Op{clientv3.OpDelete(key), eventOp(ev)}
+		ops := append([]clientv3.Op{clientv3.OpDelete(key)}, s.eventOps(ev)...)
 		if h.MachinePrefix != "" {
 			ops = append(ops, clientv3.OpDelete(allocPrefix+h.MachinePrefix))
 		}
@@ -346,7 +361,7 @@ func (s *Store) GetProfile(ctx context.Context) ([]byte, error) {
 }
 
 func (s *Store) PutProfile(ctx context.Context, yaml []byte, ev orchapi.Event) error {
-	_, err := s.kv.Txn(ctx).Then(clientv3.OpPut(profileKey, string(yaml)), eventOp(ev)).Commit()
+	_, err := s.kv.Txn(ctx).Then(append([]clientv3.Op{clientv3.OpPut(profileKey, string(yaml))}, s.eventOps(ev)...)...).Commit()
 	return err
 }
 
@@ -363,7 +378,7 @@ func (s *Store) ListHosts(ctx context.Context) ([]inventory.Host, error) {
 func (s *Store) UpdateHost(ctx context.Context, id string, change func(*inventory.Host), ev *orchapi.Event) (inventory.Host, error) {
 	var ops []clientv3.Op
 	if ev != nil {
-		ops = append(ops, eventOp(*ev))
+		ops = append(ops, s.eventOps(*ev)...)
 	}
 	return update(ctx, s, hostPrefix+id, func(h *inventory.Host) error {
 		change(h)
@@ -374,15 +389,16 @@ func (s *Store) UpdateHost(ctx context.Context, id string, change func(*inventor
 }
 
 func (s *Store) AppendEvent(ctx context.Context, ev orchapi.Event) error {
-	if _, err := s.kv.Do(ctx, eventOp(ev)); err != nil {
+	if _, err := s.kv.Txn(ctx).Then(s.eventOps(ev)...).Commit(); err != nil {
 		return err
 	}
 	return s.trimEvents(ctx)
 }
 
-// trimEvents drops the oldest events beyond the bound. The log is bounded here, on the appends
-// that make it grow fastest; a failed trim is tried again by the next append, so it is not an
-// error of the append that was already kept.
+// trimEvents drops the oldest events beyond the count bound. The count is bounded here, on the
+// appends that make the log grow fastest, and the age bound on every write that records an event
+// (eventOps); a failed trim is tried again by the next append, so it is not an error of the append
+// that was already kept.
 func (s *Store) trimEvents(ctx context.Context) error {
 	for {
 		n, err := s.kv.Get(ctx, eventPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())

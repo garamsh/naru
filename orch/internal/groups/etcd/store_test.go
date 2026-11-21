@@ -118,7 +118,7 @@ func TestOnlyOneOfTwoRacingWritersWins(t *testing.T) {
 func TestEventsGoToTheInventoryLogAndARepeatedHoldIsWrittenOnce(t *testing.T) {
 	_, inv := newStore(t)
 	e := groupsetcd.NewEvents(inv)
-	t0 := time.Unix(1000, 0).UTC()
+	t0 := time.Now().Add(-time.Hour).UTC() // recent: the store drops events older than their age bound
 	hold := groups.Event{Time: t0, Kind: groups.EventHold, Group: "web", Message: "no host has room"}
 
 	require.NoError(t, e.Record(t.Context(), hold))
