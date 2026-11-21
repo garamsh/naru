@@ -159,6 +159,9 @@ func startExposer(t *testing.T, state string, link *fakeLink, c *clock) *exposur
 	require.NoError(t, m.Load(context.Background()))
 	if _, ok := m.Network("a"); !ok {
 		require.NoError(t, m.Declare(context.Background(), network.Network{Name: "a", Prefix: pfx("10.8.0.0/16"), Remote: []netip.Prefix{pfx("10.0.2.7/32")}}))
+		for _, b := range []string{"10.8.0.5", "10.8.0.6"} {
+			require.NoError(t, m.Attach(context.Background(), network.Member{Network: "a", Address: addr(b)}))
+		}
 	}
 	x := &network.Exposer{Manager: m, Link: link, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: c.now}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -287,6 +290,8 @@ func TestExposer_RefusesWhatTheHostMustNotServe(t *testing.T) {
 		"a member's address":            {func(x *network.Exposure) { x.Address = addr("10.0.0.3") }, network.ErrReserved},
 		"a remote member's address":     {func(x *network.Exposure) { x.Address = addr("10.0.2.7") }, network.ErrReserved},
 		"the management plane":          {func(x *network.Exposure) { x.Address = addr("172.16.0.9") }, network.ErrReserved},
+		"a backend on another host":     {func(x *network.Exposure) { x.Backends = []netip.Addr{addr("10.0.2.7")} }, network.ErrBackend},
+		"a backend only in the prefix":  {func(x *network.Exposure) { x.Backends = []netip.Addr{addr("10.8.0.99")} }, network.ErrBackend},
 		"a backend outside the network": {func(x *network.Exposure) { x.Backends = []netip.Addr{addr("10.8.0.5"), addr("10.9.0.5")} }, network.ErrBackend},
 		"a backend that is the LAN's":   {func(x *network.Exposure) { x.Backends = []netip.Addr{addr("192.168.0.1")} }, network.ErrBackend},
 		"an unknown network":            {func(x *network.Exposure) { x.Network = "nope" }, network.ErrUnknownNetwork},
@@ -300,8 +305,8 @@ func TestExposer_RefusesWhatTheHostMustNotServe(t *testing.T) {
 	assert.Empty(t, e.x.Exposures())
 
 	ok := web(false)
-	ok.Backends = []netip.Addr{addr("10.0.0.3"), addr("10.0.2.7"), addr("10.8.0.5")}
-	require.NoError(t, e.x.Put(ctx, ok, 15*time.Second), "control: an attached member, a remote member and an address of the prefix are backends")
+	ok.Backends = []netip.Addr{addr("10.0.0.3"), addr("10.8.0.5")}
+	require.NoError(t, e.x.Put(ctx, ok, 15*time.Second), "control: microVMs attached on this host are backends")
 }
 
 func TestExposer_AHostWithoutALANInterfaceRefuses(t *testing.T) {
@@ -312,6 +317,8 @@ func TestExposer_AHostWithoutALANInterfaceRefuses(t *testing.T) {
 	require.NoError(t, x.Restore(context.Background()))
 	assert.ErrorIs(t, x.Put(context.Background(), web(false), time.Second), network.ErrNoLAN)
 	m.Base.LAN = "lan0"
+	require.NoError(t, m.Attach(context.Background(), network.Member{Network: "a", Address: addr("10.8.0.5")}))
+	require.NoError(t, m.Attach(context.Background(), network.Member{Network: "a", Address: addr("10.8.0.6")}))
 	assert.NoError(t, x.Put(context.Background(), web(false), time.Second), "control: with one it is taken")
 }
 
