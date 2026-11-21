@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
@@ -44,7 +45,20 @@ type KubeSpec struct {
 	// which `naructl token create --kubernetes` adds a Late worker's token live (ADR 0081); the
 	// authority's directory stays until Stop.
 	Late []int
+	// VolumeDisk, when "storage" or "block", gives every Node a blank extra disk of KubeVolumeDiskBytes
+	// with the serial KubeVolumeSerial, which the Node's configuration makes the disk of the local
+	// volumes (naru-local: XFS, mounted by init, the first storage disk) or offers whole as a block
+	// volume (naru-block), so that the volume add-on has a disk to serve (ADR 0083).
+	VolumeDisk string
 }
+
+// The extra disk of a cluster that serves volumes (KubeSpec.VolumeDisk).
+const (
+	KubeVolumeDiskBytes = 1 << 30
+	KubeVolumeSerial    = "NARUVOL0001"
+	VolumeDiskStorage   = "storage"
+	VolumeDiskBlock     = "block"
+)
 
 // KubeCluster is the two Nodes and the administrator's kubeconfig, which dials the control-plane
 // Node's API server through the forward on the test host.
@@ -156,6 +170,9 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 // Node API, when the cluster has one.
 func (c *KubeCluster) startNode(i, apiPort int) error {
 	cfg := Config{Name: fmt.Sprintf("node-%d", i), Index: i, Total: c.total, ControlPlane: i == 1, Inputs: c.spec.Inputs, MemoryMiB: KubeNodeMemoryMiB}
+	if c.spec.VolumeDisk != "" {
+		cfg.ExtraDisk, cfg.VirtioDisks, cfg.ExtraDiskSerial = KubeVolumeDiskBytes, true, KubeVolumeSerial
+	}
 	if i == 1 {
 		cfg.HostPort = c.hostPort // only the control-plane Node has the second NIC
 		cfg.APIHostPort = apiPort
@@ -219,7 +236,7 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	if c.hostNIC() {
 		k.ExtraNIC = c.HostMAC() + "=" + HostNICPrefix
 	}
-	if err := spec.Naructl.GenKubernetesNode(k); err != nil {
+	if err := genKubernetesNode(spec, k); err != nil {
 		return nil, nil, err
 	}
 	if userData, err = os.ReadFile(k.Out); err != nil {
@@ -227,6 +244,52 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	}
 	networkConfig, err = os.ReadFile(k.NetworkConfig)
 	return userData, networkConfig, err
+}
+
+// genKubernetesNode has naructl write the Node's files. A cluster that serves volumes adds the flags
+// the harness's naructl wrapper has no field for (--storage, --block-serial), so the command is composed
+// here; the same arguments as Tool.GenKubernetesNode otherwise.
+func genKubernetesNode(spec KubeSpec, k naructl.KubernetesNode) error {
+	if spec.VolumeDisk == "" {
+		return spec.Naructl.GenKubernetesNode(k)
+	}
+	if spec.VolumeDisk != VolumeDiskStorage && spec.VolumeDisk != VolumeDiskBlock {
+		return fmt.Errorf("VolumeDisk is %q, not %q or %q", spec.VolumeDisk, VolumeDiskStorage, VolumeDiskBlock)
+	}
+	args := []string{"gen", "kubernetes-node", "--ca-dir", k.CA, "--name", k.Name, "--role", k.Role, "--address", k.Address,
+		"--endpoint", k.Endpoint, "--pod-network", k.PodNetwork, "--pod-prefix", k.PodPrefix, "--out", k.Out,
+		"--local-registry", "--registry-ca", k.RegistryCA, "--sandbox-image", k.SandboxImage,
+		"--network-config", k.NetworkConfig, "--mac", k.MAC, "--gateway", k.Gateway}
+	for _, v := range k.Peers {
+		args = append(args, "--peer", v)
+	}
+	for _, v := range k.Nameservers {
+		args = append(args, "--nameserver", v)
+	}
+	if k.Search != "" {
+		args = append(args, "--search", k.Search)
+	}
+	if k.ExtraNIC != "" {
+		args = append(args, "--extra-nic", k.ExtraNIC)
+	}
+	for _, v := range k.Disable {
+		args = append(args, "--disable", v)
+	}
+	if k.BootstrapTokens {
+		args = append(args, "--bootstrap-tokens")
+	}
+	if k.Token {
+		args = append(args, "--token")
+	}
+	if spec.VolumeDisk == VolumeDiskStorage {
+		args = append(args, "--storage", "data1=serial:"+KubeVolumeSerial)
+	} else {
+		args = append(args, "--block-serial", KubeVolumeSerial)
+	}
+	if r := spec.Naructl.Run(args...); r.Err != nil {
+		return fmt.Errorf("naructl %s: %w: %s", strings.Join(args[:2], " "), r.Err, strings.TrimSpace(r.Stderr))
+	}
+	return nil
 }
 
 // Stop ends every Node, and removes the authority's directory a cluster with Late workers kept.
