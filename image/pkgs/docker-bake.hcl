@@ -30,7 +30,7 @@ group "upgrade" {
 
 group "default" {
   targets = ["builder", "toolchain", "util-linux", "e2fsprogs", "liburcu", "libinih", "xfsprogs", "libmnl", "libnftnl", "jansson", "nftables", "cacert",
-    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes", "coredns",
+    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes", "coredns", "volumes",
     "libseccomp", "containerd", "rolesanywhere",
     "mvmd", "guest-initrds",
     "kernel-host", "kernel-node", "kernel-guest-naru",
@@ -207,6 +207,16 @@ target "coredns" {
   inherits = ["_package"]
   context  = "coredns"
   output   = ["type=oci,dest=${OUT}/coredns.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+# The volume add-on's extension (ADR 0083, 0084): the driver and its sidecars, an image archive and the
+# manifests in a squashfs, with the description make image reads as it reads the naru-orch extension's.
+target "volumes" {
+  inherits = ["_package"]
+  context  = "volumes"
+  contexts = { src = "../.." }
+  args     = { NARU_VERSION = NARU_VERSION }
+  output   = ["type=oci,dest=${OUT}/volumes.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
 target "libseccomp" {
