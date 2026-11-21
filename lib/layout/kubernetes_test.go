@@ -577,3 +577,74 @@ func TestKubernetesUserData_RefusesAStorageDiskInitWouldRefuse(t *testing.T) {
 
 	require.Error(t, err)
 }
+
+// issuerFlags are the API server's --service-account-issuer values, in order, and its JWKS URI flag.
+func issuerFlags(t *testing.T, n layout.Node) (issuers []string, jwksURI string) {
+	t.Helper()
+	args, _, _ := serviceByName(t, kubeUserData(t, n), "kube-apiserver")
+	for _, a := range args {
+		if v, ok := strings.CutPrefix(a, "--service-account-issuer="); ok {
+			issuers = append(issuers, v)
+		}
+		if v, ok := strings.CutPrefix(a, "--service-account-jwks-uri="); ok {
+			jwksURI = v
+		}
+	}
+	return issuers, jwksURI
+}
+
+func TestKubernetesUserData_NoIssuerSetKeepsTheInClusterIssuerAloneAndTheDiscoveryDocumentsDefault(t *testing.T) {
+	issuers, jwksURI := issuerFlags(t, kubeNode(t, true, nil))
+
+	assert.Equal(t, []string{"https://kubernetes.default.svc.cluster.local"}, issuers)
+	assert.Empty(t, jwksURI)
+}
+
+func TestKubernetesUserData_TheOperatorsIssuersComeFirstInOrderAndTheInClusterIssuerIsStillAccepted(t *testing.T) {
+	n := kubeNode(t, true, func(n *layout.Node) {
+		n.Kube.ServiceAccountIssuers = []string{"https://oidc.example.com/naru", "https://other.example.com"}
+	})
+
+	issuers, jwksURI := issuerFlags(t, n)
+
+	assert.Equal(t, []string{"https://oidc.example.com/naru", "https://other.example.com", "https://kubernetes.default.svc.cluster.local"}, issuers,
+		"the first signs, and the in-cluster issuer is accepted last")
+	assert.Equal(t, "https://oidc.example.com/naru/openid/v1/jwks", jwksURI, "the first issuer's key set")
+}
+
+func TestKubernetesUserData_AnIssuerThatNamesTheInClusterOneIsNotRepeated(t *testing.T) {
+	n := kubeNode(t, true, func(n *layout.Node) {
+		n.Kube.ServiceAccountIssuers = []string{"https://kubernetes.default.svc.cluster.local"}
+	})
+
+	issuers, _ := issuerFlags(t, n)
+
+	assert.Equal(t, []string{"https://kubernetes.default.svc.cluster.local"}, issuers)
+}
+
+func TestKubernetesUserData_RefusesAnIssuerOpenIDConnectDoesNotAllow(t *testing.T) {
+	for _, bad := range []string{"http://oidc.example.com", "https://oidc.example.com?a=b", "https://oidc.example.com#f", "https://oidc.example.com/", "oidc.example.com", "https://"} {
+		n := kubeNode(t, true, func(n *layout.Node) { n.Kube.ServiceAccountIssuers = []string{bad} })
+		_, err := n.UserData()
+		assert.ErrorContains(t, err, "ServiceAccount issuer", bad)
+	}
+	n := kubeNode(t, true, func(n *layout.Node) {
+		n.Kube.ServiceAccountIssuers = []string{"https://a.example.com", "https://a.example.com"}
+	})
+	_, err := n.UserData()
+	assert.ErrorContains(t, err, "ServiceAccount issuer", "repeated")
+	ok := kubeNode(t, true, func(n *layout.Node) { n.Kube.ServiceAccountIssuers = []string{"https://a.example.com/path"} })
+	_, err = ok.UserData()
+	assert.NoError(t, err, "control: a valid issuer with a path")
+}
+
+func TestKubernetesUserData_AnAppliedKeyChangeRestartsTheServicesThatReadTheKeys(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, nil))
+
+	restarts := map[string][]string{}
+	for _, f := range s.Spec.Files {
+		restarts[f.Path] = f.Restart
+	}
+	assert.Equal(t, []string{"kube-apiserver", "kube-controller-manager"}, restarts["/run/kubernetes/pki/sa.key"])
+	assert.Equal(t, []string{"kube-apiserver"}, restarts["/run/kubernetes/pki/sa.pub"])
+}

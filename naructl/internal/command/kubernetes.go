@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,9 +26,19 @@ func genKubernetes(fs *pflag.FlagSet) runner {
 	endpoint := fs.String("endpoint", "", "the address of the API server")
 	adminAddress := fs.String("admin-address", "", "the host:port admin.conf dials, when it is not the endpoint on the API port (a forward)")
 	disableAddons := fs.StringArray("disable-addon", nil, "a cluster add-on the cluster does not run ("+strings.Join(layout.Addons, ", ")+"), repeatable: its objects are the cluster owner's, and the Nodes neither apply nor remove them")
+	issuers := fs.StringArray("service-account-issuer", nil, "a ServiceAccount issuer, an https URL, repeatable: the first signs the tokens and the API server accepts them all and the in-cluster issuer (ADR 0087)")
+	algorithm := fs.String("service-account-algorithm", string(pki.DefaultAlgorithm), "the algorithm of the ServiceAccount key made: RS256 or ES256; a key already there is kept, and an algorithm named that differs from its refuses")
+	rotate := fs.Bool("rotate-service-account-key", false, "make a new ServiceAccount key that signs, and keep the public key of the one it replaces so that its tokens stay valid")
 	return func(args []string, stdout, stderr io.Writer) error {
 		if err := require(fs, "ca-dir", "endpoint"); err != nil {
 			return err
+		}
+		alg, err := pki.ParseAlgorithm(*algorithm)
+		if err != nil {
+			return fmt.Errorf("--service-account-algorithm: %w", err)
+		}
+		if !layout.ValidIssuers(*issuers) {
+			return errors.New("--service-account-issuer is not an https URL with a host, no query or fragment and no trailing slash, or is repeated")
 		}
 		addr, err := netip.ParseAddr(*endpoint)
 		if err != nil {
@@ -54,19 +65,16 @@ func genKubernetes(fs *pflag.FlagSet) runner {
 		} else if err := pki.WriteFile(disabled, []byte(strings.Join(*disableAddons, "\n")+"\n"), 0o644); err != nil {
 			return err
 		}
-		key, pub := filepath.Join(*caDir, pki.ServiceAccountKeyFile), filepath.Join(*caDir, pki.ServiceAccountPubFile)
-		if _, err := os.Stat(key); errors.Is(err, os.ErrNotExist) {
-			keyPEM, pubPEM, err := pki.ServiceAccountKey()
-			if err != nil {
+		// Like the add-ons, the issuers follow the flags: with none, the in-cluster issuer signs.
+		issuersFile := filepath.Join(*caDir, pki.ServiceAccountIssuersFile)
+		if len(*issuers) == 0 {
+			if err := os.Remove(issuersFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
-			if err := pki.WriteFile(key, keyPEM, 0o600); err != nil {
-				return err
-			}
-			if err := pki.WriteFile(pub, pubPEM, 0o644); err != nil {
-				return err
-			}
-		} else if err != nil {
+		} else if err := pki.WriteFile(issuersFile, []byte(strings.Join(*issuers, "\n")+"\n"), 0o644); err != nil {
+			return err
+		}
+		if err := serviceAccountKey(*caDir, alg, fs.Changed("service-account-algorithm"), *rotate); err != nil {
 			return err
 		}
 		admin, err := ca.Client(pki.AdminName, pki.AdminOrganization)
@@ -84,6 +92,103 @@ func genKubernetes(fs *pflag.FlagSet) runner {
 		_, _ = fmt.Fprintf(stdout, "naructl: wrote %s, which carries a key; keep it in your secret store\n", conf)
 		return nil
 	}
+}
+
+// serviceAccountKey makes the cluster's ServiceAccount key pair in caDir if there is none. A key there
+// is kept unless rotate makes a new one, which signs while the public key of the one it replaces stays
+// in sa.pub (ADR 0087). A key there of another algorithm than one the operator named is refused.
+func serviceAccountKey(caDir string, alg pki.Algorithm, named, rotate bool) error {
+	key, pub := filepath.Join(caDir, pki.ServiceAccountKeyFile), filepath.Join(caDir, pki.ServiceAccountPubFile)
+	old, err := os.ReadFile(pub)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		rotate = false
+	case err != nil:
+		return err
+	case rotate:
+	default:
+		have, err := pki.KeyAlgorithm(old)
+		if err != nil {
+			return fmt.Errorf("%s: %w", pub, err)
+		}
+		if named && have != alg {
+			return fmt.Errorf("the ServiceAccount key is %s, not %s; --rotate-service-account-key makes a new one", have, alg)
+		}
+		return nil
+	}
+	keyPEM, pubPEM, err := pki.ServiceAccountKey(alg)
+	if err != nil {
+		return err
+	}
+	if rotate {
+		if pubPEM, err = pki.RotatedPublicKeys(pubPEM, old); err != nil {
+			return fmt.Errorf("%s: %w", pub, err)
+		}
+	}
+	if err := pki.WriteFile(key, keyPEM, 0o600); err != nil {
+		return err
+	}
+	return pki.WriteFile(pub, pubPEM, 0o644)
+}
+
+// genKubernetesJWKS writes what an external OpenID Connect provider's client fetches from the first
+// issuer: the discovery document and the JSON Web Key Set of the ServiceAccount public keys, under the
+// paths the issuer serves them at, for the operator to publish as they are (ADR 0087).
+func genKubernetesJWKS(fs *pflag.FlagSet) runner {
+	caDir := fs.String("ca-dir", "", "directory gen kubernetes wrote the ServiceAccount keys and issuers to")
+	outDir := fs.String("out-dir", "", "the directory that receives .well-known/openid-configuration and openid/v1/jwks, under the issuer's path")
+	return func(args []string, stdout, stderr io.Writer) error {
+		if err := require(fs, "ca-dir", "out-dir"); err != nil {
+			return err
+		}
+		issuers, err := readIssuers(*caDir)
+		if err != nil {
+			return err
+		}
+		if len(issuers) == 0 {
+			return errors.New("the cluster has no ServiceAccount issuer to publish for (run gen kubernetes --service-account-issuer)")
+		}
+		pub, err := os.ReadFile(filepath.Join(*caDir, pki.ServiceAccountPubFile))
+		if err != nil {
+			return fmt.Errorf("the ServiceAccount key (run gen kubernetes): %w", err)
+		}
+		issuer := issuers[0]
+		u, err := url.Parse(issuer)
+		if err != nil {
+			return err
+		}
+		discovery, err := pki.OIDCDiscovery(issuer, layout.JWKSURI(issuer), pub)
+		if err != nil {
+			return err
+		}
+		jwks, err := pki.ServiceAccountJWKS(pub)
+		if err != nil {
+			return err
+		}
+		for rel, content := range map[string][]byte{
+			".well-known/openid-configuration":       discovery,
+			strings.TrimPrefix(layout.JWKSPath, "/"): jwks,
+		} {
+			file := filepath.Join(*outDir, filepath.FromSlash(strings.TrimPrefix(u.Path, "/")), filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+				return err
+			}
+			if err := pki.WriteFile(file, append(content, '\n'), 0o644); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(stdout, "naructl: wrote %s, to serve at %s/%s\n", file, issuer, rel)
+		}
+		return nil
+	}
+}
+
+// readIssuers returns the issuers gen kubernetes wrote to caDir, in order.
+func readIssuers(caDir string) ([]string, error) {
+	b, err := os.ReadFile(filepath.Join(caDir, pki.ServiceAccountIssuersFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return strings.Fields(string(b)), err
 }
 
 // loadOrMakeFrontProxy returns the front-proxy authority of the cluster directory, making it first if there is none.
@@ -166,6 +271,9 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 			k.DisabledAddons = strings.Fields(string(b))
 		} else if !errors.Is(rerr, os.ErrNotExist) {
 			return rerr
+		}
+		if k.ServiceAccountIssuers, err = readIssuers(caDir); err != nil {
+			return err
 		}
 		if k.BootstrapTokens && k.ControlPlane {
 			if k.Tokens, err = pki.ReadTokens(caDir); err != nil && !errors.Is(err, os.ErrNotExist) {
