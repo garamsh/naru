@@ -3,6 +3,7 @@ package apply
 import (
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // deleteKey marks a keyed element of a patch that removes the element.
@@ -18,6 +19,12 @@ var keyed = map[string]string{
 	"spec.registries":       "host",
 	"spec.storage":          "name",
 	"spec.extensions":       "sha256",
+}
+
+// keyedFallback names, for a list, the key of an element that lacks its first key: an entry of
+// spec.extensions with no sha256 is an unpinned entry, identified by its name (ADR 0084).
+var keyedFallback = map[string]string{
+	"spec.extensions": "name",
 }
 
 // merge applies patch to target as a JSON merge patch (RFC 7386) with keyed
@@ -40,7 +47,7 @@ func merge(target, patch any, field string) (any, error) {
 			delete(out, k)
 		case isList && keyed[path] != "":
 			existing, _ := out[k].([]any)
-			merged, err := mergeKeyed(existing, list, keyed[path], path)
+			merged, err := mergeKeyed(existing, list, keyed[path], keyedFallback[path], path)
 			if err != nil {
 				return nil, err
 			}
@@ -59,12 +66,23 @@ func merge(target, patch any, field string) (any, error) {
 // mergeKeyed merges the elements of patch into existing by key. An element
 // with a new key is appended, one with "$patch": "delete" removes its element,
 // and any other is merged into the element with the same key.
-func mergeKeyed(existing, patch []any, key, field string) ([]any, error) {
+func mergeKeyed(existing, patch []any, key, fallback, field string) ([]any, error) {
 	out := slices.Clone(existing)
-	find := func(name string) int {
+	// identity is the key of an element, or the fallback when it has no key, tagged so that the
+	// two never match each other.
+	identity := func(m map[string]any) string {
+		if s, _ := m[key].(string); s != "" {
+			return key + ":" + s
+		}
+		if s, _ := m[fallback].(string); s != "" && fallback != "" {
+			return fallback + ":" + s
+		}
+		return ""
+	}
+	find := func(id string) int {
 		return slices.IndexFunc(out, func(e any) bool {
 			m, _ := e.(map[string]any)
-			return m[key] == name
+			return identity(m) == id
 		})
 	}
 	for i, e := range patch {
@@ -73,11 +91,12 @@ func mergeKeyed(existing, patch []any, key, field string) ([]any, error) {
 		if !ok {
 			return nil, &InvalidError{Fields: []string{el}, Message: "must be an object"}
 		}
-		name, ok := m[key].(string)
-		if !ok || name == "" {
+		id := identity(m)
+		if id == "" {
 			return nil, &InvalidError{Fields: []string{el + "." + key}, Message: fmt.Sprintf("must be the %s of the element", key)}
 		}
-		at := find(name)
+		name := id[strings.Index(id, ":")+1:]
+		at := find(id)
 		if op, has := m[deleteKey]; has {
 			if op != "delete" {
 				return nil, &InvalidError{Fields: []string{el + "." + deleteKey}, Message: fmt.Sprintf("must be %q, got %v", "delete", op)}

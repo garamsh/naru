@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -29,9 +30,9 @@ const (
 
 // The bounds an upgrade runs within.
 const (
-	// MaxBundleBytes caps the body of an upgrade: the ESP holds one kernel of the image's size per
-	// slot, and this is far above the largest kernel the image builds.
-	MaxBundleBytes = 1 << 30
+	// MaxBundleBytes caps the body of an upgrade: the kernel the ESP holds one of per slot, and the
+	// extensions of the release (ADR 0084), which go to the data disk.
+	MaxBundleBytes = 4 << 30
 	// Settle is how long every service of a trial boot must have run without a restart for the
 	// trial to be healthy.
 	Settle = 30 * time.Second
@@ -68,6 +69,15 @@ type Config struct {
 	// Extensions returns spec.extensions of the stored configuration and the stored images, for the
 	// check that the bundle's version can mount them. Nil checks nothing.
 	Extensions func() ([]Entry, []Image, error)
+	// Stage stores an extension member of a bundle of version for Install, checking its digest and
+	// that it is built for version, and says whether the image is new to the store; Unstage removes
+	// one Stage added when the bundle is refused. Nil Stage discards the members.
+	Stage   func(name, sha256, version string, body io.Reader) (added bool, err error)
+	Unstage func(sha256 string)
+	// Prune removes the stored extension images built for another version than the running one
+	// that the configuration does not pin (ADR 0084). It runs when an upgrade has ended: after a
+	// promotion and on a default boot. Nil prunes nothing.
+	Prune func()
 	// Now and After are the clock and a timer.
 	Now   func() time.Time
 	After func(time.Duration) <-chan time.Time
@@ -192,6 +202,7 @@ func (u *Upgrader) Install(body io.Reader, wantSHA string) (Staged, error) {
 	}
 
 	var m Manifest
+	st := u.stager()
 	err = u.withESP(p, func(dir string) error {
 		trial := filepath.Join(dir, trialSlot)
 		if err := os.Remove(trial); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -201,7 +212,7 @@ func (u *Upgrader) Install(body io.Reader, wantSHA string) (Staged, error) {
 		if err != nil {
 			return err
 		}
-		m, err = receive(body, u.cfg.MaxBytes, wantSHA, f)
+		m, err = receiveWith(body, u.cfg.MaxBytes, wantSHA, f, st)
 		if err == nil {
 			err = u.checkExtensions(m.Version)
 		}
@@ -214,6 +225,11 @@ func (u *Upgrader) Install(body io.Reader, wantSHA string) (Staged, error) {
 		if err != nil {
 			_ = os.Remove(trial)
 			_ = atomicfile.SyncDir(dir)
+			if st != nil && u.cfg.Unstage != nil {
+				for _, d := range st.added {
+					u.cfg.Unstage(d)
+				}
+			}
 			return err
 		}
 		return atomicfile.SyncDir(dir)
@@ -229,6 +245,25 @@ func (u *Upgrader) Install(body io.Reader, wantSHA string) (Staged, error) {
 	}
 	u.cfg.Log.Info("upgrade staged", "from", staged.From, "to", staged.To, "kernel_bytes", m.Kernel.Bytes, "kernel_sha256", m.Kernel.SHA256)
 	return staged, nil
+}
+
+// stager returns what takes the extension members of a bundle: those the stored configuration
+// names. It is nil, and the members are discarded, where the Node has no store of them.
+func (u *Upgrader) stager() *stager {
+	if u.cfg.Stage == nil || u.cfg.Extensions == nil {
+		return nil
+	}
+	entries, _, err := u.cfg.Extensions()
+	if err != nil {
+		u.cfg.Log.Error("read the extensions to stage the bundle's", "err", err)
+		return nil
+	}
+	return &stager{
+		wanted: func(name string) bool {
+			return slices.ContainsFunc(entries, func(e Entry) bool { return e.Name == name })
+		},
+		stage: u.cfg.Stage,
+	}
 }
 
 // arm records the upgrade, writes the trial entry and has the firmware boot it once.
@@ -284,6 +319,9 @@ func (u *Upgrader) dropTrial(p esp) (was bool, err error) {
 func (u *Upgrader) Reconcile() {
 	if u.Slot() == SlotTrial {
 		return
+	}
+	if u.cfg.Prune != nil {
+		defer u.cfg.Prune()
 	}
 	_, entryErr := readVariable(u.cfg.EFIVars, bootName(trialEntry))
 	pend, havePending := u.readPending()
@@ -354,6 +392,9 @@ func (u *Upgrader) Promote() error {
 	u.cfg.Log.Info("upgrade promoted", "from", pend.From, "to", u.cfg.Version)
 	if err := u.finish(Outcome{From: pend.From, To: u.cfg.Version, Result: ResultPromoted}); err != nil {
 		u.cfg.Log.Error("record the outcome of the upgrade", "err", err)
+	}
+	if u.cfg.Prune != nil {
+		u.cfg.Prune()
 	}
 	return nil
 }

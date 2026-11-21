@@ -49,3 +49,21 @@ func TestApply_AnExtensionPatchMergesByDigestSoOneNameKeepsAnEntryPerVersion(t *
 	_, cfg = r.engine.Config()
 	assert.Equal(t, []config.Extension{{Name: "tools", SHA256: next}}, cfg.Spec.Extensions)
 }
+
+func TestApply_AnEntryWithNoDigestIsMergedAndDeletedByItsName(t *testing.T) {
+	r := newRig(t)
+	pinned := strings.Repeat("ab", 32)
+	_, err := r.engine.Apply(apply.Request{Patch: patch(obj{"extensions": []any{obj{"name": "tools", "sha256": pinned}, obj{"name": "naru-orch"}, obj{"name": "csi"}}}), Mode: apply.Staged})
+	require.NoError(t, err)
+
+	// The same unpinned entry again is the same element, not a second one.
+	_, err = r.engine.Apply(apply.Request{Revision: 1, Patch: patch(obj{"extensions": []any{obj{"name": "naru-orch"}}}), Mode: apply.Staged})
+	require.NoError(t, err)
+	_, cfg := r.engine.Config()
+	assert.Equal(t, []config.Extension{{Name: "tools", SHA256: pinned}, {Name: "naru-orch"}, {Name: "csi"}}, cfg.Spec.Extensions)
+
+	_, err = r.engine.Apply(apply.Request{Revision: 2, Patch: patch(obj{"extensions": []any{obj{"name": "csi", "$patch": "delete"}}}), Mode: apply.Staged})
+	require.NoError(t, err)
+	_, cfg = r.engine.Config()
+	assert.Equal(t, []config.Extension{{Name: "tools", SHA256: pinned}, {Name: "naru-orch"}}, cfg.Spec.Extensions)
+}

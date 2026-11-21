@@ -129,7 +129,6 @@ func TestStore_PutRefusesWhatIsNotAnImage(t *testing.T) {
 func TestStore_PutRefusesAnImageWithoutAUsableManifest(t *testing.T) {
 	for name, content := range map[string]string{
 		"no version":      `{"name":"naru-orch","services":["a"]}`,
-		"no services":     `{"name":"naru-orch","version":"v1"}`,
 		"an unknown key":  `{"name":"naru-orch","version":"v1","services":["a"],"x":1}`,
 		"not json at all": `{`,
 	} {
@@ -382,4 +381,66 @@ func TestManager_PutReportsTheEntryAsNotMounted(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, e.Mounted)
 	assert.Equal(t, "naru-orch", e.Name)
+}
+
+func TestManager_MountTakesTheStoredImageOfAnEntryWithNoDigestBuiltForInitsVersion(t *testing.T) {
+	n := newNode(t)
+	n.put(t, manifest("naru-orch", "v0.9.0"))
+	n.put(t, manifest("naru-orch", version))
+
+	err := n.mgr.Mount([]config.Extension{{Name: "naru-orch"}})
+
+	require.NoError(t, err)
+	assert.Equal(t, manifest("naru-orch", version), n.m.mounted[filepath.Join(n.root, "naru-orch")])
+}
+
+func TestManager_MountRefusesAnEntryWithNoDigestWhenNoImageIsBuiltForInitsVersion(t *testing.T) {
+	n := newNode(t)
+	n.put(t, manifest("naru-orch", "v0.9.0"))
+
+	err := n.mgr.Mount([]config.Extension{{Name: "naru-orch"}})
+
+	require.ErrorContains(t, err, "no entry is built for naru "+version)
+	assert.Empty(t, n.m.mounted)
+}
+
+func TestManager_StageKeepsAnImageOfTheNameAndVersionAndRemovesOneOfAnother(t *testing.T) {
+	n := newNode(t)
+	good := manifest("naru-orch", "v2")
+	bad := manifest("other", "v2")
+
+	img, added, err := n.mgr.Stage(strings.NewReader(good), digestOf(good), "naru-orch", "v2")
+	require.NoError(t, err)
+	assert.True(t, added)
+	assert.Equal(t, digestOf(good), img.SHA256)
+
+	_, _, err = n.mgr.Stage(strings.NewReader(bad), digestOf(bad), "naru-orch", "v2")
+	require.ErrorIs(t, err, extension.ErrStage)
+	list, err := n.mgr.List()
+	require.NoError(t, err)
+	assert.Len(t, list, 1, "the image that is not the extension is not kept")
+
+	_, added, err = n.mgr.Stage(strings.NewReader(good), digestOf(good), "naru-orch", "v2")
+	require.NoError(t, err)
+	assert.False(t, added, "an image already stored is not new")
+}
+
+func TestManager_PruneRemovesUnpinnedImagesOfAnotherVersionAndKeepsPinnedAndCurrentOnes(t *testing.T) {
+	n := newNode(t)
+	old := n.put(t, manifest("naru-orch", "v0.9.0"))
+	cur := n.put(t, manifest("naru-orch", version))
+	pinnedOld := n.put(t, manifest("tools", "v0.9.0"))
+	unlisted := n.put(t, manifest("stray", "v0.9.0"))
+
+	removed, err := n.mgr.Prune([]config.Extension{{Name: "naru-orch"}, {Name: "tools", SHA256: pinnedOld}})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{old}, removed)
+	list, err := n.mgr.List()
+	require.NoError(t, err)
+	var have []string
+	for _, e := range list {
+		have = append(have, e.SHA256)
+	}
+	assert.ElementsMatch(t, []string{cur, pinnedOld, unlisted}, have)
 }

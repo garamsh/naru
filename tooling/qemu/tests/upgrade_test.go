@@ -273,7 +273,7 @@ func TestNode_UpgradeIsRefusedByTheNodeWith422WhenAnExtensionEntryHasNoImageForT
 	require.Error(t, r.Err)
 	assert.Contains(t, r.refusal(), "422", "the Node answers before it writes the slot")
 	assert.Contains(t, r.refusal(), "naru-orch", "the refusal names the extension")
-	assert.Contains(t, r.refusal(), "ADR 0055", "and the steps")
+	assert.Contains(t, r.refusal(), "ADR 0084", "and the pinned-entry steps")
 	after, err := statusOf(tool, admin)
 	require.NoError(t, err)
 	assert.Equal(t, before.BootID, after.BootID, "the Node was not rebooted")

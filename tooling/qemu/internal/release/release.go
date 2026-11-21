@@ -287,7 +287,8 @@ func Build(o Options) ([]Asset, error) {
 	// The upgrade bundle is the kernel, initramfs inside, that the boot disk's default slot holds:
 	// what an A/B upgrade writes to the trial slot (ADR 0020).
 	bundle := BundleName(o.Version)
-	if err := WriteBundle(filepath.Join(o.Out, bundle), o.Version, kernel, esp); err != nil {
+	if err := WriteBundle(filepath.Join(o.Out, bundle), o.Version, kernel, esp,
+		BundleExtension{Name: fixture.ExtensionName, Path: filepath.Join(o.ImageDir, fixture.ExtensionDir, fixture.ExtensionImageName)}); err != nil {
 		return nil, fmt.Errorf("the upgrade bundle (make image): %w", err)
 	}
 	names = append(names, bundle)

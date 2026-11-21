@@ -58,7 +58,7 @@ type Manifest struct {
 	Name string `json:"name"`
 	// Version is the naru version the image was built for.
 	Version string `json:"version"`
-	// Services are the names of the services the extension supplies.
+	// Services are the names of the services the extension supplies; a payload of files supplies none (ADR 0084).
 	Services []string `json:"services"`
 }
 
@@ -68,8 +68,6 @@ func (m Manifest) valid() error {
 		return errors.New("the manifest has no name")
 	case m.Version == "":
 		return errors.New("the manifest has no version")
-	case len(m.Services) == 0:
-		return errors.New("the manifest names no service")
 	}
 	return nil
 }

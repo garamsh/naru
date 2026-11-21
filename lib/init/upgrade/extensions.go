@@ -17,13 +17,15 @@ type (
 	Image struct{ Name, SHA256, Version string }
 )
 
+// An entry with no SHA256 is satisfied by any stored image of its name built for version (ADR 0084).
+//
 // MissingExtensions returns the names of the extensions entries lists for which no entry names a
 // stored image built for version: a Node booting version refuses the boot for each (ADR 0055).
 func MissingExtensions(entries []Entry, stored []Image, version string) []string {
 	have := map[string]bool{}
 	for _, e := range entries {
 		for _, img := range stored {
-			if img.SHA256 == e.SHA256 && img.Name == e.Name && img.Version == version {
+			if (img.SHA256 == e.SHA256 || e.SHA256 == "") && img.Name == e.Name && img.Version == version {
 				have[e.Name] = true
 			}
 		}
@@ -52,7 +54,7 @@ func (u *Upgrader) checkExtensions(version string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: the Node would refuse its boot on %s, since no stored image of %s is built for it and named in spec.extensions. "+
-		"Deliver the release's image with `naructl extension add`, add its entry beside the old one with `naructl apply --mode staged`, "+
-		"post the bundle again, and remove the old entry and image once the new slot is promoted (ADR 0055, Consequences)",
+		"A pinned entry needs its image delivered with `naructl extension add` and its entry added beside the old one with `naructl apply --mode staged`; "+
+		"an entry with no sha256 is satisfied by the image a bundle of the release carries (ADR 0084)",
 		ErrExtensions, version, strings.Join(missing, ", "))
 }

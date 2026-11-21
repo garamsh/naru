@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -201,6 +202,32 @@ type manifest struct {
 		Bytes  int    `json:"bytes"`
 		SHA256 string `json:"sha256"`
 	} `json:"kernel"`
+	Extensions []map[string]any `json:"extensions,omitempty"`
+}
+
+// bundleWith is bundle with extension members name -> content after the manifest, listed in order.
+func bundleWith(t *testing.T, version, kernel string, names []string, bodies map[string]string) ([]byte, string) {
+	t.Helper()
+	m := manifest{Version: version}
+	m.Kernel.Name, m.Kernel.Bytes, m.Kernel.SHA256 = "kernel.efi", len(kernel), digest([]byte(kernel))
+	for _, n := range names {
+		m.Extensions = append(m.Extensions, map[string]any{"name": n, "bytes": len(bodies[n]), "sha256": digest([]byte(bodies[n]))})
+	}
+	raw, err := json.Marshal(m)
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	files := []struct{ name, body string }{{"kernel.efi", kernel}, {"manifest.json", string(raw)}}
+	for _, n := range names {
+		files = append(files, struct{ name, body string }{"extensions/" + n + ".sqfs", bodies[n]})
+	}
+	for _, f := range files {
+		require.NoError(t, tw.WriteHeader(&tar.Header{Name: f.name, Mode: 0o644, Size: int64(len(f.body))}))
+		_, err := tw.Write([]byte(f.body))
+		require.NoError(t, err)
+	}
+	require.NoError(t, tw.Close())
+	return buf.Bytes(), digest(buf.Bytes())
 }
 
 // bundle returns an upgrade bundle of the kernel and the manifest mutated by mut, and its SHA-256.
@@ -751,7 +778,7 @@ func TestUpgrader_InstallRefusesABundleWhoseVersionHasNoImageForAnExtensionEntry
 
 	require.ErrorIs(t, err, upgrade.ErrExtensions)
 	assert.ErrorContains(t, err, "orch")
-	assert.ErrorContains(t, err, "ADR 0055")
+	assert.ErrorContains(t, err, "ADR 0084")
 	n.untouched()
 }
 
@@ -768,4 +795,80 @@ func TestUpgrader_InstallStagesABundleWhoseVersionHasItsExtensionImage(t *testin
 	_, err := u.Install(bytes.NewReader(b), sum)
 
 	require.NoError(t, err)
+}
+
+func TestMissingExtensions_AnEntryWithNoDigestIsSatisfiedByAnyStoredImageOfItsNameAndVersion(t *testing.T) {
+	entries := []upgrade.Entry{{Name: "orch"}, {Name: "csi"}}
+	stored := []upgrade.Image{{Name: "orch", SHA256: "a", Version: "v2"}, {Name: "csi", SHA256: "b", Version: "v1"}}
+
+	assert.Equal(t, []string{"csi"}, upgrade.MissingExtensions(entries, stored, "v2"))
+}
+
+// staging is the Stage, Unstage and Prune hooks recording what they were given.
+type staging struct {
+	staged, unstaged []string
+	images           []upgrade.Image
+	pruned           int
+}
+
+func (st2 *staging) apply(c *upgrade.Config, entries []upgrade.Entry) {
+	c.Extensions = func() ([]upgrade.Entry, []upgrade.Image, error) { return entries, st2.images, nil }
+	c.Stage = func(name, sha, version string, body io.Reader) (bool, error) {
+		b, _ := io.ReadAll(body)
+		st2.staged = append(st2.staged, name+"@"+version+"="+string(b))
+		st2.images = append(st2.images, upgrade.Image{Name: name, SHA256: sha, Version: version})
+		return true, nil
+	}
+	c.Unstage = func(sha string) { st2.unstaged = append(st2.unstaged, sha) }
+	c.Prune = func() { st2.pruned++ }
+}
+
+func TestUpgrader_InstallStagesTheExtensionMembersTheConfigurationNamesAndDiscardsTheOthers(t *testing.T) {
+	n := newNode(t)
+	var st staging
+	u := n.upgrader("v1", func(c *upgrade.Config) { st.apply(c, []upgrade.Entry{{Name: "orch"}}) })
+	b, sum := bundleWith(t, "v2", "kernel-B", []string{"orch", "csi"}, map[string]string{"orch": "ORCH", "csi": "CSI"})
+
+	_, err := u.Install(bytes.NewReader(b), sum)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"orch@v2=ORCH"}, st.staged)
+	assert.Empty(t, st.unstaged)
+}
+
+func TestUpgrader_InstallRemovesWhatItStagedWhenTheBundleIsRefusedAfterwards(t *testing.T) {
+	n := newNode(t)
+	var st staging
+	u := n.upgrader("v1", func(c *upgrade.Config) { st.apply(c, []upgrade.Entry{{Name: "orch"}}) })
+	b, _ := bundleWith(t, "v2", "kernel-B", []string{"orch"}, map[string]string{"orch": "ORCH"})
+
+	_, err := u.Install(bytes.NewReader(b), strings.Repeat("0", 64))
+
+	require.ErrorIs(t, err, upgrade.ErrBundle)
+	assert.Equal(t, []string{digest([]byte("ORCH"))}, st.unstaged, "the whole-body digest is checked after the members are stored")
+	n.untouched()
+}
+
+func TestUpgrader_InstallRefusesAMemberTheManifestDoesNotDescribe(t *testing.T) {
+	n := newNode(t)
+	var st staging
+	u := n.upgrader("v1", func(c *upgrade.Config) { st.apply(c, nil) })
+	b, sum := bundleWith(t, "v2", "kernel-B", []string{"orch"}, map[string]string{"orch": "ORCH"})
+	b = bytes.Replace(b, []byte("extensions/orch.sqfs"), []byte("extensions/xxxx.sqfs"), 1)
+	sum = digest(b)
+
+	_, err := u.Install(bytes.NewReader(b), sum)
+
+	require.ErrorIs(t, err, upgrade.ErrBundle)
+	n.untouched()
+}
+
+func TestUpgrader_ReconcileOnADefaultBootPrunesTheExtensionImagesOfAnotherVersion(t *testing.T) {
+	n := newNode(t)
+	var st staging
+	u := n.upgrader("v1", func(c *upgrade.Config) { st.apply(c, nil) })
+
+	u.Reconcile()
+
+	assert.Equal(t, 1, st.pruned)
 }
