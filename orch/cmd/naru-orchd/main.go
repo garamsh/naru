@@ -136,6 +136,7 @@ func run(log *slog.Logger, f runFlags) error {
 	if err != nil {
 		return err
 	}
+	go housekeep(ctx, log, o, f.dataDir)
 	if reg != nil {
 		go serveMetrics(ctx, log, f.metricsAddr, reg)
 	}

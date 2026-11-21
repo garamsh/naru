@@ -385,6 +385,48 @@ func TestHost_MountDataDisk(t *testing.T) {
 	})
 }
 
+func TestHost_MountDataDisk_GrowsTheFileSystemToTheDevice(t *testing.T) {
+	mp := filepath.Join(t.TempDir(), "var/lib/mvmd")
+	type growth struct {
+		dir    string
+		blocks uint64
+	}
+	rig := func(t *testing.T, size int64) (*Host, *[]growth) {
+		img := ext4test.Image(t, "NARUDATA", "verity", nil)
+		require.NoError(t, os.Truncate(img, size))
+		h, _ := testHost(t, map[string]string{"vda": img})
+		var grown []growth
+		h.growExt4 = func(dir string, blocks uint64) error {
+			grown = append(grown, growth{dir, blocks})
+			return nil
+		}
+		return h, &grown
+	}
+
+	t.Run("a device enlarged since the file system was made grows it to the device (mkfs picks 1 KiB blocks for 16 MiB)", func(t *testing.T) {
+		h, grown := rig(t, 64<<20)
+
+		require.NoError(t, h.MountDataDisk(config.DataDisk{Label: "NARUDATA", MountPoint: mp}))
+
+		assert.Equal(t, []growth{{mp, 64 << 20 / 1024}}, *grown)
+	})
+
+	t.Run("a device of the file system's size is left alone", func(t *testing.T) {
+		h, grown := rig(t, 16<<20)
+
+		require.NoError(t, h.MountDataDisk(config.DataDisk{Label: "NARUDATA", MountPoint: mp}))
+
+		assert.Empty(t, *grown)
+	})
+
+	t.Run("a growth the kernel refuses does not stop the boot", func(t *testing.T) {
+		h, _ := rig(t, 64<<20)
+		h.growExt4 = func(string, uint64) error { return os.ErrPermission }
+
+		assert.NoError(t, h.MountDataDisk(config.DataDisk{Label: "NARUDATA", MountPoint: mp}))
+	})
+}
+
 func TestHost_EnableForwardingWritesOnlyTheNamedFamilies(t *testing.T) {
 	h, _ := testHost(t, nil)
 	v4 := filepath.Join(h.procSys, "net/ipv4/ip_forward")

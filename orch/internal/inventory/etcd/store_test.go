@@ -208,3 +208,24 @@ func TestALogFarPastItsBoundIsTrimmedToItInOneAppend(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, evs, keep)
 }
+
+func TestTheEventLogDropsEventsOlderThanTheirAgeWhateverTheirCount(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	s := invetcd.New(c.Members[0].Etcd())
+	now := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	ages := []time.Duration{invetcd.MaxEventAge + 2*time.Hour, invetcd.MaxEventAge + time.Hour, invetcd.MaxEventAge - time.Hour, time.Minute}
+	for _, age := range ages[:3] {
+		require.NoError(t, s.AppendEvent(t.Context(), orchapi.Event{Time: now.Add(-age), Type: "t"}))
+	}
+	evs, err := s.ListEvents(t.Context(), "")
+	require.NoError(t, err)
+	require.Len(t, evs, 3, "an append trims by the age of its own event, so events older than the age of the one before them stay while they are the newest")
+
+	require.NoError(t, s.AppendEvent(t.Context(), orchapi.Event{Time: now, Type: "t"}))
+
+	evs, err = s.ListEvents(t.Context(), "")
+	require.NoError(t, err)
+	require.Len(t, evs, 2, "the two events past the age are dropped, the one inside it and the new one stay")
+	require.True(t, evs[0].Time.Equal(now.Add(-ages[2])))
+	require.True(t, evs[1].Time.Equal(now))
+}

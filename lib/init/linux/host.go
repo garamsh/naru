@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/garamsh/naru/lib/init/boot"
 	"github.com/garamsh/naru/lib/init/config"
@@ -24,6 +26,8 @@ import (
 )
 
 const (
+	// ext4IocResizeFS is EXT4_IOC_RESIZE_FS, _IOW('f', 16, __u64).
+	ext4IocResizeFS  = 0x40086610
 	seedMountPoint   = "/run/naru/cidata"
 	diskPollInterval = 100 * time.Millisecond
 	// carrierWait is how long a Node with no network-config waits for an Ethernet link to see a
@@ -55,6 +59,8 @@ type Host struct {
 	mount         mountFunc
 	run           runFunc
 	grow          growFunc
+	// growExt4 grows the ext4 file system mounted at dir to blocks blocks; growExt4FS when nil.
+	growExt4 func(dir string, blocks uint64) error
 
 	seedMountPoint string
 	resolvConf     string
@@ -156,6 +162,56 @@ func (h *Host) MountDataDisk(d config.DataDisk) error {
 		return fmt.Errorf("mount %s on %s: %w", dev, d.MountPoint, err)
 	}
 	h.dataMountPoint = d.MountPoint
+	h.growDataDisk(dev, d.MountPoint)
+	return nil
+}
+
+// growDataDisk grows the ext4 file system of the data disk, mounted at mnt, to the size of its
+// device, so an operator who enlarged the disk has the space at the next boot. The file system is
+// intact and mounted whatever happens here, so a failure is logged and does not stop the boot.
+func (h *Host) growDataDisk(dev, mnt string) {
+	f, err := os.Open(dev)
+	if err != nil {
+		slog.Warn("data disk not grown", "device", dev, "err", err.Error())
+		return
+	}
+	defer f.Close()
+	sb, err := ext4.ReadSuperblock(f)
+	if err != nil {
+		slog.Warn("data disk not grown", "device", dev, "err", err.Error())
+		return
+	}
+	size, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		slog.Warn("data disk not grown", "device", dev, "err", err.Error())
+		return
+	}
+	blocks, grow := sb.NewBlocks(size)
+	if !grow {
+		return
+	}
+	resize := h.growExt4
+	if resize == nil {
+		resize = growExt4FS
+	}
+	if err := resize(mnt, blocks); err != nil {
+		slog.Warn("data disk not grown", "device", dev, "from", sb.Blocks, "to", blocks, "err", err.Error())
+		return
+	}
+	slog.Info("data disk file system grown", "device", dev, "from", sb.Blocks, "to", blocks, "blockSize", sb.BlockSize)
+}
+
+// growExt4FS is EXT4_IOC_RESIZE_FS on the mount point, the call resize2fs makes for a mounted file
+// system.
+func growExt4FS(dir string, blocks uint64) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), ext4IocResizeFS, uintptr(unsafe.Pointer(&blocks))); errno != 0 {
+		return errno
+	}
 	return nil
 }
 

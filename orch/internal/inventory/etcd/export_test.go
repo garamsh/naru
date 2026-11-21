@@ -5,3 +5,6 @@ const MaxEvents = maxEvents
 
 // KeepEvents makes s keep n events, so a test can fill the log past its bound quickly.
 func KeepEvents(s *Store, n int) { s.keepEvents = n }
+
+// MaxEventAge is how old an event may be before the store drops it.
+const MaxEventAge = maxEventAge

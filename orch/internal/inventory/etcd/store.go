@@ -37,6 +37,10 @@ const (
 // are dropped, oldest first.
 const maxEvents = 20000
 
+// maxEventAge is how old an event may be before it is dropped, whatever the log's count: a quiet
+// fleet's events stay as relevant as a week, and no longer.
+const maxEventAge = 7 * 24 * time.Hour
+
 // trimBatch is how many events one trim transaction deletes. etcd refuses a transaction of more
 // than --max-txn-ops operations (128 by default), so a log far past its bound is trimmed in
 // batches below that.
@@ -377,13 +381,20 @@ func (s *Store) AppendEvent(ctx context.Context, ev orchapi.Event) error {
 	if _, err := s.kv.Do(ctx, eventOp(ev)); err != nil {
 		return err
 	}
-	return s.trimEvents(ctx)
+	return s.trimEvents(ctx, ev.Time)
 }
 
-// trimEvents drops the oldest events beyond the bound. The log is bounded here, on the appends
-// that make it grow fastest; a failed trim is tried again by the next append, so it is not an
-// error of the append that was already kept.
-func (s *Store) trimEvents(ctx context.Context) error {
+// trimEvents drops the events older than maxEventAge before now, in one range deletion by the
+// time in their keys, and then the oldest events beyond the bound. The log is bounded here, on the
+// appends that make it grow fastest; a failed trim is tried again by the next append, so it is not
+// an error of the append that was already kept.
+func (s *Store) trimEvents(ctx context.Context, now time.Time) error {
+	if cutoff := now.Add(-maxEventAge).UnixNano(); cutoff > 0 {
+		end := fmt.Sprintf("%s%020d", eventPrefix, cutoff)
+		if _, err := s.kv.Delete(ctx, eventPrefix, clientv3.WithRange(end)); err != nil {
+			return nil
+		}
+	}
 	for {
 		n, err := s.kv.Get(ctx, eventPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
 		if err != nil || n.Count <= int64(s.keepEvents) {

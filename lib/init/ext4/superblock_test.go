@@ -65,3 +65,19 @@ func image(t *testing.T, features string) *bytes.Reader {
 	require.NoError(t, err)
 	return bytes.NewReader(data)
 }
+
+func TestSuperblock_NewBlocks(t *testing.T) {
+	sb, err := ext4.ReadSuperblock(open(t, ext4test.Image(t, "NARUDATA", "verity", nil)))
+	require.NoError(t, err)
+	require.NotZero(t, sb.BlockSize, "the image's block size is read")
+	require.Equal(t, uint64(16<<20)/sb.BlockSize, sb.Blocks, "the image spans its 16 MiB")
+
+	blocks, grow := sb.NewBlocks(64 << 20)
+	assert.True(t, grow, "a device larger than the file system grows it")
+	assert.Equal(t, uint64(64<<20)/sb.BlockSize, blocks)
+
+	_, grow = sb.NewBlocks(16 << 20)
+	assert.False(t, grow, "a device the size of the file system needs no growth")
+	_, grow = sb.NewBlocks(8 << 20)
+	assert.False(t, grow, "a device smaller than the file system is never shrunk to")
+}
