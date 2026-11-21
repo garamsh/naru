@@ -167,11 +167,23 @@ func TestAnExposerIsScopedToItsNetworkAndTheLeaderLeasesItsAddress(t *testing.T)
 	_, err = o.c.Client(t, 0, &bare).Exposures(ctx)
 	require.Equal(t, 403, status(err))
 
+	// An operator releases a network's exposure by the network and id; an exposer may not.
+	err = ca.DeleteNetworkExposure(ctx, "a", "only-a")
+	require.Equal(t, 403, status(err), "an exposer is no operator")
+	err = o.reader.DeleteNetworkExposure(ctx, "a", "only-a")
+	require.Equal(t, 403, status(err), "nor is a reader")
+	_, err = ca.Exposure(ctx, "only-a")
+	require.NoError(t, err, "the refused calls left it")
+	require.NoError(t, o.op.DeleteNetworkExposure(ctx, "a", "only-a"), "control: an operator")
+	require.Eventually(t, func() bool { _, ok := eh.lease(still.Address); return !ok }, 30*time.Second, 50*time.Millisecond, "the host is told to remove the lease")
+	require.Eventually(t, func() bool { _, err := ca.Exposure(ctx, "only-a"); return status(err) == 404 }, 30*time.Second, 50*time.Millisecond, "and the record goes once it confirmed")
+	require.NoError(t, o.op.DeleteNetworkExposure(ctx, "a", "only-a"), "a second delete is a no-op")
+
 	require.NoError(t, ca.DeleteExposure(ctx, "web"))
 	require.Eventually(t, func() bool { _, ok := eh.lease(e.Address); return !ok }, 30*time.Second, 50*time.Millisecond, "the lease is removed once the host confirmed")
 	require.Eventually(t, func() bool {
 		list, err := o.reader.Exposures(ctx)
-		return err == nil && len(list) == 3
+		return err == nil && len(list) == 2
 	}, 30*time.Second, 50*time.Millisecond, "the reconciler then deletes the record")
 }
 

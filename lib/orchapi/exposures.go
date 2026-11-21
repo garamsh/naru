@@ -104,3 +104,10 @@ func (c *Client) Exposure(ctx context.Context, id string) (Exposure, error) {
 func (c *Client) DeleteExposure(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/exposures/"+url.PathEscape(id), nil, nil, nil)
 }
+
+// DeleteNetworkExposure starts the release of one exposure of a network, as DeleteExposure does for
+// an exposer's own. An operator uses it for the exposures a revoked exposer's controller left. It is
+// idempotent.
+func (c *Client) DeleteNetworkExposure(ctx context.Context, network, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/networks/"+url.PathEscape(network)+"/exposures/"+url.PathEscape(id), nil, nil, nil)
+}
