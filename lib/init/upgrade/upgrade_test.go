@@ -535,8 +535,15 @@ func TestUpgrader_ReconcileOnADefaultBootAfterATrialThatDidNotPromoteRollsBack(t
 func TestUpgrader_ReconcileReportsTheReasonTheTrialBootGaveUp(t *testing.T) {
 	n := newNode(t)
 	trial := stage(t, n)
+	staged, err := os.ReadFile(filepath.Join(n.state(), "pending.json"))
+	require.NoError(t, err)
 	// The trial boot gave up, rebooted, and the firmware came back to the default.
 	trial.Watch(context.Background(), "mount the system extensions: no entry is built for naru v2", &counting{script: func(int) []service.Status { return nil }}, func() {})
+	// The trial could not mount the data disk (that may be why it gave up), so what it wrote to the
+	// upgrade directory is gone and the directory is as the upgrade left it.
+	require.NoError(t, os.RemoveAll(n.state()))
+	require.NoError(t, os.MkdirAll(n.state(), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(n.state(), "pending.json"), staged, 0o600))
 	require.NoError(t, os.Remove(filepath.Join(n.efivars(), "BootCurrent-"+efiGUID)))
 	u := n.upgrader("v1")
 	u.Detect()
@@ -548,6 +555,8 @@ func TestUpgrader_ReconcileReportsTheReasonTheTrialBootGaveUp(t *testing.T) {
 	assert.Equal(t, "rolled back", last.Result)
 	assert.Equal(t, "the boot sequence refused: mount the system extensions: no entry is built for naru v2", last.Reason)
 	assert.Contains(t, n.logs.String(), "no entry is built for naru v2")
+	_, left := n.slot("TRIAL.WHY")
+	assert.False(t, left, "the reason goes with the trial slot")
 }
 
 func TestUpgrader_ReconcileDoesNothingWhenNoUpgradeIsUnfinishedAndDoesNotMountTheESP(t *testing.T) {
