@@ -24,7 +24,6 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/guest"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
-	"github.com/garamsh/naru/tooling/qemu/internal/node"
 	"github.com/garamsh/naru/tooling/qemu/internal/release"
 )
 
@@ -650,7 +649,7 @@ func TestBuild_ShipsTheVolumesExtensionAndCarriesItInTheUpgradeBundle(t *testing
 	image, err := os.ReadFile(filepath.Join(o.Out, "naru-volumes-ext-v9.sqfs"))
 	require.NoError(t, err)
 	assert.Equal(t, "volumes squashfs", string(image))
-	info, err := node.ReadVolumesExtensionInfo(filepath.Join(o.Out, "naru-volumes-ext-v9.json"))
+	info, err := fixture.ReadVolumesExtensionInfo(filepath.Join(o.Out, "naru-volumes-ext-v9.json"))
 	require.NoError(t, err)
 	assert.Equal(t, hexOf(image), info.SHA256)
 	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))

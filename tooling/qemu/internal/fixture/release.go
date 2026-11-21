@@ -63,7 +63,7 @@ func bootDiskPath(dir, version string) (string, error) {
 
 // ReadRelease reads the assets `make release` writes into dir (naru-host-<v>.qcow2, or naru-<v>.qcow2
 // in a release made before ADR 0056, naru-data-<v>.qcow2,
-// naru-guest-<v>.json, naru-inputs-<v>.json and naru-orch-ext-<v>.sqfs with its .json) and prepares what a Node boots from them in work:
+// naru-guest-<v>.json, naru-inputs-<v>.json and naru-orch-ext-<v>.sqfs with its .json, and naru-volumes-ext-<v> likewise when the release has it) and prepares what a Node boots from them in work:
 // naru.img, the boot disk as a raw file, and inputs/, the tree of the data disk. It needs
 // qemu-img and /sbin/debugfs, which the Nodes need as well.
 func ReadRelease(dir, work string) (Release, error) {
@@ -113,6 +113,13 @@ func ReadRelease(dir, work string) (Release, error) {
 	ext, err := writeStore(info, filepath.Join(dir, ReleaseExtensionName(r.Version, ".sqfs")), ExtensionStore(filepath.Join(work, "inputs")))
 	if err != nil {
 		return Release{}, err
+	}
+	volumesInfo := filepath.Join(dir, ReleaseVolumesExtensionName(r.Version, ".json"))
+	if _, err := os.Stat(volumesInfo); err == nil {
+		// A release made before the volume extension carries none, and its naructl names none.
+		if err := storeVolumes(volumesInfo, filepath.Join(dir, ReleaseVolumesExtensionName(r.Version, ".sqfs")), ext.StoreDir); err != nil {
+			return Release{}, err
+		}
 	}
 	r.Inputs = Inputs{
 		Dir: filepath.Join(work, "inputs"), FirecrackerSHA256: ri.FirecrackerSHA256, Guest: m,

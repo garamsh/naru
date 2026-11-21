@@ -1,6 +1,8 @@
 package fixture_test
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -145,4 +147,85 @@ func TestReadExtensionInfo_RefusesADescriptionWithoutADigestOrServices(t *testin
 	_, err := fixture.ReadExtensionInfo(p)
 
 	assert.ErrorContains(t, err, "a version, a SHA-256 and services")
+}
+
+// addVolumes writes the volume extension's assets a release made after ADR 0083 carries.
+func addVolumes(t *testing.T, dir, image, sum string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fixture.ReleaseVolumesExtensionName("v1", ".sqfs")), []byte(image), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fixture.ReleaseVolumesExtensionName("v1", ".json")),
+		[]byte(`{"name":"naru-volumes","version":"v1","sha256":"`+sum+`","services":[]}`), 0o644))
+}
+
+func TestReadRelease_StoresTheVolumeExtensionBesideNaruOrchsSoEveryNodeFindsIt(t *testing.T) {
+	dir := fakeRelease(t)
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte("volumes")))
+	addVolumes(t, dir, "volumes", sum)
+
+	r, err := fixture.ReadRelease(dir, t.TempDir())
+
+	require.NoError(t, err)
+	store := r.Inputs.Extension.StoreDir
+	image, err := os.ReadFile(filepath.Join(store, sum+".sqfs"))
+	require.NoError(t, err, "stored under its digest in the store naru-orch is in")
+	assert.Equal(t, "volumes", string(image))
+	manifest, err := os.ReadFile(filepath.Join(store, sum+".json"))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"name":"naru-volumes","version":"v1","services":[]}`, string(manifest), "an empty list of services, not null")
+	assert.FileExists(t, filepath.Join(store, r.Inputs.Extension.SHA256+".sqfs"), "naru-orch is still there")
+}
+
+func TestReadRelease_AReleaseWithoutTheVolumeExtensionStoresOnlyNaruOrch(t *testing.T) {
+	r, err := fixture.ReadRelease(fakeRelease(t), t.TempDir())
+
+	require.NoError(t, err)
+	entries, err := os.ReadDir(r.Inputs.Extension.StoreDir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 2, "naru-orch's image and manifest")
+}
+
+func TestReadRelease_RefusesAVolumeExtensionWhoseImageIsNotTheOneItsDescriptionStates(t *testing.T) {
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte("volumes")))
+	for name, tc := range map[string]struct{ image, errPart string }{
+		"another image": {"changed", "states SHA-256 " + sum},
+		"the image":     {"volumes", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := fakeRelease(t)
+			addVolumes(t, dir, tc.image, sum)
+
+			_, err := fixture.ReadRelease(dir, t.TempDir())
+
+			if tc.errPart == "" {
+				assert.NoError(t, err, "the control: the described image is accepted")
+				return
+			}
+			assert.ErrorContains(t, err, tc.errPart)
+		})
+	}
+}
+
+func TestReadVolumesExtensionInfo_RefusesAnotherNameAServiceOrAMalformedDigest(t *testing.T) {
+	sum := strings.Repeat("e", 64)
+	for name, info := range map[string]string{
+		"another name":     `{"name":"naru-orch","version":"v9","sha256":"` + sum + `","services":[]}`,
+		"a service":        `{"name":"naru-volumes","version":"v9","sha256":"` + sum + `","services":["x"]}`,
+		"no version":       `{"name":"naru-volumes","sha256":"` + sum + `","services":[]}`,
+		"a malformed hash": `{"name":"naru-volumes","version":"v9","sha256":"zz","services":[]}`,
+		"the description":  `{"name":"naru-volumes","version":"v9","sha256":"` + sum + `","services":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "naru-volumes.json")
+			require.NoError(t, os.WriteFile(p, []byte(info), 0o644))
+
+			i, err := fixture.ReadVolumesExtensionInfo(p)
+
+			if name == "the description" {
+				require.NoError(t, err, "the control: a well-formed description is accepted")
+				assert.NotNil(t, i.Services)
+				return
+			}
+			assert.Error(t, err)
+		})
+	}
 }

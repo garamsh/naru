@@ -4,7 +4,6 @@ package tests_test
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -101,7 +100,7 @@ func apply(t *testing.T, c *node.KubeCluster, manifest string) {
 // register on both: the CSINode of each lists naru-volumes.
 func startVolumeCluster(t *testing.T, mode string) *node.KubeCluster {
 	t.Helper()
-	c, _ := startDNSCluster(t, node.KubeSpec{VolumeDisk: mode, VolumesImageDir: os.Getenv("NARU_IMAGE_DIR")})
+	c, _ := startDNSCluster(t, node.KubeSpec{VolumeDisk: mode})
 	for _, nd := range []string{"node-1", "node-2"} {
 		kubectlEventually(t, c, nd+" registers the volume driver", "get", "csinode", nd, "-o", "jsonpath={.spec.drivers[*].name}")
 	}

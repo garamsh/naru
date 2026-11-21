@@ -60,8 +60,8 @@ type Sources struct {
 //	bin/naru-keyprobe                  scans for the private keys of given authorities (harness.md)
 //	registry/                          see WriteRegistry
 //
-// The extension make image built (extensions/naru-orch.sqfs) is stored beside the tree, in the form
-// of a Node's extension store (ExtensionStore).
+// The extensions make image built (extensions/naru-orch.sqfs and naru-volumes.sqfs) are stored beside
+// the tree, in the form of a Node's extension store (ExtensionStore).
 //
 // The guest kernel, the initrds and mkfs.ext4 are not staged: the image carries them (ADR 0010,
 // ADR 0011).
@@ -116,8 +116,11 @@ func Stage(src Sources, out string) (Inputs, error) {
 	if in.Image, in.Sandbox, err = WriteRegistry(filepath.Join(out, "registry"), entry, runtime.GOARCH); err != nil {
 		return Inputs{}, err
 	}
-	in.Extension, err = stageExtension(src.ImageDir, ExtensionStore(out))
-	return in, err
+	if in.Extension, err = stageExtension(src.ImageDir, ExtensionStore(out)); err != nil {
+		return Inputs{}, err
+	}
+	image, info := VolumesExtensionAssets(filepath.Join(src.ImageDir, ExtensionDir))
+	return in, storeVolumes(info, image, in.Extension.StoreDir)
 }
 
 // ExtensionStore is where Stage lays out the extension store of the inputs tree at dir: beside it,

@@ -1,8 +1,6 @@
 package node
 
 import (
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -10,7 +8,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 
@@ -52,9 +49,6 @@ type KubeSpec struct {
 	// volumes (naru-local: XFS, mounted by init, the first storage disk) or offers whole as a block
 	// volume (naru-block), so that the volume add-on has a disk to serve (ADR 0083).
 	VolumeDisk string
-	// VolumesImageDir is the image directory make image wrote (its extensions/ holds naru-volumes.sqfs
-	// and .json), which a cluster with VolumeDisk stores on every Node's data disk beside naru-orch.
-	VolumesImageDir string
 }
 
 // The extra disk of a cluster that serves volumes (KubeSpec.VolumeDisk).
@@ -94,14 +88,6 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 	for _, i := range spec.Late {
 		if i < 3 {
 			return nil, errors.New("Late numbers workers after node-2")
-		}
-	}
-	if spec.VolumeDisk != "" {
-		if spec.Inputs.Extension.StoreDir == "" {
-			return nil, errors.New("a cluster that serves volumes needs the staged extension store")
-		}
-		if err := StoreVolumesExtension(spec.Inputs.Extension.StoreDir, spec.VolumesImageDir); err != nil {
-			return nil, err
 		}
 	}
 	total := 2 + len(spec.Late)
@@ -266,76 +252,6 @@ func kubeNode(c Config, caDir, apiServer, sandbox string, spec KubeSpec) (userDa
 	}
 	networkConfig, err = os.ReadFile(k.NetworkConfig)
 	return userData, networkConfig, err
-}
-
-// VolumesExtensionName is the system extension that carries the volume add-on (ADR 0083, 0084).
-const VolumesExtensionName = "naru-volumes"
-
-// VolumesExtensionAssets are the files of the volume extension in a directory: its image and its
-// description, as make image writes them (imageDir/extensions) and as a release names them.
-func VolumesExtensionAssets(dir string) (image, info string) {
-	return filepath.Join(dir, VolumesExtensionName+".sqfs"), filepath.Join(dir, VolumesExtensionName+".json")
-}
-
-// VolumesExtensionInfo is the description make image writes beside the extension's image.
-type VolumesExtensionInfo struct {
-	Name     string   `json:"name"`
-	Version  string   `json:"version"`
-	SHA256   string   `json:"sha256"`
-	Services []string `json:"services"`
-}
-
-var volumesDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
-// ReadVolumesExtensionInfo reads and checks the description at path: the extension is named
-// naru-volumes, has a version and the SHA-256 of its image, and runs no service.
-func ReadVolumesExtensionInfo(path string) (VolumesExtensionInfo, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return VolumesExtensionInfo{}, fmt.Errorf("the volume extension's description (make image): %w", err)
-	}
-	var i VolumesExtensionInfo
-	if err := json.Unmarshal(b, &i); err != nil {
-		return VolumesExtensionInfo{}, fmt.Errorf("%s: %w", path, err)
-	}
-	if i.Name != VolumesExtensionName || i.Version == "" || len(i.Services) != 0 || !volumesDigest.MatchString(i.SHA256) {
-		return VolumesExtensionInfo{}, fmt.Errorf("%s names no %s extension with a version, a SHA-256 and no service", path, VolumesExtensionName)
-	}
-	return i, nil
-}
-
-// StoreVolumesExtension lays the volume extension that make image built in imageDir (the directory
-// whose extensions/ holds it) out in storeDir, a Node's extension store: <sha256>.sqfs and its
-// manifest <sha256>.json, beside what the store holds. A Node whose spec.extensions lists
-// naru-volumes with no digest finds it there (ADR 0084).
-func StoreVolumesExtension(storeDir, imageDir string) error {
-	image, infoPath := VolumesExtensionAssets(filepath.Join(imageDir, "extensions"))
-	info, err := ReadVolumesExtensionInfo(infoPath)
-	if err != nil {
-		return err
-	}
-	manifest, err := json.Marshal(struct {
-		Name     string   `json:"name"`
-		Version  string   `json:"version"`
-		Services []string `json:"services"`
-	}{info.Name, info.Version, []string{}})
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(storeDir, 0o755); err != nil {
-		return err
-	}
-	b, err := os.ReadFile(image)
-	if err != nil {
-		return fmt.Errorf("the volume extension's image (make image): %w", err)
-	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(b)); got != info.SHA256 {
-		return fmt.Errorf("%s states SHA-256 %s, and its image is %s (make image)", infoPath, info.SHA256, got)
-	}
-	if err := os.WriteFile(filepath.Join(storeDir, info.SHA256+".sqfs"), b, 0o644); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(storeDir, info.SHA256+".json"), manifest, 0o644)
 }
 
 // Stop ends every Node, and removes the authority's directory a cluster with Late workers kept.
