@@ -1,0 +1,14 @@
+{
+  "name": "naru-node-v0-1-0-dev-13",
+  "version": "v0.1.0-dev.13",
+  "kernel": {
+    "file": "naru-node-kernel-v0.1.0-dev.13",
+    "sha256": "f21f737991f56abf47b27326e35456b58901ce4963da974180d6aa00d1974832",
+    "bytes": 55923928
+  },
+  "initramfs": {
+    "file": "naru-node-initramfs-v0.1.0-dev.13",
+    "sha256": "a3c6306b6e19244454bdefac479528ea88ca11f4cce03eac397b65f4bcad018d",
+    "bytes": 153712862
+  }
+}

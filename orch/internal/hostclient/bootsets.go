@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/garamsh/naru/lib/hostapi"
@@ -31,11 +32,16 @@ func (c *Client) AddBootSet(ctx context.Context, hostID string, set groups.BootS
 	if err != nil {
 		return err
 	}
-	defer kernel.Close()
-	defer initramfs.Close()
 	if kernel == nil || initramfs == nil {
+		for _, rc := range []io.ReadCloser{kernel, initramfs} {
+			if rc != nil {
+				rc.Close()
+			}
+		}
 		return errors.New("boot set opened no files")
 	}
+	defer kernel.Close()
+	defer initramfs.Close()
 	return c.api(h).AddBootSet(ctx, hostapi.BootSetRequest{
 		Name: set.Name, KernelSHA256: set.KernelSHA256, InitramfsSHA256: set.InitramfsSHA256,
 	}, kernel, initramfs)

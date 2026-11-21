@@ -34,6 +34,9 @@ type Event struct {
 	Member  string
 	Host    string
 	Message string
+	// Class, when set, is what repeats of a failure share; it replaces Message in deciding
+	// whether an event repeats another.
+	Class string
 }
 
 // Events records what the engine did and decided.

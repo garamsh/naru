@@ -10,13 +10,20 @@ import (
 // maxBootSetName is the longest name mvmd takes for a boot set.
 const maxBootSetName = 63
 
+const bootSetNamePrefix = "naru-node-"
+
 var notBootSetName = regexp.MustCompile(`[^a-z0-9-]`)
 
 // BootSetName is the name a release's boot set is offered under: naru-node- and the version in
 // lower case with every character outside a-z, 0-9 and the hyphen replaced by a hyphen, so
-// v0.4.0 is naru-node-v0-4-0. It fails for a version whose name is longer than mvmd takes.
+// v0.4.0 is naru-node-v0-4-0. It fails for a version whose name is longer than mvmd takes, and
+// for one that already starts with naru-node-: that is a boot set name, which no release makes a
+// name of.
 func BootSetName(version string) (string, error) {
-	name := "naru-node-" + notBootSetName.ReplaceAllString(strings.ToLower(version), "-")
+	if strings.HasPrefix(strings.ToLower(version), bootSetNamePrefix) {
+		return "", fmt.Errorf("version %q is a boot set name, not a release version", version)
+	}
+	name := bootSetNamePrefix + notBootSetName.ReplaceAllString(strings.ToLower(version), "-")
 	if len(name) > maxBootSetName {
 		return "", fmt.Errorf("version %q makes the boot set name %q, longer than the %d characters mvmd takes", version, name, maxBootSetName)
 	}

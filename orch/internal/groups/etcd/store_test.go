@@ -168,6 +168,26 @@ func TestABootSetFailureIsLoggedUnderItsTypeAndARepeatOnTheSameHostIsWrittenOnce
 	}, got, "the same reason on the same host within ten minutes is one event; another reason or host is its own")
 }
 
+func TestABootSetFailureOfOneClassWordedDifferentlyIsWrittenOnce(t *testing.T) {
+	_, inv := newStore(t)
+	e := groupsetcd.NewEvents(inv)
+	t0 := time.Unix(1000, 0).UTC()
+	fail := func(at time.Duration, class, msg string) groups.Event {
+		return groups.Event{Time: t0.Add(at), Kind: groups.EventBootSetFailed, Host: "h1", Class: class, Message: msg}
+	}
+	for _, ev := range []groups.Event{
+		fail(0, "v1: store unreadable", "store unreadable: dial tcp 10.0.0.1: timeout"),
+		fail(10*time.Second, "v1: store unreadable", "store unreadable: dial tcp 10.0.0.2: timeout"),
+		fail(20*time.Second, "v1: checksum check failed", "checksum check failed: vmlinuz"),
+		fail(11*time.Minute, "v1: store unreadable", "store unreadable: dial tcp 10.0.0.3: timeout"),
+	} {
+		require.NoError(t, e.Record(t.Context(), ev))
+	}
+	evs, err := inv.ListEvents(t.Context(), "")
+	require.NoError(t, err)
+	require.Len(t, evs, 3, "the second is a repeat of the first; another class and a repeat after ten minutes are written")
+}
+
 func podMember(id, network, prefix string) groups.Member {
 	return groups.Member{ID: id, Group: "web", Network: network, PodPrefix: prefix, Phase: groups.PhasePending}
 }

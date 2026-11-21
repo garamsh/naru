@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"sync"
@@ -13,6 +14,10 @@ import (
 
 // bootSetParallel is how many hosts receive a boot set at once: a set is hundreds of MiB.
 const bootSetParallel = 2
+
+// maxBootSetBackoff is the longest a host that keeps failing a boot set is left alone. The wait
+// starts at one pass interval and doubles with each failure in a row.
+const maxBootSetBackoff = 10 * time.Minute
 
 // BootSetConfig is what NewBootSets needs. Whoever holds the leader lease constructs and runs
 // one BootSetReconciler.
@@ -27,7 +32,7 @@ type BootSetConfig struct {
 }
 
 // BootSetReconciler adds to each host the boot sets the groups that can place on it need. It
-// keeps no state between passes and never removes a boot set.
+// never removes a boot set. What it keeps between passes is the backoff of the hosts that fail.
 type BootSetReconciler struct {
 	hosts    BootSetHosts
 	store    Store
@@ -36,6 +41,18 @@ type BootSetReconciler struct {
 	events   Events
 	interval time.Duration
 	log      *slog.Logger
+
+	state   sync.Mutex
+	failing map[bootSetKey]backoff
+}
+
+// bootSetKey is one boot set a host lacks.
+type bootSetKey struct{ host, name string }
+
+// backoff is how many passes in a row failed for a bootSetKey, and when it is tried again.
+type backoff struct {
+	fails int
+	next  time.Time
 }
 
 // NewBootSets returns a BootSetReconciler over the given adapters.
@@ -43,7 +60,7 @@ func NewBootSets(c BootSetConfig) *BootSetReconciler {
 	if c.Interval <= 0 {
 		c.Interval = DefaultInterval
 	}
-	return &BootSetReconciler{hosts: c.Hosts, store: c.Store, releases: c.Releases, clock: c.Clock, events: c.Events, interval: c.Interval, log: c.Log}
+	return &BootSetReconciler{hosts: c.Hosts, store: c.Store, releases: c.Releases, clock: c.Clock, events: c.Events, interval: c.Interval, log: c.Log, failing: map[bootSetKey]backoff{}}
 }
 
 // Run reconciles every interval until ctx ends and returns ctx's error. A failed pass is logged
@@ -79,7 +96,7 @@ func (r *BootSetReconciler) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list hosts: %w", err)
 	}
-	needs := missingBootSets(specs, hosts)
+	needs := r.due(missingBootSets(specs, hosts), r.clock.Now())
 	var (
 		mu   sync.Mutex
 		errs []error
@@ -95,7 +112,7 @@ func (r *BootSetReconciler) Reconcile(ctx context.Context) error {
 		set, err := r.releases.Fetch(ctx, n.version)
 		if err != nil {
 			for _, host := range n.hosts {
-				fail(r.record(ctx, EventBootSetFailed, host, fmt.Sprintf("boot set %s for node version %s: %v", n.name, n.version, err)))
+				fail(r.failed(ctx, host, n, err, "release not fetched"))
 			}
 			continue
 		}
@@ -117,13 +134,62 @@ func (r *BootSetReconciler) Reconcile(ctx context.Context) error {
 
 func (r *BootSetReconciler) add(ctx context.Context, host string, n bootSetNeed, set BootSet) error {
 	if err := r.hosts.AddBootSet(ctx, host, set); err != nil {
-		return r.record(ctx, EventBootSetFailed, host, fmt.Sprintf("boot set %s for node version %s: %v", n.name, n.version, err))
+		return r.failed(ctx, host, n, err, "host did not take the set")
 	}
-	return r.record(ctx, EventBootSetAdded, host, fmt.Sprintf("boot set %s for node version %s", n.name, n.version))
+	return r.record(ctx, Event{Kind: EventBootSetAdded, Host: host, Message: fmt.Sprintf("boot set %s for node version %s", n.name, n.version)})
 }
 
-func (r *BootSetReconciler) record(ctx context.Context, kind EventKind, host, msg string) error {
-	if err := r.events.Record(ctx, Event{Time: r.clock.Now(), Kind: kind, Host: host, Message: msg}); err != nil {
+// failed records that n did not reach host and backs the host off. The event's class is the
+// store's Failure class, or otherwise, so that the same refusal worded differently is one event.
+func (r *BootSetReconciler) failed(ctx context.Context, host string, n bootSetNeed, err error, otherwise string) error {
+	class := otherwise
+	var f *Failure
+	if errors.As(err, &f) {
+		class = f.Class
+	}
+	now := r.clock.Now()
+	r.state.Lock()
+	b := r.failing[bootSetKey{host, n.name}]
+	b.fails++
+	delay := maxBootSetBackoff
+	if b.fails <= 16 {
+		delay = min(r.interval<<(b.fails-1), maxBootSetBackoff)
+	}
+	b.next = now.Add(delay)
+	r.failing[bootSetKey{host, n.name}] = b
+	r.state.Unlock()
+	return r.record(ctx, Event{Kind: EventBootSetFailed, Host: host, Class: n.name + ": " + class,
+		Message: fmt.Sprintf("boot set %s for node version %s: %v", n.name, n.version, err)})
+}
+
+// due drops from needs the hosts still backing off at now, and forgets the backoff of every set no
+// host lacks any longer, so that the state is bounded by what the groups need.
+func (r *BootSetReconciler) due(needs []bootSetNeed, now time.Time) []bootSetNeed {
+	r.state.Lock()
+	defer r.state.Unlock()
+	lacking := map[bootSetKey]bool{}
+	var out []bootSetNeed
+	for _, n := range needs {
+		var ready []string
+		for _, h := range n.hosts {
+			k := bootSetKey{h, n.name}
+			lacking[k] = true
+			if b, ok := r.failing[k]; !ok || !now.Before(b.next) {
+				ready = append(ready, h)
+			}
+		}
+		if len(ready) > 0 {
+			n.hosts = ready
+			out = append(out, n)
+		}
+	}
+	maps.DeleteFunc(r.failing, func(k bootSetKey, _ backoff) bool { return !lacking[k] })
+	return out
+}
+
+func (r *BootSetReconciler) record(ctx context.Context, e Event) error {
+	e.Time = r.clock.Now()
+	if err := r.events.Record(ctx, e); err != nil {
 		return fmt.Errorf("record event: %w", err)
 	}
 	return nil
