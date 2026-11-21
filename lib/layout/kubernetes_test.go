@@ -118,7 +118,7 @@ func TestKubernetesUserData_WorkerRunsTheKubeletAndTheProxyAndNoControlPlane(t *
 			running = append(running, sv.Name)
 		}
 	}
-	assert.Equal(t, []string{"containerd", "addon-image-coredns", "addon-pin-coredns", "kubelet", "kube-proxy"}, running, "what a worker runs")
+	assert.Equal(t, []string{"containerd", "addon-image-coredns", "kubelet", "kube-proxy"}, running, "what a worker runs")
 }
 
 func TestKubernetesUserData_ControlPlaneRunsEveryServiceInTheTopologysOrder(t *testing.T) {
@@ -436,17 +436,19 @@ func TestKubernetesUserData_DisabledDNSIsNeitherAppliedNorGivenAPairButItsImageI
 	assert.Contains(t, serviceNames(s), "addon-image-coredns")
 }
 
-func TestKubernetesUserData_EveryNodeImportsTheAddonImagesAndPinsThemUntilThatSucceeds(t *testing.T) {
+func TestKubernetesUserData_EveryNodeImportsTheAddonImagesUnderTheNameTheManifestsUseAndPinsThemUntilThatSucceeds(t *testing.T) {
 	for _, controlPlane := range []bool{true, false} {
 		s := kubeUserData(t, kubeNode(t, controlPlane, nil))
 
 		args, binary, restart := serviceByName(t, s, "addon-image-coredns")
 		assert.Equal(t, "/bin/ctr", binary)
 		assert.Equal(t, "on-failure", restart)
+		line := strings.Join(args, " ")
+		assert.Contains(t, line, "--namespace k8s.io images import --digests", "the CRI reads the k8s.io namespace")
+		assert.Contains(t, line, "--base-name naru.local/coredns ", "without it ctr names the image import-<date>, and the manifest's reference is never created")
+		assert.Contains(t, line, "--label io.cri-containerd.pinned=pinned", "the tag and the digest image are pinned as they are imported")
 		assert.Equal(t, layout.AddonsDir+"/images/coredns.tar", args[len(args)-1])
-		pin, _, restart := serviceByName(t, s, "addon-pin-coredns")
-		assert.Equal(t, "on-failure", restart)
-		assert.Contains(t, pin, "io.cri-containerd.pinned=pinned")
+		assert.NotContains(t, serviceNames(s), "addon-pin-coredns")
 	}
 }
 

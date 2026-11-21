@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -86,9 +85,20 @@ func TestGenKubernetes_DisableAddonIsWhatTheControlPlaneNodeReadsAndAnUnknownNam
 	require.NoError(t, err)
 
 	assert.NotContains(t, string(data), "name: addons\n", "a cluster without DNS has nothing for the add-ons service to apply")
-	out, err := run(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "nope")
+	_, err = run(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "nope")
 	require.Error(t, err)
-	assert.True(t, strings.Contains(out, "dns"), out)
+	assert.EqualError(t, err, `--disable-addon "nope" is not one of dns`)
+}
+
+func TestGenKubernetes_AGenWithoutDisableAddonTurnsEveryAddonOnAgain(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "dns")
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10")
+
+	data, err := os.ReadFile(dep.kubeNode(t, "control-plane"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(data), "name: addons\n")
 }
 
 func TestGenKubernetes_AControlPlaneNodeAppliesTheAddonsByDefault(t *testing.T) {

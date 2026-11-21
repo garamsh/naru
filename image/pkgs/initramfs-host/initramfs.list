@@ -74,9 +74,6 @@ file /opt/cni/bin/bridge @OUT@/bridge 0755 0 0
 file /opt/cni/bin/host-local @OUT@/host-local 0755 0 0
 file /opt/cni/bin/loopback @OUT@/loopback 0755 0 0
 # The cluster add-ons (ADR 0083): the images every Node imports and the manifests a control-plane Node applies.
-dir /usr 0755 0 0
-dir /usr/lib 0755 0 0
-dir /usr/lib/naru 0755 0 0
 dir /usr/lib/naru/addons 0755 0 0
 dir /usr/lib/naru/addons/images 0755 0 0
 dir /usr/lib/naru/addons/manifests 0755 0 0

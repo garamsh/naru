@@ -67,17 +67,12 @@ const (
 // a node setting (KubeNode.DisabledAddons) that turns it off.
 var Addons = []string{"dns"}
 
-// addonImages are the images the add-ons run, each the archive AddonsDir/images/<name>.tar naming the
-// image <ref> that the manifests reference by digest.
-var addonImages = []struct{ name, ref string }{{"coredns", "naru.local/coredns:release"}}
-
 // Kubernetes is the Topology of a Kubernetes Node: the services in the order init starts them.
 var Kubernetes = Topology{
 	Services: []Service{
 		{Name: "registry"},
 		{Name: "containerd"},
 		{Name: "addon-image-coredns"},
-		{Name: "addon-pin-coredns"},
 		{Name: "etcd", ControlPlane: true},
 		{Name: "kube-apiserver", ControlPlane: true},
 		{Name: "kube-controller-manager", ControlPlane: true},
@@ -325,8 +320,7 @@ func (n Node) kubeServices() []service {
 	list := []service{
 		{Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")), Args: []string{"-listen", RegistryAddr, "-dir", path.Join(InputsDir, "registry")}},
 		{Name: "containerd", Binary: n.binary("containerd", "/bin/containerd"), Args: []string{"--config", kubePath("containerd.toml")}, Env: n.kubeEnv()},
-		{Name: "addon-image-coredns", Binary: n.binary("addon-image-coredns", "/bin/ctr"), RestartPolicy: restartOnFailure, Args: ctrArgs("import", "--digests", path.Join(AddonsDir, "images", "coredns.tar"))},
-		{Name: "addon-pin-coredns", Binary: n.binary("addon-pin-coredns", "/bin/ctr"), RestartPolicy: restartOnFailure, Args: ctrArgs("label", addonImages[0].ref, "io.cri-containerd.pinned=pinned")},
+		{Name: "addon-image-coredns", Binary: n.binary("addon-image-coredns", "/bin/ctr"), RestartPolicy: restartOnFailure, Args: ctrImportArgs("coredns")},
 		{Name: "etcd", Binary: n.binary("etcd", "/bin/etcd"), Args: n.etcdArgs()},
 		{
 			Name: "kube-apiserver", Binary: n.binary("kube-apiserver", "/bin/kube-apiserver"),
@@ -407,10 +401,14 @@ func (n Node) kubeServices() []service {
 // restartOnFailure is the restart policy of a service that runs until it succeeds.
 const restartOnFailure = "on-failure"
 
-// ctrArgs are the arguments of ctr, containerd's client, for an add-on image: against the Node's
-// containerd and the namespace the CRI reads.
-func ctrArgs(command ...string) []string {
-	return append([]string{"--address", ContainerdSocket, "--namespace", "k8s.io", "images"}, command...)
+// ctrImportArgs are the arguments of ctr, containerd's client, that import the add-on image name from
+// AddonsDir/images into the namespace the CRI reads. --base-name gives the archive's tag and its digest
+// image the name naru.local/<name>, which the manifests reference, and --label pins both.
+func ctrImportArgs(name string) []string {
+	return []string{
+		"--address", ContainerdSocket, "--namespace", "k8s.io", "images", "import", "--digests",
+		"--base-name", "naru.local/" + name, "--label", "io.cri-containerd.pinned=pinned", path.Join(AddonsDir, "images", name+".tar"),
+	}
 }
 
 // kubePKI is a control-plane Node's spec.pki: the cluster's authority, whose key lets init issue each

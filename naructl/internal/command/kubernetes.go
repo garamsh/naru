@@ -40,15 +40,19 @@ func genKubernetes(fs *pflag.FlagSet) runner {
 		if _, err := loadOrMakeFrontProxy(*caDir); err != nil {
 			return err
 		}
-		if len(*disableAddons) > 0 {
-			for _, name := range *disableAddons {
-				if !slices.Contains(layout.Addons, name) {
-					return fmt.Errorf("--disable-addon %q is not one of %s", name, strings.Join(layout.Addons, ", "))
-				}
+		for _, name := range *disableAddons {
+			if !slices.Contains(layout.Addons, name) {
+				return fmt.Errorf("--disable-addon %q is not one of %s", name, strings.Join(layout.Addons, ", "))
 			}
-			if err := pki.WriteFile(filepath.Join(*caDir, pki.DisabledAddonsFile), []byte(strings.Join(*disableAddons, "\n")+"\n"), 0o644); err != nil {
+		}
+		// The file follows the flags: with none, every add-on is on again.
+		disabled := filepath.Join(*caDir, pki.DisabledAddonsFile)
+		if len(*disableAddons) == 0 {
+			if err := os.Remove(disabled); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
+		} else if err := pki.WriteFile(disabled, []byte(strings.Join(*disableAddons, "\n")+"\n"), 0o644); err != nil {
+			return err
 		}
 		key, pub := filepath.Join(*caDir, pki.ServiceAccountKeyFile), filepath.Join(*caDir, pki.ServiceAccountPubFile)
 		if _, err := os.Stat(key); errors.Is(err, os.ErrNotExist) {

@@ -386,7 +386,11 @@ func Build(o Options) ([]Asset, error) {
 	if err != nil {
 		return nil, err
 	}
-	sbom, err := SBOM(o.Version, o.Epoch, comps, bins)
+	images, err := ReadAddonImages(o.Archives)
+	if err != nil {
+		return nil, err
+	}
+	sbom, err := SBOM(o.Version, o.Epoch, comps, bins, images)
 	if err != nil {
 		return nil, err
 	}

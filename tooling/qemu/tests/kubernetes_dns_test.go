@@ -21,11 +21,11 @@ import (
 // The DNS test (ADR 0083) boots the two-Node cluster of the Kubernetes test with its default add-ons.
 // A Pod resolves a Service of its own namespace and one of another by name, and an external name through
 // the Node's resolver, which CoreDNS forwards to. The Nodes' resolver is a Pod on node-1's network that
-// answers the one name; no machine answers it otherwise. A second cluster disables DNS, and the add-ons
-// leave what the administrator put in kube-system alone.
+// answers the one name; no machine answers it otherwise. A second cluster disables DNS: its control-plane
+// Node has no service to apply anything, and what the administrator put in kube-system stays as it was.
 
 // startDNSCluster boots a cluster and waits for the default ServiceAccount, which a Pod needs.
-func startDNSCluster(t *testing.T, spec node.KubeSpec) *node.KubeCluster {
+func startDNSCluster(t *testing.T, spec node.KubeSpec) (*node.KubeCluster, string) {
 	t.Helper()
 	_, err := exec.LookPath("kubectl")
 	require.NoError(t, err, "kubectl is a precondition of make test-qemu")
@@ -42,7 +42,15 @@ func startDNSCluster(t *testing.T, spec node.KubeSpec) *node.KubeCluster {
 		require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "started", "service=kubelet"), nd.Name+" kubelet")
 	}
 	kubectlEventually(t, c, "the default ServiceAccount exists", "get", "serviceaccount", "default", "-o", "name")
-	return c
+	return c, spec.Dir
+}
+
+// nodeOneUserData is the user-data naructl wrote for node-1, the control-plane Node.
+func nodeOneUserData(t *testing.T, dir string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "node-1", "naru.yaml"))
+	require.NoError(t, err)
+	return string(b)
 }
 
 func service(namespace, name string) string {
@@ -58,7 +66,8 @@ spec:
 }
 
 func TestNode_KubernetesDNSResolvesAServiceOfItsOwnNamespaceAndOfAnotherAndAnExternalNameThroughTheNodesResolver(t *testing.T) {
-	c := startDNSCluster(t, node.KubeSpec{Resolver: true})
+	c, dir := startDNSCluster(t, node.KubeSpec{Resolver: true})
+	assert.Contains(t, nodeOneUserData(t, dir), "name: addons\n", "the control-plane Node has the service that applies the add-ons: the control of the disabled case")
 	const external = "external.naru.test"
 
 	// The Nodes' resolver: a Pod on node-1's network, which answers external.naru.test with 192.0.2.53.
@@ -103,10 +112,21 @@ func TestNode_KubernetesDNSResolvesAServiceOfItsOwnNamespaceAndOfAnotherAndAnExt
 	}
 }
 
-func TestNode_KubernetesDisabledDNSIsNotAppliedAndWhatTheAdministratorKeptInKubeSystemIsLeftAlone(t *testing.T) {
-	c := startDNSCluster(t, node.KubeSpec{DisableAddons: []string{"dns"}})
+func TestNode_KubernetesDisabledDNSGivesTheControlPlaneNodeNothingToApplyAndWhatTheAdministratorKeptInKubeSystemIsLeftAlone(t *testing.T) {
+	c, dir := startDNSCluster(t, node.KubeSpec{DisableAddons: []string{"dns"}})
 
-	// The administrator's own cluster DNS, under the names the add-on would use.
+	// The setup asked for the cluster without DNS: node-1 has no service that applies add-ons, and
+	// the kubelet is still told the cluster's DNS address, so a Pod would use the administrator's.
+	userData := nodeOneUserData(t, dir)
+	require.NotContains(t, userData, "name: addons\n")
+	require.Contains(t, userData, "clusterDNS")
+
+	// node-1 runs kube-proxy last when it has no add-ons to apply, so once it has started and the API
+	// server is ready, nothing is left that could still apply an add-on.
+	require.NoError(t, c.Nodes[0].WaitFor(context.Background(), bootTimeout, "started", "service=kube-proxy"))
+	kubectlEventually(t, c, "the API server is ready", "get", "--raw=/readyz")
+
+	// The administrator's own cluster DNS, under the name the add-on would use.
 	const mine = `apiVersion: v1
 kind: Service
 metadata:
@@ -124,8 +144,6 @@ spec:
 	out, err := kubectl(t, c, mine, "apply", "-f", "-")
 	require.NoError(t, err, out)
 
-	// Where the add-ons would have run, a minute is many times what the enabled cluster takes to apply them.
-	time.Sleep(time.Minute)
 	deployments, err := kubectl(t, c, "", "-n", "kube-system", "get", "deployments", "-o", "name")
 	require.NoError(t, err, deployments)
 	assert.NotContains(t, deployments, "coredns", "a cluster that disables DNS gets no CoreDNS")
