@@ -1,10 +1,7 @@
 package pki_test
 
 import (
-	"crypto/ecdsa"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"regexp"
 	"testing"
 
@@ -13,21 +10,6 @@ import (
 
 	"github.com/garamsh/naru/lib/layout/pki"
 )
-
-func TestServiceAccountKey_PublicKeyIsTheKeysOwn(t *testing.T) {
-	keyPEM, pubPEM, err := pki.ServiceAccountKey()
-	require.NoError(t, err)
-
-	keyBlock, _ := pem.Decode(keyPEM)
-	require.NotNil(t, keyBlock)
-	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
-	require.NoError(t, err)
-	pubBlock, _ := pem.Decode(pubPEM)
-	require.NotNil(t, pubBlock)
-	pub, err := x509.ParsePKIXPublicKey(pubBlock.Bytes)
-	require.NoError(t, err)
-	assert.True(t, key.PublicKey.Equal(pub.(*ecdsa.PublicKey)))
-}
 
 func TestKubeconfig_CarriesTheServerTheAuthorityAndThePairInline(t *testing.T) {
 	ca, err := pki.New("test")

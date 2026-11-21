@@ -49,6 +49,15 @@ type KubeSpec struct {
 	// volumes (naru-local: XFS, mounted by init, the first storage disk) or offers whole as a block
 	// volume (naru-block), so that the volume add-on has a disk to serve (ADR 0083).
 	VolumeDisk string
+	// ServiceAccountIssuers are gen kubernetes --service-account-issuer, the first of which signs
+	// (ADR 0087), and ServiceAccountAlgorithm is --service-account-algorithm. A cluster with issuers
+	// keeps the authority's directory until Stop, as CADir, so that a test reads the signing key.
+	ServiceAccountIssuers   []string
+	ServiceAccountAlgorithm string
+	// RotateServiceAccountKey makes gen kubernetes rotate the ServiceAccount key once before the Nodes
+	// boot, and keeps the key it replaced as <CADir>/sa.key.previous, so that a test signs as the old
+	// key. It needs ServiceAccountIssuers.
+	RotateServiceAccountKey bool
 }
 
 // The extra disk of a cluster that serves volumes (KubeSpec.VolumeDisk).
@@ -81,7 +90,7 @@ func KubePodPrefix(index int) string { return fmt.Sprintf("10.64.%d.0/24", index
 
 // StartKubernetes boots node-1 as the control-plane Node and node-2 as a worker, and returns them as
 // soon as QEMU has started each. The caller must Stop it.
-func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
+func StartKubernetes(spec KubeSpec) (cluster *KubeCluster, err error) {
 	if spec.Inputs.Image.Digest == "" {
 		return nil, errors.New("a Kubernetes cluster needs the test image, which its Pods run")
 	}
@@ -89,6 +98,9 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 		if i < 3 {
 			return nil, errors.New("Late numbers workers after node-2")
 		}
+	}
+	if spec.RotateServiceAccountKey && len(spec.ServiceAccountIssuers) == 0 {
+		return nil, errors.New("RotateServiceAccountKey needs ServiceAccountIssuers, whose key id naructl prints")
 	}
 	total := 2 + len(spec.Late)
 	port, err := freePort()
@@ -100,16 +112,40 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 		return nil, err
 	}
 	// The CA's directory goes once the Nodes' user-data is written: it holds the authority's key, the
-	// ServiceAccount key and admin.conf. The administrator keeps a copy of admin.conf.
-	if len(spec.Late) == 0 {
-		defer func() { _ = os.RemoveAll(caDir) }()
-	}
+	// ServiceAccount key and admin.conf. The administrator keeps a copy of admin.conf. It stays until
+	// Stop for a cluster the test reads it of, and goes at once when StartKubernetes fails.
+	keep := len(spec.Late) > 0 || len(spec.ServiceAccountIssuers) > 0
+	defer func() {
+		if !keep || err != nil {
+			_ = os.RemoveAll(caDir)
+		}
+	}()
 	if err := spec.Naructl.GenCA(caDir); err != nil {
 		return nil, err
 	}
 	apiServer := QEMUNetwork(1, total).IP
-	if err := spec.Naructl.GenKubernetes(caDir, apiServer, "127.0.0.1:"+strconv.Itoa(port), spec.DisableAddons...); err != nil {
+	gen := naructl.KubernetesCluster{
+		CADir: caDir, Endpoint: apiServer, AdminAddress: "127.0.0.1:" + strconv.Itoa(port), DisableAddons: spec.DisableAddons,
+		ServiceAccountIssuers: spec.ServiceAccountIssuers, ServiceAccountAlgorithm: spec.ServiceAccountAlgorithm,
+	}
+	if err := spec.Naructl.GenKubernetesCluster(gen); err != nil {
 		return nil, err
+	}
+	if spec.RotateServiceAccountKey {
+		kid, err := spec.Naructl.SigningKeyID(caDir)
+		if err != nil {
+			return nil, err
+		}
+		key, err := os.ReadFile(filepath.Join(caDir, "sa.key"))
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(caDir, "sa.key.previous"), key, 0o600); err != nil {
+			return nil, err
+		}
+		if err := spec.Naructl.GenKubernetesCluster(naructl.KubernetesCluster{CADir: caDir, Endpoint: apiServer, AdminAddress: gen.AdminAddress, DisableAddons: spec.DisableAddons, RotateServiceAccountKey: kid}); err != nil {
+			return nil, err
+		}
 	}
 	var apiPort int
 	var apiAdmin string
@@ -140,7 +176,7 @@ func StartKubernetes(spec KubeSpec) (*KubeCluster, error) {
 		Image:      spec.Inputs.Image.Repository + "@" + spec.Inputs.Image.Digest,
 		spec:       spec, caDir: caDir, apiServer: apiServer, total: total, hostPort: port, APIAdmin: apiAdmin,
 	}
-	if len(spec.Late) > 0 {
+	if keep {
 		c.CADir = caDir
 	}
 	// The sandbox runs the image's command with no arguments, which would serve the microVM probe on
