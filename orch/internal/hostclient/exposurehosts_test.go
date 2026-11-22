@@ -74,9 +74,9 @@ func TestOnlyRunningMicroVMsAreBackendsAndMakeAHostACandidate(t *testing.T) {
 	hosts, err := h.List(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, []exposures.Host{
-		{ID: "h1", LAN: "eth0", Networks: []string{"a"}},
+		{ID: "h1", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.5", "10.1.0.6"}}},
 		{ID: "h2", LAN: "eth0"},
-		{ID: "h3", LAN: "eth0", Networks: []string{"b"}},
+		{ID: "h3", LAN: "eth0", Networks: []string{"b"}, Members: map[string][]string{"b": {"10.2.0.5"}}},
 	}, hosts, "h2 only has a stopped microVM on a")
 }
 

@@ -54,7 +54,8 @@ const PhaseReleasing = "releasing"
 // its host may end.
 type Record struct {
 	orchapi.Exposure
-	LeaseUntil time.Time `json:"leaseUntil,omitzero"`
+	LeaseUntil     time.Time `json:"leaseUntil,omitzero"`
+	LeasedBackends []string  `json:"leasedBackends,omitempty"`
 }
 
 // Equal reports whether two records store the same bytes.

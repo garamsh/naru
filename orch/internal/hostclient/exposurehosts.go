@@ -115,18 +115,23 @@ func (h *ExposureHosts) List(ctx context.Context) ([]exposures.Host, error) {
 		}
 		seen := map[string]bool{}
 		var nets []string
-		var members []string
+		var members map[string][]string
 		for _, m := range vms {
 			if live(m) && m.Network != "" {
 				if !seen[m.Network] {
 					seen[m.Network] = true
 					nets = append(nets, m.Network)
 				}
-				members = append(members, m.Addresses...)
+				if members == nil {
+					members = map[string][]string{}
+				}
+				members[m.Network] = append(members[m.Network], m.Addresses...)
 			}
 		}
 		sort.Strings(nets)
-		sort.Strings(members)
+		for net := range members {
+			sort.Strings(members[net])
+		}
 		return exposures.Host{ID: a.ID, LAN: info.LANInterface, Networks: nets, Members: members}, true
 	}), nil
 }
