@@ -78,7 +78,7 @@ require (
 	github.com/transparency-dev/merkle v0.0.2 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/mod v0.43.0 // indirect
 	golang.org/x/term v0.47.0 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
