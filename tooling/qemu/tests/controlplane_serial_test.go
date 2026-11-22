@@ -47,9 +47,11 @@ const (
 	// load the slowest took 285 ms. 2.5 s is 0.4 s above that load and 0.3 s below the shortest stall,
 	// and a stall is told from a load spike beyond what was measured by its repeating: one handshake
 	// slower than 2.5 s is not enough, two are. Neither distribution was measured on the host the test
-	// runs on for this bound, the stall one by the calculation above and not by a run of init that
-	// re-prints all of the kept log; the run is deferred to the final check of #235. The 100 ms of the
-	// criterion is aurora's on Proxmox.
+	// runs on for this bound, the stall confirmed by a run with the whole 1 MiB kept log printed at
+	// once (ReprintBytes = KeptBytes, BlockPiece = KeptBytes + 64<<10): node-3 stalled at 10.9 s, 8.9 s
+	// and 11.0 s, node-1 at 13.4 s (garamsh/naru#235, comment 6939492640). With ReprintBytes = KeptBytes
+	// alone the longest handshake was 69 ms: the block is still written in 2 KiB pieces. The 100 ms of
+	// the criterion is aurora's on Proxmox.
 	maxStall     = 2500 * time.Millisecond
 	repeatStalls = 2
 	// slowHandshake is the length past which a handshake is counted in the log, so that a run that
