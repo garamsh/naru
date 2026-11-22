@@ -80,6 +80,29 @@ func FindESP(sysClassBlock, devDir, guid string) (partition, disk string, err er
 	return p.device, filepath.Join(devDir, filepath.Base(filepath.Dir(real))), nil
 }
 
+// FindBootDisk returns the name in sysClassBlock of the disk that holds the partition whose
+// PARTUUID is guid, so the caller does not carry its own PARTUUID scan. It returns "" when no
+// partition has the GUID or the sysfs entry cannot be resolved.
+func FindBootDisk(sysClassBlock, guid string) string {
+	entries, err := os.ReadDir(sysClassBlock)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		dir := filepath.Join(sysClassBlock, e.Name())
+		uevent, err := os.ReadFile(filepath.Join(dir, "uevent"))
+		if err != nil || !HasPartUUID(string(uevent), guid) {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			continue
+		}
+		return filepath.Base(filepath.Dir(real))
+	}
+	return ""
+}
+
 // HasPartUUID reports whether a partition's uevent text names guid as its PARTUUID, in either case.
 func HasPartUUID(uevent, guid string) bool {
 	for _, line := range strings.Split(uevent, "\n") {

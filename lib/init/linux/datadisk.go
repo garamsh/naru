@@ -88,22 +88,5 @@ func (h *Host) blankOrLabelled(label string, first bool) (string, error) {
 // bootDisk returns the name in /sys/class/block of the disk that holds the partition whose
 // PARTUUID is wire.ESPGUID, and "" when no partition has it.
 func (h *Host) bootDisk() string {
-	entries, err := os.ReadDir(h.sysClassBlock)
-	if err != nil {
-		return ""
-	}
-	for _, e := range entries {
-		dir := filepath.Join(h.sysClassBlock, e.Name())
-		uevent, err := os.ReadFile(filepath.Join(dir, "uevent"))
-		if err != nil || !upgrade.HasPartUUID(string(uevent), wire.ESPGUID) {
-			continue
-		}
-		// A partition's sysfs entry lies under its disk's.
-		real, err := filepath.EvalSymlinks(dir)
-		if err != nil {
-			continue
-		}
-		return filepath.Base(filepath.Dir(real))
-	}
-	return ""
+	return upgrade.FindBootDisk(h.sysClassBlock, wire.ESPGUID)
 }
