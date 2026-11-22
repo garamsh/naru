@@ -1,6 +1,7 @@
 package network
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -49,7 +50,7 @@ func (l *LAN) Add(a netip.Addr, valid time.Duration) error {
 	if err != nil {
 		return err
 	}
-	if err := l.check(a, false); err != nil {
+	if err := l.check(a, false, false); err != nil {
 		return err
 	}
 	x := hostAddr(a)
@@ -59,10 +60,12 @@ func (l *LAN) Add(a netip.Addr, valid time.Duration) error {
 	return netlink.AddrReplace(link, x)
 }
 
-// Check refuses an address the host must not take for a lease.
-func (l *LAN) Check(a netip.Addr) error { return l.check(a, true) }
+// Check refuses an address the host must not take for a new lease: one the host already holds on
+// any interface, the LAN's network or broadcast address, a default gateway, or an address not
+// inside any prefix of the LAN interface. An address a lease already holds passes.
+func (l *LAN) Check(a netip.Addr) error { return l.check(a, true, true) }
 
-func (l *LAN) check(a netip.Addr, gateways bool) error {
+func (l *LAN) check(a netip.Addr, gateways, lanPrefix bool) error {
 	have, err := netlink.AddrList(nil, netlink.FAMILY_V4)
 	if err != nil {
 		return err
@@ -94,7 +97,26 @@ func (l *LAN) check(a netip.Addr, gateways bool) error {
 			}
 		}
 	}
-	return refuseHostAddress(a, held, gw)
+	if err := refuseHostAddress(a, held, gw); err != nil {
+		return err
+	}
+	if lanPrefix {
+		if err := checkLANPrefix(a, l.name, held); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkLANPrefix refuses a when it is not inside any non-/32 prefix of the LAN interface. A
+// layer-2 announcement cannot reach beyond the interface's own subnet.
+func checkLANPrefix(a netip.Addr, lanName string, held []hostAddress) error {
+	for _, h := range held {
+		if h.OnLAN && !h.Ours && h.Prefix.Bits() < 32 && h.Prefix.Contains(a) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s is not inside any prefix of %s", ErrOutsideLAN, a, lanName)
 }
 
 // hostAddress is an address of the host: its prefix, whether it is on the LAN interface, and whether
@@ -166,6 +188,56 @@ func (l *LAN) Held() ([]netip.Addr, error) {
 	return out, nil
 }
 
+// Probe sends one ARP probe for a and returns ErrTaken when any host answers within 500 ms.
+// Use it before taking a new lease to detect another LAN host that holds the address (RFC 5227
+// §2.1). The probe uses 0.0.0.0 as the sender IP, so the host does not claim the address;
+// any ARP packet with a as the sender protocol address means another host holds it.
+// Renewals do not probe: the host already holds the address.
+func (l *LAN) Probe(a netip.Addr) error {
+	link, err := l.link()
+	if err != nil {
+		return err
+	}
+	hw := link.Attrs().HardwareAddr
+	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, int(htons(etherTypeARP)))
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	to := &syscall.SockaddrLinklayer{Protocol: htons(etherTypeARP), Ifindex: link.Attrs().Index, Halen: 6}
+	copy(to.Addr[:], broadcast)
+	frame, err := ARPProbe(hw, a)
+	if err != nil {
+		return err
+	}
+	if err := syscall.Sendto(fd, frame, 0, to); err != nil {
+		return err
+	}
+	tv := syscall.Timeval{Sec: 0, Usec: 500000}
+	if err := syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv); err != nil {
+		return err
+	}
+	target := a.Unmap().As4()
+	buf := make([]byte, 42)
+	for {
+		n, _, err := syscall.Recvfrom(fd, buf, 0)
+		if err != nil {
+			if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+				return nil
+			}
+			return err
+		}
+		if n < 42 || buf[12] != 0x08 || buf[13] != 0x06 {
+			continue
+		}
+		var senderIP [4]byte
+		copy(senderIP[:], buf[28:32])
+		if senderIP == target {
+			return ErrTaken
+		}
+	}
+}
+
 // Announce sends the gratuitous ARP of the address on the interface.
 func (l *LAN) Announce(a netip.Addr) error {
 	link, err := l.link()
@@ -192,6 +264,27 @@ const etherTypeARP = 0x0806
 var broadcast = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
+
+// ARPProbe returns the Ethernet frame of an ARP probe from hw for a: an ARP request whose sender
+// IP is 0.0.0.0 (RFC 5227 §2.1), so the host does not claim the address. Any host that holds a
+// answers with its MAC and address.
+func ARPProbe(hw net.HardwareAddr, a netip.Addr) ([]byte, error) {
+	a = a.Unmap()
+	if len(hw) != 6 || !a.Is4() {
+		return nil, fmt.Errorf("an ARP probe needs a 6-byte hardware address and an IPv4 address")
+	}
+	f := make([]byte, 0, 42)
+	f = append(f, broadcast...)
+	f = append(f, hw...)
+	f = append(f, 0x08, 0x06)
+	f = append(f, 0, 1, 0x08, 0, 6, 4)
+	f = append(f, 0, 1)                // request
+	f = append(f, hw...)               // sender hardware
+	f = append(f, 0, 0, 0, 0)         // sender IP: 0.0.0.0
+	f = append(f, 0, 0, 0, 0, 0, 0)   // target hardware: zeros
+	f = append(f, a.AsSlice()...)      // target IP: the address being probed
+	return f, nil
+}
 
 // ARPAnnouncement returns the Ethernet frame of an unsolicited ARP reply from hw announcing a: a
 // broadcast whose sender and target protocol addresses are both a.

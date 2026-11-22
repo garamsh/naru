@@ -13,11 +13,16 @@ import (
 // Errors the exposures answer; the API maps them to statuses.
 var (
 	ErrNoLAN    = errors.New("the host has no LAN interface")
-	ErrReserved = errors.New("the address belongs to a network, a member or the management plane")
+	ErrReserved = errors.New("the address belongs to a network or a member")
 	ErrBackend  = errors.New("a backend is not a member of the exposure's network")
 	// ErrHostAddress is an address the host cannot take for a lease because it is the host's own,
 	// the LAN's network or broadcast address, or its gateway: announcing it would take it over.
 	ErrHostAddress = errors.New("the address belongs to the host or to the LAN")
+	// ErrOutsideLAN is an address not inside any prefix of the LAN interface: a layer-2 announcement
+	// cannot reach beyond the interface's own subnet.
+	ErrOutsideLAN = errors.New("the address is not inside any prefix of the LAN interface")
+	// ErrTaken is an address answered by an ARP probe: another host on the LAN already holds it.
+	ErrTaken = errors.New("the address is held by another host on the LAN")
 	// ErrInvalid is an exposure that is malformed: a port outside its range, a NodePort outside
 	// Kubernetes' range, a repeated port, no backend, or a UDP port with the PROXY protocol.
 	ErrInvalid = errors.New("the exposure is invalid")
@@ -101,10 +106,10 @@ func (m *Manager) Exposures() []Exposure {
 	return sortedExposures(m.c.Exposures)
 }
 
-// PutExposure takes the lease on e.Address or renews it, and applies. The address must not be one
-// the host's networks, their members or the management plane hold, since the host would answer for
-// it on the LAN, and every backend must be a member of the exposure's network, since the host
-// would forward LAN traffic to it. A renewal that changes only the deadline changes no rule.
+// PutExposure takes the lease on e.Address or renews it, and applies. The address must not belong
+// to the host's networks or their members, since the host would answer for it on the LAN, and every
+// backend must be a member of the exposure's network on this host, since the host would forward LAN
+// traffic to it. A renewal that changes only the deadline changes no rule.
 func (m *Manager) PutExposure(ctx context.Context, e Exposure) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -172,9 +177,6 @@ func checkExposure(base, c Config, e Exposure) error {
 	}
 	if n == nil {
 		return ErrUnknownNetwork
-	}
-	if base.Management.IsValid() && base.Management.Contains(e.Address) {
-		return ErrReserved
 	}
 	for _, o := range c.Networks {
 		if o.Prefix.Contains(e.Address) || slices.ContainsFunc(o.Remote, func(p netip.Prefix) bool { return p.Contains(e.Address) }) {

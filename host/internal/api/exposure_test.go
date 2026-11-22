@@ -20,9 +20,10 @@ import (
 
 // lanLink is the LAN interface of the tests.
 type lanLink struct {
-	mu      sync.Mutex
-	addrs   map[netip.Addr]bool
-	refused map[netip.Addr]bool
+	mu          sync.Mutex
+	addrs       map[netip.Addr]bool
+	refused     map[netip.Addr]bool
+	lanPrefixes []netip.Prefix
 }
 
 func (l *lanLink) Check(a netip.Addr) error {
@@ -30,6 +31,14 @@ func (l *lanLink) Check(a netip.Addr) error {
 	defer l.mu.Unlock()
 	if l.refused[a] {
 		return network.ErrHostAddress
+	}
+	if len(l.lanPrefixes) > 0 {
+		for _, p := range l.lanPrefixes {
+			if p.Contains(a) {
+				return nil
+			}
+		}
+		return network.ErrOutsideLAN
 	}
 	return nil
 }
@@ -48,6 +57,7 @@ func (l *lanLink) Remove(a netip.Addr) error {
 	return nil
 }
 
+func (l *lanLink) Probe(netip.Addr) error       { return nil }
 func (l *lanLink) Held() ([]netip.Addr, error) { return nil, nil }
 func (l *lanLink) Announce(netip.Addr) error   { return nil }
 
@@ -67,7 +77,7 @@ func startExposures(t *testing.T) exposureServer {
 	t.Helper()
 	x := &network.Exposer{}
 	e := startEnvRevoking(t, netip.MustParseAddr("10.1.0.1"), true, nil, func(d *Deps) { d.Exposures, d.LANInterface = x, "lan0" })
-	link := &lanLink{addrs: map[netip.Addr]bool{}, refused: map[netip.Addr]bool{}}
+	link := &lanLink{addrs: map[netip.Addr]bool{}, refused: map[netip.Addr]bool{}, lanPrefixes: []netip.Prefix{netip.MustParsePrefix("192.168.0.0/24")}}
 	e.nets.Base.LAN = "lan0"
 	x.Listen = func(string) (net.Listener, error) { return net.Listen("tcp4", "127.0.0.1:0") }
 	x.Manager, x.Link, x.Log = e.nets, link, slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -153,7 +163,7 @@ func TestExposure_Refusals(t *testing.T) {
 		{"address is IPv6", "/v1/exposures/fd00::80", goodExposure},
 		{"address is the loopback", "/v1/exposures/127.0.0.1", goodExposure},
 		{"address is in the network", "/v1/exposures/10.8.1.1", goodExposure},
-		{"address is the management", "/v1/exposures/172.16.0.5", goodExposure},
+		{"address is outside the LAN prefix", "/v1/exposures/172.16.0.5", goodExposure},
 		{"unknown network", ok, change(func(r *hostapi.ExposureRequest) { r.Network = "nope" })},
 		{"bad network name", ok, change(func(r *hostapi.ExposureRequest) { r.Network = "A_" })},
 		{"no ports", ok, change(func(r *hostapi.ExposureRequest) { r.Ports = nil })},
@@ -229,8 +239,8 @@ func TestExposure_AMemberAddressIsRefused(t *testing.T) {
 	code, b := e.do(t, p, "PUT", "/v1/exposures/10.0.0.3", goodExposure())
 	assert.Equal(t, 422, code, "a microVM's address is not announced on the LAN: %s", b)
 	assert.False(t, e.link.has("10.0.0.3"))
-	code, b = e.do(t, p, "PUT", "/v1/exposures/10.0.0.4", goodExposure())
-	assert.Equal(t, 200, code, "control: another address is: %s", b)
+	code, b = e.do(t, p, "PUT", "/v1/exposures/192.168.0.84", goodExposure())
+	assert.Equal(t, 200, code, "control: an address in the LAN prefix that is not a member's is taken: %s", b)
 }
 
 func TestExposure_Roles(t *testing.T) {

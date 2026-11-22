@@ -174,6 +174,10 @@ func (s *Server) exposureFail(w http.ResponseWriter, err error) {
 		invalid(w, "backends")
 	case errors.Is(err, network.ErrHostAddress):
 		invalid(w, "address")
+	case errors.Is(err, network.ErrOutsideLAN):
+		invalid(w, "address")
+	case errors.Is(err, network.ErrTaken):
+		writeJSON(w, http.StatusConflict, hostapi.ErrorBody{Error: err.Error()})
 	case errors.Is(err, network.ErrInvalid):
 		invalid(w, "exposure")
 	case errors.Is(err, network.ErrNoLAN):

@@ -61,10 +61,14 @@ type fakeLink struct {
 	failAdd map[netip.Addr]bool
 	// removeErr, when set, is the error of every Remove.
 	removeErr error
+	// takenByProbe are the addresses Probe reports as held by another host.
+	takenByProbe map[netip.Addr]bool
+	// lanPrefixes, when set, are the subnets Check requires the address to be in.
+	lanPrefixes []netip.Prefix
 }
 
 func newLink(left ...netip.Addr) *fakeLink {
-	l := &fakeLink{addrs: map[netip.Addr]bool{}, refused: map[netip.Addr]bool{}, valid: map[netip.Addr]time.Duration{}, failAdd: map[netip.Addr]bool{}}
+	l := &fakeLink{addrs: map[netip.Addr]bool{}, refused: map[netip.Addr]bool{}, valid: map[netip.Addr]time.Duration{}, failAdd: map[netip.Addr]bool{}, takenByProbe: map[netip.Addr]bool{}}
 	for _, a := range left {
 		l.addrs[a] = true
 	}
@@ -76,6 +80,23 @@ func (l *fakeLink) Check(a netip.Addr) error {
 	defer l.mu.Unlock()
 	if l.refused[a] {
 		return network.ErrHostAddress
+	}
+	if len(l.lanPrefixes) > 0 {
+		for _, p := range l.lanPrefixes {
+			if p.Contains(a) {
+				return nil
+			}
+		}
+		return network.ErrOutsideLAN
+	}
+	return nil
+}
+
+func (l *fakeLink) Probe(a netip.Addr) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.takenByProbe[a] {
+		return network.ErrTaken
 	}
 	return nil
 }
@@ -149,8 +170,12 @@ type exposureEnv struct {
 }
 
 // startExposer is an Exposer over a Manager that holds the network "a" and has restored.
+// The link's LAN prefixes are set to 192.168.0.0/24, as the LAN interface of the tests.
 func startExposer(t *testing.T, state string, link *fakeLink, c *clock) *exposureEnv {
 	t.Helper()
+	if len(link.lanPrefixes) == 0 {
+		link.lanPrefixes = []netip.Prefix{pfx("192.168.0.0/24")}
+	}
 	f := &fakeRunner{}
 	m := newManager(f, &fakeTunnel{}, state)
 	m.Base.LAN = "lan0"
@@ -281,26 +306,37 @@ func TestExposer_RefusesWhatTheHostMustNotServe(t *testing.T) {
 	e := startExposer(t, "", link, c)
 	ctx := context.Background()
 	require.NoError(t, e.m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
+	// A member whose address is inside the LAN prefix exercises checkExposure after the LAN prefix
+	// check passes.
+	require.NoError(t, e.m.Attach(ctx, network.Member{Network: "a", Address: addr("192.168.0.33")}))
 
-	for name, tc := range map[string]struct {
+	for _, tc := range []struct {
+		name   string
 		change func(*network.Exposure)
 		want   error
 	}{
-		"an address of the network":     {func(x *network.Exposure) { x.Address = addr("10.8.1.1") }, network.ErrReserved},
-		"a member's address":            {func(x *network.Exposure) { x.Address = addr("10.0.0.3") }, network.ErrReserved},
-		"a remote member's address":     {func(x *network.Exposure) { x.Address = addr("10.0.2.7") }, network.ErrReserved},
-		"the management plane":          {func(x *network.Exposure) { x.Address = addr("172.16.0.9") }, network.ErrReserved},
-		"a backend on another host":     {func(x *network.Exposure) { x.Backends = []netip.Addr{addr("10.0.2.7")} }, network.ErrBackend},
-		"a backend only in the prefix":  {func(x *network.Exposure) { x.Backends = []netip.Addr{addr("10.8.0.99")} }, network.ErrBackend},
-		"a backend outside the network": {func(x *network.Exposure) { x.Backends = []netip.Addr{addr("10.8.0.5"), addr("10.9.0.5")} }, network.ErrBackend},
-		"a backend that is the LAN's":   {func(x *network.Exposure) { x.Backends = []netip.Addr{addr("192.168.0.1")} }, network.ErrBackend},
-		"an unknown network":            {func(x *network.Exposure) { x.Network = "nope" }, network.ErrUnknownNetwork},
+		// Addresses outside the LAN prefix are refused by Link.Check (the LAN prefix check runs before
+		// checkExposure). In production, a network's prefix never overlaps the LAN; the LAN prefix
+		// check catches these addresses first.
+		{"an address of the network", func(x *network.Exposure) { x.Address = addr("10.8.1.1") }, network.ErrOutsideLAN},
+		{"a member's address", func(x *network.Exposure) { x.Address = addr("10.0.0.3") }, network.ErrOutsideLAN},
+		{"a remote member's address", func(x *network.Exposure) { x.Address = addr("10.0.2.7") }, network.ErrOutsideLAN},
+		{"an address outside the LAN's prefix", func(x *network.Exposure) { x.Address = addr("172.16.0.9") }, network.ErrOutsideLAN},
+		// A member's address in the LAN prefix is refused by checkExposure after the LAN prefix check passes.
+		{"a member's address in the LAN prefix", func(x *network.Exposure) { x.Address = addr("192.168.0.33") }, network.ErrReserved},
+		{"a backend on another host", func(x *network.Exposure) { x.Backends = []netip.Addr{addr("10.0.2.7")} }, network.ErrBackend},
+		{"a backend only in the prefix", func(x *network.Exposure) { x.Backends = []netip.Addr{addr("10.8.0.99")} }, network.ErrBackend},
+		{"a backend outside the network", func(x *network.Exposure) { x.Backends = []netip.Addr{addr("10.8.0.5"), addr("10.9.0.5")} }, network.ErrBackend},
+		{"a backend that is the LAN's", func(x *network.Exposure) { x.Backends = []netip.Addr{addr("192.168.0.1")} }, network.ErrBackend},
+		{"an unknown network", func(x *network.Exposure) { x.Network = "nope" }, network.ErrUnknownNetwork},
 	} {
-		x := web(false)
-		tc.change(&x)
-		err := e.x.Put(ctx, x, 15*time.Second)
-		assert.ErrorIs(t, err, tc.want, name)
-		assert.False(t, link.has(x.Address), "%s: the address was not taken", name)
+		t.Run(tc.name, func(t *testing.T) {
+			x := web(false)
+			tc.change(&x)
+			err := e.x.Put(ctx, x, 15*time.Second)
+			assert.ErrorIs(t, err, tc.want)
+			assert.False(t, link.has(x.Address), "the address was not taken")
+		})
 	}
 	assert.Empty(t, e.x.Exposures())
 
@@ -333,6 +369,43 @@ func TestExposer_AnAddressTheLinkRefusesLeavesNoRules(t *testing.T) {
 	link.addErr = nil
 	require.NoError(t, e.x.Put(context.Background(), web(false), 15*time.Second), "control: with the link working the same lease is taken")
 	assert.Contains(t, e.f.last(), "dnat ip to")
+}
+
+func TestExposer_AnAddressAnsweredByARPRefusesWith409(t *testing.T) {
+	c, link := &clock{t: t0}, newLink()
+	e := startExposer(t, "", link, c)
+	ctx := context.Background()
+	a := addr("192.168.0.80")
+	link.takenByProbe[a] = true
+	assert.ErrorIs(t, e.x.Put(ctx, web(false), 15*time.Second), network.ErrTaken)
+	assert.False(t, link.has(a), "the address was not taken")
+	assert.Empty(t, e.x.Exposures())
+
+	// Control: once the probe no longer answers, the same address is taken.
+	delete(link.takenByProbe, a)
+	require.NoError(t, e.x.Put(ctx, web(false), 15*time.Second), "control: silence from the probe takes the lease")
+	assert.True(t, link.has(a))
+
+	// Renewals do not probe: the host already holds the address.
+	link.takenByProbe[a] = true
+	require.NoError(t, e.x.Put(ctx, web(false), 15*time.Second), "control: a renewal is not probed")
+}
+
+func TestExposer_AnAddressOutsideTheLANPrefixIsRefused(t *testing.T) {
+	c, link := &clock{t: t0}, newLink()
+	link.lanPrefixes = []netip.Prefix{pfx("10.78.0.0/24")}
+	e := startExposer(t, "", link, c)
+	ctx := context.Background()
+
+	// 192.168.0.80 is outside 10.78.0.0/24.
+	assert.ErrorIs(t, e.x.Put(ctx, web(false), 15*time.Second), network.ErrOutsideLAN)
+	assert.False(t, link.has(addr("192.168.0.80")), "the address was not taken")
+
+	// An address inside the LAN prefix is accepted.
+	inside := web(false)
+	inside.Address = addr("10.78.0.80")
+	require.NoError(t, e.x.Put(ctx, inside, 15*time.Second), "control: an address inside the prefix is taken")
+	assert.True(t, link.has(addr("10.78.0.80")))
 }
 
 func TestExposer_AnAddressTheHostHoldsIsRefusedBeforeAnythingIsDone(t *testing.T) {
@@ -515,7 +588,7 @@ func TestExposer_AStateThatNoLongerHoldsIsDroppedAtLoad(t *testing.T) {
 		{"control: the file as it was written", func(s string) string { return s }, true},
 		{"a backend outside the network", func(s string) string { return strings.Replace(s, "10.8.0.6", "10.9.9.9", 1) }, false},
 		{"a node port outside the range", func(s string) string { return strings.Replace(s, "30080", "80", 1) }, false},
-		{"the address of the management plane", func(s string) string { return strings.Replace(s, "192.168.0.80", "172.16.0.9", 1) }, false},
+		{"an address inside a network prefix", func(s string) string { return strings.Replace(s, "192.168.0.80", "10.8.0.50", 1) }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "networks.json")
