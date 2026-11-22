@@ -19,6 +19,11 @@ const (
 	EventFailed      EventKind = "failed"
 	EventObserveFail EventKind = "observe-failed"
 	EventPassFailed  EventKind = "pass-failed"
+
+	// EventBootSetAdded and EventBootSetFailed are the boot set reconciler's: Host is the host
+	// the set was added to or refused by.
+	EventBootSetAdded  EventKind = "bootset.added"
+	EventBootSetFailed EventKind = "bootset.failed"
 )
 
 // Event is one action taken or one decision made.
@@ -29,6 +34,9 @@ type Event struct {
 	Member  string
 	Host    string
 	Message string
+	// Class, when set, is what repeats of a failure share; it replaces Message in deciding
+	// whether an event repeats another.
+	Class string
 }
 
 // Events records what the engine did and decided.

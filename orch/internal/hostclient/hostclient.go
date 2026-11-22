@@ -154,7 +154,7 @@ func request(spec groups.MachineSpec) (hostapi.CreateRequest, error) {
 		if userData == "" {
 			userData = groups.DefaultUserData
 		}
-		r.BootSet, r.Seed, r.DataDisk = t.NodeVersion, []byte(userData), uint64(t.Disks[0].SizeBytes)
+		r.BootSet, r.Seed, r.DataDisk = spec.BootSet, []byte(userData), uint64(t.Disks[0].SizeBytes)
 	default:
 		return hostapi.CreateRequest{}, fmt.Errorf("template form %q is neither image nor os", t.Form)
 	}
