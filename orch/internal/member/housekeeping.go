@@ -137,9 +137,10 @@ type Housekeeper struct {
 	// no write, so there the record fails and only the log says so.
 	Report func(ctx context.Context, member string, detail map[string]string) error
 
-	// since is when each unreachable member was first seen so, by ID. It starts empty on every
-	// leader, which only delays a removal.
-	since map[uint64]time.Time
+	// since is when each unreachable member was first seen so, by ID, and unstartedSince when each
+	// member that was added and has not started was. They start empty on every leader, which only
+	// delays a removal.
+	since, unstartedSince map[uint64]time.Time
 	// reported is the members Report has been called for, by ID.
 	reported map[uint64]bool
 }
@@ -152,17 +153,21 @@ type probe struct {
 // Pass looks at every member, defragments those whose database is mostly free pages one at a time
 // while all of them answer, disarms the no-space alarm of a member that is below its quota, and
 // removes the member that has stayed unreachable for the departure time when the cluster can spare
-// it.
+// it, and the member that was added and has stayed unstarted for it.
 func (h *Housekeeper) Pass(ctx context.Context) error {
 	list, err := h.Client.MemberList(ctx)
 	if err != nil {
 		return fmt.Errorf("list members: %w", err)
 	}
 	var up []probe
-	var down []*etcdserverpb.Member
+	var down, unstarted []*etcdserverpb.Member
 	for _, m := range list.Members {
 		if len(m.ClientURLs) == 0 {
-			// Added but not yet started: not tracked as departed.
+			// Added and not yet started, so it has published no client URL. A learner takes no part in
+			// the quorum, so only a voter is a member that must start or go.
+			if !m.IsLearner {
+				unstarted = append(unstarted, m)
+			}
 			continue
 		}
 		pctx, cancel := context.WithTimeout(ctx, probeTimeout)
@@ -174,7 +179,7 @@ func (h *Housekeeper) Pass(ctx context.Context) error {
 		}
 		up = append(up, probe{m, st})
 	}
-	h.note(list.Members, down)
+	h.note(list.Members, down, unstarted)
 
 	var errs []error
 	alarms, err := h.Client.AlarmList(ctx)
@@ -182,18 +187,14 @@ func (h *Housekeeper) Pass(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("list the alarms: %w", err))
 		alarms = &clientv3.AlarmResponse{}
 	}
-	// A defragmentation blocks its member, so it runs only while every member answers. The one
-	// exception: when the no-space alarm is armed for a member and defragmentation would free enough
-	// to disarm it, the alarm deadlocks removal of an out member (the fence write fails), so
-	// defragmentation runs for that member even with a member out. Clearing an alarm does not block
-	// and is the one thing a cluster with a member out needs from a member that answers.
-	line := h.Quota / DisarmShare
+	// A defragmentation blocks its member, so it runs only while every member answers. Clearing an
+	// alarm does not, and is the one thing a cluster with a member out needs from a member that
+	// answers.
 	for _, p := range up {
 		armed := slices.IndexFunc(alarms.Alarms, func(a *etcdserverpb.AlarmMember) bool {
 			return a.Alarm == etcdserverpb.AlarmType_NOSPACE && a.MemberID == p.member.ID
 		})
-		alarmedAndFreeable := armed >= 0 && p.status.DbSize >= line && p.status.DbSizeInUse < line
-		if len(down) == 0 || alarmedAndFreeable {
+		if len(down) == 0 {
 			errs = append(errs, h.defrag(ctx, p, armed >= 0))
 		}
 		if armed >= 0 {
@@ -201,23 +202,27 @@ func (h *Housekeeper) Pass(ctx context.Context) error {
 		}
 		h.checkFit(ctx, p)
 	}
-	if len(down) > 0 {
-		errs = append(errs, h.depart(ctx, list.Members, down))
+	if len(down) > 0 || len(unstarted) > 0 {
+		errs = append(errs, h.depart(ctx, list.Members, down, unstarted))
 	}
 	return errors.Join(errs...)
 }
 
 // Forget drops what the housekeeper has seen of the members, for a member that no longer leads: a
 // later term starts its own count of how long a member has been out, and reports again.
-func (h *Housekeeper) Forget() { h.since, h.reported = nil, nil }
+func (h *Housekeeper) Forget() { h.since, h.unstartedSince, h.reported = nil, nil, nil }
 
-// note remembers when each unreachable member first was, and forgets those that answer.
-func (h *Housekeeper) note(all, down []*etcdserverpb.Member) {
+// note remembers when each unreachable member, and each member that was added and has not started,
+// first was so, and forgets those that are neither.
+func (h *Housekeeper) note(all, down, unstarted []*etcdserverpb.Member) {
 	if h.since == nil {
 		h.since = map[uint64]time.Time{}
 	}
+	if h.unstartedSince == nil {
+		h.unstartedSince = map[uint64]time.Time{}
+	}
 	now := h.Now()
-	gone := map[uint64]bool{}
+	gone, joining := map[uint64]bool{}, map[uint64]bool{}
 	for _, m := range down {
 		gone[m.ID] = true
 		if _, ok := h.since[m.ID]; !ok {
@@ -225,9 +230,19 @@ func (h *Housekeeper) note(all, down []*etcdserverpb.Member) {
 			h.Log.Info("a member does not answer", "member", m.Name)
 		}
 	}
+	for _, m := range unstarted {
+		joining[m.ID] = true
+		if _, ok := h.unstartedSince[m.ID]; !ok {
+			h.unstartedSince[m.ID] = now
+			h.Log.Info("a member was added and has not started", "member", m.Name)
+		}
+	}
 	for _, m := range all {
 		if !gone[m.ID] {
 			delete(h.since, m.ID)
+		}
+		if !joining[m.ID] {
+			delete(h.unstartedSince, m.ID)
 		}
 	}
 }
@@ -289,14 +304,30 @@ func (h *Housekeeper) checkFit(ctx context.Context, p probe) {
 	h.reported[p.member.ID] = true
 }
 
-// depart removes the first member that has been unreachable for the departure time, when it is
-// the only one out and the cluster is large enough to spare it.
-func (h *Housekeeper) depart(ctx context.Context, all, down []*etcdserverpb.Member) error {
+// depart removes the first member that has stayed unstarted for the departure time, else the first
+// that has been unreachable for it, when it is the only one out and the cluster is large enough to
+// spare it. A member inside its window as unstarted is not out: it has not answered yet because it
+// has not started, and counting it would keep a departed member from being removed.
+func (h *Housekeeper) depart(ctx context.Context, all, down, unstarted []*etcdserverpb.Member) error {
 	after := h.Departure
 	if after == 0 {
 		after = DepartAfter
 	}
 	now := h.Now()
+	// An unstarted voter counts toward the quorum, so each one added to a cluster whose join then
+	// failed costs it fault tolerance until it is gone. Removing it only lowers what the quorum
+	// needs, so it takes no check of the others.
+	for _, m := range unstarted {
+		if now.Sub(h.unstartedSince[m.ID]) < after {
+			continue
+		}
+		if err := h.remove(ctx, m); err != nil {
+			return err
+		}
+		delete(h.unstartedSince, m.ID)
+		h.Log.Warn("removed a member that was added and stayed unstarted; it joins again when it starts", "member", m.Name, "after", after.String())
+		return nil
+	}
 	for _, m := range down {
 		if now.Sub(h.since[m.ID]) < after {
 			continue
@@ -305,17 +336,26 @@ func (h *Housekeeper) depart(ctx context.Context, all, down []*etcdserverpb.Memb
 			h.Log.Warn("a member stays out and is not removed", "member", m.Name, "reason", err.Error())
 			return nil
 		}
-		if h.Fence != nil {
-			if err := h.Fence(ctx); err != nil {
-				return fmt.Errorf("remove %s: %w", m.Name, err)
-			}
-		}
-		if _, err := h.Client.MemberRemove(ctx, m.ID); err != nil {
-			return fmt.Errorf("remove %s: %w", m.Name, err)
+		if err := h.remove(ctx, m); err != nil {
+			return err
 		}
 		delete(h.since, m.ID)
 		h.Log.Warn("removed a member that stayed unreachable; it rejoins from its peers when it starts", "member", m.Name, "after", after.String())
 		return nil
+	}
+	return nil
+}
+
+// remove removes a member after the fence, which fails once the pass no longer leads. The fence
+// writes nothing, so a database that the no-space alarm keeps read-only does not refuse it.
+func (h *Housekeeper) remove(ctx context.Context, m *etcdserverpb.Member) error {
+	if h.Fence != nil {
+		if err := h.Fence(ctx); err != nil {
+			return fmt.Errorf("remove %s: %w", m.Name, err)
+		}
+	}
+	if _, err := h.Client.MemberRemove(ctx, m.ID); err != nil {
+		return fmt.Errorf("remove %s: %w", m.Name, err)
 	}
 	return nil
 }
