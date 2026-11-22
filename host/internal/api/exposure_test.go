@@ -57,7 +57,7 @@ func (l *lanLink) Remove(a netip.Addr) error {
 	return nil
 }
 
-func (l *lanLink) Probe(netip.Addr) error       { return nil }
+func (l *lanLink) Probe(netip.Addr) error      { return nil }
 func (l *lanLink) Held() ([]netip.Addr, error) { return nil, nil }
 func (l *lanLink) Announce(netip.Addr) error   { return nil }
 

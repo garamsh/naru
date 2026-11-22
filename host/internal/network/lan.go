@@ -278,11 +278,11 @@ func ARPProbe(hw net.HardwareAddr, a netip.Addr) ([]byte, error) {
 	f = append(f, hw...)
 	f = append(f, 0x08, 0x06)
 	f = append(f, 0, 1, 0x08, 0, 6, 4)
-	f = append(f, 0, 1)                // request
-	f = append(f, hw...)               // sender hardware
-	f = append(f, 0, 0, 0, 0)         // sender IP: 0.0.0.0
-	f = append(f, 0, 0, 0, 0, 0, 0)   // target hardware: zeros
-	f = append(f, a.AsSlice()...)      // target IP: the address being probed
+	f = append(f, 0, 1)             // request
+	f = append(f, hw...)            // sender hardware
+	f = append(f, 0, 0, 0, 0)       // sender IP: 0.0.0.0
+	f = append(f, 0, 0, 0, 0, 0, 0) // target hardware: zeros
+	f = append(f, a.AsSlice()...)   // target IP: the address being probed
 	return f, nil
 }
 
