@@ -72,6 +72,23 @@ func newHost(t *testing.T) *fakeHost {
 
 func (f *fakeHost) addr() string { u, _ := url.Parse(f.srv.URL); return u.Host }
 
+func (f *fakeHost) body(key string) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bodies[key]
+}
+
+func (f *fakeHost) saw(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.requests {
+		if r == key {
+			return true
+		}
+	}
+	return false
+}
+
 // client is a client that has listed the hosts of inv, as the engine's pass does before it calls one.
 func client(inv inventory) *hostclient.Client {
 	c := hostclient.New(inv, &http.Client{Transport: &http.Transport{TLSClientConfig: insecure()}}, nil)

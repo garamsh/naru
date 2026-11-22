@@ -142,7 +142,7 @@ func TestEventsGoToTheInventoryLogAndARepeatedHoldIsWrittenOnce(t *testing.T) {
 func TestABootSetFailureIsLoggedUnderItsTypeAndARepeatOnTheSameHostIsWrittenOnce(t *testing.T) {
 	_, inv := newStore(t)
 	e := groupsetcd.NewEvents(inv)
-	t0 := time.Unix(1000, 0).UTC()
+	t0 := time.Now().Add(-time.Hour).UTC() // recent: the store drops events older than their age bound
 	fail := func(at time.Duration, host, msg string) groups.Event {
 		return groups.Event{Time: t0.Add(at), Kind: groups.EventBootSetFailed, Host: host, Message: msg}
 	}
@@ -171,7 +171,7 @@ func TestABootSetFailureIsLoggedUnderItsTypeAndARepeatOnTheSameHostIsWrittenOnce
 func TestABootSetFailureOfOneClassWordedDifferentlyIsWrittenOnce(t *testing.T) {
 	_, inv := newStore(t)
 	e := groupsetcd.NewEvents(inv)
-	t0 := time.Unix(1000, 0).UTC()
+	t0 := time.Now().Add(-time.Hour).UTC() // recent: the store drops events older than their age bound
 	fail := func(at time.Duration, class, msg string) groups.Event {
 		return groups.Event{Time: t0.Add(at), Kind: groups.EventBootSetFailed, Host: "h1", Class: class, Message: msg}
 	}

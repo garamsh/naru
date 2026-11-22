@@ -27,7 +27,7 @@ func TestAddBootSetStreamsTheNameAndBothFilesToTheHost(t *testing.T) {
 
 	require.NoError(t, c.AddBootSet(t.Context(), "h1", bootSet(strings.NewReader("KERNEL"), strings.NewReader("INITRAMFS"))))
 
-	body := string(h.bodies["POST /v1/boot-sets"])
+	body := string(h.body("POST /v1/boot-sets"))
 	for _, want := range []string{`"name":"naru-node-v1"`, `"kernelSha256":"k"`, `"initramfsSha256":"i"`, "KERNEL", "INITRAMFS"} {
 		require.Contains(t, body, want)
 	}
@@ -42,14 +42,14 @@ func TestAddBootSetEndsWhenAFileFailsItsCheck(t *testing.T) {
 	err := c.AddBootSet(t.Context(), "h1", bootSet(io.MultiReader(strings.NewReader("KER"), errReader{bad}), strings.NewReader("INITRAMFS")))
 
 	require.ErrorIs(t, err, bad)
-	require.NotContains(t, string(h.bodies["POST /v1/boot-sets"]), "INITRAMFS", "the initramfs is not sent after the kernel failed")
+	require.NotContains(t, string(h.body("POST /v1/boot-sets")), "INITRAMFS", "the initramfs is not sent after the kernel failed")
 }
 
 func TestAddBootSetRefusesAHostTheListDidNotRead(t *testing.T) {
 	h := newHost(t)
 	c := client(inventory{{ID: "h1", Address: h.addr()}})
 	require.Error(t, c.AddBootSet(t.Context(), "elsewhere", bootSet(strings.NewReader("K"), strings.NewReader("I"))))
-	require.NotContains(t, h.requests, "POST /v1/boot-sets")
+	require.False(t, h.saw("POST /v1/boot-sets"), "no request should reach the host")
 }
 
 type closeCounter struct {

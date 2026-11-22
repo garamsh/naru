@@ -498,6 +498,45 @@ func TestParse_OrchEtcdQuotaAndCompactionRetentionGiveOrchdItsFlags(t *testing.T
 	}
 }
 
+func TestParse_OrchBootSetFieldsGiveOrchdItsFlagsAndAreValidated(t *testing.T) {
+	plain, err := config.Parse([]byte(daemonsDoc(t)))
+	require.NoError(t, err)
+	for _, f := range []string{"--boot-set-store=", "--boot-set-trust-root=", "--boot-set-identity=", "--boot-set-issuer="} {
+		assert.NotContains(t, strings.Join(service(t, plain, "naru-orchd").Args, " "), f, "orchd's own defaults apply unless asked for")
+	}
+
+	doc := strings.Replace(daemonsDoc(t), "  orch:\n    peerURL", "  orch:\n    bootSetStore: https://releases.example.com\n    bootSetIdentity: https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}\n    bootSetIssuer: https://token.actions.githubusercontent.com\n    peerURL", 1)
+	cfg, err := config.Parse([]byte(doc))
+	require.NoError(t, err)
+	assert.Contains(t, service(t, cfg, "naru-orchd").Args, "--boot-set-store=https://releases.example.com")
+	assert.Contains(t, service(t, cfg, "naru-orchd").Args, "--boot-set-identity=https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}")
+	assert.Contains(t, service(t, cfg, "naru-orchd").Args, "--boot-set-issuer=https://token.actions.githubusercontent.com")
+
+	trustRoot := `{"mediaType":"application/vnd.dev.sigstore.trustedroot+json;version=0.1"}`
+	docWithRoot := strings.Replace(doc, "    bootSetStore:", "    bootSetTrustRoot: '"+trustRoot+"'\n    bootSetStore:", 1)
+	cfg2, err := config.Parse([]byte(docWithRoot))
+	require.NoError(t, err)
+	assert.Contains(t, service(t, cfg2, "naru-orchd").Args, "--boot-set-trust-root="+config.OrchBootSetTrustRootFile)
+	rootFile := file(t, cfg2, config.OrchBootSetTrustRootFile)
+	assert.Equal(t, trustRoot, rootFile.Content)
+
+	docPrefix := strings.Replace(daemonsDoc(t), "  orch:\n    peerURL", "  orch:\n    bootSetIdentity: 'https://github.com/example/repo/*'\n    peerURL", 1)
+	_, err = config.Parse([]byte(docPrefix))
+	require.NoError(t, err, "a prefix identity of at least https://github.com/<owner>/<repo>/ is accepted")
+
+	for name, bad := range map[string]string{
+		"ftp store":              strings.Replace(doc, "https://releases.example.com", "ftp://releases.example.com", 1),
+		"bare * identity":        strings.Replace(doc, "bootSetIdentity: https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}", "bootSetIdentity: '*'", 1),
+		"short prefix identity":  strings.Replace(doc, "bootSetIdentity: https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}", "bootSetIdentity: 'https://github.com/example/*'", 1),
+		"http issuer":            strings.Replace(doc, "bootSetIssuer: https://token.actions.githubusercontent.com", "bootSetIssuer: http://token.actions.githubusercontent.com", 1),
+		"trust root not JSON":    strings.Replace(docWithRoot, trustRoot, "not-json", 1),
+		"identity mid-star":      strings.Replace(doc, "bootSetIdentity: https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}", "bootSetIdentity: 'https://github.com/*/repo/workflow.yml'", 1),
+	} {
+		_, err = config.Parse([]byte(bad))
+		require.Error(t, err, name)
+	}
+}
+
 // joining is the daemons document with orch joining a running member instead of starting a cluster.
 func joining(t *testing.T, extra string) string {
 	t.Helper()
