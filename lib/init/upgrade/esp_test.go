@@ -56,3 +56,21 @@ func TestFindESP_FailsWhenNoPartitionHasTheGUID(t *testing.T) {
 
 	assert.ErrorContains(t, err, "no partition has the GUID")
 }
+
+func TestFindBootDisk_FindsTheDiskByPartUUIDNotByName(t *testing.T) {
+	// The ESP is on vdb, not sda: FindBootDisk must follow the GUID, not the name.
+	class := sysfs(t, map[string]map[string]string{
+		"sda": {"sda1": "11111111-2222-3333-4444-555555555555"},
+		"vdb": {"vdb1": wire.ESPGUID},
+	})
+
+	assert.Equal(t, "vdb", upgrade.FindBootDisk(class, wire.ESPGUID))
+
+	// The control: with the ESP GUID on sda1 instead, FindBootDisk returns sda.
+	class = sysfs(t, map[string]map[string]string{
+		"sda": {"sda1": wire.ESPGUID},
+		"vdb": {"vdb1": "11111111-2222-3333-4444-555555555555"},
+	})
+
+	assert.Equal(t, "sda", upgrade.FindBootDisk(class, wire.ESPGUID))
+}

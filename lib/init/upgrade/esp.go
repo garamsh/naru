@@ -35,6 +35,33 @@ type esp struct {
 	guid [16]byte
 }
 
+// partitionByGUID returns the name in sysClassBlock of the partition whose PARTUUID is guid.
+// It returns "" when no partition matches and returns an error only when ReadDir fails.
+func partitionByGUID(sysClassBlock, guid string) (string, error) {
+	entries, err := os.ReadDir(sysClassBlock)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		uevent, err := os.ReadFile(filepath.Join(sysClassBlock, e.Name(), "uevent"))
+		if err != nil || !HasPartUUID(string(uevent), guid) {
+			continue
+		}
+		return e.Name(), nil
+	}
+	return "", nil
+}
+
+// diskOf returns the name in sysClassBlock of the disk that holds partition, following the
+// symlink a partition's sysfs entry is to find its disk's directory above it.
+func diskOf(sysClassBlock, partition string) (string, error) {
+	real, err := filepath.EvalSymlinks(filepath.Join(sysClassBlock, partition))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Base(filepath.Dir(real)), nil
+}
+
 // findESP returns the partition of sysClassBlock whose PARTUUID is guid, with its device node
 // under devDir.
 func findESP(sysClassBlock, devDir, guid string) (esp, error) {
@@ -42,27 +69,23 @@ func findESP(sysClassBlock, devDir, guid string) (esp, error) {
 	if err != nil {
 		return esp{}, err
 	}
-	entries, err := os.ReadDir(sysClassBlock)
+	name, err := partitionByGUID(sysClassBlock, guid)
 	if err != nil {
 		return esp{}, err
 	}
-	for _, e := range entries {
-		dir := filepath.Join(sysClassBlock, e.Name())
-		uevent, err := os.ReadFile(filepath.Join(dir, "uevent"))
-		if err != nil || !HasPartUUID(string(uevent), guid) {
-			continue
-		}
-		p := esp{device: filepath.Join(devDir, e.Name()), guid: want}
-		n, err1 := readNumber(filepath.Join(dir, "partition"))
-		start, err2 := readNumber(filepath.Join(dir, "start"))
-		size, err3 := readNumber(filepath.Join(dir, "size"))
-		if err := errors.Join(err1, err2, err3); err != nil {
-			return esp{}, fmt.Errorf("the geometry of %s: %w", e.Name(), err)
-		}
-		p.number, p.start, p.sectors = uint32(n), start, size
-		return p, nil
+	if name == "" {
+		return esp{}, fmt.Errorf("no partition has the GUID %s", guid)
 	}
-	return esp{}, fmt.Errorf("no partition has the GUID %s", guid)
+	p := esp{device: filepath.Join(devDir, name), guid: want}
+	dir := filepath.Join(sysClassBlock, name)
+	n, err1 := readNumber(filepath.Join(dir, "partition"))
+	start, err2 := readNumber(filepath.Join(dir, "start"))
+	size, err3 := readNumber(filepath.Join(dir, "size"))
+	if err := errors.Join(err1, err2, err3); err != nil {
+		return esp{}, fmt.Errorf("the geometry of %s: %w", name, err)
+	}
+	p.number, p.start, p.sectors = uint32(n), start, size
+	return p, nil
 }
 
 // FindESP returns the device node under devDir of the partition of sysClassBlock whose PARTUUID is
@@ -72,12 +95,26 @@ func FindESP(sysClassBlock, devDir, guid string) (partition, disk string, err er
 	if err != nil {
 		return "", "", err
 	}
-	// A partition's sysfs entry lies under its disk's.
-	real, err := filepath.EvalSymlinks(filepath.Join(sysClassBlock, filepath.Base(p.device)))
+	diskName, err := diskOf(sysClassBlock, filepath.Base(p.device))
 	if err != nil {
 		return "", "", err
 	}
-	return p.device, filepath.Join(devDir, filepath.Base(filepath.Dir(real))), nil
+	return p.device, filepath.Join(devDir, diskName), nil
+}
+
+// FindBootDisk returns the name in sysClassBlock of the disk that holds the partition whose
+// PARTUUID is guid, so the caller does not carry its own PARTUUID scan. It returns "" when no
+// partition has the GUID or the sysfs entry cannot be resolved.
+func FindBootDisk(sysClassBlock, guid string) string {
+	name, err := partitionByGUID(sysClassBlock, guid)
+	if err != nil || name == "" {
+		return ""
+	}
+	disk, err := diskOf(sysClassBlock, name)
+	if err != nil {
+		return ""
+	}
+	return disk
 }
 
 // HasPartUUID reports whether a partition's uevent text names guid as its PARTUUID, in either case.
