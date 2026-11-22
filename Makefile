@@ -78,8 +78,12 @@ TEST_TIMEOUT ?= 60m
 # tooling/disk builds four disks and sgdisk ends each with sync(2), which waits
 # for every dirty page of the machine: on a machine others write to, one build
 # took 40 minutes.
+#
+# One go test run takes every module's packages, so its package pool is shared: a module's slowest
+# package no longer waits for the previous module's.
 test:
-	$(call each_module, $(count_packages); (cd "$$dir" && go test -race -count=1 -timeout $(TEST_TIMEOUT) ./...))
+	$(call each_module, $(count_packages))
+	go test -race -count=1 -timeout $(TEST_TIMEOUT) $(addsuffix /...,$(MODULES))
 
 # test-cgroup runs the tests that use real cgroups, in a cgroup the user
 # delegates to itself with systemd-run --user. They are not part of ci: a
