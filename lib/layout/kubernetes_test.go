@@ -124,7 +124,7 @@ func TestKubernetesUserData_WorkerRunsTheKubeletAndTheProxyAndNoControlPlane(t *
 			running = append(running, sv.Name)
 		}
 	}
-	assert.Equal(t, []string{"containerd", "addon-image-coredns", "addon-image-volumes", "kubelet", "kube-proxy"}, running, "what a worker runs")
+	assert.Equal(t, []string{"containerd", "addon-image-coredns", "addon-image-volumes", "kube-network-policies", "kubelet", "kube-proxy"}, running, "what a worker runs")
 }
 
 func TestKubernetesUserData_ControlPlaneRunsEveryServiceInTheTopologysOrder(t *testing.T) {
