@@ -165,12 +165,7 @@ func TestFleet_AClientOnTheLANReachesAMicroVMThroughALeasedAddressAndNotOnceTheL
 		_, err = first.PutExposure(ctx, proxyAddr, proxied(vm1))
 		require.NoError(t, err)
 	}
-	// Use eventually rather than a one-shot assert: a brief Del+Add gap during
-	// renewal can leave ARP caches stale for up to one announcement cycle (5 s),
-	// so a point-in-time check races the first gratuitous ARP.
-	eventually(t, "the control: a renewed lease still answers after 20 s", func() bool {
-		return reaches(forwardAddr+":80", "src=")
-	})
+	assert.True(t, reaches(forwardAddr+":80", "src="), "the control: a renewed lease still answers after 20 s")
 
 	// Deleted, the forwarded address leaves the interface and the table and the client no longer reaches
 	// it, and the other lease is untouched.

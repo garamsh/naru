@@ -57,15 +57,7 @@ func (l *LAN) Add(a netip.Addr, valid time.Duration) error {
 	x.Label = l.label
 	secs := max(int((valid+time.Second-1)/time.Second), 1)
 	x.ValidLft, x.PreferedLft = secs, secs
-	// RTM_NEWADDR|NLM_F_REPLACE does not update the kernel's valid_lft counter
-	// for an existing secondary IPv4 address: it modifies the other fields but
-	// leaves the countdown running from the original Add. Delete first so the
-	// kernel registers a fresh entry — the gap is two netlink round-trips
-	// (~microseconds), far shorter than the renewal interval.
-	if err := netlink.AddrDel(link, hostAddr(a)); err != nil && err != syscall.EADDRNOTAVAIL {
-		return err
-	}
-	return netlink.AddrAdd(link, x)
+	return netlink.AddrReplace(link, x)
 }
 
 // Check refuses an address the host must not take for a new lease: one the host already holds on

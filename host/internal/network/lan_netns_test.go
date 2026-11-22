@@ -94,15 +94,16 @@ func validLftOf(t *testing.T, link netlink.Link, addr netip.Addr) int {
 }
 
 // TestLAN_AddResetsTheKernelLifetimeOnRenewal proves that LAN.Add resets the
-// kernel's valid_lft on every call. Without the fix, RTM_NEWADDR|NLM_F_REPLACE
-// updates the address record but leaves the original countdown running, so a
-// renewed lease expires on the kernel's first schedule rather than the latest
-// one.
+// kernel's valid_lft on every call. RTM_NEWADDR|NLM_F_REPLACE (AddrReplace)
+// resets valid_lft on the production kernel 6.18.63 (confirmed on QEMU). The
+// test fails without the renewal: valid_lft does not rise after the second Add,
+// and the address expires on the original countdown.
+//
+// A 60-second lifetime tolerates CPU stalls on a loaded QEMU guest: polling to
+// the half-way point (≈30 s) leaves ≈28 s of stall tolerance in the final
+// survival check.
 func TestLAN_AddResetsTheKernelLifetimeOnRenewal(t *testing.T) {
-	const (
-		lft  = 10 * time.Second
-		half = 6 * time.Second
-	)
+	const lft = 60 * time.Second
 	leased := netip.MustParseAddr("10.9.0.80")
 	link, lan := setupVeth(t, "veth0", "veth1", "10.9.0.1/24")
 
@@ -111,10 +112,12 @@ func TestLAN_AddResetsTheKernelLifetimeOnRenewal(t *testing.T) {
 	initial := validLftOf(t, link, leased)
 	require.Greater(t, initial, 0, "address must be on the interface after the first Add")
 
-	// Wait past the half-life; the countdown should leave about 4 s.
-	time.Sleep(half)
-	before := validLftOf(t, link, leased)
-	require.Greater(t, before, 0, "address must still be present before renewal")
+	// Poll until the countdown has reached the half-way point; no fixed sleep.
+	var before int
+	require.Eventually(t, func() bool {
+		before = validLftOf(t, link, leased)
+		return before > 0 && before <= initial/2
+	}, lft, time.Second, "valid_lft must count down to half within the lease lifetime")
 	assert.Less(t, before, initial, "valid_lft must have counted down")
 
 	// Renewal.
@@ -127,21 +130,23 @@ func TestLAN_AddResetsTheKernelLifetimeOnRenewal(t *testing.T) {
 	assert.Greater(t, after, before,
 		"valid_lft must be reset by the renewal (before=%d, after=%d)", before, after)
 
-	// Wait out the original remaining time plus margin. If the renewal did not
-	// reset the counter the address would have expired.
-	time.Sleep(time.Duration(before+2) * time.Second)
-	assert.Greater(t, validLftOf(t, link, leased), 0,
+	// Verify the address survives past the pre-renewal expiry. If valid_lft was
+	// not reset, the address expires within before seconds; with a reset it
+	// lives for a full lft from the renewal point.
+	require.Never(t, func() bool {
+		return validLftOf(t, link, leased) <= 0
+	}, time.Duration(before+2)*time.Second, time.Second,
 		"address must survive past the original expiry, proving the lifetime was reset")
 }
 
 // TestLAN_RenewalSurvivesAProxyListenerAndEstablishedConnection shows that
-// LAN.Add (Del+Add) does not break a TCP listener or an established connection
-// that uses the leased address. The listener is on the leased /32; the client
-// connects to it through the kernel's local-address routing, which requires no
-// separate network path.
+// LAN.Add (AddrReplace) does not break a TCP listener or an established
+// connection that uses the leased address. The listener is on the leased /32;
+// the client connects to it through the kernel's local-address routing, which
+// requires no separate network path.
 func TestLAN_RenewalSurvivesAProxyListenerAndEstablishedConnection(t *testing.T) {
 	const (
-		lft  = 10 * time.Second
+		lft  = 30 * time.Second
 		port = "9877"
 	)
 	leased := netip.MustParseAddr("10.9.2.80")
@@ -183,7 +188,7 @@ func TestLAN_RenewalSurvivesAProxyListenerAndEstablishedConnection(t *testing.T)
 	_, err = server.Read(buf)
 	require.NoError(t, err, "server read must succeed before renewal")
 
-	// Renewal: Del+Add.
+	// Renewal.
 	require.NoError(t, lan.Add(leased, lft))
 
 	// (a) The listener must still accept new connections after the renewal.
