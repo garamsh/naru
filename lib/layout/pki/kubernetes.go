@@ -1,12 +1,7 @@
 package pki
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"fmt"
 	"strings"
 )
@@ -19,6 +14,9 @@ const (
 	// tokens with, and the public key that verifies them.
 	ServiceAccountKeyFile = "sa.key"
 	ServiceAccountPubFile = "sa.pub"
+	// ServiceAccountIssuersFile lists, a URL to a line, the issuers the operator set (ADR 0087): gen
+	// kubernetes writes it and gen kubernetes-node and gen kubernetes-jwks read it. The first signs.
+	ServiceAccountIssuersFile = "service-account-issuers"
 	// DisabledAddonsFile lists, a name to a line, the cluster add-ons the cluster does not run (ADR 0083):
 	// gen kubernetes writes it and gen kubernetes-node reads it.
 	DisabledAddonsFile = "disabled-addons"
@@ -29,25 +27,6 @@ const (
 	AdminName         = "kubernetes-admin"
 	AdminOrganization = "system:masters"
 )
-
-// ServiceAccountKey returns a new key for signing ServiceAccount tokens, as the PEM of the private
-// key and of the public key.
-func ServiceAccountKey() (keyPEM, pubPEM []byte, err error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return nil, nil, err
-	}
-	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
-		pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}), nil
-}
 
 // Kubeconfig is a kubeconfig that names server, trusts caPEM and presents pair, both inline.
 func Kubeconfig(user, server string, caPEM []byte, pair Pair) []byte {

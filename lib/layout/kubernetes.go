@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"path"
 	"slices"
 	"strings"
@@ -52,6 +53,11 @@ const (
 	ServiceCIDR = "10.96.0.0/16"
 	// ClusterDomain is the domain of the cluster's DNS names, which the API server's certificate names.
 	ClusterDomain = "cluster.local"
+	// InClusterIssuer is the ServiceAccount issuer a cluster has when the operator sets none, and one
+	// the API server accepts always (ADR 0087).
+	InClusterIssuer = "https://kubernetes.default.svc." + ClusterDomain
+	// JWKSPath is where, under an issuer, its JSON Web Key Set is served, as the API server serves it.
+	JWKSPath = "/openid/v1/jwks"
 	// ClusterDNS is the address the kubelet gives Pods as their nameserver: the tenth address of the
 	// Service range, where the DNS add-on's Service is (ADR 0083).
 	ClusterDNS = "10.96.0.10"
@@ -130,6 +136,10 @@ type KubeNode struct {
 	// the PEM of the keys of ServiceAccount tokens: all three on a control-plane Node only.
 	FrontProxy                           *pki.CA
 	ServiceAccountKey, ServiceAccountPub []byte
+	// ServiceAccountIssuers are the issuers the operator set (ADR 0087): the first signs the tokens
+	// and is the one an external provider trusts. The API server also accepts InClusterIssuer. With
+	// none, InClusterIssuer signs.
+	ServiceAccountIssuers []string
 	// LocalRegistry makes the Node run the registry service from the data disk's inputs, and
 	// RegistryCA is the path on the Node of the CA containerd trusts for RegistryAddr.
 	LocalRegistry bool
@@ -250,6 +260,8 @@ func (n Node) checkKube() error {
 		return errors.New("tokens are for a control-plane Node that accepts bootstrap tokens")
 	case k.Token != "" && !pki.ValidToken(k.Token):
 		return errors.New("the bootstrap token is not <id>.<secret>, [a-z0-9]{6}.[a-z0-9]{16}")
+	case !ValidIssuers(k.ServiceAccountIssuers):
+		return errors.New("a ServiceAccount issuer is a plain https URL (a host and a path of letters, digits and - . _ ~ segments, no userinfo, query, fragment, trailing slash or space), and none is repeated")
 	case !validAddons(k.DisabledAddons):
 		return fmt.Errorf("an add-on to disable is not one of %s", strings.Join(Addons, ", "))
 	case !validBlockSerials(k.BlockSerials, n.Storage):
@@ -290,6 +302,68 @@ func (n Node) checkKube() error {
 		}
 	}
 	return nil
+}
+
+// issuerArgs are the API server's ServiceAccount issuer flags: the operator's issuers in order, the
+// first of which signs, then InClusterIssuer if they do not name it. With the operator's issuers the
+// discovery document names the first one's key set, which is where naructl's output is served.
+func (k KubeNode) issuerArgs() []string {
+	issuers := slices.Clone(k.ServiceAccountIssuers)
+	if !slices.Contains(issuers, InClusterIssuer) {
+		issuers = append(issuers, InClusterIssuer)
+	}
+	var args []string
+	for _, iss := range issuers {
+		args = append(args, "--service-account-issuer="+iss)
+	}
+	if len(k.ServiceAccountIssuers) > 0 {
+		args = append(args, "--service-account-jwks-uri="+JWKSURI(k.ServiceAccountIssuers[0]))
+	}
+	return args
+}
+
+// JWKSURI is where issuer serves its JSON Web Key Set.
+func JWKSURI(issuer string) string { return issuer + JWKSPath }
+
+// ValidIssuers reports whether every issuer is a plain https URL, as OpenID Connect Discovery requires
+// of an issuer, and none is repeated. Plain is: the scheme https in lower case, a host, no userinfo,
+// query or fragment, and a path of segments of letters, digits and - . _ ~ that are neither empty (so
+// no trailing slash) nor "." nor "..". A path is also a directory name under gen kubernetes-jwks's
+// --out-dir, and a line of a file, which is why it is this narrow.
+func ValidIssuers(issuers []string) bool {
+	seen := map[string]bool{}
+	for _, iss := range issuers {
+		if !plainIssuer(iss) || seen[iss] {
+			return false
+		}
+		seen[iss] = true
+	}
+	return true
+}
+
+func plainIssuer(iss string) bool {
+	rest, ok := strings.CutPrefix(iss, "https://")
+	if !ok {
+		return false
+	}
+	host, path, _ := strings.Cut(rest, "/")
+	if host == "" || strings.ContainsFunc(host, func(r rune) bool { return r <= ' ' || r >= 0x7f || strings.ContainsRune("@?#%\\/", r) }) {
+		return false
+	}
+	if u, err := url.Parse(iss); err != nil || u.Host != host {
+		return false
+	}
+	if !strings.Contains(rest, "/") {
+		return true
+	}
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" || seg == "." || seg == ".." || strings.ContainsFunc(seg, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-._~", r))
+		}) {
+			return false
+		}
+	}
+	return true
 }
 
 // validAddons reports whether every name is an add-on.
@@ -401,7 +475,6 @@ func (n Node) kubeServices() []service {
 				"--kubelet-certificate-authority=" + ca, "--kubelet-client-certificate=" + pkiPath(apiserverKubelet.name+".crt"),
 				"--kubelet-client-key=" + pkiPath(apiserverKubelet.name+".key"), "--kubelet-preferred-address-types=InternalIP",
 				"--service-cluster-ip-range=" + ServiceCIDR,
-				"--service-account-issuer=https://kubernetes.default.svc." + ClusterDomain,
 				"--service-account-key-file=" + pkiPath("sa.pub"), "--service-account-signing-key-file=" + pkiPath("sa.key"),
 				"--authorization-mode=Node,RBAC", "--enable-admission-plugins=NodeRestriction",
 				"--requestheader-client-ca-file=" + pkiPath("front-proxy-ca.crt"), "--requestheader-allowed-names=" + frontProxy.cn,
@@ -455,6 +528,9 @@ func (n Node) kubeServices() []service {
 		list = append(list, service{Name: "addons", Binary: n.binary("addons", "/bin/kubectl"), Args: args, RestartPolicy: restartOnFailure})
 	}
 	for i := range list {
+		if list[i].Name == "kube-apiserver" {
+			list[i].Args = append(list[i].Args, k.issuerArgs()...)
+		}
 		switch {
 		case list[i].Name == "kube-apiserver" && k.BootstrapTokens:
 			list[i].Args = append(list[i].Args, "--token-auth-file="+KubeBootstrapTokensFile)
@@ -700,8 +776,8 @@ func (n Node) kubeFiles() ([]file, error) {
 	}
 	if k.ControlPlane {
 		files = append(files,
-			file{Path: pkiPath("sa.key"), Mode: "0600", Content: string(k.ServiceAccountKey)},
-			file{Path: pkiPath("sa.pub"), Mode: "0644", Content: string(k.ServiceAccountPub)},
+			file{Path: pkiPath("sa.key"), Mode: "0600", Content: string(k.ServiceAccountKey), Restart: []string{Kubernetes.APIServer, "kube-controller-manager"}},
+			file{Path: pkiPath("sa.pub"), Mode: "0644", Content: string(k.ServiceAccountPub), Restart: []string{Kubernetes.APIServer}},
 			file{Path: kubePath("controller-manager.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-controller-manager", "controller-manager")},
 			file{Path: kubePath("scheduler.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-scheduler", "scheduler")},
 		)
