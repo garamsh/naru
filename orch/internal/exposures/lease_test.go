@@ -22,7 +22,7 @@ type fakeHosts struct {
 	held   map[string]map[string]bool // host -> address
 	delErr map[string]error           // host -> error of Delete
 	// onPut, when set, runs before a Put is recorded; it may block or advance the clock.
-	onPut func(ctx context.Context, id, address string) error
+	onPut func(ctx context.Context, id, address string, l exposures.Lease) error
 	// received is the time each Put was recorded, by address.
 	received map[string]time.Time
 	clock    *exposurestest.Clock
@@ -38,9 +38,9 @@ func (f *fakeHosts) List(context.Context) ([]exposures.Host, error) {
 	return append([]exposures.Host(nil), f.hosts...), nil
 }
 
-func (f *fakeHosts) Put(ctx context.Context, id, address string, _ exposures.Lease) error {
+func (f *fakeHosts) Put(ctx context.Context, id, address string, l exposures.Lease) error {
 	if f.onPut != nil {
-		if err := f.onPut(ctx, id, address); err != nil {
+		if err := f.onPut(ctx, id, address, l); err != nil {
 			return err
 		}
 	}
@@ -122,23 +122,27 @@ func reconcilerOn(st *exposurestest.Store, h *fakeHosts, clk *exposurestest.Cloc
 // lease is the longest a host may keep an address after orch asked it to: the call, then the lease.
 const lease = (exposures.CallTimeout + exposures.LeaseSeconds*time.Second)
 
+// defaultMembers are the backend addresses used in the standard fixture (10.1.0.5 and 10.1.0.6).
+var defaultMembers = map[string][]string{"a": {"10.1.0.5", "10.1.0.6"}}
+
 func lanHosts(ids ...string) []exposures.Host {
 	var out []exposures.Host
 	for _, id := range ids {
-		out = append(out, exposures.Host{ID: id, LAN: "eth0", Networks: []string{"a"}})
+		out = append(out, exposures.Host{ID: id, LAN: "eth0", Networks: []string{"a"}, Members: defaultMembers})
 	}
 	return out
 }
 
 func TestChooseSkipsAHostWithoutALANOrTheNetworkAndIsStable(t *testing.T) {
-	hosts := []exposures.Host{{ID: "h1", Networks: []string{"a"}}, {ID: "h2", LAN: "eth0", Networks: []string{"b"}}}
-	_, ok := exposures.Choose("192.168.0.80", "a", hosts)
+	backends := []string{"10.1.0.5"}
+	hosts := []exposures.Host{{ID: "h1", Networks: []string{"a"}, Members: map[string][]string{"a": backends}}, {ID: "h2", LAN: "eth0", Networks: []string{"b"}, Members: map[string][]string{"b": backends}}}
+	_, ok := exposures.Choose("192.168.0.80", "a", backends, hosts)
 	require.False(t, ok, "no host has both a LAN interface and a microVM on a")
 	hosts = lanHosts("h1", "h2", "h3", "h4")
-	first, ok := exposures.Choose("192.168.0.80", "a", hosts)
+	first, ok := exposures.Choose("192.168.0.80", "a", backends, hosts)
 	require.True(t, ok)
 	for range 3 {
-		again, _ := exposures.Choose("192.168.0.80", "a", hosts)
+		again, _ := exposures.Choose("192.168.0.80", "a", backends, hosts)
 		require.Equal(t, first, again)
 	}
 	// Losing a host that does not hold the address does not move it.
@@ -155,9 +159,239 @@ func TestChooseSkipsAHostWithoutALANOrTheNetworkAndIsStable(t *testing.T) {
 				without = append(without, o)
 			}
 		}
-		got, _ := exposures.Choose("192.168.0.80", "a", without)
+		got, _ := exposures.Choose("192.168.0.80", "a", backends, without)
 		require.Equal(t, first, got, "losing %s moved the address", h.ID)
 	}
+}
+
+func TestChooseSkipsAHostThatRunsNoneOfTheExposuresBackends(t *testing.T) {
+	// A host with the network but no matching backend is not a candidate.
+	backends := []string{"10.1.0.5"}
+	noMatch := exposures.Host{ID: "h1", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.9"}}}
+	_, ok := exposures.Choose("192.168.0.80", "a", backends, []exposures.Host{noMatch})
+	require.False(t, ok, "h1 runs no backend of the exposure")
+
+	// Control: the same host with a matching backend is chosen.
+	match := noMatch
+	match.Members = map[string][]string{"a": {"10.1.0.9", "10.1.0.5"}}
+	_, ok = exposures.Choose("192.168.0.80", "a", backends, []exposures.Host{match})
+	require.True(t, ok, "control: h1 with the matching backend is a candidate")
+}
+
+func TestTheLeaseCarriesOnlyTheBackendsThatRunOnTheSender(t *testing.T) {
+	s, st := fixture(t)
+	ctx := t.Context()
+	// Two hosts: h1 runs 10.1.0.5, h2 runs 10.1.0.6; both are on network a.
+	// The exposure has both backends. Each host should be leased only its own.
+	h1 := exposures.Host{ID: "h1", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.5"}}}
+	h2 := exposures.Host{ID: "h2", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.6"}}}
+	hosts := newHosts(h1, h2)
+	var mu sync.Mutex
+	leases := map[string]exposures.Lease{}
+	hosts.onPut = func(_ context.Context, id, _ string, l exposures.Lease) error {
+		mu.Lock()
+		leases[id] = l
+		mu.Unlock()
+		return nil
+	}
+	_, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5", "10.1.0.6"))
+	require.NoError(t, err)
+	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
+	r := reconciler(st, hosts, clk)
+	require.NoError(t, r.Reconcile(ctx))
+	rec, err := st.GetExposure(ctx, "a", "web")
+	require.NoError(t, err)
+	assigned := rec.Host
+	mu.Lock()
+	got := leases[assigned]
+	mu.Unlock()
+	require.Len(t, got.Backends, 1, "the lease carries only the one backend that runs on the chosen host")
+	var expect string
+	for _, h := range []exposures.Host{h1, h2} {
+		if h.ID == assigned {
+			expect = h.Members["a"][0]
+		}
+	}
+	require.Equal(t, []string{expect}, got.Backends)
+
+	// Control: when the host runs both backends, the lease carries both.
+	hosts.mu.Lock()
+	for i := range hosts.hosts {
+		hosts.hosts[i].Members = map[string][]string{"a": {"10.1.0.5", "10.1.0.6"}}
+	}
+	hosts.mu.Unlock()
+	leases = map[string]exposures.Lease{}
+	clk.Advance(5 * time.Second)
+	require.NoError(t, r.Reconcile(ctx))
+	rec, _ = st.GetExposure(ctx, "a", "web")
+	mu.Lock()
+	both := leases[rec.Host]
+	mu.Unlock()
+	require.Len(t, both.Backends, 2, "control: when both backends run on the host the lease carries both")
+}
+
+func TestABackendEndingNarrowsTheLease(t *testing.T) {
+	s, st := fixture(t)
+	ctx := t.Context()
+	// A single host runs both backends initially; both appear in its lease.
+	h1 := exposures.Host{ID: "h1", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.5", "10.1.0.6"}}}
+	hosts := newHosts(h1)
+	var mu sync.Mutex
+	leases := map[string]exposures.Lease{}
+	hosts.onPut = func(_ context.Context, id, _ string, l exposures.Lease) error {
+		mu.Lock()
+		leases[id] = l
+		mu.Unlock()
+		return nil
+	}
+	_, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5", "10.1.0.6"))
+	require.NoError(t, err)
+	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
+	r := reconciler(st, hosts, clk)
+	require.NoError(t, r.Reconcile(ctx))
+	mu.Lock()
+	initial := leases["h1"]
+	mu.Unlock()
+	require.Len(t, initial.Backends, 2, "h1 carries both backends when it runs both")
+
+	// 10.1.0.5 ends on h1; the renewed lease is narrowed to the remaining backend.
+	hosts.mu.Lock()
+	hosts.hosts[0].Members = map[string][]string{"a": {"10.1.0.6"}}
+	hosts.mu.Unlock()
+	clk.Advance(5 * time.Second)
+	require.NoError(t, r.Reconcile(ctx))
+	mu.Lock()
+	narrowed := leases["h1"]
+	mu.Unlock()
+	require.Equal(t, []string{"10.1.0.6"}, narrowed.Backends, "lease narrowed to the remaining backend")
+
+	// Control: with 10.1.0.5 restored, the lease carries both again.
+	hosts.mu.Lock()
+	hosts.hosts[0].Members = map[string][]string{"a": {"10.1.0.5", "10.1.0.6"}}
+	hosts.mu.Unlock()
+	clk.Advance(5 * time.Second)
+	require.NoError(t, r.Reconcile(ctx))
+	mu.Lock()
+	restored := leases["h1"]
+	mu.Unlock()
+	require.Equal(t, []string{"10.1.0.5", "10.1.0.6"}, restored.Backends, "control: both backends in the lease once restored")
+}
+
+func TestAHostWithNoBackendsOfTheExposureIsNoLongerACandidate(t *testing.T) {
+	s, st := fixture(t)
+	ctx := t.Context()
+	// h1 runs 10.1.0.5; h2 runs 10.1.0.6; the exposure uses only 10.1.0.5, so only h1 is a
+	// candidate. When h1 loses 10.1.0.5, it confirms deletion and the exposure becomes pending.
+	h1 := exposures.Host{ID: "h1", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.5"}}}
+	h2 := exposures.Host{ID: "h2", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.6"}}}
+	hosts := newHosts(h1, h2)
+	_, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5"))
+	require.NoError(t, err)
+	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
+	r := reconciler(st, hosts, clk)
+	require.NoError(t, r.Reconcile(ctx))
+	rec, err := st.GetExposure(ctx, "a", "web")
+	require.NoError(t, err)
+	require.Equal(t, "h1", rec.Host, "h1 is the only candidate for 10.1.0.5")
+	require.Equal(t, orchapi.ExposureAnnounced, rec.Phase)
+
+	// h1 loses 10.1.0.5; it is still answering (confirms Delete), so the address goes pending at once.
+	hosts.mu.Lock()
+	hosts.hosts[0].Members = nil // no members: not a candidate
+	hosts.mu.Unlock()
+	clk.Advance(5 * time.Second)
+	require.NoError(t, r.Reconcile(ctx))
+	got, _ := st.GetExposure(ctx, "a", "web")
+	require.Equal(t, orchapi.ExposurePending, got.Phase, "no candidate and h1 confirmed: pending immediately")
+	require.Empty(t, got.Host)
+
+	// Control: restoring 10.1.0.5 on h2 makes it the candidate and the exposure is announced.
+	hosts.mu.Lock()
+	hosts.hosts[1].Members = map[string][]string{"a": {"10.1.0.5"}}
+	hosts.mu.Unlock()
+	clk.Advance(5 * time.Second)
+	require.NoError(t, r.Reconcile(ctx))
+	got, _ = st.GetExposure(ctx, "a", "web")
+	require.Equal(t, orchapi.ExposureAnnounced, got.Phase, "control: h2 running 10.1.0.5 becomes the candidate")
+	require.Equal(t, "h2", got.Host)
+}
+
+func TestASilentHolderIsRenewedWithItsLastLeasedBackends(t *testing.T) {
+	s, st := fixture(t)
+	ctx := t.Context()
+	// Two hosts, each with one backend of the exposure. The chosen host goes silent; its renewal
+	// must carry only the backend it last received, not the full list (which would fail on the
+	// host side since the other backend is not local to it).
+	h1 := exposures.Host{ID: "h1", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.5"}}}
+	h2 := exposures.Host{ID: "h2", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.6"}}}
+	hosts := newHosts(h1, h2)
+	_, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5", "10.1.0.6"))
+	require.NoError(t, err)
+	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
+	r := reconciler(st, hosts, clk)
+	require.NoError(t, r.Reconcile(ctx))
+	rec, err := st.GetExposure(ctx, "a", "web")
+	require.NoError(t, err)
+	chosenHost := rec.Host
+	require.NotEmpty(t, chosenHost)
+	require.Len(t, rec.LeasedBackends, 1, "lease record carries only the local backend")
+
+	// The chosen host goes silent; Members unknown.
+	hosts.silence(chosenHost, true)
+	var mu sync.Mutex
+	var renewedBackends []string
+	hosts.onPut = func(_ context.Context, id, _ string, l exposures.Lease) error {
+		if id == chosenHost {
+			mu.Lock()
+			renewedBackends = l.Backends
+			mu.Unlock()
+		}
+		return nil
+	}
+	clk.Advance(5 * time.Second)
+	require.NoError(t, r.Reconcile(ctx))
+	mu.Lock()
+	got := renewedBackends
+	mu.Unlock()
+	require.Equal(t, rec.LeasedBackends, got, "silent holder renewed with last-leased backends, not the full list")
+
+	// Control: when the host answers again, the renewal reflects its current members.
+	hosts.silence(chosenHost, false)
+	hosts.onPut = nil
+	var mu2 sync.Mutex
+	var afterBackends []string
+	hosts.onPut = func(_ context.Context, id, _ string, l exposures.Lease) error {
+		if id == chosenHost {
+			mu2.Lock()
+			afterBackends = l.Backends
+			mu2.Unlock()
+		}
+		return nil
+	}
+	clk.Advance(5 * time.Second)
+	require.NoError(t, r.Reconcile(ctx))
+	mu2.Lock()
+	ctrl := afterBackends
+	mu2.Unlock()
+	require.Equal(t, rec.LeasedBackends, ctrl, "control: answering host gets same local backends")
+}
+
+func TestChooseMatchesBackendsOnlyWithinTheExposuresNetwork(t *testing.T) {
+	// 10.1.0.5 appears on h2's network "b" but not on network "a". The exposure is on network "a"
+	// with backend 10.1.0.5. h1 has 10.1.0.5 on "a"; h2 must not match even though it has the
+	// same address on a different network.
+	backends := []string{"10.1.0.5"}
+	h1 := exposures.Host{ID: "h1", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.5"}}}
+	h2 := exposures.Host{ID: "h2", LAN: "eth0", Networks: []string{"b"}, Members: map[string][]string{"b": {"10.1.0.5"}}}
+	got, ok := exposures.Choose("addr", "a", backends, []exposures.Host{h1, h2})
+	require.True(t, ok)
+	require.Equal(t, "h1", got, "h2 has 10.1.0.5 only on network b, not a")
+
+	// Control: h2 also runs 10.1.0.5 on network "a"; both are candidates.
+	h2.Networks = append(h2.Networks, "a")
+	h2.Members["a"] = []string{"10.1.0.5"}
+	_, ok = exposures.Choose("addr", "a", backends, []exposures.Host{h1, h2})
+	require.True(t, ok, "control: both hosts run 10.1.0.5 on a")
 }
 
 func TestTheLeaderLeasesAnAddressToOneHostAndRenewsIt(t *testing.T) {
@@ -236,7 +470,7 @@ func TestAnAddressMovesAtOnceWhenTheOldHostConfirmsItRemovedIt(t *testing.T) {
 			h.hosts[i].Networks = nil
 		}
 	}
-	h.hosts = append(h.hosts, exposures.Host{ID: old, LAN: "eth0", Networks: []string{"a"}})
+	h.hosts = append(h.hosts, exposures.Host{ID: old, LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.5"}}})
 	h.mu.Unlock()
 	require.NoError(t, r.Reconcile(t.Context()))
 	got, _ := st.GetExposure(t.Context(), "a", "web")
@@ -270,7 +504,10 @@ func TestTheStoredDeadlineIsNeverBeforeTheEndOfTheHostsLease(t *testing.T) {
 	h := newHosts(lanHosts("h1", "h2", "h3")...)
 	h.clock = clk
 	// The renewal reaches the host as late as the call may take.
-	h.onPut = func(context.Context, string, string) error { clk.Advance(exposures.CallTimeout); return nil }
+	h.onPut = func(context.Context, string, string, exposures.Lease) error {
+		clk.Advance(exposures.CallTimeout)
+		return nil
+	}
 	require.NoError(t, reconciler(st, h, clk).Reconcile(t.Context()))
 	got, err := st.GetExposure(t.Context(), "a", "web")
 	require.NoError(t, err)
@@ -293,7 +530,7 @@ func TestAHostThatDoesNotAnswerDelaysNoOtherExposure(t *testing.T) {
 	for i := range 8 {
 		e, err := s.ApplyExposure(t.Context(), "ccm", "a", "svc"+string(rune('a'+i)), spec("a", "10.1.0.5"))
 		require.NoError(t, err)
-		h, _ := exposures.Choose(e.Address, "a", hosts)
+		h, _ := exposures.Choose(e.Address, "a", spec("a", "10.1.0.5").Backends, hosts)
 		byHost[h] = append(byHost[h], e.Address)
 	}
 	require.Greater(t, len(byHost), 1, "the exposures spread over more than one host")
@@ -308,7 +545,7 @@ func TestAHostThatDoesNotAnswerDelaysNoOtherExposure(t *testing.T) {
 	var mu sync.Mutex
 	met := 0
 	h := newHosts(hosts...)
-	h.onPut = func(ctx context.Context, id, _ string) error {
+	h.onPut = func(ctx context.Context, id, _ string, _ exposures.Lease) error {
 		begin, wait, once := otherBegan, stuckBegan, &onceOther
 		if id == stuck {
 			begin, wait, once = stuckBegan, otherBegan, &onceStuck

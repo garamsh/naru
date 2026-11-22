@@ -24,7 +24,7 @@ type exposureHosts struct {
 }
 
 func (e *exposureHosts) List(context.Context) ([]exposures.Host, error) {
-	return []exposures.Host{{ID: "h1", LAN: "eth0", Networks: []string{"a", "b"}}}, nil
+	return []exposures.Host{{ID: "h1", LAN: "eth0", Networks: []string{"a", "b"}, Members: map[string][]string{"a": {"10.1.0.5"}, "b": {"10.2.0.5"}}}}, nil
 }
 
 func (e *exposureHosts) Put(_ context.Context, _, address string, l exposures.Lease) error {
