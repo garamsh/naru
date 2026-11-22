@@ -3,9 +3,9 @@ name: release
 # A pushed tag v* builds the release assets with `make release` and publishes them as a GitHub
 # Release named after the tag. workflow_dispatch repeats a run for a tag that already exists.
 # The workflow boots no QEMU: the boot test is `make test-qemu`, which a contributor runs.
-# A tag whose name contains "-" (v0.1.0-rc.1) is published as a pre-release and not as the latest
-# release (`--prerelease --latest=false`, on both the create and the edit path); any other tag is
-# published as before.
+# A tag whose name contains "-" (v0.1.0-dev.14 or v0.1.0-rc.1) is published as a pre-release and
+# not as the latest release (`--prerelease --latest=false`, on both the create and the edit path);
+# any other tag is published as before.
 #
 # A tag publishes once. A run for a tag whose release exists compares the new build's SHA256SUMS
 # with the published one (naru-release compare, ADR 0076): if they agree on every asset it uploads,
