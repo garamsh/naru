@@ -30,7 +30,7 @@ group "upgrade" {
 
 group "default" {
   targets = ["builder", "toolchain", "util-linux", "e2fsprogs", "liburcu", "libinih", "xfsprogs", "libmnl", "libnftnl", "jansson", "nftables", "cacert",
-    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes", "coredns", "volumes",
+    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes", "kube-network-policies", "coredns", "volumes",
     "libseccomp", "containerd", "rolesanywhere",
     "mvmd", "guest-initrds",
     "kernel-host", "kernel-node", "kernel-guest-naru",
@@ -203,6 +203,12 @@ target "kubernetes" {
   output   = ["type=oci,dest=${OUT}/kubernetes.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
+target "kube-network-policies" {
+  inherits = ["_package"]
+  context  = "kube-network-policies"
+  output   = ["type=oci,dest=${OUT}/kube-network-policies.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
 target "coredns" {
   inherits = ["_package"]
   context  = "coredns"
@@ -294,22 +300,23 @@ target "gen-init-cpio" {
 target "_initramfs" {
   inherits = ["_package"]
   contexts = {
-    src            = "../.."
-    gen-init-cpio  = "target:gen-init-cpio"
-    testroot       = TESTROOT
-    naru           = "target:naru"
-    e2fsprogs      = "target:e2fsprogs"
-    xfsprogs       = "target:xfsprogs"
-    nftables       = "target:nftables"
-    util-linux     = "target:util-linux"
-    etcd           = "target:etcd"
-    ecr-login      = "target:ecr-login"
-    rolesanywhere  = "target:rolesanywhere"
-    kubernetes     = "target:kubernetes"
-    containerd     = "target:containerd"
-    cni            = "target:cni"
-    coredns        = "target:coredns"
-    cacert         = "target:cacert"
+    src                    = "../.."
+    gen-init-cpio          = "target:gen-init-cpio"
+    testroot               = TESTROOT
+    naru                   = "target:naru"
+    e2fsprogs              = "target:e2fsprogs"
+    xfsprogs               = "target:xfsprogs"
+    nftables               = "target:nftables"
+    util-linux             = "target:util-linux"
+    etcd                   = "target:etcd"
+    ecr-login              = "target:ecr-login"
+    rolesanywhere          = "target:rolesanywhere"
+    kubernetes             = "target:kubernetes"
+    kube-network-policies  = "target:kube-network-policies"
+    containerd             = "target:containerd"
+    cni                    = "target:cni"
+    coredns                = "target:coredns"
+    cacert                 = "target:cacert"
   }
 }
 

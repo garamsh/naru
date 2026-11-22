@@ -55,24 +55,25 @@ spec:
 
 // recorder is both Host and Services and records the order of their calls.
 type recorder struct {
-	raw        string
-	network    string
-	readErr    error
-	networkErr error
-	filesErr   error
-	diskErr    error
-	formatErr  error
-	forwardErr error
-	prepareErr error
-	sealErr    error
-	issueErr   error
-	timeErr    error
-	routeErr   error
-	storageErr error
-	extErr     error
-	startErr   error
-	apiErr     error
-	api        *store.Stored
+	raw                string
+	network            string
+	readErr            error
+	networkErr         error
+	filesErr           error
+	diskErr            error
+	formatErr          error
+	forwardErr         error
+	bridgeNetfilterErr error
+	prepareErr         error
+	sealErr            error
+	issueErr           error
+	timeErr            error
+	routeErr           error
+	storageErr         error
+	extErr             error
+	startErr           error
+	apiErr             error
+	api                *store.Stored
 
 	stored  *store.Stored
 	loadErr error
@@ -216,6 +217,11 @@ func (r *recorder) EnableForwarding(f []config.Family) error {
 	r.calls = append(r.calls, "forward")
 	r.forwarded = f
 	return r.forwardErr
+}
+
+func (r *recorder) EnableBridgeNetfilter() error {
+	r.calls = append(r.calls, "bridge-netfilter")
+	return r.bridgeNetfilterErr
 }
 
 func (r *recorder) AddRoute(rt config.Route) error {

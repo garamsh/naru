@@ -105,6 +105,7 @@ var Kubernetes = Topology{
 		{Name: "kube-apiserver", ControlPlane: true},
 		{Name: "kube-controller-manager", ControlPlane: true},
 		{Name: "kube-scheduler", ControlPlane: true},
+		{Name: "kube-network-policies"},
 		{Name: "kubelet"},
 		{Name: "kube-proxy"},
 		{Name: "addons", ControlPlane: true},
@@ -160,6 +161,9 @@ type KubeNode struct {
 	// BlockSerials are the serial numbers of the disks the Node offers whole as block volumes
 	// (class naru-block), besides Node.Storage, which is where its local volumes are (ADR 0083).
 	BlockSerials []string
+	// DisableNetworkPolicy, when true, leaves kube-network-policies out of the topology: no enforcement,
+	// no sysctl, no PKI pair. It is the cluster setting networkPolicy: false (ADR 0086).
+	DisableNetworkPolicy bool
 }
 
 // KubeTokensContent is the content of KubeBootstrapTokensFile: a line of the API server's static
@@ -425,6 +429,9 @@ func (n Node) kubeUserData() ([]byte, error) {
 	// already labelled is left as it is (docs/architecture/init.md).
 	c.Spec.DataDisk.FormatBlank = true
 	c.Spec.Network.Forwarding = []string{"ipv4"}
+	if !k.DisableNetworkPolicy {
+		c.Spec.Network.BridgeNetfilter = true
+	}
 	for _, p := range k.Peers {
 		c.Spec.Network.Routes = append(c.Spec.Network.Routes, route{To: p.PodPrefix, Via: p.Address})
 	}
@@ -500,6 +507,10 @@ func (n Node) kubeServices() []service {
 			},
 		},
 		{
+			Name: "kube-network-policies", Binary: n.binary("kube-network-policies", "/bin/kube-network-policies"), Env: n.kubeEnv(),
+			Args: []string{"--kubeconfig=" + kubePath("kube-network-policies.conf"), "--hostname-override=" + n.Name},
+		},
+		{
 			Name: "kubelet", Binary: n.binary("kubelet", "/bin/kubelet"), Env: n.kubeEnv(),
 			Args: []string{
 				"--config=" + kubePath("kubelet.yaml"), "--kubeconfig=" + n.kubeletKubeconfig(), "--hostname-override=" + n.Name,
@@ -513,6 +524,9 @@ func (n Node) kubeServices() []service {
 	}
 	if !k.LocalRegistry {
 		list = slices.DeleteFunc(list, func(s service) bool { return s.Name == "registry" })
+	}
+	if k.DisableNetworkPolicy {
+		list = slices.DeleteFunc(list, func(s service) bool { return s.Name == "kube-network-policies" })
 	}
 	if !slices.Contains(n.enabledAddons(), "volumes") {
 		list = slices.DeleteFunc(list, func(s service) bool { return s.Name == "addon-image-volumes" })
@@ -619,7 +633,13 @@ func (n Node) kubePKI() *pkiSpec {
 	serving := cluster(pairSpec{"kubelet", n.Name}, "server", "kubelet")
 	serving.NodeAddresses = true
 	serving.DNSNames = []string{n.Name}
-	add(node, serving, cluster(pairSpec{"kube-proxy", "system:kube-proxy"}, "client", "kube-proxy"))
+	add(node, serving)
+	add(cluster(pairSpec{"kube-proxy", "system:kube-proxy"}, "client", "kube-proxy"))
+	if !k.DisableNetworkPolicy {
+		knp := cluster(pairSpec{"kube-network-policies", "system:kube-network-policies"}, "client", "kube-network-policies")
+		knp.Organization = "system:nodes"
+		add(knp)
+	}
 	return spec
 }
 
@@ -742,12 +762,17 @@ func (n Node) kubeFiles() ([]file, error) {
 		{Path: kubePath("kubelet.yaml"), Mode: "0644", Content: string(kubelet)},
 		{Path: kubePath("kube-proxy.yaml"), Mode: "0644", Content: string(proxy)},
 		{Path: kubePath("kube-proxy.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-proxy", "kube-proxy")},
-		// The kubelet's user-namespace mappings read /etc/passwd and /etc/group, which the image links here.
-		{Path: kubePath("passwd"), Mode: "0644", Content: "root:x:0:0:root:/:/bin/false\n"},
-		{Path: kubePath("group"), Mode: "0644", Content: "root:x:0:\n"},
-		// containerd copies /etc/hosts into every Pod's sandbox, and the image links it here.
-		{Path: kubePath("hosts"), Mode: "0644", Content: "127.0.0.1 localhost\n::1 localhost\n"},
 	}
+	if !k.DisableNetworkPolicy {
+		files = append(files, file{Path: kubePath("kube-network-policies.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-network-policies", "kube-network-policies")})
+	}
+	files = append(files,
+		// The kubelet's user-namespace mappings read /etc/passwd and /etc/group, which the image links here.
+		file{Path: kubePath("passwd"), Mode: "0644", Content: "root:x:0:0:root:/:/bin/false\n"},
+		file{Path: kubePath("group"), Mode: "0644", Content: "root:x:0:\n"},
+		// containerd copies /etc/hosts into every Pod's sandbox, and the image links it here.
+		file{Path: kubePath("hosts"), Mode: "0644", Content: "127.0.0.1 localhost\n::1 localhost\n"},
+	)
 	if k.RegistryCA != "" {
 		host := RegistryAddr
 		files = append(files, file{
@@ -804,8 +829,14 @@ func (n Node) workerPairFiles() ([]file, error) {
 		{"kubelet-client", func() (pki.Pair, error) { return n.CA.Client("system:node:"+n.Name, "system:nodes") }},
 		{"kubelet", func() (pki.Pair, error) { return n.CA.Server(n.Name, ip, net.IPv4(127, 0, 0, 1)) }},
 		{"kube-proxy", func() (pki.Pair, error) { return n.CA.Client("system:kube-proxy") }},
+		{"kube-network-policies", func() (pki.Pair, error) {
+			return n.CA.Client("system:kube-network-policies", "system:nodes")
+		}},
 	} {
 		if p.name == "kubelet-client" && n.kube().Token != "" {
+			continue
+		}
+		if p.name == "kube-network-policies" && n.kube().DisableNetworkPolicy {
 			continue
 		}
 		pair, err := p.pair()

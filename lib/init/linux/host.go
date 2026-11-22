@@ -238,6 +238,11 @@ func (h *Host) WriteRegistries(spec config.Spec) error {
 // SetAsidePair sets the pair file of p aside when its certificate lacks the Organization p names.
 func (h *Host) SetAsidePair(p config.KeptPair) (bool, error) { return keptpair.SetAside(p) }
 
+// EnableBridgeNetfilter sets net.bridge.bridge-nf-call-iptables=1.
+func (h *Host) EnableBridgeNetfilter() error {
+	return os.WriteFile(filepath.Join(h.procSys, "net/bridge/bridge-nf-call-iptables"), []byte("1"), 0o644)
+}
+
 // EnableForwarding turns forwarding on for each family named.
 func (h *Host) EnableForwarding(families []config.Family) error {
 	files := map[config.Family]string{

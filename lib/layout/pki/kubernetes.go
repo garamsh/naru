@@ -20,6 +20,9 @@ const (
 	// DisabledAddonsFile lists, a name to a line, the cluster add-ons the cluster does not run (ADR 0083):
 	// gen kubernetes writes it and gen kubernetes-node reads it.
 	DisabledAddonsFile = "disabled-addons"
+	// DisableNetworkPolicyFile, when present in the CA directory, turns NetworkPolicy enforcement off:
+	// gen kubernetes writes it and gen kubernetes-node reads it (ADR 0086).
+	DisableNetworkPolicyFile = "disable-network-policy"
 	// AdminKubeconfigFile is the administrator's kubeconfig.
 	AdminKubeconfigFile = "admin.conf"
 	// AdminName and AdminOrganization are the subject of the administrator's certificate; the

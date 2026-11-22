@@ -54,6 +54,7 @@ file /bin/kube-controller-manager @OUT@/kube-controller-manager 0755 0 0
 file /bin/kube-scheduler @OUT@/kube-scheduler 0755 0 0
 file /bin/kubelet @OUT@/kubelet 0755 0 0
 file /bin/kube-proxy @OUT@/kube-proxy 0755 0 0
+file /bin/kube-network-policies @OUT@/kube-network-policies 0755 0 0
 file /bin/kubectl @OUT@/kubectl 0755 0 0
 file /bin/ctr @OUT@/ctr 0755 0 0
 file /bin/containerd @OUT@/containerd 0755 0 0

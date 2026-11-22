@@ -311,8 +311,9 @@ type nodeConfig struct {
 			FormatBlank bool   `yaml:"formatBlank,omitempty"`
 		} `yaml:"dataDisk"`
 		Network struct {
-			Forwarding []string `yaml:"forwarding"`
-			Routes     []route  `yaml:"routes,omitempty"`
+			Forwarding      []string `yaml:"forwarding"`
+			Routes          []route  `yaml:"routes,omitempty"`
+			BridgeNetfilter bool     `yaml:"bridgeNetfilter,omitempty"`
 		} `yaml:"network"`
 		Services []service `yaml:"services"`
 		Files    []file    `yaml:"files"`
