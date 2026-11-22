@@ -48,11 +48,13 @@ func removeAndRejoin(t *testing.T, f *fleet, out int) {
 	assert.False(t, f.node(leader).Has(removedMember, orchName(out)), "a member is not removed before the departure time")
 	f.must(f.orchAs(f.root, leader, "enroll-key", "create"), "the two members left take a write")
 	// After it, the leader removes that member, and no other: the others answer, and the cluster had three.
+	// Record the console offset before polling so the alive-member check covers only this removal.
+	consAt := len(f.node(leader).Console())
 	eventually(t, "the leader removes the member that stayed out", func() bool {
 		return f.node(leader).Has(removedMember, orchName(out))
 	})
 	for _, i := range alive {
-		assert.False(t, f.node(leader).Has(removedMember, orchName(i)), "orch-%d answers and is not removed", i)
+		assert.False(t, f.node(leader).HasAfter(consAt, removedMember, orchName(i)), "orch-%d answers and is not removed", i)
 	}
 
 	// The member starts again with its old data directory, which the cluster has forgotten: it wipes it and joins afresh.
@@ -117,18 +119,19 @@ func refusedForSpace(r result) bool {
 }
 
 func TestFleet_TheHousekeeperKeepsEtcdUnderItsQuotaThroughMoreWritesThanTheQuotaHolds(t *testing.T) {
-	const quota = 16 << 20
+	const quota = 8 << 20
 	f := newFleet(t, fleetOpts{controls: 3, orchExtra: func(int) map[string]any {
 		return map[string]any{"etcdQuotaBytes": quota, "etcdCompactionRetention": "30s", "housekeepingInterval": "5s"}
 	}})
 	f.startOrch()
 	eventually(t, "a member leads", func() bool { return f.leader(f.controls()) != 0 })
 
-	// About 400 KiB a set, one every 3 seconds, which keeps the live data well under the quota, until more than twice the
+	// About 400 KiB a set, one every 6 seconds, which keeps the live data well under the quota, until more than twice the
 	// quota has been written and a defragmentation has been seen. Without compaction and defragmentation the quota is
-	// spent and the sets fail with "database space exceeded".
+	// spent and the sets fail with "database space exceeded". The 6-second interval keeps the write rate low enough
+	// that the housekeeping probes can complete between writes in QEMU.
 	deadline := time.Now().Add(15 * time.Minute)
-	tick := time.NewTicker(3 * time.Second)
+	tick := time.NewTicker(6 * time.Second)
 	defer tick.Stop()
 	var written int
 	defragSeen := func() bool {

@@ -348,6 +348,76 @@ func TestHousekeeper_ARefusedReportIsLoggedAndTriedAtTheNextPass(t *testing.T) {
 	assert.Contains(t, logged.String(), "the quota event was not recorded")
 }
 
+func TestHousekeeper_KeepsAMemberWithNoClientURLsInsideTheDepartureTime(t *testing.T) {
+	cl := fakeMembers(3)
+	// A fourth member that was just added but has not started: no client URLs.
+	cl.members = append(cl.members, &etcdserverpb.Member{ID: 10, Name: "m4"})
+	now := time.Now()
+	h := &member.Housekeeper{Client: cl, Quota: member.MaxQuota, Departure: time.Hour, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
+
+	require.NoError(t, h.Pass(t.Context()))
+	now = now.Add(59 * time.Minute)
+	require.NoError(t, h.Pass(t.Context()))
+
+	assert.Empty(t, cl.removed, "a member added and not yet started is given the departure time to start")
+}
+
+func TestHousekeeper_RemovesAMemberThatStaysUnstartedPastTheDepartureTime(t *testing.T) {
+	cl := fakeMembers(3)
+	cl.members = append(cl.members, &etcdserverpb.Member{ID: 10, Name: "m4"})
+	now := time.Now()
+	h := &member.Housekeeper{Client: cl, Quota: member.MaxQuota, Departure: time.Hour, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
+
+	require.NoError(t, h.Pass(t.Context()))
+	now = now.Add(2 * time.Hour)
+	require.NoError(t, h.Pass(t.Context()))
+
+	assert.Equal(t, []uint64{10}, cl.removed, "a voter that never starts counts toward the quorum, so it is removed")
+}
+
+func TestHousekeeper_RemovesAnUnstartedMemberFromAClusterTooSmallToSpareAnOutOne(t *testing.T) {
+	cl := fakeMembers(1)
+	cl.members = append(cl.members, &etcdserverpb.Member{ID: 10, Name: "m2"})
+	now := time.Now()
+	h := &member.Housekeeper{Client: cl, Quota: member.MaxQuota, Departure: time.Hour, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
+
+	require.NoError(t, h.Pass(t.Context()))
+	now = now.Add(2 * time.Hour)
+	require.NoError(t, h.Pass(t.Context()))
+
+	assert.Equal(t, []uint64{10}, cl.removed, "removing it lowers the quorum, so the minimum cluster size does not apply")
+}
+
+func TestHousekeeper_DoesNotRemoveAnUnstartedLearner(t *testing.T) {
+	cl := fakeMembers(3)
+	cl.members = append(cl.members, &etcdserverpb.Member{ID: 10, Name: "m4", IsLearner: true})
+	now := time.Now()
+	h := &member.Housekeeper{Client: cl, Quota: member.MaxQuota, Departure: time.Hour, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
+
+	require.NoError(t, h.Pass(t.Context()))
+	now = now.Add(2 * time.Hour)
+	require.NoError(t, h.Pass(t.Context()))
+
+	assert.Empty(t, cl.removed, "a learner is no voter, so it costs the quorum nothing")
+}
+
+func TestHousekeeper_ANotYetStartedMemberInsideItsWindowDoesNotBlockRemovalOfADepartedOne(t *testing.T) {
+	cl := fakeMembers(3, 2) // m3 is out from the first pass
+	now := time.Now()
+	h := &member.Housekeeper{Client: cl, Quota: member.MaxQuota, Departure: time.Hour, Now: func() time.Time { return now }, Log: slog.New(slog.DiscardHandler)}
+	require.NoError(t, h.Pass(t.Context()))
+
+	// A fourth member is added 40 minutes in and has not started when m3 has been out for an hour.
+	now = now.Add(40 * time.Minute)
+	cl.members = append(cl.members, &etcdserverpb.Member{ID: 10, Name: "m4"})
+	require.NoError(t, h.Pass(t.Context()))
+	require.Empty(t, cl.removed, "m3 has not been out for the departure time yet")
+	now = now.Add(21 * time.Minute)
+	require.NoError(t, h.Pass(t.Context()))
+
+	assert.Equal(t, []uint64{3}, cl.removed, "the unstarted member is inside its own window, so it is not a second member out")
+}
+
 func TestHousekeeper_DefragmentsAMemberWhoseAlarmItsFreePagesKeepArmed(t *testing.T) {
 	const quota = 512 << 20
 	line := int64(quota / member.DisarmShare)
