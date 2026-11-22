@@ -49,15 +49,8 @@ jobs:
           cache: true
           cache-dependency-path: "**/go.sum"
 
-      # Diagnosis of naru#301, removed once its cause is fixed.
-      - name: Packages after netecho, one at a time and verbose
-        working-directory: tooling/qemu
-        run: |
-          (while :; do date -u +%T; free -m | sed -n 2p; df -h / | sed -n 2p; ps -eo rss,comm --sort=-rss | head -4; sleep 15; done) &
-          for p in node pcap registry release route seed standin storageprobe; do
-            echo "=== $p"; go test -race -count=1 -v -timeout 10m ./internal/$p 2>&1 || true
-          done
-
+      # TEST_TIMEOUT bounds each package's tests below the job's timeout: a test that hangs fails its
+      # package with every goroutine printed, instead of the job being cancelled with no log.
       - name: Run the checks
         env:
           TEST_TIMEOUT: 20m

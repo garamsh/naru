@@ -1,9 +1,13 @@
 package node
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,9 +28,58 @@ const (
 
 func readSuperblock(t *testing.T, path string) []byte {
 	t.Helper()
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	require.NoError(t, err)
-	return b[superblock : superblock+superblockSz]
+	defer f.Close()
+	sb := make([]byte, superblockSz)
+	_, err = f.ReadAt(sb, superblock)
+	require.NoError(t, err)
+	return sb
+}
+
+// diskHolds reports which of the needles the file holds. A data disk is sparse and 8 GiB virtual, so
+// the scan reads only what lseek(SEEK_DATA) says is written, a megabyte at a time, and never holds
+// the disk in memory: ReadFile of it took the 16 GB of a CI runner.
+func diskHolds(t *testing.T, path string, needles ...string) map[string]bool {
+	t.Helper()
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	defer f.Close()
+	found := map[string]bool{}
+	keep := 0
+	for _, n := range needles {
+		keep = max(keep, len(n)-1)
+	}
+	buf := make([]byte, 1<<20)
+	for off := int64(0); ; {
+		start, err := f.Seek(off, 3) // SEEK_DATA
+		if errors.Is(err, syscall.ENXIO) {
+			break
+		}
+		require.NoError(t, err)
+		end, err := f.Seek(start, 4) // SEEK_HOLE
+		require.NoError(t, err)
+		tail := []byte(nil)
+		for pos := start; pos < end; {
+			n, err := f.ReadAt(buf[:min(int64(len(buf)), end-pos)], pos)
+			if err != nil && !errors.Is(err, io.EOF) {
+				require.NoError(t, err)
+			}
+			window := append(tail, buf[:n]...)
+			for _, needle := range needles {
+				if bytes.Contains(window, []byte(needle)) {
+					found[needle] = true
+				}
+			}
+			tail = append([]byte(nil), window[max(0, len(window)-keep):]...)
+			pos += int64(n)
+			if n == 0 {
+				break
+			}
+		}
+		off = end
+	}
+	return found
 }
 
 func label(sb []byte) string {
@@ -52,9 +105,7 @@ func TestBuildDataDisk_CarriesTheInputsTree(t *testing.T) {
 	data, err := BuildDataDisk(t.TempDir(), inputs)
 
 	require.NoError(t, err)
-	b, err := os.ReadFile(data)
-	require.NoError(t, err)
-	assert.Contains(t, string(b), "marker-inputs-9f3a")
+	assert.True(t, diskHolds(t, data, "marker-inputs-9f3a")["marker-inputs-9f3a"])
 }
 
 func TestBuildDataDiskWith_CarriesAKeptAgentPairWhereTheAgentKeepsIt(t *testing.T) {
@@ -64,10 +115,9 @@ func TestBuildDataDiskWith_CarriesAKeptAgentPairWhereTheAgentKeepsIt(t *testing.
 	data, err := BuildDataDiskWith(t.TempDir(), "", pair, "")
 
 	require.NoError(t, err)
-	b, err := os.ReadFile(data)
-	require.NoError(t, err)
-	assert.Contains(t, string(b), "marker-pair-4c1e")
-	assert.Contains(t, string(b), "gaon-node-agent")
+	held := diskHolds(t, data, "marker-pair-4c1e", "gaon-node-agent")
+	assert.True(t, held["marker-pair-4c1e"])
+	assert.True(t, held["gaon-node-agent"])
 }
 
 func TestBuildDataDiskWith_CarriesTheExtensionStoreWhereInitKeepsItsExtensions(t *testing.T) {
@@ -77,10 +127,9 @@ func TestBuildDataDiskWith_CarriesTheExtensionStoreWhereInitKeepsItsExtensions(t
 	data, err := BuildDataDiskWith(t.TempDir(), "", "", store)
 
 	require.NoError(t, err)
-	b, err := os.ReadFile(data)
-	require.NoError(t, err)
-	assert.Contains(t, string(b), "marker-image-77d0")
-	assert.Contains(t, string(b), strings.Repeat("a", 64)+".sqfs")
+	held := diskHolds(t, data, "marker-image-77d0", strings.Repeat("a", 64)+".sqfs")
+	assert.True(t, held["marker-image-77d0"])
+	assert.True(t, held[strings.Repeat("a", 64)+".sqfs"])
 }
 
 func TestBuildCidata_IsA4MiBVolumeLabelledCidataHoldingTheThreeFiles(t *testing.T) {
