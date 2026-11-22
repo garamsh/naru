@@ -162,7 +162,7 @@ func (h *Housekeeper) Pass(ctx context.Context) error {
 	var down []*etcdserverpb.Member
 	for _, m := range list.Members {
 		if len(m.ClientURLs) == 0 {
-			down = append(down, m) // a member added but not yet started has no client URL
+			// Added but not yet started: not tracked as departed.
 			continue
 		}
 		pctx, cancel := context.WithTimeout(ctx, probeTimeout)
@@ -182,14 +182,18 @@ func (h *Housekeeper) Pass(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("list the alarms: %w", err))
 		alarms = &clientv3.AlarmResponse{}
 	}
-	// A defragmentation blocks its member, so it runs only while every member answers. Clearing an
-	// alarm does not, and is the one thing a cluster with a member out needs from a member that
-	// answers.
+	// A defragmentation blocks its member, so it runs only while every member answers. The one
+	// exception: when the no-space alarm is armed for a member and defragmentation would free enough
+	// to disarm it, the alarm deadlocks removal of an out member (the fence write fails), so
+	// defragmentation runs for that member even with a member out. Clearing an alarm does not block
+	// and is the one thing a cluster with a member out needs from a member that answers.
+	line := h.Quota / DisarmShare
 	for _, p := range up {
 		armed := slices.IndexFunc(alarms.Alarms, func(a *etcdserverpb.AlarmMember) bool {
 			return a.Alarm == etcdserverpb.AlarmType_NOSPACE && a.MemberID == p.member.ID
 		})
-		if len(down) == 0 {
+		alarmedAndFreeable := armed >= 0 && p.status.DbSize >= line && p.status.DbSizeInUse < line
+		if len(down) == 0 || alarmedAndFreeable {
 			errs = append(errs, h.defrag(ctx, p, armed >= 0))
 		}
 		if armed >= 0 {
