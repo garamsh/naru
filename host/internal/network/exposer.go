@@ -110,6 +110,9 @@ func (x *Exposer) Put(ctx context.Context, e Exposure, lease time.Duration) erro
 		if err := x.Link.Check(e.Address); err != nil {
 			return err
 		}
+		if err := x.Link.Probe(e.Address); err != nil {
+			return err
+		}
 	}
 	e.Deadline = x.now().Add(lease)
 	if err := x.Manager.PutExposure(ctx, e); err != nil {

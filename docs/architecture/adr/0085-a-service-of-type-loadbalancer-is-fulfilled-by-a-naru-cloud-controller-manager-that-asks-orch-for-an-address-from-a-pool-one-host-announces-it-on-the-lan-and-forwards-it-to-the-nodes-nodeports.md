@@ -52,6 +52,20 @@ Drafted for garamsh/naru#275, part of goal garamsh/naru#262. It carries out item
 - **PROXY protocol by default.** A receiver that does not expect the header rejects every connection, so it is off until a Service asks.
 - **A credential per host or per cluster with every role.** A stolen Secret would reach more than its own network.
 
+## Amendment: ARP probe and LAN-prefix requirement (garamsh/naru#296)
+
+The original item 6 refused an exposure whose address is inside the host's management prefix. This was a defect: `spec.host.network.managementPrefix` is the host's LAN interface's subnet in a single-NIC deployment (aurora: `192.168.0.0/24`), and aurora's agreed pool (`192.168.0.80–.89`) is inside it. The check therefore refused every exposure in the only range naru can announce on that network. The QEMU fleet test reproduces the production topology (one NIC, management prefix equals the LAN subnet), and the failure confirmed it. Decided at https://github.com/garamsh/naru/pull/296#issuecomment-7079583563.
+
+**Replacement rules (host side, item 6):**
+
+1. **Drop the management-prefix refusal.** Hostd no longer refuses an exposure whose address falls inside `spec.host.network.managementPrefix`.
+
+2. **Require the address inside the LAN interface's own prefix.** A layer-2 announcement cannot reach beyond the interface's subnet. An address not inside any prefix of the LAN interface is refused with 422.
+
+3. **Probe with ARP before taking a new lease.** Before adding a new leased address, hostd sends one ARP request with sender IP 0.0.0.0 (RFC 5227 §2.1) and waits 500 ms for a reply. If any host answers — meaning another LAN host already holds the address — the PUT is refused with 409. Renewals do not probe: the host already owns the address and would answer itself.
+
+The management prefix continues to govern the nftables rules (management traffic to network API endpoints) and is not removed from configuration.
+
 ## Consequences
 
 - A Service has an address on the LAN within one reconciler interval of its creation and nothing in the cluster needs a privileged pod.
