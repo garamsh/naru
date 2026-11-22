@@ -37,12 +37,15 @@ const (
 
 // Host is an admitted host the reconciler may lease an address to. LAN is the interface it
 // announces on; a host with none is no candidate. Networks are the networks it runs a microVM on.
-// Silent is an admitted host that did not answer this pass: it is no candidate for a new address,
-// and keeps the ones it holds for SilentGrace.
+// Members are the addresses of its running microVMs, so the reconciler knows which of an
+// exposure's backends run on it; a host that runs none of an exposure's backends is no candidate
+// for it. Silent is an admitted host that did not answer this pass: it is no candidate for a new
+// address, and keeps the ones it holds for SilentGrace.
 type Host struct {
 	ID       string
 	LAN      string
 	Networks []string
+	Members  []string
 	Silent   bool
 }
 
@@ -126,11 +129,15 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 // Choose returns the host that should hold the address among the candidates, by rendezvous
 // hashing, so a lost host moves only its own addresses and a returned host takes back only its own.
-// A candidate is a host that answered, with a LAN interface, that runs a microVM on the network.
-func Choose(address, network string, hosts []Host) (string, bool) {
+// A candidate is a host that answered, with a LAN interface, that runs a microVM on the network,
+// and that runs at least one of the exposure's backends (ADR 0085 item 6, as amended by #296).
+func Choose(address, network string, backends []string, hosts []Host) (string, bool) {
 	best, bestScore := "", uint64(0)
 	for _, h := range hosts {
 		if h.Silent || h.LAN == "" || !slices.Contains(h.Networks, network) {
+			continue
+		}
+		if !slices.ContainsFunc(backends, func(b string) bool { return slices.Contains(h.Members, b) }) {
 			continue
 		}
 		sum := sha256.Sum256([]byte(address + "\x00" + h.ID))
@@ -139,6 +146,18 @@ func Choose(address, network string, hosts []Host) (string, bool) {
 		}
 	}
 	return best, best != ""
+}
+
+// localBackends returns the backends from the exposure that run on h, by intersection with
+// h.Members.
+func localBackends(h Host, backends []string) []string {
+	var out []string
+	for _, b := range backends {
+		if slices.Contains(h.Members, b) {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // Reconcile runs one pass. For each exposure it renews the lease on its host while that host is
@@ -275,7 +294,7 @@ func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, re
 		}
 		return r.store.DeleteExposure(ctx, rec)
 	}
-	want, ok := Choose(rec.Address, rec.Network, hosts)
+	want, ok := Choose(rec.Address, rec.Network, rec.Backends, hosts)
 	if rec.Host != "" && silent(hosts, rec.Host) {
 		want, ok = rec.Host, true // slow, not known gone: renewed where it is, and not moved and moved back
 	}
@@ -306,7 +325,16 @@ func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, re
 	if err := r.store.UpdateExposure(ctx, next, rec); err != nil {
 		return err
 	}
-	l := Lease{Network: rec.Network, Ports: rec.Ports, Backends: rec.Backends, ProxyProtocol: rec.ProxyProtocol, Seconds: LeaseSeconds}
+	// The lease carries only the backends that run on the announcing host; a silent host's members
+	// are unknown so the full list is sent and the host side validates (ADR 0085 item 6).
+	local := rec.Backends
+	for _, h := range hosts {
+		if h.ID == want && !h.Silent {
+			local = localBackends(h, rec.Backends)
+			break
+		}
+	}
+	l := Lease{Network: rec.Network, Ports: rec.Ports, Backends: local, ProxyProtocol: rec.ProxyProtocol, Seconds: LeaseSeconds}
 	if err := r.hosts.Put(ctx, want, rec.Address, l); err != nil {
 		return fmt.Errorf("lease on host %s: %w", want, err)
 	}
