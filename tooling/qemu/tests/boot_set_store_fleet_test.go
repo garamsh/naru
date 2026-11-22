@@ -18,7 +18,7 @@ import (
 
 const (
 	// storeDir is where the control Nodes keep the release store orch reads (ADR 0089).
-	storeDir = "/var/lib/naru/boot-set-store"
+	storeDir = "/run/boot-set-store"
 	// storeVersion is a Node version no host offers a boot set for.
 	storeVersion = "v9.9.9"
 	// signerIdentity is the identity the store's releases are checked against.
