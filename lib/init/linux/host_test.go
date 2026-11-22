@@ -17,6 +17,7 @@ import (
 
 	"github.com/garamsh/naru/lib/init/boot"
 	"github.com/garamsh/naru/lib/init/config"
+	"github.com/garamsh/naru/lib/init/ext4"
 	"github.com/garamsh/naru/lib/init/ext4/ext4test"
 	"github.com/garamsh/naru/lib/init/netcfg"
 )
@@ -391,7 +392,7 @@ func TestHost_MountDataDisk_GrowsTheFileSystemToTheDevice(t *testing.T) {
 		dir    string
 		blocks uint64
 	}
-	rig := func(t *testing.T, size int64) (*Host, *[]growth) {
+	rig := func(t *testing.T, size int64) (*Host, *[]growth, string) {
 		img := ext4test.Image(t, "NARUDATA", "verity", nil)
 		require.NoError(t, os.Truncate(img, size))
 		h, _ := testHost(t, map[string]string{"vda": img})
@@ -400,19 +401,24 @@ func TestHost_MountDataDisk_GrowsTheFileSystemToTheDevice(t *testing.T) {
 			grown = append(grown, growth{dir, blocks})
 			return nil
 		}
-		return h, &grown
+		return h, &grown, img
 	}
 
-	t.Run("a device enlarged since the file system was made grows it to the device (mkfs picks 1 KiB blocks for 16 MiB)", func(t *testing.T) {
-		h, grown := rig(t, 64<<20)
+	t.Run("a device enlarged since the file system was made grows it to the device", func(t *testing.T) {
+		h, grown, img := rig(t, 64<<20)
+		imgf, err := os.Open(img)
+		require.NoError(t, err)
+		sb, err := ext4.ReadSuperblock(imgf)
+		require.NoError(t, imgf.Close())
+		require.NoError(t, err)
 
 		require.NoError(t, h.MountDataDisk(config.DataDisk{Label: "NARUDATA", MountPoint: mp}))
 
-		assert.Equal(t, []growth{{mp, 64 << 20 / 1024}}, *grown)
+		assert.Equal(t, []growth{{mp, 64 << 20 / sb.BlockSize}}, *grown)
 	})
 
 	t.Run("a device of the file system's size is left alone", func(t *testing.T) {
-		h, grown := rig(t, 16<<20)
+		h, grown, _ := rig(t, 16<<20)
 
 		require.NoError(t, h.MountDataDisk(config.DataDisk{Label: "NARUDATA", MountPoint: mp}))
 
@@ -420,7 +426,7 @@ func TestHost_MountDataDisk_GrowsTheFileSystemToTheDevice(t *testing.T) {
 	})
 
 	t.Run("a growth the kernel refuses does not stop the boot", func(t *testing.T) {
-		h, _ := rig(t, 64<<20)
+		h, _, _ := rig(t, 64<<20)
 		h.growExt4 = func(string, uint64) error { return os.ErrPermission }
 
 		assert.NoError(t, h.MountDataDisk(config.DataDisk{Label: "NARUDATA", MountPoint: mp}))
