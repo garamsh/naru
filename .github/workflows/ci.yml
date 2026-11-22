@@ -49,5 +49,9 @@ jobs:
           cache: true
           cache-dependency-path: "**/go.sum"
 
+      # TEST_TIMEOUT bounds each package's tests below the job's timeout: a test that hangs fails its
+      # package with every goroutine printed, instead of the job being cancelled with no log.
       - name: Run the checks
+        env:
+          TEST_TIMEOUT: 20m
         run: make ci
