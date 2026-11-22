@@ -68,6 +68,10 @@ format:
 format-apply:
 	$(call each_module, (cd "$$dir" && git ls-files --cached --others --exclude-standard -z -- '*.go' | xargs -0 gofmt -w))
 
+# TEST_TIMEOUT bounds each package's test binary: go test prints every goroutine of a package that
+# runs past it and fails it. ci.yml sets it below the job's timeout, so a hung test is named in the log.
+TEST_TIMEOUT ?= 60m
+
 # The tests need neither root nor a VM. The ones that need a delegated cgroup
 # are skipped here and run by test-cgroup; those that need PID 1 run in the
 # QEMU test of the image. The timeout is above go test's 10 minutes because
@@ -75,7 +79,7 @@ format-apply:
 # for every dirty page of the machine: on a machine others write to, one build
 # took 40 minutes.
 test:
-	$(call each_module, $(count_packages); (cd "$$dir" && go test -race -count=1 -timeout 60m ./...))
+	$(call each_module, $(count_packages); (cd "$$dir" && go test -race -count=1 -timeout $(TEST_TIMEOUT) ./...))
 
 # test-cgroup runs the tests that use real cgroups, in a cgroup the user
 # delegates to itself with systemd-run --user. They are not part of ci: a

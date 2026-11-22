@@ -49,5 +49,19 @@ jobs:
           cache: true
           cache-dependency-path: "**/go.sum"
 
+      # Diagnosis of naru#301, removed once its cause is fixed: memory, disk and the heaviest processes
+      # every 20 seconds, printed whether the checks pass or not.
+      - name: Sample the runner
+        run: |
+          nohup sh -c 'while :; do date -u +%T; free -m | sed -n 2p; df -h / | sed -n 2p; ps -eo rss,comm --sort=-rss | head -4; sleep 20; done' >"$RUNNER_TEMP/sample.log" 2>&1 &
+
       - name: Run the checks
+        env:
+          TEST_TIMEOUT: 20m
         run: make ci
+
+      - name: Print the samples
+        if: always()
+        run: |
+          tail -n 400 "$RUNNER_TEMP/sample.log"
+          sudo dmesg | grep -i -E 'oom|killed process|out of memory' | tail -n 20 || true
