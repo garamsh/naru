@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -308,17 +309,28 @@ func apiClient(t *testing.T, file string) (*http.Client, string) {
 	return hc, f.Endpoints[0]
 }
 
-// extensionRows are the lines of `naructl extension list` after the header, by digest.
-func extensionRows(t *testing.T, file string) map[string][]string {
-	t.Helper()
+// extensionTable is the lines of `naructl extension list` after the header, by digest, or the error
+// of the call. A wait for a Node that is still booting polls it: its API refuses connections until
+// init listens.
+func extensionTable(file string) (map[string][]string, error) {
 	r := ctl(file, "extension", "list")
-	require.NoError(t, r.Err, r.refusal())
+	if r.Err != nil {
+		return nil, fmt.Errorf("%w: %s", r.Err, r.refusal())
+	}
 	rows := map[string][]string{}
 	for i, line := range strings.Split(strings.TrimSpace(r.Stdout), "\n") {
 		if f := strings.Fields(line); i > 0 && len(f) >= 6 {
 			rows[f[2]] = f
 		}
 	}
+	return rows, nil
+}
+
+// extensionRows is extensionTable for a Node that is up: a failed call fails the test.
+func extensionRows(t *testing.T, file string) map[string][]string {
+	t.Helper()
+	rows, err := extensionTable(file)
+	require.NoError(t, err)
 	return rows
 }
 
