@@ -525,12 +525,12 @@ func TestParse_OrchBootSetFieldsGiveOrchdItsFlagsAndAreValidated(t *testing.T) {
 	require.NoError(t, err, "a prefix identity of at least https://github.com/<owner>/<repo>/ is accepted")
 
 	for name, bad := range map[string]string{
-		"ftp store":              strings.Replace(doc, "https://releases.example.com", "ftp://releases.example.com", 1),
-		"bare * identity":        strings.Replace(doc, "bootSetIdentity: https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}", "bootSetIdentity: '*'", 1),
-		"short prefix identity":  strings.Replace(doc, "bootSetIdentity: https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}", "bootSetIdentity: 'https://github.com/example/*'", 1),
-		"http issuer":            strings.Replace(doc, "bootSetIssuer: https://token.actions.githubusercontent.com", "bootSetIssuer: http://token.actions.githubusercontent.com", 1),
-		"trust root not JSON":    strings.Replace(docWithRoot, trustRoot, "not-json", 1),
-		"identity mid-star":      strings.Replace(doc, "bootSetIdentity: https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}", "bootSetIdentity: 'https://github.com/*/repo/workflow.yml'", 1),
+		"ftp store":             strings.Replace(doc, "https://releases.example.com", "ftp://releases.example.com", 1),
+		"bare * identity":       strings.Replace(doc, "bootSetIdentity: https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}", "bootSetIdentity: '*'", 1),
+		"short prefix identity": strings.Replace(doc, "bootSetIdentity: https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}", "bootSetIdentity: 'https://github.com/example/*'", 1),
+		"http issuer":           strings.Replace(doc, "bootSetIssuer: https://token.actions.githubusercontent.com", "bootSetIssuer: http://token.actions.githubusercontent.com", 1),
+		"trust root not JSON":   strings.Replace(docWithRoot, trustRoot, "not-json", 1),
+		"identity mid-star":     strings.Replace(doc, "bootSetIdentity: https://github.com/example/repo/.github/workflows/release.yml@refs/tags/{version}", "bootSetIdentity: 'https://github.com/*/repo/workflow.yml'", 1),
 	} {
 		_, err = config.Parse([]byte(bad))
 		require.Error(t, err, name)
