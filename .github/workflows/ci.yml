@@ -55,7 +55,7 @@ jobs:
         run: |
           (while :; do date -u +%T; free -m | sed -n 2p; df -h / | sed -n 2p; ps -eo rss,comm --sort=-rss | head -4; sleep 15; done) &
           for p in node pcap registry release route seed standin storageprobe; do
-            echo "=== $p"; go test -race -count=1 -v -timeout 10m ./internal/$p 2>&1 | tail -n 60 || true
+            echo "=== $p"; go test -race -count=1 -v -timeout 10m ./internal/$p 2>&1 || true
           done
 
       - name: Run the checks
