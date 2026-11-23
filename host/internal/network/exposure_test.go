@@ -1,6 +1,7 @@
 package network_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -625,4 +626,42 @@ func TestManager_RefusesAnExposureThatIsMalformed(t *testing.T) {
 		x.Deadline = t0.Add(time.Minute)
 		assert.NoError(t, e.m.PutExposure(context.Background(), x), "control: backend port %d is valid", port)
 	}
+}
+
+func TestExposer_ALeaseThatFailsValidationIsDroppedAtLoadWithAWarning(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "networks.json")
+	c, link := &clock{t: t0}, newLink()
+	e := startExposer(t, state, link, c)
+	require.NoError(t, e.x.Put(context.Background(), web(false), 15*time.Second))
+	raw, err := os.ReadFile(state)
+	require.NoError(t, err)
+
+	load := func(content string) (kept int, logged string) {
+		path := filepath.Join(t.TempDir(), "networks.json")
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		var buf bytes.Buffer
+		m := newManager(&fakeRunner{}, &fakeTunnel{}, path)
+		m.Base.LAN = "lan0"
+		m.Now = c.now
+		m.Boot = c.bootInfo
+		m.Log = slog.New(slog.NewTextHandler(&buf, nil))
+		require.NoError(t, m.Load(context.Background()))
+		return len(m.Exposures()), buf.String()
+	}
+
+	kept, logged := load(strings.Replace(string(raw), "30080", "0", 1))
+	assert.Zero(t, kept, "a lease whose backend port is 0 is dropped")
+	assert.Contains(t, logged, "level=WARN")
+	assert.Contains(t, logged, "dropped a lease at load")
+	assert.Contains(t, logged, "backendPort 0")
+
+	kept, logged = load(string(raw))
+	assert.Equal(t, 1, kept, "control: the file as it was written is restored")
+	assert.NotContains(t, logged, "dropped a lease")
+
+	c.advance(time.Minute)
+	kept, logged = load(string(raw))
+	assert.Zero(t, kept)
+	assert.Contains(t, logged, "level=INFO", "control: a lease that only ran out is not a warning")
+	assert.NotContains(t, logged, "level=WARN")
 }

@@ -10,6 +10,14 @@ Values in angle brackets are yours. The example uses the pool `192.168.0.112/29`
 - The pool's range is on the hosts' LAN segment, inside the LAN interface's subnet, with no DHCP in it and no other user, and overlaps no network's prefix and no other pool.
 - The network and the group of the member exist, and the group's template lists the member's address ([groups.md](../architecture/groups.md), [ADR 0099](../architecture/adr/0099-a-group-template-lists-its-members-addresses-by-number-orch-places-a-member-on-a-host-whose-machine-prefix-holds-its-address-and-mvmd-gives-it.md)). `<member address>` below is that address, such as `10.200.1.10`.
 
+## After an upgrade from a release that has `nodePort`
+
+Exposures stored by that release stop forwarding: orch's log shows `exposure not leased` with the exposure's id and an `exposure.refused` event names it, and hostd's log shows `dropped a lease at load` at warning level. Before step 1:
+
+1. List them: `naructl exposure list` (the owner column is empty for these).
+2. Delete each: `naructl exposure delete <network> <id>`. The address is free once its host confirmed the removal or the lease and skew passed.
+3. The cloud controller applies its Services again on its next resync; nothing else is needed for them.
+
 ## 1. The pool
 
 ```

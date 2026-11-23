@@ -1,6 +1,7 @@
 package exposures_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/lib/orchapi"
@@ -116,7 +118,7 @@ func reconciler(st *exposurestest.Store, h *fakeHosts, clk *exposurestest.Clock)
 }
 
 func reconcilerOn(st *exposurestest.Store, h *fakeHosts, clk *exposurestest.Clock, nets exposures.Networks) *exposures.Reconciler {
-	return exposures.NewReconciler(exposures.Config{Hosts: h, Exposures: st, Networks: nets, Clock: clk, Log: slog.New(slog.DiscardHandler)})
+	return exposures.NewReconciler(exposures.Config{Hosts: h, Exposures: st, Networks: nets, Events: &exposurestest.Log{}, Clock: clk, Log: slog.New(slog.DiscardHandler)})
 }
 
 // lease is the longest a host may keep an address after orch asked it to: the call, then the lease.
@@ -728,4 +730,78 @@ func TestAnExposureOfANetworkMadeDuringAPassIsNotTakenForOneWhoseNetworkIsGone(t
 	got, err := st.GetExposure(ctx, "c", "web")
 	require.NoError(t, err, "the exposure made after the lists were read is left for the next pass")
 	require.NotEqual(t, exposures.PhaseReleasing, got.Phase)
+}
+
+func TestAStoredExposureOutsideItsOwnersPortsIsNotLeasedAndIsRecordedOnce(t *testing.T) {
+	ctx := t.Context()
+	s, st := fixture(t)
+	for _, id := range []string{"web", "kept", "ownerless", "operators"} {
+		_, err := s.ApplyExposure(ctx, "ccm", orchapi.OwnerExposer, "a", id, spec("a", "10.1.0.5"))
+		require.NoError(t, err)
+	}
+	// What an exposure stored before ADR 0102 reads as: its nodePort was dropped by the rename, so its
+	// backend port is 0, and it has no owner. The last is a valid port in a row its owner does not hold.
+	change := func(id string, edit func(*exposures.Record)) {
+		cur, err := st.GetExposure(ctx, "a", id)
+		require.NoError(t, err)
+		next := cur
+		edit(&next)
+		require.NoError(t, st.UpdateExposure(ctx, next, cur))
+	}
+	change("web", func(r *exposures.Record) { r.Ports[0].BackendPort = 0 })
+	change("ownerless", func(r *exposures.Record) { r.Owner = "" })
+	change("operators", func(r *exposures.Record) { r.Ports[0].BackendPort = 6443 })
+
+	h := newHosts(exposures.Host{ID: "h1", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.5"}}})
+	var mu sync.Mutex
+	put := map[string]bool{}
+	h.onPut = func(_ context.Context, _, address string, _ exposures.Lease) error {
+		mu.Lock()
+		put[address] = true
+		mu.Unlock()
+		return nil
+	}
+	events := &recordedEvents{}
+	var logs bytes.Buffer
+	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
+	r := exposures.NewReconciler(exposures.Config{Hosts: h, Exposures: st, Networks: bothNetworks, Events: events, Clock: clk, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	require.NoError(t, r.Reconcile(ctx))
+	require.NoError(t, r.Reconcile(ctx))
+
+	recs, err := st.ListExposures(ctx)
+	require.NoError(t, err)
+	byID := map[string]exposures.Record{}
+	for _, rec := range recs {
+		byID[rec.ID] = rec
+	}
+	for _, id := range []string{"web", "ownerless", "operators"} {
+		assert.False(t, put[byID[id].Address], "%s: nothing is leased to a host that would refuse it", id)
+		assert.Contains(t, logs.String(), "exposure="+id, "%s: logged at error level with its id", id)
+	}
+	assert.Contains(t, logs.String(), "level=ERROR")
+	assert.Contains(t, logs.String(), "stored before ADR 0102")
+	assert.ElementsMatch(t, []string{"web", "ownerless", "operators"}, events.subjects(), "one event each, over two passes")
+	assert.True(t, put[byID["kept"].Address], "control: an exposure inside its owner's row is leased")
+	assert.NotContains(t, logs.String(), "exposure=kept")
+}
+
+// recordedEvents is an exposures.Log that keeps the subjects of the events it was given.
+type recordedEvents struct {
+	mu  sync.Mutex
+	got []string
+}
+
+func (e *recordedEvents) AppendEvent(_ context.Context, ev orchapi.Event) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if ev.Type == exposures.EventExposureRefused {
+		e.got = append(e.got, ev.Subject)
+	}
+	return nil
+}
+
+func (e *recordedEvents) subjects() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.got...)
 }

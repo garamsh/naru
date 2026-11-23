@@ -38,7 +38,7 @@ Drafted for garamsh/naru#262. It amends [ADR 0085](./0085-a-service-of-type-load
 
 - A cluster's API server is reachable on a LAN address that moves with its member's host in under 25 s, as every exposure does (ADR 0085 item 5). A member that moves to another host takes the address with it.
 - The operator owns the exposure until it deletes it; nothing in the cluster releases it.
-- Exposures made before this change carry no owner: the exposer cannot see them, the operator lists and deletes them, and the controller's apply of the same id is 409 until it has.
+- Exposures stored before this change carry `nodePort`, which reads as `backendPort: 0` in orch's records and hostd's state file, and have no owner. They stop forwarding at the upgrade: hostd drops such a lease at load with a warning, and orch's reconciler does not lease a stored record whose port is outside its owner's row of the table, or whose owner has none, logs it at error level with the id, network and reason on every pass and records an `exposure.refused` event once. After the upgrade the operator deletes every pre-change exposure (`naructl exposure delete`, which the operator's route allows for any owner), and the cloud controller applies its Services again on its next resync. There is no compatibility code that reads the old name.
 - The ccm and `naructl` use `backendPort` in every file and flag; a file naming `nodePort` is refused.
 - The API server's audit log records the host's address, not the client's.
 

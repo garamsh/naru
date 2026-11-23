@@ -306,11 +306,20 @@ func (s *Service) DeletePool(ctx context.Context, by, name string) error {
 	return s.log.AppendEvent(ctx, orchapi.Event{Time: s.clock.Now(), Type: EventPoolDeleted, Subject: name, Detail: map[string]string{"by": by}})
 }
 
-func validateSpec(owner string, spec orchapi.ExposureSpec) error {
+// checkBackendPort refuses a backend port outside its owner's row of BackendPorts, and an owner with
+// no row. It is the one rule an apply and the reconciler both hold a port to.
+func checkBackendPort(owner string, port int) error {
 	allowed, ok := BackendPorts[owner]
 	if !ok {
 		return forbidden("owner %q has no backend ports", owner)
 	}
+	if port < allowed.First || port > allowed.Last {
+		return forbidden("backendPort %d is outside %d to %d, which an %s exposure may name", port, allowed.First, allowed.Last, owner)
+	}
+	return nil
+}
+
+func validateSpec(owner string, spec orchapi.ExposureSpec) error {
 	if n := len(spec.Ports); n == 0 || n > MaxPortsPerExposure {
 		return bad("an exposure has 1 to %d ports", MaxPortsPerExposure)
 	}
@@ -322,8 +331,8 @@ func validateSpec(owner string, spec orchapi.ExposureSpec) error {
 		if p.Port < 1 || p.Port > 65535 {
 			return bad("port %d must be 1 to 65535", p.Port)
 		}
-		if p.BackendPort < allowed.First || p.BackendPort > allowed.Last {
-			return forbidden("backendPort %d is outside %d to %d, which an %s exposure may name", p.BackendPort, allowed.First, allowed.Last, owner)
+		if err := checkBackendPort(owner, p.BackendPort); err != nil {
+			return err
 		}
 		k := fmt.Sprintf("%s/%d", p.Protocol, p.Port)
 		if seen[k] {
