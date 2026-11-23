@@ -167,3 +167,13 @@ func TestAServiceThatAsksForLocalIsToldWhatNaruDoes(t *testing.T) {
 		}
 	}
 }
+
+func TestASweepLeavesAnExposureTheOperatorDeclared(t *testing.T) {
+	o := newFakeOrch()
+	o.exps["api"] = orchapi.Exposure{ID: "api", Network: "lab", Owner: orchapi.OwnerOperator, Address: "192.168.0.112"}
+	o.exps["d.gone.dddddddd"] = orchapi.Exposure{ID: "d.gone.dddddddd", Network: "lab", Owner: orchapi.OwnerExposer, Address: "192.168.0.80"}
+	p := ccm.New(ccm.Config{Network: "lab", Pool: "lan"}, o, discard())
+	require.NoError(t, p.Sweep(t.Context(), func(context.Context) ([]v1.Service, error) { return nil, nil }))
+	require.Equal(t, []string{"d.gone.dddddddd"}, o.deletes, "only the exposer's own exposure is released")
+	require.Contains(t, o.exps, "api")
+}

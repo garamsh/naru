@@ -198,7 +198,7 @@ func startExposer(t *testing.T, state string, link *fakeLink, c *clock) *exposur
 func web(proxy bool) network.Exposure {
 	return network.Exposure{
 		Address: addr("192.168.0.80"), Network: "a", Proxy: proxy,
-		Ports:    []network.ExposurePort{{Protocol: "tcp", Port: 80, NodePort: 30080}, {Protocol: "udp", Port: 53, NodePort: 30053}},
+		Ports:    []network.ExposurePort{{Protocol: "tcp", Port: 80, BackendPort: 30080}, {Protocol: "udp", Port: 53, BackendPort: 30053}},
 		Backends: []netip.Addr{addr("10.8.0.5"), addr("10.8.0.6")},
 	}
 }
@@ -214,7 +214,7 @@ func TestRuleset_ProxiedTCPPortIsNotForwarded(t *testing.T) {
 	c := twoNetworks()
 	c.LAN = "lan0"
 	e := web(true)
-	e.Ports = []network.ExposurePort{{Protocol: "tcp", Port: 443, NodePort: 30443}}
+	e.Ports = []network.ExposurePort{{Protocol: "tcp", Port: 443, BackendPort: 30443}}
 	c.Exposures = []network.Exposure{e}
 	rules := network.Ruleset(c)
 	assert.NotContains(t, rules, "dport 443", "the proxy answers the port, no DNAT does")
@@ -587,7 +587,7 @@ func TestExposer_AStateThatNoLongerHoldsIsDroppedAtLoad(t *testing.T) {
 	}{
 		{"control: the file as it was written", func(s string) string { return s }, true},
 		{"a backend outside the network", func(s string) string { return strings.Replace(s, "10.8.0.6", "10.9.9.9", 1) }, false},
-		{"a node port outside the range", func(s string) string { return strings.Replace(s, "30080", "80", 1) }, false},
+		{"a backend port of 0", func(s string) string { return strings.Replace(s, "30080", "0", 1) }, false},
 		{"an address inside a network prefix", func(s string) string { return strings.Replace(s, "192.168.0.80", "10.8.0.50", 1) }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -604,8 +604,8 @@ func TestManager_RefusesAnExposureThatIsMalformed(t *testing.T) {
 		name   string
 		change func(*network.Exposure)
 	}{
-		{"a node port below the range", func(x *network.Exposure) { x.Ports[0].NodePort = 29999 }},
-		{"a node port above the range", func(x *network.Exposure) { x.Ports[0].NodePort = 32768 }},
+		{"a backend port of 0", func(x *network.Exposure) { x.Ports[0].BackendPort = 0 }},
+		{"a backend port above 65535", func(x *network.Exposure) { x.Ports[0].BackendPort = 65536 }},
 		{"a protocol that is neither", func(x *network.Exposure) { x.Ports[0].Protocol = "sctp" }},
 		{"a port twice", func(x *network.Exposure) { x.Ports[1] = x.Ports[0] }},
 		{"the PROXY protocol on a UDP port", func(x *network.Exposure) { x.Proxy = true }},
@@ -618,11 +618,11 @@ func TestManager_RefusesAnExposureThatIsMalformed(t *testing.T) {
 			assert.ErrorIs(t, e.m.PutExposure(context.Background(), x), network.ErrInvalid)
 		})
 	}
-	for _, port := range []int{30000, 32767} {
+	for _, port := range []int{1, 6443, 65535} {
 		e := startExposer(t, "", newLink(), &clock{t: t0})
 		x := web(false)
-		x.Ports[0].NodePort = port
+		x.Ports[0].BackendPort = port
 		x.Deadline = t0.Add(time.Minute)
-		assert.NoError(t, e.m.PutExposure(context.Background(), x), "control: node port %d is in the range", port)
+		assert.NoError(t, e.m.PutExposure(context.Background(), x), "control: backend port %d is valid", port)
 	}
 }

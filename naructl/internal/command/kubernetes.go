@@ -347,7 +347,7 @@ func loadOrMakeFrontProxy(caDir string) (*pki.CA, error) {
 func genKubernetesNode(fs *pflag.FlagSet) runner {
 	var (
 		nameservers, binaries, disable, timeServers, peers list
-		storage, blockSerials                              list
+		storage, blockSerials, serving                     list
 		extraNIC                                           string
 		n                                                  layout.Node
 		k                                                  layout.KubeNode
@@ -363,6 +363,7 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 	fs.StringVar(&podNetwork, "pod-network", "", "the prefix every Pod address is in, such as 10.64.0.0/12")
 	fs.StringVar(&podPrefix, "pod-prefix", "", "the part of the Pod network this Node's Pods take, such as 10.64.1.0/24")
 	fs.BoolVar(&podPrefixFromSeed, "pod-prefix-from-seed", false, "the Node takes its Pod prefix at boot from its seed's meta-data, which the host writes for a microVM it routed one to: give no --pod-prefix and no --peer")
+	fs.Var(&serving, "serving-address", "another address the API server's certificate names, repeatable, for a control-plane Node: an address the API server is dialled at that is not the Node's own, such as the LAN address of an operator exposure")
 	fs.Var(&peers, "peer", "another Node, <address>=<pod-prefix>, repeatable: the Node routes to the prefix via the address")
 	fs.StringVar(&n.MAC, "mac", "", "the MAC address of the Node's card (with --network-config)")
 	fs.StringVar(&gateway, "gateway", "", "the default gateway (with --network-config)")
@@ -470,6 +471,16 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 			if n.Gateway, err = netip.ParseAddr(gateway); err != nil {
 				return fmt.Errorf("--gateway: %w", err)
 			}
+		}
+		if len(serving) > 0 && !k.ControlPlane {
+			return errors.New("--serving-address names an address of the API server, which only a control-plane Node runs")
+		}
+		for _, s := range serving {
+			a, err := netip.ParseAddr(s)
+			if err != nil {
+				return fmt.Errorf("--serving-address: %w", err)
+			}
+			n.ServingAddresses = append(n.ServingAddresses, a)
 		}
 		for _, s := range nameservers {
 			a, err := netip.ParseAddr(s)

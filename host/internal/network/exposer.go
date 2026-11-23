@@ -255,7 +255,7 @@ func (x *Exposer) proxies(h *held, e Exposure) error {
 		ports[p.Port] = p
 	}
 	for port, p := range h.proxies {
-		if q, ok := ports[port]; !ok || q.NodePort != p.nodePort {
+		if q, ok := ports[port]; !ok || q.BackendPort != p.backendPort {
 			p.cancel()
 			delete(h.proxies, port)
 		}
@@ -270,7 +270,7 @@ func (x *Exposer) proxies(h *held, e Exposure) error {
 			return fmt.Errorf("listen on %s:%d: %w", e.Address, port, err)
 		}
 		ctx, cancel := context.WithCancel(x.ctx)
-		px := &proxy{ln: ln, nodePort: p.NodePort, dial: x.dial, limit: x.slots, cancel: cancel, log: x.Log, idle: x.Idle}
+		px := &proxy{ln: ln, backendPort: p.BackendPort, dial: x.dial, limit: x.slots, cancel: cancel, log: x.Log, idle: x.Idle}
 		px.setBackends(e.Backends)
 		h.proxies[port] = px
 		go px.serve(ctx)

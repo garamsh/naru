@@ -765,6 +765,14 @@ func (n Node) kubePKI() *pkiSpec {
 	apiserver := cluster(pairSpec{"apiserver", "kube-apiserver"}, "server", "kube-apiserver")
 	apiserver.NodeAddresses = true
 	apiserver.IPAddresses = []string{n.APIServer.String(), firstHost(ServiceCIDR)}
+	// ServingAddresses are the addresses a client dials the API server at that are not the Node's own,
+	// such as the LAN address a host leases to it (ADR 0102); the certificate is signed before the Node
+	// exists, so they are known beforehand.
+	for _, a := range n.ServingAddresses {
+		if !slices.Contains(apiserver.IPAddresses, a.String()) {
+			apiserver.IPAddresses = append(apiserver.IPAddresses, a.String())
+		}
+	}
 	apiserver.DNSNames = []string{"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc." + ClusterDomain}
 	kubeletClient := cluster(apiserverKubelet, "client", "kube-apiserver")
 	kubeletClient.Organization = "system:masters"

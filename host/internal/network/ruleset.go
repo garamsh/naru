@@ -151,7 +151,7 @@ func exposureForward(c Config, line func(string, ...any)) {
 	}
 	for _, e := range sortedExposures(c.Exposures) {
 		for _, p := range e.forwarded() {
-			line("\t\tiifname \"%s\" ip daddr { %s } %s dport %d ct status dnat ct original ip daddr @leased ct state new accept comment \"%s:%d\"", c.LAN, addrList(e.Backends), p.Protocol, p.NodePort, e.Address, p.Port)
+			line("\t\tiifname \"%s\" ip daddr { %s } %s dport %d ct status dnat ct original ip daddr @leased ct state new accept comment \"%s:%d\"", c.LAN, addrList(e.Backends), p.Protocol, p.BackendPort, e.Address, p.Port)
 		}
 	}
 }
@@ -177,7 +177,7 @@ func exposureRules(c Config, line func(string, ...any)) {
 	for _, e := range forwarded {
 		for _, p := range e.forwarded() {
 			line("\t\tiifname \"%s\" ip daddr %s ip daddr @leased %s dport %d dnat ip to numgen random mod %d map { %s } comment \"%s\"",
-				c.LAN, e.Address, p.Protocol, p.Port, len(e.Backends), backendMap(e.Backends, p.NodePort), e.Network)
+				c.LAN, e.Address, p.Protocol, p.Port, len(e.Backends), backendMap(e.Backends, p.BackendPort), e.Network)
 		}
 	}
 	line("\t}")
@@ -196,11 +196,11 @@ func addrList(in []netip.Addr) string {
 	return strings.Join(s, ", ")
 }
 
-// backendMap is the map a numgen picks from: number i is backend i at the NodePort.
-func backendMap(backends []netip.Addr, nodePort int) string {
+// backendMap is the map a numgen picks from: number i is backend i at the BackendPort.
+func backendMap(backends []netip.Addr, backendPort int) string {
 	s := make([]string, len(backends))
 	for i, a := range backends {
-		s[i] = fmt.Sprintf("%d : %s . %d", i, a, nodePort)
+		s[i] = fmt.Sprintf("%d : %s . %d", i, a, backendPort)
 	}
 	return strings.Join(s, ", ")
 }

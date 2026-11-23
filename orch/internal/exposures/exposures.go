@@ -45,6 +45,18 @@ const (
 	maxPoolSize            = 1 << 16
 )
 
+// PortRange is the backend ports an owner's exposures may name.
+type PortRange struct{ First, Last int }
+
+// BackendPorts is the one table of which backend ports an exposure may name, keyed by its owner
+// (ADR 0102). A Service's is a NodePort, so the exposer, which is the cluster's own credential, is held to the
+// range Kubernetes allocates them from: a stolen Secret cannot send the LAN to a Node's kubelet or
+// etcd. The operator names whatever the Nodes serve, such as a member's API server.
+var BackendPorts = map[string]PortRange{
+	orchapi.OwnerExposer:  {First: 30000, Last: 32767},
+	orchapi.OwnerOperator: {First: 1, Last: 65535},
+}
+
 // PhaseReleasing is the phase of an exposure its network deleted, or that is being removed: it
 // keeps its address claimed until the host that held it confirmed the removal or its lease and
 // Skew have passed, and then the reconciler deletes it. It is never shown to an exposer.
@@ -56,6 +68,12 @@ type Record struct {
 	orchapi.Exposure
 	LeaseUntil     time.Time `json:"leaseUntil,omitzero"`
 	LeasedBackends []string  `json:"leasedBackends,omitempty"`
+}
+
+// sees reports whether a caller of the given owner may see and delete the record: its own, and
+// every owner's for the operator.
+func (r Record) sees(as string) bool {
+	return as == orchapi.OwnerOperator || as == r.Owner
 }
 
 // Equal reports whether two records store the same bytes.
@@ -288,7 +306,11 @@ func (s *Service) DeletePool(ctx context.Context, by, name string) error {
 	return s.log.AppendEvent(ctx, orchapi.Event{Time: s.clock.Now(), Type: EventPoolDeleted, Subject: name, Detail: map[string]string{"by": by}})
 }
 
-func validateSpec(spec orchapi.ExposureSpec) error {
+func validateSpec(owner string, spec orchapi.ExposureSpec) error {
+	allowed, ok := BackendPorts[owner]
+	if !ok {
+		return forbidden("owner %q has no backend ports", owner)
+	}
 	if n := len(spec.Ports); n == 0 || n > MaxPortsPerExposure {
 		return bad("an exposure has 1 to %d ports", MaxPortsPerExposure)
 	}
@@ -297,8 +319,11 @@ func validateSpec(spec orchapi.ExposureSpec) error {
 		if p.Protocol != "TCP" && p.Protocol != "UDP" {
 			return bad("protocol %q is not TCP or UDP", p.Protocol)
 		}
-		if p.Port < 1 || p.Port > 65535 || p.NodePort < 1 || p.NodePort > 65535 {
-			return bad("port %d and nodePort %d must be 1 to 65535", p.Port, p.NodePort)
+		if p.Port < 1 || p.Port > 65535 {
+			return bad("port %d must be 1 to 65535", p.Port)
+		}
+		if p.BackendPort < allowed.First || p.BackendPort > allowed.Last {
+			return forbidden("backendPort %d is outside %d to %d, which an %s exposure may name", p.BackendPort, allowed.First, allowed.Last, owner)
 		}
 		k := fmt.Sprintf("%s/%d", p.Protocol, p.Port)
 		if seen[k] {
@@ -345,7 +370,7 @@ func own(network string) error {
 // the caller's network are ErrForbidden. An id is the network's own, so another network's
 // exposure of the same id is not seen. A new exposure gets the requested address when it is in
 // the pool and free, else the lowest free address.
-func (s *Service) ApplyExposure(ctx context.Context, by, network, id string, spec orchapi.ExposureSpec) (orchapi.Exposure, error) {
+func (s *Service) ApplyExposure(ctx context.Context, by, owner, network, id string, spec orchapi.ExposureSpec) (orchapi.Exposure, error) {
 	if err := own(network); err != nil {
 		return orchapi.Exposure{}, err
 	}
@@ -355,7 +380,7 @@ func (s *Service) ApplyExposure(ctx context.Context, by, network, id string, spe
 	if spec.Network != network {
 		return orchapi.Exposure{}, forbidden("the spec names network %q, not %q", spec.Network, network)
 	}
-	if err := validateSpec(spec); err != nil {
+	if err := validateSpec(owner, spec); err != nil {
 		return orchapi.Exposure{}, err
 	}
 	pool, err := s.store.GetPool(ctx, spec.Pool)
@@ -380,12 +405,15 @@ func (s *Service) ApplyExposure(ctx context.Context, by, network, id string, spe
 	}
 	cur, err := s.store.GetExposure(ctx, network, id)
 	if err == nil {
+		if cur.Owner != owner {
+			return orchapi.Exposure{}, fmt.Errorf("%w: exposure %s is owned by the %s", inventory.ErrConflict, id, cur.Owner)
+		}
 		return s.update(ctx, by, cur, spec)
 	}
 	if !errors.Is(err, inventory.ErrNotFound) {
 		return orchapi.Exposure{}, err
 	}
-	return s.create(ctx, by, id, spec, pool)
+	return s.create(ctx, by, owner, id, spec, pool)
 }
 
 // update changes the ports, backends and proxy protocol of cur. The reconciler rewrites the record
@@ -419,7 +447,7 @@ func (s *Service) update(ctx context.Context, by string, cur Record, spec orchap
 	return orchapi.Exposure{}, err
 }
 
-func (s *Service) create(ctx context.Context, by, id string, spec orchapi.ExposureSpec, pool orchapi.AddressPool) (orchapi.Exposure, error) {
+func (s *Service) create(ctx context.Context, by, owner, id string, spec orchapi.ExposureSpec, pool orchapi.AddressPool) (orchapi.Exposure, error) {
 	cidrs, err := parseCIDRs(pool.CIDRs)
 	if err != nil {
 		return orchapi.Exposure{}, err
@@ -461,7 +489,7 @@ func (s *Service) create(ctx context.Context, by, id string, spec orchapi.Exposu
 		}
 	}
 	r := Record{Exposure: orchapi.Exposure{
-		ID: id, Network: spec.Network, Pool: pool.Name, Address: addr.String(), Ports: spec.Ports,
+		ID: id, Network: spec.Network, Owner: owner, Pool: pool.Name, Address: addr.String(), Ports: spec.Ports,
 		Backends: slices.Clone(spec.Backends), ProxyProtocol: spec.ProxyProtocol, Phase: orchapi.ExposurePending,
 	}}
 	// The claim in the same transaction is what keeps two requests from one address, the pool
@@ -482,9 +510,10 @@ func (s *Service) event(ctx context.Context, typ, by string, r Record) error {
 	return s.log.AppendEvent(ctx, orchapi.Event{Time: s.clock.Now(), Type: typ, Subject: r.ID, Detail: map[string]string{"by": by, "network": r.Network, "address": r.Address}})
 }
 
-// Exposure returns one exposure of the caller's network. Another network's exposure and an absent
-// one are both inventory.ErrNotFound, and an exposure being released is not shown.
-func (s *Service) Exposure(ctx context.Context, network, id string) (orchapi.Exposure, error) {
+// Exposure returns one exposure of the caller's network. Another network's exposure, an absent one
+// and one the caller's owner does not see are all inventory.ErrNotFound, and an exposure being
+// released is not shown.
+func (s *Service) Exposure(ctx context.Context, as, network, id string) (orchapi.Exposure, error) {
 	if err := own(network); err != nil {
 		return orchapi.Exposure{}, err
 	}
@@ -495,25 +524,26 @@ func (s *Service) Exposure(ctx context.Context, network, id string) (orchapi.Exp
 	if err != nil {
 		return orchapi.Exposure{}, err
 	}
-	if r.Phase == PhaseReleasing {
+	if r.Phase == PhaseReleasing || !r.sees(as) {
 		return orchapi.Exposure{}, inventory.ErrNotFound
 	}
 	return r.Exposure, nil
 }
 
-// Exposures lists the exposures of the caller's network, those being released left out.
-func (s *Service) Exposures(ctx context.Context, network string) ([]orchapi.Exposure, error) {
+// Exposures lists the exposures of the caller's network that the caller's owner sees, those being
+// released left out.
+func (s *Service) Exposures(ctx context.Context, as, network string) ([]orchapi.Exposure, error) {
 	if err := own(network); err != nil {
 		return nil, err
 	}
-	all, err := s.AllExposures(ctx)
+	recs, err := s.store.ListExposures(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := []orchapi.Exposure{}
-	for _, e := range all {
-		if e.Network == network && e.Phase != PhaseReleasing {
-			out = append(out, e)
+	for _, r := range recs {
+		if r.Network == network && r.Phase != PhaseReleasing && r.sees(as) {
+			out = append(out, r.Exposure)
 		}
 	}
 	return out, nil
@@ -539,8 +569,8 @@ const deleteTries = 3
 // DeleteExposure starts the release of the caller's exposure: the address stays claimed, and so
 // cannot be given to another exposure, until the host that held it confirmed the removal or its
 // lease and Skew have passed, and then the reconciler deletes the record. An absent exposure,
-// another network's included, and one already being released are not an error.
-func (s *Service) DeleteExposure(ctx context.Context, by, network, id string) error {
+// another network's or another owner's included, and one already being released are not an error.
+func (s *Service) DeleteExposure(ctx context.Context, by, as, network, id string) error {
 	if err := own(network); err != nil {
 		return err
 	}
@@ -551,7 +581,7 @@ func (s *Service) DeleteExposure(ctx context.Context, by, network, id string) er
 	for range deleteTries {
 		var cur Record
 		cur, err = s.store.GetExposure(ctx, network, id)
-		if errors.Is(err, inventory.ErrNotFound) || err == nil && cur.Phase == PhaseReleasing {
+		if errors.Is(err, inventory.ErrNotFound) || err == nil && (cur.Phase == PhaseReleasing || !cur.sees(as)) {
 			return nil
 		}
 		if err != nil {

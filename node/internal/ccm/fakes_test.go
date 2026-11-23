@@ -35,7 +35,7 @@ func (f *fakeOrch) ApplyExposure(_ context.Context, id string, spec orchapi.Expo
 		return orchapi.Exposure{}, f.err
 	}
 	f.applied = append(f.applied, spec)
-	e := orchapi.Exposure{ID: id, Network: spec.Network, Pool: spec.Pool, Address: "192.168.0.80", Ports: spec.Ports, Backends: spec.Backends, Phase: f.phase}
+	e := orchapi.Exposure{ID: id, Network: spec.Network, Owner: orchapi.OwnerExposer, Pool: spec.Pool, Address: "192.168.0.80", Ports: spec.Ports, Backends: spec.Backends, Phase: f.phase}
 	f.exps[id] = e
 	return e, nil
 }

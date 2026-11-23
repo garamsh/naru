@@ -194,7 +194,7 @@ func TestTheLeaseCarriesOnlyTheBackendsThatRunOnTheSender(t *testing.T) {
 		mu.Unlock()
 		return nil
 	}
-	_, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5", "10.1.0.6"))
+	_, err := s.ApplyExposure(ctx, "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5", "10.1.0.6"))
 	require.NoError(t, err)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
 	r := reconciler(st, hosts, clk)
@@ -244,7 +244,7 @@ func TestABackendEndingNarrowsTheLease(t *testing.T) {
 		mu.Unlock()
 		return nil
 	}
-	_, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5", "10.1.0.6"))
+	_, err := s.ApplyExposure(ctx, "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5", "10.1.0.6"))
 	require.NoError(t, err)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
 	r := reconciler(st, hosts, clk)
@@ -285,7 +285,7 @@ func TestAHostWithNoBackendsOfTheExposureIsNoLongerACandidate(t *testing.T) {
 	h1 := exposures.Host{ID: "h1", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.5"}}}
 	h2 := exposures.Host{ID: "h2", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.6"}}}
 	hosts := newHosts(h1, h2)
-	_, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5"))
+	_, err := s.ApplyExposure(ctx, "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
 	r := reconciler(st, hosts, clk)
@@ -325,7 +325,7 @@ func TestASilentHolderIsRenewedWithItsLastLeasedBackends(t *testing.T) {
 	h1 := exposures.Host{ID: "h1", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.5"}}}
 	h2 := exposures.Host{ID: "h2", LAN: "eth0", Networks: []string{"a"}, Members: map[string][]string{"a": {"10.1.0.6"}}}
 	hosts := newHosts(h1, h2)
-	_, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5", "10.1.0.6"))
+	_, err := s.ApplyExposure(ctx, "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5", "10.1.0.6"))
 	require.NoError(t, err)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
 	r := reconciler(st, hosts, clk)
@@ -396,7 +396,7 @@ func TestChooseMatchesBackendsOnlyWithinTheExposuresNetwork(t *testing.T) {
 
 func TestTheLeaderLeasesAnAddressToOneHostAndRenewsIt(t *testing.T) {
 	s, st := fixture(t)
-	e, err := s.ApplyExposure(t.Context(), "ccm", "a", "web", spec("a", "10.1.0.5"))
+	e, err := s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	h := newHosts(lanHosts("h1", "h2", "h3")...)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
@@ -419,7 +419,7 @@ func TestTheLeaderLeasesAnAddressToOneHostAndRenewsIt(t *testing.T) {
 
 func TestALostHostsAddressMovesAfterItsLeaseAndSkewAndNotBefore(t *testing.T) {
 	s, st := fixture(t)
-	e, err := s.ApplyExposure(t.Context(), "ccm", "a", "web", spec("a", "10.1.0.5"))
+	e, err := s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	h := newHosts(lanHosts("h1", "h2", "h3")...)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
@@ -442,7 +442,7 @@ func TestALostHostsAddressMovesAfterItsLeaseAndSkewAndNotBefore(t *testing.T) {
 
 func TestAnAddressMovesAtOnceWhenTheOldHostConfirmsItRemovedIt(t *testing.T) {
 	s, st := fixture(t)
-	e, err := s.ApplyExposure(t.Context(), "ccm", "a", "web", spec("a", "10.1.0.5"))
+	e, err := s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	h := newHosts(lanHosts("h1", "h2")...)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
@@ -487,7 +487,7 @@ func TestALeaseNoExposureHoldsIsRemovedFromTheHost(t *testing.T) {
 
 func TestNoCandidateHostLeavesTheExposurePending(t *testing.T) {
 	s, st := fixture(t)
-	_, err := s.ApplyExposure(t.Context(), "ccm", "a", "web", spec("a", "10.1.0.5"))
+	_, err := s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	h := newHosts(exposures.Host{ID: "h1", Networks: []string{"a"}})
 	require.NoError(t, reconciler(st, h, &exposurestest.Clock{T: time.Unix(2000, 0)}).Reconcile(t.Context()))
@@ -498,7 +498,7 @@ func TestNoCandidateHostLeavesTheExposurePending(t *testing.T) {
 
 func TestTheStoredDeadlineIsNeverBeforeTheEndOfTheHostsLease(t *testing.T) {
 	s, st := fixture(t)
-	e, err := s.ApplyExposure(t.Context(), "ccm", "a", "web", spec("a", "10.1.0.5"))
+	e, err := s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
 	h := newHosts(lanHosts("h1", "h2", "h3")...)
@@ -528,7 +528,7 @@ func TestAHostThatDoesNotAnswerDelaysNoOtherExposure(t *testing.T) {
 	hosts := lanHosts("h1", "h2", "h3")
 	byHost := map[string][]string{}
 	for i := range 8 {
-		e, err := s.ApplyExposure(t.Context(), "ccm", "a", "svc"+string(rune('a'+i)), spec("a", "10.1.0.5"))
+		e, err := s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "svc"+string(rune('a'+i)), spec("a", "10.1.0.5"))
 		require.NoError(t, err)
 		h, _ := exposures.Choose(e.Address, "a", spec("a", "10.1.0.5").Backends, hosts)
 		byHost[h] = append(byHost[h], e.Address)
@@ -585,14 +585,14 @@ func TestAHostThatDoesNotAnswerDelaysNoOtherExposure(t *testing.T) {
 func TestADeletedExposureLeavesOnlyWhenItsHostConfirmsOrItsLeaseAndSkewPass(t *testing.T) {
 	s, st := fixture(t)
 	ctx := t.Context()
-	e, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5"))
+	e, err := s.ApplyExposure(ctx, "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	h := newHosts(lanHosts("h1", "h2")...)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
 	r := reconciler(st, h, clk)
 	require.NoError(t, r.Reconcile(ctx))
 	holder := h.holders(e.Address)[0]
-	require.NoError(t, s.DeleteExposure(ctx, "ccm", "a", "web"))
+	require.NoError(t, s.DeleteExposure(ctx, "ccm", orchapi.OwnerExposer, "a", "web"))
 
 	// The host cannot be asked: the record, and so the address, stays until the lease and Skew pass.
 	h.mu.Lock()
@@ -608,14 +608,14 @@ func TestADeletedExposureLeavesOnlyWhenItsHostConfirmsOrItsLeaseAndSkewPass(t *t
 	require.ErrorIs(t, err, inventory.ErrNotFound, "the deadline and Skew have passed")
 
 	// Control: a host that answers lets it go at once.
-	e2, err := s.ApplyExposure(ctx, "ccm", "a", "db", spec("a", "10.1.0.5"))
+	e2, err := s.ApplyExposure(ctx, "ccm", orchapi.OwnerExposer, "a", "db", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	require.Equal(t, e.Address, e2.Address, "the freed address is the lowest again")
 	h.mu.Lock()
 	delete(h.delErr, holder)
 	h.mu.Unlock()
 	require.NoError(t, r.Reconcile(ctx))
-	require.NoError(t, s.DeleteExposure(ctx, "ccm", "a", "db"))
+	require.NoError(t, s.DeleteExposure(ctx, "ccm", orchapi.OwnerExposer, "a", "db"))
 	require.NoError(t, r.Reconcile(ctx))
 	_, err = st.GetExposure(ctx, "a", "db")
 	require.ErrorIs(t, err, inventory.ErrNotFound)
@@ -625,7 +625,7 @@ func TestADeletedExposureLeavesOnlyWhenItsHostConfirmsOrItsLeaseAndSkewPass(t *t
 func TestAnExposureWhoseNetworkIsGoneIsReleasedLikeADeletedOne(t *testing.T) {
 	s, st := fixture(t)
 	ctx := t.Context()
-	e, err := s.ApplyExposure(ctx, "ccm", "a", "web", spec("a", "10.1.0.5"))
+	e, err := s.ApplyExposure(ctx, "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	h := newHosts(lanHosts("h1", "h2")...)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}
@@ -644,7 +644,7 @@ func TestAnExposureWhoseNetworkIsGoneIsReleasedLikeADeletedOne(t *testing.T) {
 
 func TestAFailedNetworkListReleasesNothing(t *testing.T) {
 	s, st := fixture(t)
-	_, err := s.ApplyExposure(t.Context(), "ccm", "a", "web", spec("a", "10.1.0.5"))
+	_, err := s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	h := newHosts(lanHosts("h1")...)
 	r := reconcilerOn(st, h, &exposurestest.Clock{T: time.Unix(2000, 0)}, failingNetworks{})
@@ -661,7 +661,7 @@ func (failingNetworks) List(context.Context) ([]orchapi.Network, error) {
 
 func TestASlowHolderKeepsItsAddressRenewedAndOnlyASilenceBeyondTheGraceMovesIt(t *testing.T) {
 	s, st := fixture(t)
-	e, err := s.ApplyExposure(t.Context(), "ccm", "a", "web", spec("a", "10.1.0.5"))
+	e, err := s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.5"))
 	require.NoError(t, err)
 	h := newHosts(lanHosts("h1", "h2", "h3")...)
 	clk := &exposurestest.Clock{T: time.Unix(2000, 0)}

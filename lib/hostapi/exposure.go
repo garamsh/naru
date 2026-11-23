@@ -6,12 +6,12 @@ import (
 	"net/url"
 )
 
-// ExposurePort is one port of an exposure: the port on the address and the NodePort of the
+// ExposurePort is one port of an exposure: the port on the address and the BackendPort of the
 // backends it goes to.
 type ExposurePort struct {
-	Protocol string `json:"protocol"`
-	Port     int    `json:"port"`
-	NodePort int    `json:"nodePort"`
+	Protocol    string `json:"protocol"`
+	Port        int    `json:"port"`
+	BackendPort int    `json:"backendPort"`
 }
 
 // ExposureRequest is the body of PUT /v1/exposures/{address}: a lease on a LAN address. The host

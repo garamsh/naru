@@ -529,3 +529,24 @@ func TestGenKubernetesNode_APodPrefixFromTheSeedIsAcceptedByInitAndNamesNoPrefix
 		"--endpoint", "192.168.0.10", "--pod-network", "10.64.0.0/12", "--pod-prefix-from-seed", "--pod-prefix", "10.64.2.0/24", "--out", out)
 	assert.Error(t, err)
 }
+
+func TestGenKubernetesNode_AServingAddressIsNamedByTheAPIServersCertificateOfAControlPlaneNodeOnly(t *testing.T) {
+	dep := newDeployment(t)
+	dep.kubernetes(t)
+
+	raw, err := os.ReadFile(dep.kubeNode(t, "control-plane", "--serving-address", "192.168.0.112"))
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "192.168.0.112", "the user-data's API server pair names the leased LAN address")
+	plain, err := os.ReadFile(dep.kubeNode(t, "control-plane"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(plain), "192.168.0.112", "control: with no flag it names none")
+
+	_, err = run(t, "gen", "kubernetes-node", "--ca-dir", dep.ca, "--name", "node-2", "--role", "worker", "--address", "192.168.0.20/24",
+		"--endpoint", "192.168.0.10", "--pod-network", "10.64.0.0/12", "--pod-prefix", "10.64.2.0/24", "--serving-address", "192.168.0.112",
+		"--out", filepath.Join(t.TempDir(), "w.yaml"))
+	require.ErrorContains(t, err, "--serving-address", "a worker runs no API server")
+	_, err = run(t, "gen", "kubernetes-node", "--ca-dir", dep.ca, "--name", "node-1", "--role", "control-plane", "--address", "192.168.0.10/24",
+		"--endpoint", "192.168.0.10", "--pod-network", "10.64.0.0/12", "--pod-prefix", "10.64.1.0/24", "--serving-address", "nope",
+		"--out", filepath.Join(t.TempDir(), "c.yaml"))
+	require.ErrorContains(t, err, "--serving-address")
+}

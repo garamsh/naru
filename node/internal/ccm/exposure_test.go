@@ -44,7 +44,7 @@ func TestTheSpecCarriesThePortsTheNodePortsAndOnlyIPv4InternalAddresses(t *testi
 	require.NoError(t, err)
 	require.Equal(t, orchapi.ExposureSpec{
 		Network: "lab", Pool: "lan", RequestedAddress: "192.168.0.85",
-		Ports:    []orchapi.ExposurePort{{Protocol: "TCP", Port: 443, NodePort: 30443}, {Protocol: "UDP", Port: 53, NodePort: 30053}},
+		Ports:    []orchapi.ExposurePort{{Protocol: "TCP", Port: 443, BackendPort: 30443}, {Protocol: "UDP", Port: 53, BackendPort: 30053}},
 		Backends: []string{"10.1.0.5", "10.1.0.6"},
 	}, spec, "the IPv6 and external addresses and the duplicate are left out, the rest sorted")
 }
@@ -82,9 +82,19 @@ func TestOrphansAreTheExposuresNoLoadBalancerServiceHas(t *testing.T) {
 	clusterIP := service("d", "cip", "")
 	clusterIP.UID = "cccccccc-0000-0000-0000-000000000000"
 	clusterIP.Spec.Type = v1.ServiceTypeClusterIP
-	exps := []orchapi.Exposure{{ID: "d.keep.aaaaaaaa"}, {ID: "d.gone.dddddddd"}, {ID: "d.cip.cccccccc"}, {ID: "d.keep.eeeeeeee"}}
+	own := func(id string) orchapi.Exposure { return orchapi.Exposure{ID: id, Owner: orchapi.OwnerExposer} }
+	exps := []orchapi.Exposure{own("d.keep.aaaaaaaa"), own("d.gone.dddddddd"), own("d.cip.cccccccc"), own("d.keep.eeeeeeee")}
 	require.Equal(t,
 		[]string{"d.gone.dddddddd", "d.cip.cccccccc", "d.keep.eeeeeeee"},
 		ccm.Orphans(exps, []v1.Service{*keep, *clusterIP}),
 		"a Service that is gone, one no longer a LoadBalancer, and one re-made under a new UID")
+}
+
+func TestOrphansLeaveTheExposuresTheOperatorDeclared(t *testing.T) {
+	declared := orchapi.Exposure{ID: "api", Owner: orchapi.OwnerOperator}
+	gone := orchapi.Exposure{ID: "d.gone.dddddddd", Owner: orchapi.OwnerExposer}
+	require.Equal(t, []string{"d.gone.dddddddd"}, ccm.Orphans([]orchapi.Exposure{declared, gone}, nil),
+		"no Service has the operator's exposure, and it is not released; the controller's own is")
+	require.Equal(t, []string{"d.gone.dddddddd", "api"}, ccm.Orphans([]orchapi.Exposure{gone, {ID: "api", Owner: orchapi.OwnerExposer}}, nil),
+		"control: the same id owned by the exposer is an orphan")
 }
