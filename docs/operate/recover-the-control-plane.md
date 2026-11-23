@@ -6,7 +6,7 @@ Bring the signer and orch back on blank control hosts from the signer's bundle a
 
 ## 1. Keep the two things the recovery needs
 
-Do this while the control plane is healthy, and again after any change of the signer's authorities or operators. The recovery key and its passphrase are kept apart from the control hosts.
+Do this while the control plane is healthy, and again after any change of the signer's authorities or operators. The recovery key and its passphrase are kept apart from the control hosts until step 2.
 
 ```
 naructl signer bundle --admin <admin> --passphrase-file <passphrase file> --config <signer config> --out <bundle>
@@ -17,7 +17,9 @@ The bundle holds every authority key sealed to the recovery key. The snapshot is
 
 ## 2. Boot the control hosts blank
 
-Each control host keeps its user-data and gets a blank data disk. Host 1 boots without `spec.orch` and without `spec.signer.bootstrap`: it is restored, not bootstrapped. Hosts 2 and 3 boot with `spec.signer.replica` and no `spec.orch`. Host 1's user-data carries the recovery key and its passphrase as two files readable only by the signer's user (mode `0600`, owner `6001`), which the next step names by path.
+Each control host keeps its user-data and gets a blank data disk. Host 1 boots without `spec.orch` and without `spec.signer.bootstrap`: it is restored, not bootstrapped. Hosts 2 and 3 boot with `spec.signer.replica` and no `spec.orch`. Host 1's user-data carries the recovery key and its passphrase as two files (`spec.files`, mode `0600`, owner `6001`, the signer's user), which step 3 names by path. This is the way the fleet test runs and the way this release supports.
+
+**The risk.** Both files are in the user-data, which stays readable on the host until it is wiped: whoever can read it holds the recovery key and the passphrase, and so every authority key in the bundle and every sealed snapshot. After the restore, replace host 1's user-data with the one that has no recovery files and wipe the old one (`naructl reset --scope all`, [recover-a-member-or-host.md](./recover-a-member-or-host.md)), and keep the user-data of this step off shared disks and out of version control. A production means that does not leave the key on the host is required before 0.1.0-rc and is tracked in [#324](https://github.com/garamsh/naru/issues/324).
 
 ## 3. Restore the signer on host 1
 
