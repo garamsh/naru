@@ -23,10 +23,12 @@ RUN make -C src guest-initrd converter-initrd
 RUN . /pin.env && mkdir -p /out \
  && cp src/guest-agent/target/initrd.cpio /out/guest-initrd.cpio \
  && cp src/converter/target/initrd.cpio /out/converter-initrd.cpio \
+ && bad=0 \
  && for v in guest-initrd:$GUEST_INITRD_SHA256 converter-initrd:$CONVERTER_INITRD_SHA256; do \
       got=$(sha256sum "/out/${v%%:*}.cpio" | cut -d' ' -f1); \
-      [ "$got" = "${v##*:}" ] || { echo "guest-initrds: ${v%%:*}.cpio is $got at mvmd $MVMD_COMMIT, not the ${v##*:} of pin.env" >&2; exit 1; }; \
-    done
+      [ "$got" = "${v##*:}" ] || { echo "guest-initrds: ${v%%:*}.cpio is $got at mvmd $MVMD_COMMIT, not the ${v##*:} of pin.env" >&2; bad=1; }; \
+    done \
+ && [ "$bad" = 0 ]
 
 FROM scratch
 COPY --from=build /out /
