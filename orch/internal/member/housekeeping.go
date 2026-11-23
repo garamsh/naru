@@ -32,7 +32,7 @@ const (
 	MinQuota = 128 << 20
 	MaxQuota = 2 << 30
 	// DefragHighWater is the percent of the quota a database must reach before it is defragmented, and
-	// DefragReclaimable the percent of the file that must be free pages for the pause to be worth it (ADR 0103).
+	// DefragReclaimable the percent of the file that must be free pages for the pause to be worth it (ADR 0104).
 	DefragHighWater   = 80
 	DefragReclaimable = 10
 	// DisarmShare is the share of the quota a database must be under for its no-space alarm to be

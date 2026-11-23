@@ -1,4 +1,4 @@
-# ADR 0103: the housekeeper defragments a database at 80% of its quota with a tenth of the file free, in place of an eighth of the quota and half free, amending ADR 0088 item 4
+# ADR 0104: the housekeeper defragments a database at 80% of its quota with a tenth of the file free, in place of an eighth of the quota and half free, amending ADR 0088 item 4
 
 > Status: accepted
 > Date: 2026-11-23
