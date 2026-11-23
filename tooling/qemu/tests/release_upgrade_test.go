@@ -3,6 +3,7 @@
 package tests_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,39 +35,85 @@ func TestRelease_AHostInstalledFromOneReleaseUpgradesInPlaceToTheNextAndKeepsIts
 // A gen node host with a storage disk and a static network-config upgraded in place was the case of
 // a trial boot that was refused and rolled back (#263); no release test had it.
 func TestRelease_AHostWithAStorageDiskUpgradesInPlaceToTheNextAndMountsItAgain(t *testing.T) {
-	upgradeBetweenReleases(t, releaseCase{
-		Configure: func(c *node.Config, g *naructl.Node) {
-			withExtraDisk(c)
-			for _, s := range c.Storage {
-				g.Storage = append(g.Storage, s.Name+"="+s.Device)
-			}
-		},
-		Installed: func(t *testing.T, nd *node.Node) {
-			require.True(t, nd.Has(formatted, "device=/dev/vdb"), "the control: the first boot formatted the storage disk the entry names")
-			require.True(t, nd.Has(storageMark, "device=/dev/vdb"), "and mounted it")
-		},
-		Upgraded: func(t *testing.T, nd *node.Node, mark int) {
-			assert.True(t, nd.HasAfter(mark, storageMark, "device=/dev/vdb"), "the upgraded boot mounted the storage disk again")
-			assert.False(t, nd.HasAfter(mark, "storage disk not prepared"), "and did not refuse its entry")
-			assert.False(t, nd.HasAfter(mark, "boot refused"), "and refused no part of the boot")
-		},
-	})
+	c := plainRelease
+	c.Configure = func(c *node.Config, g *naructl.Node) {
+		withExtraDisk(c)
+		for _, s := range c.Storage {
+			g.Storage = append(g.Storage, s.Name+"="+s.Device)
+		}
+	}
+	c.Installed = func(t *testing.T, r releaseRun) {
+		require.True(t, r.Node.Has(formatted, "device=/dev/vdb"), "the control: the first boot formatted the storage disk the entry names")
+		require.True(t, r.Node.Has(storageMark, "device=/dev/vdb"), "and mounted it")
+	}
+	c.Upgraded = func(t *testing.T, r releaseRun, mark int) {
+		assert.True(t, r.Node.HasAfter(mark, storageMark, "device=/dev/vdb"), "the upgraded boot mounted the storage disk again")
+		assert.False(t, r.Node.HasAfter(mark, "storage disk not prepared"), "and did not refuse its entry")
+		assert.False(t, r.Node.HasAfter(mark, "boot refused"), "and refused no part of the boot")
+	}
+	upgradeBetweenReleases(t, c)
 }
 
-// releaseCase is what a release upgrade test adds to the host it installs: Configure sets it on the
-// Node's configuration and the host `gen node` writes, Installed checks the boot of the release in
-// FROM, and Upgraded checks the console after mark, the length of the console when the upgrade began.
+// A control host whose spec.extensions names naru-orch without its digest takes the new release's
+// image with the upgrade, as ADR 0084 decides and #265 asks: the operator posts the bundle and does
+// nothing else. A host installed from a release before ADR 0084 cannot name it that way, so the test
+// skips for one, and make test-release-upgrade allows that skip.
+func TestRelease_AControlHostRunningTheExtensionUpgradesWithTheBundleAloneAndMountsTheNewImage(t *testing.T) {
+	var oldImage, newImage string
+	c := plainRelease
+	c.Skip = func(from string) string {
+		if fixture.PredatesCarriedExtensions(from) {
+			return fmt.Sprintf("%s predates %s, the first release whose upgrade carries a host's extensions (ADR 0084); its host cannot name naru-orch without a digest", from, fixture.FirstCarriedExtensions)
+		}
+		return ""
+	}
+	c.Configure = func(_ *node.Config, g *naructl.Node) { g.Extra = append(g.Extra, "--extension", fixture.ExtensionName) }
+	c.Installed = func(t *testing.T, r releaseRun) {
+		info, err := fixture.ReadExtensionInfo(filepath.Join(r.ToDir, fixture.ReleaseExtensionName(r.To, ".json")))
+		require.NoError(t, err)
+		oldImage, newImage = r.From.Inputs.Extension.SHA256, info.SHA256
+		require.NotEqual(t, oldImage, newImage, "the two releases carry two images of naru-orch")
+		eventually(t, "the control: the Node mounts the extension of the release it was installed from", func() bool {
+			rows, err := extensionTableWith(r.FromTool, r.Admin)
+			return err == nil && mountedExtension(rows[oldImage])
+		})
+	}
+	c.Upgraded = func(t *testing.T, r releaseRun, _ int) {
+		eventually(t, "the Node mounts the image the bundle carried and no longer stores the old one", func() bool {
+			rows, err := extensionTableWith(r.ToTool, r.Admin)
+			_, oldStored := rows[oldImage]
+			return err == nil && mountedExtension(rows[newImage]) && !oldStored
+		})
+	}
+	upgradeBetweenReleases(t, c)
+}
+
+// releaseCase is what a release upgrade test adds to the host it installs. Skip names the reason
+// the release in FROM cannot have the host, or is empty. Configure sets the host on the Node's
+// configuration and on the host `gen node` writes. Installed checks the boot of the release in FROM,
+// and Upgraded the host after the upgrade; mark is the length of the console when the upgrade began.
 type releaseCase struct {
+	Skip      func(from string) string
 	Configure func(*node.Config, *naructl.Node)
-	Installed func(t *testing.T, nd *node.Node)
-	Upgraded  func(t *testing.T, nd *node.Node, mark int)
+	Installed func(t *testing.T, r releaseRun)
+	Upgraded  func(t *testing.T, r releaseRun, mark int)
+}
+
+// releaseRun is the Node a release case installed and what its checks reach it with.
+type releaseRun struct {
+	Node             *node.Node
+	Admin            string
+	FromTool, ToTool naructl.Tool
+	From             fixture.Release
+	ToDir, To        string
 }
 
 // plainRelease is the case of a host with nothing added.
 var plainRelease = releaseCase{
+	Skip:      func(string) string { return "" },
 	Configure: addNothing,
-	Installed: func(*testing.T, *node.Node) {},
-	Upgraded:  func(*testing.T, *node.Node, int) {},
+	Installed: func(*testing.T, releaseRun) {},
+	Upgraded:  func(*testing.T, releaseRun, int) {},
 }
 
 // upgradeBetweenReleases installs the release in FROM on the host the case describes, upgrades it to
@@ -86,6 +133,9 @@ func upgradeBetweenReleases(t *testing.T, c releaseCase) {
 	}
 	from, err := fixture.ReadRelease(fromDir, t.TempDir())
 	require.NoError(t, err)
+	if reason := c.Skip(from.Version); reason != "" {
+		t.Skip(reason)
+	}
 	// An operator who installed a release has that release's naructl, and the one of the release
 	// they upgrade to; each writes and reads what its release does, and one from before cobra is
 	// driven with the flag spellings it was released with.
@@ -106,7 +156,8 @@ func upgradeBetweenReleases(t *testing.T, c releaseCase) {
 	require.Equal(t, "default", before.Slot)
 	require.NoError(t, ctlWith(fromTool, admin, "apply", "-f", patchFile(t, idle("1m"))).Err)
 	stored := storeOf(t, nd)
-	c.Installed(t, nd)
+	run := releaseRun{Node: nd, Admin: admin, FromTool: fromTool, ToTool: toTool, From: from, ToDir: toDir, To: to}
+	c.Installed(t, run)
 	mark := len(nd.Console())
 
 	r := ctlWith(toTool, admin, "upgrade", "--bundle", bundles[0], "--sums", filepath.Join(toDir, "SHA256SUMS"))
@@ -125,5 +176,11 @@ func upgradeBetweenReleases(t *testing.T, c releaseCase) {
 	services := ctlWith(toTool, admin, "services")
 	require.NoError(t, services.Err, services.refusal())
 	assert.Contains(t, services.Stdout, "naru49-idle", "the Node lists the service the applied configuration names")
-	c.Upgraded(t, nd, mark)
+	c.Upgraded(t, run, mark)
+}
+
+// mountedExtension reports whether a row of `naructl extension list` is mounted, which is the
+// path its last column shows.
+func mountedExtension(row []string) bool {
+	return len(row) > 0 && row[len(row)-1] == "/usr/lib/naru/extensions/"+fixture.ExtensionName
 }
