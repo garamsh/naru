@@ -14,6 +14,7 @@ require (
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000 // indirect
 	github.com/garamsh/naru/lib/identity v0.0.0-00010101000000-000000000000 // indirect
 	github.com/garamsh/naru/lib/metrics v0.0.0-00010101000000-000000000000 // indirect
 	github.com/garamsh/naru/lib/orchapi v0.0.0-00010101000000-000000000000 // indirect
@@ -36,6 +37,7 @@ require (
 )
 
 replace (
+	github.com/garamsh/naru/lib/hostapi => ../lib/hostapi
 	github.com/garamsh/naru/lib/identity => ../lib/identity
 	github.com/garamsh/naru/lib/init => ../lib/init
 	github.com/garamsh/naru/lib/metrics => ../lib/metrics

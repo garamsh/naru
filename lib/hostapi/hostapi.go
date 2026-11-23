@@ -58,6 +58,25 @@ type MvmdInfo struct {
 	Kernels []Kernel `json:"kernels"`
 }
 
+// Upgrade is how the last upgrade of the host's naru ended, as init records it.
+type Upgrade struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Result string `json:"result"`
+	Reason string `json:"reason,omitempty"`
+	// Time is RFC 3339.
+	Time string `json:"time"`
+}
+
+// NaruInfo is what GET /v1/host says of the naru the host runs, as init reports it on its own API:
+// its version, the slot it booted from (`default` or `trial`) and how the last upgrade ended, which
+// is absent while none has.
+type NaruInfo struct {
+	Version     string   `json:"version"`
+	Slot        string   `json:"slot"`
+	LastUpgrade *Upgrade `json:"lastUpgrade,omitempty"`
+}
+
 // Host is the body of GET /v1/host. HostID is the ID a reset confirms (ADR 0082); a host started
 // without a reset leaves it empty.
 type Host struct {
@@ -67,6 +86,8 @@ type Host struct {
 	Capacity Resources         `json:"capacity"`
 	Free     Resources         `json:"free"`
 	Mvmd     MvmdInfo          `json:"mvmd"`
+	// Naru is absent when init has not written its status for the host.
+	Naru *NaruInfo `json:"naru,omitempty"`
 	// LANInterface is the interface the host announces exposed addresses on; empty when it
 	// announces none (ADR 0085 item 5).
 	LANInterface string `json:"lanInterface,omitempty"`

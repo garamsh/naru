@@ -33,6 +33,9 @@ type Deps struct {
 	// HostFile is the file init writes from spec.host: the region and labels /v1/host reports. It is
 	// read on every request, so an apply that changes spec.host shows with no restart.
 	HostFile string
+	// InitFile is the file init writes with the version it runs, its slot and the last upgrade, which
+	// /v1/host reports. A file that is absent is reported as no information.
+	InitFile string
 	// MachineGateway is the gateway of the Machines' network, an address of the prefix mvmd gives
 	// their addresses from. mvmd's API does not report it, and an OS-form microVM's seed names it.
 	// Invalid means unset, and an OS-form request is then refused.

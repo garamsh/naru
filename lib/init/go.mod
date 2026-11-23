@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000
+	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/identity v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/metrics v0.0.0-00010101000000-000000000000
 	github.com/garamsh/naru/lib/orchapi v0.0.0-00010101000000-000000000000
@@ -31,6 +32,8 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/sys v0.49.0
 )
+
+replace github.com/garamsh/naru/lib/hostapi => ../hostapi
 
 replace github.com/garamsh/naru/lib/identity => ../identity
 
