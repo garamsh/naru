@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"testing"
 	"time"
@@ -301,3 +302,38 @@ func TestRemovingAHostFreesEveryPrefixItHeld(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []inventory.Allocation{{Prefix: "10.200.2.0/24", HostID: "kept"}}, all, "the other host keeps its prefix")
 }
+
+type noPrefixes struct{}
+
+func (noPrefixes) MachinePrefixes(context.Context) (map[string][]string, error) { return nil, nil }
+
+func TestARecorderPassReleasesTheConfirmedPrefixesOfHostsThatAreNotAdmittedAndNoOtherRecord(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	kv := c.Members[0].Etcd()
+	s := invetcd.New(kv)
+	ctx := t.Context()
+	now := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
+	admitPlain(t, s, "kept", now)
+	admitPlain(t, s, "removed", now)
+	require.NoError(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.1.0/24", HostID: "kept"}))
+	require.NoError(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.2.0/24", HostID: "removed"}))
+	// A reservation of a host that is only pending is not an orphan: its admission is in flight.
+	pick := func([]netip.Prefix) (netip.Prefix, error) { return netip.MustParsePrefix("10.200.3.0/24"), nil }
+	reservation, err := s.Reserve(ctx, "pending", pick, now.Add(time.Hour), now)
+	require.NoError(t, err)
+	// The removal that a claim raced: the host's record is gone and its allocation stayed.
+	_, err = kv.Delete(ctx, "/naru/orch/hosts/removed")
+	require.NoError(t, err)
+
+	r := inventory.NewRecorder(s, noPrefixes{}, fixedClock{now}, time.Minute, slog.New(slog.DiscardHandler))
+	require.NoError(t, r.Reconcile(ctx))
+
+	all, err := s.ListAllocations(ctx)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []inventory.Allocation{{Prefix: "10.200.1.0/24", HostID: "kept"}, reservation}, all,
+		"the removed host's prefix is released; an admitted host's and an in-flight reservation stay")
+}
+
+type fixedClock struct{ t time.Time }
+
+func (c fixedClock) Now() time.Time { return c.t }

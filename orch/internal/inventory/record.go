@@ -58,8 +58,12 @@ func (r *Recorder) Run(ctx context.Context) error {
 	}
 }
 
-// Reconcile is one pass. A prefix another host holds is an event and is never overwritten.
+// Reconcile is one pass. A prefix another host holds is an event and is never overwritten, and a
+// confirmed allocation of a host that is no longer admitted is released.
 func (r *Recorder) Reconcile(ctx context.Context) error {
+	if err := r.releaseOrphans(ctx); err != nil {
+		return err
+	}
 	reported, err := r.hosts.MachinePrefixes(ctx)
 	if err != nil {
 		return err
@@ -101,4 +105,32 @@ func (r *Recorder) conflict(ctx context.Context, host, prefix string) {
 	if err := r.store.AppendEvent(ctx, ev); err != nil {
 		r.log.Error("the prefix conflict was not recorded", "err", err.Error())
 	}
+}
+
+// releaseOrphans releases every confirmed allocation whose host is not admitted: a claim that
+// committed just before its host was removed, which the removal did not see. The allocations are
+// read before the hosts, and a confirmed one is written in the transaction that writes its host, so
+// a host missing from the second read was removed after the first; the release deletes the record
+// only while it still holds the value read.
+func (r *Recorder) releaseOrphans(ctx context.Context) error {
+	allocations, err := r.store.ListAllocations(ctx)
+	if err != nil {
+		return err
+	}
+	hosts, err := r.store.ListHosts(ctx)
+	if err != nil {
+		return err
+	}
+	admitted := map[string]bool{}
+	for _, h := range hosts {
+		admitted[h.ID] = true
+	}
+	var errs []error
+	for _, a := range allocations {
+		if a.ReservedUntil.IsZero() && !admitted[a.HostID] {
+			r.log.Warn("releasing the Machine prefix of a host that is not admitted", "host", a.HostID, "prefix", a.Prefix)
+			errs = append(errs, r.store.Release(ctx, a))
+		}
+	}
+	return errors.Join(errs...)
 }

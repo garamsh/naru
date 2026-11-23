@@ -1,4 +1,4 @@
-# ADR 0102: orch records the Machine prefixes every host reports, and admits a joined host only while every admitted host has one recorded
+# ADR 0103: orch records the Machine prefixes every host reports, and admits a joined host only while every admitted host has one recorded
 
 > Status: accepted
 > Date: 2026-11-23
@@ -17,7 +17,7 @@ Drafted for garamsh/naru#262. It extends [ADR 0059](./0059-orch-admits-a-host-th
 1. **The leader records what each admitted host reports.** A recorder, run beside the groups engine on the leader's guarded store, reads every admitted host's `machinePrefixes` once per pass (`--network-interval`) and writes each prefix as a confirmed allocation of that host, the record `Reserve` and `Admit` already write for a joined host. A host that already holds the prefix is left as it is, and a host's own reservation or an expired one is taken over. A host that does not answer is skipped, and a host that is not admitted holds nothing.
 2. **A prefix another host holds is never overwritten.** The recorder appends the event `host.prefix-conflict` naming the host and the prefix, once per leader term, and leaves the record with the first host.
 3. **A joined host is admitted only while every admitted host holds a recorded prefix.** Before it reserves a prefix, `Admit` of a host with hardware lists the admitted hosts and the confirmed allocations; a host with none is 409 naming it. The admission is not issued a certificate, and the host stays pending. The operator removes a host that never reports, or waits for it.
-4. **Removing a host frees every prefix it holds**, those it reported as well as the one orch gave.
+4. **Removing a host frees every prefix it holds**, those it reported as well as the one orch gave. A claim that committed just before its host was removed escapes that removal, so each pass of the recorder also releases the confirmed allocations of hosts that are not admitted (a release deletes the record only while it still holds the value read, and a reservation is left to its admission).
 5. **A host enrolled with its own configuration is unchanged.** Its record keeps an empty `machinePrefix`, which is what tells orch it has no configuration to build; the allocation is a separate record.
 
 ## Options considered

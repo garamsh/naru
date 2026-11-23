@@ -100,7 +100,11 @@ func (s *service) Admit(ctx context.Context, by string, req orchapi.AdmitRequest
 }
 
 // requireRecorded is ErrPrefixUnrecorded naming each admitted host that holds no confirmed Machine
-// prefix in the allocation records, and nil when every one holds one.
+// prefix in the allocation records, and nil when every one holds one. It asks for one prefix per
+// host: the recorder writes a host's prefixes one after another, so a host that reports several is
+// counted from its first, and an admission that falls between its first and its last can still be
+// given a prefix of the later ones. naructl gives mvmd one Machine prefix (network.ipv4_prefix), so a
+// host reports one today; the pool's choice also skips every prefix claimed by then.
 func (s *service) requireRecorded(ctx context.Context) error {
 	hosts, err := s.store.ListHosts(ctx)
 	if err != nil {
