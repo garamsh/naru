@@ -98,3 +98,44 @@ func TestFleet_AnOperatorTheSignerIssuedACertificateToAddsABootSetToAnEnrolledHo
 		return r.Err == nil && strings.Contains(r.Stdout, set)
 	})
 }
+
+// An operator the signer issued a certificate to upgrades a host that joined by enrollment through the
+// host's Node API with that certificate and no client file of the Node API's authority (ADR 0100): the
+// Node API trusts the authorities orch's callers chain to and takes the role from the certificate's
+// unit. A reader's upgrade is the control: the same certificate path is accepted by the handshake and
+// refused by role.
+func TestFleet_AnOperatorTheSignerIssuedACertificateToUpgradesAnEnrolledHostThroughItsNodeAPI(t *testing.T) {
+	want := os.Getenv("NARU_VERSION")
+	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
+	next := want + "-next"
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 1, upgradable: true, forward: []string{"50000"}})
+	f.startOrch()
+	h := f.hosts()[0]
+	id := f.enrollAndAdmit("eu-1")[h]
+	api := f.forward(h, "50000")
+	operator, reader := f.operator("ops-1", "operator"), f.operator("ops-2", "reader")
+	bundle, sums := bundleFor(t, "next", next)
+
+	call := func(p person, words ...string) result {
+		args := append(append([]string{}, words...), "--identity", p.file, "--passphrase-file", f.pass, "--host-ca", f.c.HostCA, "--endpoint", api, "--server-name", id)
+		return nrun(args...)
+	}
+	status := func() (upgradeState, error) {
+		r := call(reader, "upgrade", "--status")
+		if r.Err != nil {
+			return upgradeState{}, r.Err
+		}
+		return parseUpgradeState(r.Stdout)
+	}
+	f.must(call(reader, "version"), "a reader reads the joined host's Node API")
+
+	r := call(reader, "upgrade", "--bundle", bundle, "--sums", sums)
+	require.Error(t, r.Err)
+	assert.Contains(t, r.Stderr, "403", "a reader's upgrade is refused by role, not by the handshake")
+
+	f.must(call(operator, "upgrade", "--bundle", bundle, "--sums", sums), "an operator upgrades the joined host")
+	awaitRestarting(t, f.node(h), "the joined host runs the next version and has promoted it", func() bool {
+		s, err := status()
+		return err == nil && s.Version == next && s.Slot == "default" && strings.Contains(s.Outcome, "promoted")
+	})
+}

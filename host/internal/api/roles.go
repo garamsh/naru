@@ -43,13 +43,14 @@ const (
 // automation are readers, and a host's own certificate is no role here.
 func roleOf(cert *x509.Certificate) Role {
 	role := None
-	if r, err := identity.RoleOf(cert); err == nil {
-		switch r {
-		case identity.RoleOrch, identity.RoleRoot, identity.RoleOperator:
-			role = Provisioner
-		case identity.RoleReader, identity.RoleAutomation:
-			role = Reader
-		}
+	if r, err := identity.RoleOf(cert); err == nil && r == identity.RoleOrch {
+		role = Provisioner
+	}
+	switch identity.PersonAccess(cert) {
+	case identity.AccessWrite:
+		role = max(role, Provisioner)
+	case identity.AccessRead:
+		role = max(role, Reader)
 	}
 	for _, o := range cert.Subject.Organization {
 		switch o {

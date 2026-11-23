@@ -53,31 +53,14 @@ func genAPIClient(fs *pflag.FlagSet) runner {
 }
 
 // call is a client command: the flags every one takes, then dial and run.
-type call struct {
-	fs                           *pflag.FlagSet
-	config, endpoint, serverName *string
-}
+type call struct{ caller }
 
 func newCall(fs *pflag.FlagSet) call {
-	c := call{
-		fs:         fs,
-		config:     fs.String("config", "", "the client file written by gen api-client"),
-		endpoint:   fs.String("endpoint", "", "the Node's address, an IP address with or without a port (default the client file's first endpoint)"),
-		serverName: serverNameFlag(fs),
-	}
-	return c
-}
-
-// check refuses a command given a number of arguments other than positional, or no --config.
-func (c call) check(args []string, n int) error {
-	if err := positional(args, n); err != nil {
-		return err
-	}
-	return require(c.fs, "config")
+	return call{newCaller(fs, "the client file written by gen api-client")}
 }
 
 func (c call) dial() (*client.Client, error) {
-	f, err := client.LoadFile(*c.config)
+	f, err := c.file()
 	if err != nil {
 		return nil, err
 	}

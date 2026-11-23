@@ -405,3 +405,29 @@ func TestExposerSubject_IsTheSubjectExposerNetworkReadsBack(t *testing.T) {
 		assert.False(t, ok, "%q", n)
 	}
 }
+
+func TestPersonAccess(t *testing.T) {
+	c := newCA(t)
+	tests := []struct {
+		name  string
+		units []string
+		want  identity.Access
+	}{
+		{"root", []string{"root"}, identity.AccessWrite},
+		{"operator", []string{"operator"}, identity.AccessWrite},
+		{"reader", []string{"reader"}, identity.AccessRead},
+		{"automation", []string{"automation"}, identity.AccessRead},
+		{"host", []string{"host"}, identity.AccessNone},
+		{"orch", []string{"orch"}, identity.AccessNone},
+		{"an unknown unit", []string{"wizard"}, identity.AccessNone},
+		{"two units", []string{"operator", "root"}, identity.AccessNone},
+		{"no unit", nil, identity.AccessNone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cert, _ := c.issue(t, "someone", 7, now.Add(time.Hour), tt.units...)
+
+			assert.Equal(t, tt.want, identity.PersonAccess(cert))
+		})
+	}
+}

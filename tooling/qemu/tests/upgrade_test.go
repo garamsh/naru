@@ -137,8 +137,13 @@ func statusOf(bin naructl.Tool, admin string) (upgradeState, error) {
 	if r.Err != nil {
 		return upgradeState{}, r.Err
 	}
+	return parseUpgradeState(r.Stdout)
+}
+
+// parseUpgradeState reads what `naructl upgrade --status` printed.
+func parseUpgradeState(stdout string) (upgradeState, error) {
 	var s upgradeState
-	for _, line := range strings.Split(r.Stdout, "\n") {
+	for _, line := range strings.Split(stdout, "\n") {
 		key, rest, _ := strings.Cut(line, " ")
 		rest = strings.TrimSpace(rest)
 		switch key {

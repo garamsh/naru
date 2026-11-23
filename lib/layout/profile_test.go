@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -118,10 +119,30 @@ func TestHostProfileNode_ServesTheNodeAPIFromTheHostCertificateAndItsKeyFile(t *
 		} `yaml:"spec"`
 	}
 	require.NoError(t, yaml.Unmarshal(data, &raw))
-	assert.Equal(t, p.APIClientCA, raw.Spec.API["clientCA"])
+	assert.Equal(t, 2, strings.Count(raw.Spec.API["clientCA"], "BEGIN CERTIFICATE"), "the profile's authority and orch's callers'")
+	assert.Contains(t, raw.Spec.API["clientCA"], p.APIClientCA, "the profile's authority")
+	assert.Contains(t, raw.Spec.API["clientCA"], h.OrchCA, "the authority orch's callers chain to, which holds the operator authority")
 	assert.Equal(t, h.Certificate, raw.Spec.API["certificate"])
 	assert.Equal(t, layout.HostKeyFile, raw.Spec.API["keyFile"])
 	assert.NotContains(t, raw.Spec.API, "key")
+}
+
+func TestHostProfileNode_ATrustSetOfOrchsCallersAloneStillServesTheNodeAPI(t *testing.T) {
+	p := profile(t)
+	h := joined(t)
+	n, err := p.Node(h)
+	require.NoError(t, err)
+	data, err := n.UserData()
+	require.NoError(t, err)
+
+	var raw struct {
+		Spec struct {
+			API map[string]string `yaml:"api"`
+		} `yaml:"spec"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &raw))
+	assert.Equal(t, 1, strings.Count(raw.Spec.API["clientCA"], "BEGIN CERTIFICATE"), "a profile with no apiClientCA trusts orch's callers' authorities alone")
+	assert.Equal(t, h.Certificate, raw.Spec.API["certificate"])
 }
 
 func TestHostProfileNode_CarriesTheRevocationKeyAndListToHostdAndTheNodeAPI(t *testing.T) {

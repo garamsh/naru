@@ -755,3 +755,29 @@ func TestClientCommands_ANodeWhoseCertificateTheFilesAuthorityDidNotIssueIsRefus
 	assert.Contains(t, err.Error(), "certificate")
 	assert.Len(t, node.requests, before, "no request crossed a connection to an unverified Node")
 }
+
+func TestNodeAPICommands_NameTheirCallerByAClientFileOrByAPersonFileAndNotBoth(t *testing.T) {
+	tests := map[string]struct {
+		args []string
+		want string
+	}{
+		"neither":                          {[]string{"version"}, "--config or --identity is required"},
+		"both":                             {[]string{"version", "--config", "c.yaml", "--identity", "p"}, "give one"},
+		"a person file with no passphrase": {[]string{"version", "--identity", "p", "--host-ca", "ca", "--endpoint", "10.0.0.1"}, "--passphrase-file is required"},
+		"a person file with no endpoint":   {[]string{"version", "--identity", "p", "--passphrase-file", "f", "--host-ca", "ca"}, "--endpoint is required"},
+		"a person file with no authority":  {[]string{"version", "--identity", "p", "--passphrase-file", "f", "--endpoint", "10.0.0.1"}, "--host-ca is required"},
+		"an authority with no person file": {[]string{"version", "--config", "c.yaml", "--host-ca", "ca"}, "--host-ca has no effect without --identity"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := run(t, tt.args...)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
+
+	_, err := run(t, "version", "--identity", "missing.person", "--passphrase-file", "missing.pass", "--host-ca", "ca", "--endpoint", "10.0.0.1")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "is required", "the control: a complete --identity form passes the flag check and fails on its files")
+}
