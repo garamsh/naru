@@ -93,6 +93,9 @@ var signingKeyID = regexp.MustCompile(`signing ServiceAccount key id is (\S+)`)
 // KubernetesNode is the arguments of gen kubernetes-node.
 type KubernetesNode struct {
 	CA, Name, Role, Address, Endpoint, PodNetwork, PodPrefix string
+	// PodPrefixFromSeed leaves the Pod prefix to the seed's meta-data (gen kubernetes-node
+	// --pod-prefix-from-seed, ADR 0098); PodPrefix and Peers are then empty.
+	PodPrefixFromSeed bool
 	// Peers are <address>=<pod-prefix> entries.
 	Peers []string
 	// MAC, Gateway, Search, Nameservers and ExtraNIC are the network-config's.
@@ -117,7 +120,13 @@ type KubernetesNode struct {
 // n.NetworkConfig when that is set.
 func (t Tool) GenKubernetesNode(n KubernetesNode) error {
 	args := []string{"gen", "kubernetes-node", t.caDirFlag(), n.CA, "--name", n.Name, "--role", n.Role, "--address", n.Address,
-		"--endpoint", n.Endpoint, "--pod-network", n.PodNetwork, "--pod-prefix", n.PodPrefix, "--out", n.Out}
+		"--endpoint", n.Endpoint, "--pod-network", n.PodNetwork}
+	if n.PodPrefixFromSeed {
+		args = append(args, "--pod-prefix-from-seed")
+	} else {
+		args = append(args, "--pod-prefix", n.PodPrefix)
+	}
+	args = append(args, "--out", n.Out)
 	flag := func(name string, values ...string) {
 		for _, v := range values {
 			args = append(args, "--"+name, v)
