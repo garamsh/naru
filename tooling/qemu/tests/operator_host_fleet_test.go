@@ -3,6 +3,7 @@
 package tests_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,6 +27,20 @@ func TestFleet_AnOperatorTheSignerIssuedACertificateToCallsAnEnrolledHostsAPIWit
 	}
 	out := f.must(call(operator, "host"), "an operator reads the host")
 	assert.Contains(t, out, `"region": "eu-1"`)
+	// The host reports the naru it runs, as init has it, so the operator reads a seed-joined host's
+	// version with no client file of the Node API's authority (garamsh/naru#274).
+	var host struct {
+		Naru *struct {
+			Version     string          `json:"version"`
+			Slot        string          `json:"slot"`
+			LastUpgrade json.RawMessage `json:"lastUpgrade"`
+		} `json:"naru"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &host), "naructl host prints one JSON document")
+	require.NotNil(t, host.Naru, "GET /v1/host carries the naru the host runs")
+	assert.NotEmpty(t, host.Naru.Version)
+	assert.Equal(t, "default", host.Naru.Slot, "a host that has not upgraded runs the default slot")
+	assert.Empty(t, host.Naru.LastUpgrade, "no upgrade has ended")
 	f.must(call(reader, "host"), "a reader reads the host")
 	f.must(call(operator, "microvm", "list"), "an operator lists microVMs")
 

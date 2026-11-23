@@ -32,6 +32,7 @@ func main() {
 		key      = flag.String("key", "/run/naru-hostd/tls.key", "serving key")
 		clients  = flag.String("client-ca", "/run/naru-hostd/client-ca.crt", "CA of the clients' certificates")
 		hostFile = flag.String("host-file", "/run/naru-hostd/host.json", "region and labels, written by init from spec.host")
+		initFile = flag.String("init-file", "/run/naru-hostd/init.json", "the version, slot and last upgrade of the naru the host runs, written by init")
 		socket   = flag.String("mvmd-socket", "/run/mvmd.sock", "mvmd's runtime API socket")
 		gateway  = flag.String("machine-gateway", "", "gateway of the microVMs' network, written into the seed of an OS-form microVM")
 		length   = flag.Duration("fence-length", 10*time.Minute, "how long each renewal arms mvmd's fencing deadline")
@@ -179,7 +180,7 @@ func main() {
 		log.Warn("cannot tell the host's ID; the reset call is off", "err", err.Error())
 	}
 	// A reset of the data disk deletes serving.pem, so the pair that serves after it is the configuration's.
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
 		HostID: resetID, ResetMarker: *resetMarker, Reboot: rebootInit, CheckPair: pairAfterReset(revocations, *cert)})
 	if *metricsAddr != "" {
 		go func() {

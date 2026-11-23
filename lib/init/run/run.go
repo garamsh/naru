@@ -91,10 +91,17 @@ func Main() {
 		default:
 		}
 	}
-	upgrades := upgrade.NewWith(upgrade.Config{Version: version(), Started: started, Log: log, Extensions: func() ([]upgrade.Entry, []upgrade.Image, error) {
+	var upgrades *upgrade.Upgrader
+	publish := func() {
+		if err := writeInitStatus(config.InitStatusFile, version(), upgrades); err != nil {
+			log.Warn("write the status naru-hostd reports", "file", config.InitStatusFile, "err", err)
+		}
+	}
+	upgrades = upgrade.NewWith(upgrade.Config{Version: version(), Started: started, Log: log, Changed: publish, Extensions: func() ([]upgrade.Entry, []upgrade.Image, error) {
 		return storedExtensions(configs, extensions)
 	}, Stage: stageExtension(extensions), Unstage: func(sha string) { _ = extensions.Delete(sha) }, Prune: func() { pruneExtensions(configs, extensions, log) }})
 	upgrades.Detect()
+	publish()
 	server := api.New(api.Deps{
 		Services:   services,
 		Logs:       con,

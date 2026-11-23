@@ -1029,3 +1029,22 @@ func TestUpgrader_ReconcileOnADefaultBootPrunesOnce(t *testing.T) {
 
 	assert.Equal(t, 1, st.pruned)
 }
+
+func TestUpgrader_ChangedIsCalledWhenAnUpgradeEndsWithTheOutcomeRecordedAndTheSlotSet(t *testing.T) {
+	n := newNode(t)
+	var slots, results []string
+	var u *upgrade.Upgrader
+	u = stageWith(t, n, func(c *upgrade.Config) {
+		c.Changed = func() {
+			slots = append(slots, u.Slot())
+			last, _ := u.Last()
+			results = append(results, last.Result)
+		}
+	})
+	assert.Empty(t, slots, "nothing has ended yet")
+
+	require.NoError(t, u.Promote())
+
+	assert.Equal(t, []string{upgrade.SlotDefault}, slots, "the slot is the default's by the time the reader is told")
+	assert.Equal(t, []string{"promoted"}, results, "the outcome is recorded by then")
+}

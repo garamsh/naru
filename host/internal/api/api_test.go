@@ -93,6 +93,7 @@ type env struct {
 	addr     string
 	ca       authority
 	hostFile string
+	initFile string
 	pool     *x509.CertPool
 	metrics  *prometheus.Registry
 	nets     *network.Manager
@@ -169,12 +170,13 @@ func startEnvRevoking(t *testing.T, gateway netip.Addr, networks bool, revocatio
 	e := &env{rt: newFake(), addr: ln.Addr().String(), ca: ca, pool: x509.NewCertPool()}
 	e.pool.AppendCertsFromPEM(srvCA.pem)
 	e.hostFile = write("host.json", []byte(`{"region":"eu-1","labels":{"disk":"ssd"}}`))
+	e.initFile = filepath.Join(dir, "init.json")
 	e.metrics = prometheus.NewRegistry()
 	e.nft = &recorder{}
 	e.tunnel = &fakeTunnel{}
 	e.state = filepath.Join(dir, "networks.json")
 	e.nets = e.manager()
-	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics, Revocations: revocations, LeaderTokenFile: filepath.Join(dir, "leader-token")}
+	deps := Deps{Runtime: e.rt, HostFile: e.hostFile, InitFile: e.initFile, MachineGateway: gateway, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: e.metrics, Revocations: revocations, LeaderTokenFile: filepath.Join(dir, "leader-token")}
 	if networks {
 		deps.Networks = e.nets
 	}
@@ -249,6 +251,43 @@ func TestHost_ReportsTheHostFileOnEveryRequest(t *testing.T) {
 	_, b = e.do(t, c, "GET", "/v1/host", nil)
 	require.NoError(t, json.Unmarshal(b, &h))
 	assert.Equal(t, "nvme", h.Labels["disk"])
+}
+
+func TestHost_ReportsNaruVersionSlotAndLastUpgradeFromTheInitFileOnEveryRequest(t *testing.T) {
+	e := start(t)
+	c := e.as(t, ReaderOrganization)
+	get := func() (int, hostapi.Host) {
+		code, b := e.do(t, c, "GET", "/v1/host", nil)
+		var h hostapi.Host
+		if code == 200 {
+			require.NoError(t, json.Unmarshal(b, &h))
+		}
+		return code, h
+	}
+
+	// The control: with no file the host reports no naru and still answers.
+	code, h := get()
+	require.Equal(t, 200, code)
+	assert.Nil(t, h.Naru)
+	assert.Equal(t, "eu-1", h.Region)
+
+	require.NoError(t, os.WriteFile(e.initFile, []byte(`{"version":"v0.1.0-dev.14","slot":"trial"}`), 0o600))
+	code, h = get()
+	require.Equal(t, 200, code)
+	require.NotNil(t, h.Naru)
+	assert.Equal(t, hostapi.NaruInfo{Version: "v0.1.0-dev.14", Slot: "trial"}, *h.Naru, "no upgrade has ended, so no lastUpgrade")
+
+	// A changed file shows with no restart.
+	require.NoError(t, os.WriteFile(e.initFile, []byte(`{"version":"v0.1.0-dev.14","slot":"default","lastUpgrade":{"from":"v0.1.0-dev.13","to":"v0.1.0-dev.14","result":"promoted","time":"2026-11-23T10:00:00Z"}}`), 0o600))
+	_, h = get()
+	require.NotNil(t, h.Naru)
+	assert.Equal(t, "default", h.Naru.Slot)
+	assert.Equal(t, &hostapi.Upgrade{From: "v0.1.0-dev.13", To: "v0.1.0-dev.14", Result: "promoted", Time: "2026-11-23T10:00:00Z"}, h.Naru.LastUpgrade)
+
+	// A file the host cannot read is a failure, not a host with no version.
+	require.NoError(t, os.WriteFile(e.initFile, []byte(`not json`), 0o600))
+	code, _ = get()
+	assert.Equal(t, 500, code)
 }
 
 func TestRoles_AReaderMayNotWrite(t *testing.T) {
