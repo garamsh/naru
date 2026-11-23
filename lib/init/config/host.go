@@ -13,6 +13,11 @@ import (
 // by the apply that writes any file, with no reboot and no restart.
 const HostFile = "/run/naru-hostd/host.json"
 
+// InitStatusFile is the file init writes for naru-hostd to read on each request: the version init
+// runs, the slot it booted from and how the last upgrade ended, which GET /v1/host reports. init
+// rewrites it each time an upgrade ends.
+const InitStatusFile = "/run/naru-hostd/init.json"
+
 // Host is where the Node is and how it is told apart: the region and labels naru-hostd reports.
 type Host struct {
 	// Region is a DNS label.

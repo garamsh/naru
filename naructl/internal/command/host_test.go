@@ -211,6 +211,32 @@ func TestMicrovm_CreateGetListDeleteSpeakTheHostAPIOverMutualTLS(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestHost_PrintsTheNaruVersionTheSlotAndTheLastUpgradeTheHostReports(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "host-ca", "--ca-dir", dep.ca)
+	answer := map[string]any{"region": "eu-1", "labels": map[string]string{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/host", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(answer) })
+	addr := hostServer(t, dep, mux)
+	cfg := filepath.Join(t.TempDir(), "c.yaml")
+	mustRun(t, "gen", "host-client", "--ca-dir", dep.ca, "--role", "reader", "--endpoint", addr, "--out", cfg)
+
+	// The control: a host that reports no version prints none.
+	out, err := run(t, "host", "--config", cfg)
+	require.NoError(t, err, out)
+	assert.NotContains(t, out, `"naru"`)
+
+	answer["naru"] = map[string]any{"version": "v0.1.0-dev.14", "slot": "trial", "lastUpgrade": map[string]any{
+		"from": "v0.1.0-dev.13", "to": "v0.1.0-dev.14", "result": "rolled back", "reason": "a service stopped", "time": "2026-11-23T10:00:00Z"}}
+	out, err = run(t, "host", "--config", cfg)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, `"version": "v0.1.0-dev.14"`)
+	assert.Contains(t, out, `"slot": "trial"`)
+	assert.Contains(t, out, `"result": "rolled back"`)
+	assert.Contains(t, out, `"reason": "a service stopped"`)
+	assert.Contains(t, out, `"from": "v0.1.0-dev.13"`)
+}
+
 // servingPair is a serving pair of the host authority of dep for ip.
 func servingPair(t *testing.T, dep deployment, ip net.IP) tls.Certificate {
 	t.Helper()

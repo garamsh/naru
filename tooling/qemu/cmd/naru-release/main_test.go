@@ -23,7 +23,9 @@ func renderNotes(t *testing.T, sumsText string, extra ...string) (string, error)
 	t.Helper()
 	f := filepath.Join(t.TempDir(), "SHA256SUMS")
 	require.NoError(t, os.WriteFile(f, []byte(sumsText), 0o644))
-	args := append([]string{"-template", template, "-sums", f, "-tag", "v0.1.0-dev.13", "-commit", "abc123",
+	pin := filepath.Join(t.TempDir(), "pin.env")
+	require.NoError(t, os.WriteFile(pin, []byte("CACERT_DATE=2026-11-05\nCACERT_URL=https://curl.se/ca/cacert-2026-11-05.pem\nCACERT_SHA256=ab\nCACERT_LICENSE=MPL-2.0\n"), 0o644))
+	args := append([]string{"-template", template, "-sums", f, "-cacert-pin", pin, "-tag", "v0.1.0-dev.13", "-commit", "abc123",
 		"-esp-bytes", "536870912", "-upgrade-kernel-bytes", "211239936"}, extra...)
 	var out bytes.Buffer
 	err := notes(args, &out)
@@ -37,6 +39,7 @@ func TestNotes_StatesTheBuildsFiguresAndTheAssetsThatDifferByDesign(t *testing.T
 	assert.Contains(t, got, "ESP is 536870912 bytes")
 	assert.Contains(t, got, "is 211239936 bytes")
 	assert.Contains(t, got, "`SHA256SUMS` of the other 3,")
+	assert.Contains(t, got, "is curl's cacert.pem of 2026-11-05")
 	assert.Contains(t, got, "except those of the by-design assets (`naru-data-v0.1.0-dev.13.qcow2`)")
 	assert.Contains(t, got, "- `naru-host-v0.1.0-dev.13.qcow2` `2222`\n")
 	assert.NotContains(t, got, "three that differ", "the stale count of by-design assets is gone")
@@ -61,7 +64,7 @@ func TestNotes_RefusesSumsWithNoAssetThatDiffersByDesign(t *testing.T) {
 
 func TestNotes_RefusesAMissingFigure(t *testing.T) {
 	var out bytes.Buffer
-	err := notes([]string{"-template", template, "-sums", "x", "-tag", "v1.0.0", "-commit", "c"}, &out)
+	err := notes([]string{"-template", template, "-sums", "x", "-tag", "v1.0.0", "-commit", "c", "-cacert-pin", "x"}, &out)
 	assert.ErrorContains(t, err, "are required")
 }
 

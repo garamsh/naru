@@ -78,6 +78,9 @@ type Config struct {
 	// that no pinned entry of the configuration names (ADR 0084). It runs when an upgrade has
 	// ended: after a promotion and on a default boot. Nil prunes nothing.
 	Prune func()
+	// Changed is called each time an upgrade ends, once the outcome is recorded and the slot is
+	// the one the Node now runs from, so a reader outside init follows both. Nil calls nothing.
+	Changed func()
 	// Now and After are the clock and a timer.
 	Now   func() time.Time
 	After func(time.Duration) <-chan time.Time

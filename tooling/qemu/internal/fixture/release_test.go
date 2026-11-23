@@ -248,3 +248,11 @@ func TestReadVolumesExtensionInfo_RefusesAnotherNameAServiceOrAMalformedDigest(t
 		})
 	}
 }
+
+func TestPredatesCarriedExtensions_NamesTheReleasesBeforeADR0084AndNoOtherVersion(t *testing.T) {
+	assert.True(t, fixture.PredatesCarriedExtensions("v0.1.0-dev.13"))
+	assert.True(t, fixture.PredatesCarriedExtensions("v0.1.0-dev.1"))
+	assert.False(t, fixture.PredatesCarriedExtensions(fixture.FirstCarriedExtensions), "the first release that carries them does not predate them")
+	assert.False(t, fixture.PredatesCarriedExtensions("v0.1.0-dev.15"))
+	assert.False(t, fixture.PredatesCarriedExtensions("v0.1.0"), "a version that is not a dev release carries them")
+}

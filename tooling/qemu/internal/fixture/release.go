@@ -143,6 +143,23 @@ func PredatesVolumes(version string) bool {
 	return ok && err == nil && dev <= lastDevWithoutVolumes
 }
 
+// FirstCarriedExtensions is the first published release whose upgrade bundle carries a host's
+// extensions and whose init accepts a spec.extensions entry with no digest (ADR 0084). A host
+// installed from an earlier release cannot name an extension the one-step way, so its upgrade still
+// takes the hand steps ADR 0055 listed, which no release test drives.
+const FirstCarriedExtensions = "v0.1.0-dev.14"
+
+// lastDevWithoutCarriedExtensions is the number of the last v0.1.0-dev.N release before it.
+const lastDevWithoutCarriedExtensions = 13
+
+// PredatesCarriedExtensions reports whether the release of that version was made before
+// FirstCarriedExtensions. Any other version, including one that is not a v0.1.0-dev.N, carries them.
+func PredatesCarriedExtensions(version string) bool {
+	n, ok := strings.CutPrefix(version, "v0.1.0-dev.")
+	dev, err := strconv.Atoi(n)
+	return ok && err == nil && dev <= lastDevWithoutCarriedExtensions
+}
+
 // releaseVersion is the release's guest manifest and version, from the one naru-guest-<v>.json in dir.
 func releaseVersion(dir string) (guestFile, version string, err error) {
 	guests, err := filepath.Glob(filepath.Join(dir, "naru-guest-*.json"))

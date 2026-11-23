@@ -27,6 +27,7 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
+	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000 // indirect
 	github.com/garamsh/naru/lib/metrics v0.0.0-00010101000000-000000000000 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -120,6 +121,7 @@ require (
 )
 
 replace (
+	github.com/garamsh/naru/lib/hostapi => ../lib/hostapi
 	github.com/garamsh/naru/lib/identity => ../lib/identity
 	github.com/garamsh/naru/lib/init => ../lib/init
 	github.com/garamsh/naru/lib/metrics => ../lib/metrics

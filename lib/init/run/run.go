@@ -91,7 +91,13 @@ func Main() {
 		default:
 		}
 	}
-	upgrades := upgrade.NewWith(upgrade.Config{Version: version(), Started: started, Log: log, Extensions: func() ([]upgrade.Entry, []upgrade.Image, error) {
+	var upgrades *upgrade.Upgrader
+	publish := func() {
+		if err := writeInitStatus(config.InitStatusFile, version(), upgrades); err != nil {
+			log.Warn("write the status naru-hostd reports", "file", config.InitStatusFile, "err", err)
+		}
+	}
+	upgrades = upgrade.NewWith(upgrade.Config{Version: version(), Started: started, Log: log, Changed: publish, Extensions: func() ([]upgrade.Entry, []upgrade.Image, error) {
 		return storedExtensions(configs, extensions)
 	}, Stage: stageExtension(extensions), Unstage: func(sha string) { _ = extensions.Delete(sha) }, Prune: func() { pruneExtensions(configs, extensions, log) }})
 	upgrades.Detect()
@@ -112,6 +118,9 @@ func Main() {
 	metricsCtx, stopMetrics := context.WithCancel(context.Background())
 	var engine *apply.Engine
 	stopRenewing, booted, refusal := bootAndRenew(bootHost{host, extensions}, issuer, services, configs, server, log)
+	// The status is written once the data disk is mounted, where an upgrade that ended in an earlier
+	// boot left its outcome; an upgrade that ends later writes it again through Changed.
+	publish()
 	if booted != nil {
 		engine = newEngine(*booted, configs, services, host, issuer, server)
 		server.Attach(engine)
