@@ -18,6 +18,20 @@ func TestApply_ANewOwnerOfAFileRewritesIt(t *testing.T) {
 	assert.Contains(t, r.calls(), "file /run/f1", "the content and mode are the same, the owner is not")
 }
 
+func TestApply_AFileWhoseOnlyChangeIsItsTemplateIsRewrittenAndOneThatChangedNothingIsNot(t *testing.T) {
+	r := newRig(t)
+
+	_, err := r.engine.Apply(apply.Request{Patch: patch(obj{"files": []any{obj{"path": "/run/f1", "template": "guest"}}}), Mode: apply.NoReboot})
+
+	require.NoError(t, err)
+	assert.Contains(t, r.calls(), "file /run/f1", "the content, mode and owner are the same, the template is not")
+
+	control := newRig(t)
+	_, err = control.engine.Apply(apply.Request{Patch: patch(obj{"files": []any{obj{"path": "/run/f1"}}}), Mode: apply.NoReboot})
+	require.NoError(t, err)
+	assert.NotContains(t, control.calls(), "file /run/f1", "control: the same file is not written again")
+}
+
 func TestApply_AMetricsListenerNeedsAReboot(t *testing.T) {
 	r := newRig(t)
 
