@@ -112,6 +112,33 @@ func TestNode_KubernetesDNSResolvesAServiceOfItsOwnNamespaceAndOfAnotherAndAnExt
 	}
 }
 
+// The kubelet looks an add-on's image up by the reference its manifest names (ADR 0105). A reference the
+// import did not create sends it to the registry named naru.local, which nothing answers, and the Pod
+// stays in ImagePullBackOff.
+func TestNode_EveryAddonImageIsFoundByTheKubeletUnderTheReferenceItsManifestNames(t *testing.T) {
+	c, _ := startDNSCluster(t, node.KubeSpec{VolumeDisk: node.VolumeDiskStorage})
+	addons := []struct{ kind, name, ready string }{
+		{"deployment", "coredns", "{.status.readyReplicas}"},
+		{"daemonset", "naru-volumes", "{.status.numberReady}"},
+	}
+	for _, a := range addons {
+		refs := kubectlEventually(t, c, a.name+" is applied", "-n", "kube-system", "get", a.kind, a.name, "-o", "jsonpath={.spec.template.spec.containers[*].image}")
+		for _, ref := range strings.Fields(refs) {
+			assert.Regexp(t, `^naru\.local/`+a.name+`@sha256:[0-9a-f]{64}$`, ref, "the manifest names the image by the digest of its manifest")
+		}
+		want := "2"
+		ok := assert.Eventually(t, func() bool {
+			out, _ := kubectl(t, c, "", "-n", "kube-system", "get", a.kind, a.name, "-o", "jsonpath="+a.ready)
+			return out == want
+		}, kubeTimeout, 3*time.Second, a.name+" runs on both Nodes: its Pods found their image locally")
+		if !ok {
+			pods, _ := kubectl(t, c, "", "-n", "kube-system", "describe", "pods")
+			t.Logf("the Pods of kube-system:\n%s", pods)
+			t.FailNow()
+		}
+	}
+}
+
 func TestNode_KubernetesDisabledDNSGivesTheControlPlaneNodeNothingToApplyAndWhatTheAdministratorKeptInKubeSystemIsLeftAlone(t *testing.T) {
 	c, dir := startDNSCluster(t, node.KubeSpec{DisableAddons: []string{"dns"}})
 
