@@ -312,8 +312,12 @@ func apiClient(t *testing.T, file string) (*http.Client, string) {
 // extensionTable is the lines of `naructl extension list` after the header, by digest, or the error
 // of the call. A wait for a Node that is still booting polls it: its API refuses connections until
 // init listens.
-func extensionTable(file string) (map[string][]string, error) {
-	r := ctl(file, "extension", "list")
+func extensionTable(file string) (map[string][]string, error) { return extensionTableWith(tool, file) }
+
+// extensionTableWith is extensionTable for the naructl bin: the one an operator who installed a
+// release has.
+func extensionTableWith(bin naructl.Tool, file string) (map[string][]string, error) {
+	r := ctlWith(bin, file, "extension", "list")
 	if r.Err != nil {
 		return nil, fmt.Errorf("%w: %s", r.Err, r.refusal())
 	}
