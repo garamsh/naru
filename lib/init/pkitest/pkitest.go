@@ -79,6 +79,13 @@ func NewLeaf(t testing.TB) string {
 // TLS client.
 func Issue(t testing.TB, ca CA, organizations ...string) (certPEM, keyPEM string) {
 	t.Helper()
+	return IssueUnits(t, ca, nil, organizations...)
+}
+
+// IssueUnits is Issue for a leaf that also has the OrganizationalUnits units, which is where the
+// signer puts a certificate's role.
+func IssueUnits(t testing.TB, ca CA, units []string, organizations ...string) (certPEM, keyPEM string) {
+	t.Helper()
 	caBlock, _ := pem.Decode([]byte(ca.Cert))
 	caCert, err := x509.ParseCertificate(caBlock.Bytes)
 	if err != nil {
@@ -99,7 +106,7 @@ func Issue(t testing.TB, ca CA, organizations ...string) (certPEM, keyPEM string
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "test-leaf", Organization: organizations},
+		Subject:      pkix.Name{CommonName: "test-leaf", Organization: organizations, OrganizationalUnit: units},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

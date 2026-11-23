@@ -73,30 +73,29 @@ func loadHost(caDir, region string, labels list) (*layout.Host, error) {
 	return h, nil
 }
 
-// hostCall is a host API command: the flags every one takes, then dial and run. A caller is either
-// a client file (--config) or a person the signer issued a certificate to (--identity), which a host
-// that joined from the install seed accepts (ADR 0080).
-type hostCall struct {
+// caller is who a command acts as: a client file (--config) or a person the signer issued a
+// certificate to (--identity), which a host that joined from the install seed accepts on its host API
+// and on its Node API (ADR 0080, ADR 0100).
+type caller struct {
 	fs                                                     *pflag.FlagSet
 	config, endpoint, serverName, identity, passfn, hostCA *string
 }
 
-func newHostCall(fs *pflag.FlagSet) hostCall {
-	c := hostCall{
+func newCaller(fs *pflag.FlagSet, configUsage string) caller {
+	return caller{
 		fs:         fs,
-		config:     fs.String("config", "", "the client file written by gen host-client"),
-		endpoint:   fs.String("endpoint", "", "the host's address, an IP address with or without a port (default the client file's first endpoint)"),
+		config:     fs.String("config", "", configUsage),
+		endpoint:   fs.String("endpoint", "", "the address of the host or Node, an IP address with or without a port (default the client file's first endpoint)"),
 		serverName: serverNameFlag(fs),
 		identity:   fs.String("identity", "", "in place of --config, the person file naructl operator person wrote from a certificate the signer issued; needs --passphrase-file, --host-ca and --endpoint"),
 		passfn:     fs.String("passphrase-file", "", "a file holding the passphrase of the person file"),
-		hostCA:     fs.String("host-ca", "", "with --identity, the host authority's certificate, PEM: naructl signer ca --authority host"),
+		hostCA:     fs.String("host-ca", "", "with --identity, the authority the host's certificate chains to, PEM: naructl signer ca --authority host"),
 	}
-	return c
 }
 
 // check refuses a command given a number of arguments other than positional, or none of --config and
 // --identity, or both, or an --identity without what it dials with.
-func (c hostCall) check(args []string, n int) error {
+func (c caller) check(args []string, n int) error {
 	if err := positional(args, n); err != nil {
 		return err
 	}
@@ -118,31 +117,39 @@ func (c hostCall) check(args []string, n int) error {
 	return nil
 }
 
-func (c hostCall) dial() (*hostapi.Client, error) {
-	if *c.identity != "" {
-		pass, err := passphrase(*c.passfn)
-		if err != nil {
-			return nil, err
-		}
-		data, err := os.ReadFile(*c.identity)
-		if err != nil {
-			return nil, fmt.Errorf("read the person file: %w", err)
-		}
-		p, err := identity.DecryptPerson(pass, data)
-		if err != nil {
-			return nil, err
-		}
-		ca, err := os.ReadFile(*c.hostCA)
-		if err != nil {
-			return nil, fmt.Errorf("read the host authority: %w", err)
-		}
-		f, err := client.PersonFile(p, string(ca), []string{*c.endpoint})
-		if err != nil {
-			return nil, err
-		}
-		return client.DialHost(f, *c.endpoint, *c.serverName)
+// file returns the client file the caller dials with.
+func (c caller) file() (client.File, error) {
+	if *c.identity == "" {
+		return client.LoadFile(*c.config)
 	}
-	f, err := client.LoadFile(*c.config)
+	pass, err := passphrase(*c.passfn)
+	if err != nil {
+		return client.File{}, err
+	}
+	data, err := os.ReadFile(*c.identity)
+	if err != nil {
+		return client.File{}, fmt.Errorf("read the person file: %w", err)
+	}
+	p, err := identity.DecryptPerson(pass, data)
+	if err != nil {
+		return client.File{}, err
+	}
+	ca, err := os.ReadFile(*c.hostCA)
+	if err != nil {
+		return client.File{}, fmt.Errorf("read the host authority: %w", err)
+	}
+	return client.PersonFile(p, string(ca), []string{*c.endpoint})
+}
+
+// hostCall is a host API command: the flags every one takes, then dial and run.
+type hostCall struct{ caller }
+
+func newHostCall(fs *pflag.FlagSet) hostCall {
+	return hostCall{newCaller(fs, "the client file written by gen host-client")}
+}
+
+func (c hostCall) dial() (*hostapi.Client, error) {
+	f, err := c.file()
 	if err != nil {
 		return nil, err
 	}

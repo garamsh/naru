@@ -179,6 +179,19 @@ func probeHost(pool netip.Prefix) (JoinedHost, error) {
 	}, nil
 }
 
+// trustSet is the PEM bundle of the authorities the Node API's clients' certificates chain to: the
+// profile's and the one orch's callers do, which holds the operator authority beside orch's
+// (ADR 0100). An authority that is empty is left out.
+func trustSet(authorities ...string) string {
+	var b strings.Builder
+	for _, a := range authorities {
+		if a = strings.TrimSpace(a); a != "" {
+			b.WriteString(a + "\n")
+		}
+	}
+	return b.String()
+}
+
 // Node is the Node of host h under the profile: the host API served from the certificate orch issued
 // for the key the host made, naru-hostd's clients trusted through the authority orch's certificate
 // chains to, and spec.host.orch so its agent keeps reporting. It runs no gaon and so carries no
@@ -199,7 +212,7 @@ func (p HostProfile) Node(h JoinedHost) (Node, error) {
 		HostNetwork: p.Network, Storage: p.Storage, Extensions: p.Extensions,
 		Host: &Host{
 			Region: h.Region, Labels: h.Labels, Certificate: h.Certificate, KeyFile: HostKeyFile,
-			ClientCA: h.OrchCA, APIClientCA: p.APIClientCA,
+			ClientCA: h.OrchCA, APIClientCA: trustSet(p.APIClientCA, h.OrchCA),
 			RevocationPublicKey: h.RevocationPublicKey, RevocationList: h.CRL,
 		},
 		HostOrch: &HostOrch{URL: p.Orch.URL, CASHA256: p.Orch.CASHA256, EnrollKey: JoinedEnrollKey},

@@ -164,7 +164,14 @@ func (r *rig) client(t *testing.T, ca pkitest.CA, organizations ...string) *http
 
 func (r *rig) clientTrusting(t *testing.T, serverCA, ca pkitest.CA, organizations ...string) *http.Client {
 	t.Helper()
-	certPEM, keyPEM := pkitest.Issue(t, ca, organizations...)
+	return r.clientWithUnits(t, serverCA, ca, nil, organizations...)
+}
+
+// clientWithUnits is clientTrusting for a certificate that also has the OrganizationalUnits units, as
+// the signer's certificates do.
+func (r *rig) clientWithUnits(t *testing.T, serverCA, ca pkitest.CA, units []string, organizations ...string) *http.Client {
+	t.Helper()
+	certPEM, keyPEM := pkitest.IssueUnits(t, ca, units, organizations...)
 	pair, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
 	require.NoError(t, err)
 	pool := x509.NewCertPool()
@@ -294,6 +301,67 @@ func TestServer_RoleDecidesWhatAClientMayDo(t *testing.T) {
 			assert.Len(t, r.engine.applied(), map[bool]int{true: 1, false: 0}[tt.post == http.StatusOK], "a refused apply never reaches the engine")
 		})
 	}
+}
+
+func TestServer_ASignerIssuedCertificateTakesItsRoleFromItsUnit(t *testing.T) {
+	const applyBody = `{"revision":3,"patch":{"metadata":{"name":"x"}}}`
+	tests := map[string]struct {
+		units         []string
+		organizations []string
+		get, post     int
+	}{
+		"root":                        {[]string{"root"}, nil, http.StatusOK, http.StatusOK},
+		"operator":                    {[]string{"operator"}, nil, http.StatusOK, http.StatusOK},
+		"reader":                      {[]string{"reader"}, nil, http.StatusOK, http.StatusForbidden},
+		"automation":                  {[]string{"automation"}, nil, http.StatusOK, http.StatusForbidden},
+		"host":                        {[]string{"host"}, nil, http.StatusForbidden, http.StatusForbidden},
+		"orch":                        {[]string{"orch"}, nil, http.StatusForbidden, http.StatusForbidden},
+		"an unknown unit":             {[]string{"wizard"}, nil, http.StatusForbidden, http.StatusForbidden},
+		"two units":                   {[]string{"operator", "reader"}, nil, http.StatusForbidden, http.StatusForbidden},
+		"no unit and no organization": {nil, nil, http.StatusForbidden, http.StatusForbidden},
+		"the organization still works, with no unit":           {nil, []string{"naru:admin"}, http.StatusOK, http.StatusOK},
+		"the organization still works, beside an unknown unit": {[]string{"wizard"}, []string{"naru:admin"}, http.StatusOK, http.StatusOK},
+		"a reader's unit never lowers an admin organization":   {[]string{"reader"}, []string{"naru:admin"}, http.StatusOK, http.StatusOK},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.engine.result = apply.Result{Revision: 4, Mode: apply.NoReboot}
+			r.start(t)
+			c := r.clientWithUnits(t, r.serverCA, r.clientCA, tt.units, tt.organizations...)
+
+			getStatus, _ := r.do(t, c, http.MethodGet, "/v1/config", "")
+			postStatus, _ := r.do(t, c, http.MethodPost, "/v1/config", applyBody)
+
+			assert.Equal(t, tt.get, getStatus, "GET")
+			assert.Equal(t, tt.post, postStatus, "POST")
+		})
+	}
+}
+
+func TestServer_ASignerIssuedCertificateOfAnAuthorityOutsideTheTrustSetFailsTLS(t *testing.T) {
+	r := newRig(t)
+	r.start(t)
+	stranger := pkitest.NewCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+
+	_, err := r.clientWithUnits(t, r.serverCA, stranger, []string{"operator"}).Get(r.url("/v1/version"))
+	status, _ := r.do(t, r.clientWithUnits(t, r.serverCA, r.clientCA, []string{"operator"}), http.MethodGet, "/v1/version", "")
+
+	assert.Error(t, err, "an operator certificate of an authority the client CA lacks fails the handshake, whatever its unit")
+	assert.Equal(t, http.StatusOK, status, "the control: the operator certificate of an authority it holds is served")
+}
+
+func TestServer_AnOperatorAuthorityJoinsTheTrustSetThroughTheClientCABundle(t *testing.T) {
+	r := newRig(t)
+	operators := pkitest.NewCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	r.chosen.Config.Spec.API.ClientCA = r.clientCA.Cert + operators.Cert
+	r.start(t)
+
+	viaBundle, _ := r.do(t, r.clientWithUnits(t, r.serverCA, operators, []string{"operator"}), http.MethodGet, "/v1/version", "")
+	viaFirst, _ := r.do(t, r.admin(t), http.MethodGet, "/v1/version", "")
+
+	assert.Equal(t, http.StatusOK, viaBundle, "an authority in the bundle is trusted")
+	assert.Equal(t, http.StatusOK, viaFirst, "the control: the first authority of the bundle still is")
 }
 
 func TestServer_AForbiddenBodyNamesNoField(t *testing.T) {

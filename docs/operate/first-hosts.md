@@ -93,7 +93,7 @@ It prints `naructl: wrote root's authorisation for the signer of naru-<name> to 
 
 ### 6. The host profile
 
-The profile holds what every host admitted from now on is built from: the guest manifest, the Firecracker hash, the Machine pool, orch's address and authority hash, the registry the hosts pull images from, and the management network.
+The profile holds what every host admitted from now on is built from: the guest manifest, the Firecracker hash, the Machine pool, orch's address and authority hash, the registry the hosts pull images from, and the management network. A joined host's Node API trusts the authorities orch's callers chain to (the operator authority among them), so the operator's person file reaches it ([upgrade-a-host.md](./upgrade-a-host.md)); `--api-client-ca <file>` adds an authority of your own, such as the one `gen api-client` signs under.
 
 ```
 naructl gen host-profile --guest <naru-guest-version.json> --firecracker-sha256 <hex> --machine-pool <cidr> \
