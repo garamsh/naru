@@ -234,3 +234,58 @@ func TestOSForm_TheSeedsMetaDataCarriesAPodPrefixOnlyForAMicroVMThatHasOne(t *te
 	assert.True(t, bytes.Contains(vol, []byte("local-hostname: web")), "the control: the meta-data is there")
 	assert.False(t, bytes.Contains(vol, []byte("naru-pod-prefix")))
 }
+
+func TestOSForm_AnAddressTheRequestNamesIsTheMachinesAndItsSeedsAndIsRepeatableByName(t *testing.T) {
+	e := start(t)
+	c := e.as(t, ProvisionerOrganization)
+	body := osBody()
+	body["address"] = "10.1.0.20"
+
+	code, b := e.do(t, c, "POST", "/v1/microvms", body)
+	require.Equal(t, 201, code, string(b))
+	assert.Equal(t, "10.1.0.20", e.rt.machines["web"].Addresses[0], "mvmd was asked for it")
+	assert.True(t, bytes.Contains(e.rt.contents["web.seed"], []byte("address: '10.1.0.20'")), "the seed carries the address mvmd gave")
+
+	// The same request again is the same microVM; the control is the same name with another address.
+	code, b = e.do(t, c, "POST", "/v1/microvms", body)
+	assert.Equal(t, 200, code, string(b))
+	body["address"] = "10.1.0.21"
+	code, b = e.do(t, c, "POST", "/v1/microvms", body)
+	assert.Equal(t, 409, code, string(b))
+}
+
+func TestOSForm_AnAddressMvmdRefusesIsRefusedAsMvmdAnswers(t *testing.T) {
+	e := start(t)
+	c := e.as(t, ProvisionerOrganization)
+	other := osBody()
+	other["name"], other["address"] = "other", "10.1.0.20"
+	code, b := e.do(t, c, "POST", "/v1/microvms", other)
+	require.Equal(t, 201, code, string(b))
+
+	for name, tc := range map[string]struct {
+		address string
+		code    int
+	}{
+		"held by another microVM": {"10.1.0.20", 409},
+		"outside the prefix":      {"10.2.0.5", 422},
+		"not an address":          {"ten", 422},
+		"IPv6":                    {"fd00::5", 422},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := osBody()
+			body["address"] = tc.address
+			code, b := e.do(t, c, "POST", "/v1/microvms", body)
+			assert.Equal(t, tc.code, code, string(b))
+			assert.NotContains(t, e.rt.machines, "web", "a refused request leaves no microVM")
+		})
+	}
+}
+
+func TestHost_ReportsTheMachinePrefixesMvmdGivesAddressesFrom(t *testing.T) {
+	e := start(t)
+	code, b := e.do(t, e.as(t, "naru:host-reader"), "GET", "/v1/host", nil)
+	require.Equal(t, 200, code, string(b))
+	var h hostapi.Host
+	require.NoError(t, json.Unmarshal(b, &h))
+	assert.Equal(t, []string{"10.1.0.0/24"}, h.Mvmd.MachinePrefixes)
+}

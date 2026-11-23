@@ -58,6 +58,8 @@ type MvmdInfo struct {
 	Driver   string    `json:"driver"`
 	Kernels  []Kernel  `json:"kernels"`
 	BootSets []BootSet `json:"bootSets"`
+	// MachinePrefixes are the prefixes mvmd gives the addresses of microVMs from, in CIDR form.
+	MachinePrefixes []string `json:"machinePrefixes"`
 }
 
 // BootSet is a boot set the host offers: its name, the SHA-256 digests of its files and how the host

@@ -61,6 +61,9 @@ type Template struct {
 	// UserData is the user-data of an OS-form microVM, used as written; empty gives
 	// DefaultUserData.
 	UserData string `json:"userData"`
+	// Addresses fixes the IPv4 address of an OS-form member by its number: member <group>-<n>
+	// has Addresses[n-1]. Empty leaves every address to the host.
+	Addresses []string `json:"addresses"`
 }
 
 // DefaultUserData is the user-data of an OS-form microVM whose template gives none.
@@ -135,6 +138,10 @@ func (g GroupSpec) Validate() error {
 		return bad("podPrefixBits %d is outside 0..32", g.Template.PodPrefixBits)
 	case g.Template.PodPrefixBits > 0 && g.Template.Network == "":
 		return bad("podPrefixBits needs a network to cut the prefixes from")
+	case len(g.Template.Addresses) > 0 && g.Template.Form != FormOS:
+		return bad("addresses are for an OS-form template")
+	case !validAddresses(g.Template.Addresses):
+		return bad("addresses are not distinct IPv4 addresses")
 	case g.Stateful && g.FenceTTL <= 0:
 		return bad("a stateful group needs a fenceTTL")
 	case g.Stateful && g.Rollout.MaxSurge != 0:
@@ -263,7 +270,9 @@ type Host struct {
 	Draining     bool
 	Capacity     Capacity
 	NodeVersions []string
-	Machines     []Machine
+	// MachinePrefixes are the prefixes the host gives its microVMs' addresses from.
+	MachinePrefixes []string
+	Machines        []Machine
 }
 
 // Fence is a Machine's fence as its host reports it.

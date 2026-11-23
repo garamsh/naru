@@ -34,6 +34,11 @@ type CreateRequest struct {
 	Seed      []byte `json:"seed,omitempty"`
 	DataDisk  uint64 `json:"dataDisk,omitempty"`
 	PodPrefix string `json:"podPrefix,omitempty"`
+	// Address is the IPv4 address the OS-form microVM is to have, inside the host's Machine prefix
+	// (`mvmd.machinePrefixes` of GET /v1/host). Absent, mvmd chooses. An address outside the prefix or
+	// that is not a host address is 422 on address; one another microVM, the gateway or a resolver
+	// holds is 409.
+	Address string `json:"address,omitempty"`
 }
 
 // MicroVM is a microVM as the host API shows it.

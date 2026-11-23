@@ -53,7 +53,7 @@ func newHost(t *testing.T) *fakeHost {
 		}
 		switch key {
 		case "GET /v1/host":
-			_, _ = w.Write([]byte(`{"free":{"cpu":6,"memory":8589934592},"mvmd":{"kernels":[{"name":"naru"}],"bootSets":[{"name":"node-1","origin":"configured"},{"name":"node-2","origin":"added"}]}}`))
+			_, _ = w.Write([]byte(`{"free":{"cpu":6,"memory":8589934592},"mvmd":{"machinePrefixes":["10.77.1.0/24"],"kernels":[{"name":"naru"}],"bootSets":[{"name":"node-1","origin":"configured"},{"name":"node-2","origin":"added"}]}}`))
 		case "GET /v1/microvms":
 			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","state":"running","network":"lab","podPrefix":"10.9.0.64/26","addresses":["10.9.0.2"]},{"name":"b","state":"stopped"},{"name":"c","state":"created"}]}`))
 		case "GET /v1/microvms/db-1/fence":
@@ -118,6 +118,7 @@ func TestListReportsReadinessCapacityBootSetsAndMachines(t *testing.T) {
 	require.True(t, h.Ready)
 	require.Equal(t, groups.Capacity{CPUs: 6, MemoryMiB: 8192}, h.Capacity)
 	require.Equal(t, []string{"node-1", "node-2"}, h.NodeVersions)
+	require.Equal(t, []string{"10.77.1.0/24"}, h.MachinePrefixes)
 	require.Equal(t, map[string]string{"rack": "a"}, h.Labels)
 	require.Equal(t, []groups.Machine{
 		{ID: "a", State: groups.MachineRunning, Network: "lab", PodPrefix: "10.9.0.64/26", Addresses: []string{"10.9.0.2"}}, {ID: "b", State: groups.MachineStopped}, {ID: "c", State: groups.MachineCreated},
@@ -191,6 +192,13 @@ func TestCreateSendsTheOSForm(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(h.bodies["POST /v1/microvms"], &got))
 	require.Equal(t, base64.StdEncoding.EncodeToString([]byte("#cloud-config\nhostname: db\n")), got["seed"])
+
+	// An address the member is to have is sent as the request's address; none sends none.
+	require.NoError(t, c.Create(t.Context(), "h", groups.MachineSpec{ID: "cp-1", Address: "10.77.1.10", Template: groups.Template{
+		Form: groups.FormOS, CPUs: 1, MemoryMiB: 128, NodeVersion: "node-2", Disks: []groups.Disk{{Name: "data", SizeBytes: 2 << 30}},
+	}}))
+	require.NoError(t, json.Unmarshal(h.bodies["POST /v1/microvms"], &got))
+	require.Equal(t, "10.77.1.10", got["address"])
 
 	// An OS-form template with no disk has no data disk to size.
 	err = c.Create(t.Context(), "h", groups.MachineSpec{ID: "db-2", Template: groups.Template{Form: groups.FormOS, CPUs: 1, MemoryMiB: 128, NodeVersion: "node-2"}})

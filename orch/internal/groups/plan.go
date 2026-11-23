@@ -194,7 +194,8 @@ func planRetries(gs GroupState, o Observed, hosts []Host, keep []MemberState) []
 				onHost[other.Host]++
 			}
 		}
-		h, err := Place(spec, hosts, onHost)
+		want := WantOf(spec, ms.MachineID)
+		h, err := Place(spec, want, hosts, onHost)
 		if err != nil {
 			var pe *PlacementError
 			if errors.As(err, &pe) {
@@ -206,7 +207,7 @@ func planRetries(gs GroupState, o Observed, hosts []Host, keep []MemberState) []
 		m.Host = h.ID
 		out = append(out, Action{
 			Kind: ActionCreate, Group: spec.Name, Member: m, Host: h.ID,
-			Spec:   MachineSpec{ID: m.MachineID, Template: spec.Template, BootSet: bootSetOn(spec.Template, h), PodPrefix: m.PodPrefix, Fenced: spec.Stateful},
+			Spec:   MachineSpec{ID: m.MachineID, Template: spec.Template, BootSet: bootSetOn(spec.Template, h), PodPrefix: m.PodPrefix, Address: want.String(), Fenced: spec.Stateful},
 			Reason: fmt.Sprintf("tries again after %d refused create(s)", m.CreateFailures),
 		})
 		for i := range hosts {
@@ -241,7 +242,9 @@ func planCreates(gs GroupState, o Observed, hosts []Host, pods *podPrefixes, pre
 	}
 	var out []Action
 	for range n {
-		h, err := Place(spec, hosts, onHost)
+		id := fmt.Sprintf("%s-%d", spec.Name, next+1)
+		want := WantOf(spec, id)
+		h, err := Place(spec, want, hosts, onHost)
 		if err != nil {
 			var pe *PlacementError
 			if errors.As(err, &pe) {
@@ -250,7 +253,6 @@ func planCreates(gs GroupState, o Observed, hosts []Host, pods *podPrefixes, pre
 			break
 		}
 		next++
-		id := fmt.Sprintf("%s-%d", spec.Name, next)
 		m := Member{ID: id, Group: spec.Name, Host: h.ID, MachineID: id, TemplateHash: gs.Hash, Phase: PhasePending, LastSeen: o.Now, Network: spec.Template.Network}
 		if bits := spec.Template.PodPrefixBits; bits > 0 {
 			pfx, err := podPrefix(o.Networks, pods, spec.Template.Network, bits)
@@ -262,7 +264,7 @@ func planCreates(gs GroupState, o Observed, hosts []Host, pods *podPrefixes, pre
 		}
 		out = append(out, Action{
 			Kind: ActionCreate, Group: spec.Name, Member: m, Host: h.ID,
-			Spec:   MachineSpec{ID: id, Template: spec.Template, BootSet: bootSetOn(spec.Template, h), PodPrefix: m.PodPrefix, Fenced: spec.Stateful},
+			Spec:   MachineSpec{ID: id, Template: spec.Template, BootSet: bootSetOn(spec.Template, h), PodPrefix: m.PodPrefix, Address: want.String(), Fenced: spec.Stateful},
 			Reason: createReason(len(keep), retiring, spec.Count),
 		})
 		onHost[h.ID]++

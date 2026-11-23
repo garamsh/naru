@@ -40,18 +40,18 @@ func TestPlace_RefusesAHostThatBreaksAConstraint(t *testing.T) {
 			bad := okHost("bad")
 			tc.mutate(&bad)
 
-			control, err := groups.Place(s, []groups.Host{okHost("good")}, nil)
+			control, err := groups.Place(s, groups.WantOf(s, "web-1"), []groups.Host{okHost("good")}, nil)
 			require.NoError(t, err, "control: the unchanged host takes the member")
 			assert.Equal(t, "good", control.ID)
 
-			_, err = groups.Place(s, []groups.Host{bad}, nil)
+			_, err = groups.Place(s, groups.WantOf(s, "web-1"), []groups.Host{bad}, nil)
 
 			var pe *groups.PlacementError
 			require.ErrorAs(t, err, &pe)
 			require.ErrorIs(t, err, groups.ErrNoHost)
 			assert.Contains(t, pe.Refused["bad"][0], tc.reason)
 
-			got, err := groups.Place(s, []groups.Host{bad, okHost("good")}, nil)
+			got, err := groups.Place(s, groups.WantOf(s, "web-1"), []groups.Host{bad, okHost("good")}, nil)
 			require.NoError(t, err)
 			assert.Equal(t, "good", got.ID, "the refused host is skipped, not fatal")
 		})
@@ -60,7 +60,7 @@ func TestPlace_RefusesAHostThatBreaksAConstraint(t *testing.T) {
 
 func TestPlace_SpreadsBeforeItFillsAHost(t *testing.T) {
 	s := spec("web", 3)
-	got, err := groups.Place(s, []groups.Host{okHost("a"), okHost("b")}, map[string]int{"a": 1})
+	got, err := groups.Place(s, groups.WantOf(s, "web-1"), []groups.Host{okHost("a"), okHost("b")}, map[string]int{"a": 1})
 	require.NoError(t, err)
 	assert.Equal(t, "b", got.ID)
 }

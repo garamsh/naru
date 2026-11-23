@@ -101,6 +101,7 @@ func (c *Client) probe(ctx context.Context, h orchapi.Host, out *groups.Host) {
 	for _, b := range info.Mvmd.BootSets {
 		out.NodeVersions = append(out.NodeVersions, b.Name)
 	}
+	out.MachinePrefixes = info.Mvmd.MachinePrefixes
 	for _, m := range vms {
 		out.Machines = append(out.Machines, groups.Machine{
 			ID: m.Name, State: machineState(m.State), Image: m.ImageDigest, BootSet: m.BootSet,
@@ -156,7 +157,7 @@ func request(spec groups.MachineSpec) (hostapi.CreateRequest, error) {
 		if userData == "" {
 			userData = groups.DefaultUserData
 		}
-		r.BootSet, r.Seed, r.DataDisk = spec.BootSet, []byte(userData), uint64(t.Disks[0].SizeBytes)
+		r.BootSet, r.Seed, r.DataDisk, r.Address = spec.BootSet, []byte(userData), uint64(t.Disks[0].SizeBytes), spec.Address
 	default:
 		return hostapi.CreateRequest{}, fmt.Errorf("template form %q is neither image nor os", t.Form)
 	}

@@ -93,6 +93,9 @@ type Create struct {
 	BootSet        string
 	Cmdline        string
 	RoutedPrefixes []string
+	// RequestedIPv4 is the address the Machine is to have, inside the node's Machine prefix; empty leaves
+	// the choice to mvmd, which refuses an address it cannot give (ADR 0069 of mvmd).
+	RequestedIPv4 string
 	// RestartOnBoot makes mvmd start the Machine again at the first fencing deadline of a new host
 	// boot when it ran when the host went down and was not stopped since. It is fixed for the
 	// Machine's life.

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/netip"
 	"slices"
 	"sort"
 	"sync"
@@ -167,6 +168,19 @@ func (f *fakeRuntime) CreateMachine(_ context.Context, c mvmd.Create) (mvmd.Mach
 		BootSet: c.BootSet, Cmdline: c.Cmdline, RoutedPrefixes: c.RoutedPrefixes, RestartOnBoot: c.RestartOnBoot, Fenced: c.Fenced,
 		ID: c.ID, State: mvmd.StateCreated, ImageDigest: c.ImageDigest, CPU: c.CPU, MemoryBytes: c.MemoryBytes,
 		RootDiskBytes: c.RootDiskBytes, Disks: c.Disks, Policy: c.Policy, Addresses: []string{"10.1.0.5"},
+	}
+	if c.RequestedIPv4 != "" {
+		// Like mvmd: an address outside the node's Machine prefix is invalid, one another Machine holds a conflict.
+		a, _ := netip.ParseAddr(c.RequestedIPv4)
+		if !netip.MustParsePrefix(f.info.MachinePrefixes[0]).Contains(a) {
+			return mvmd.Machine{}, fmt.Errorf("%w: %s is outside the Machine prefix", mvmd.ErrInvalid, c.RequestedIPv4)
+		}
+		for _, other := range f.machines {
+			if slices.Contains(other.Addresses, c.RequestedIPv4) {
+				return mvmd.Machine{}, fmt.Errorf("%w: %s is held by %s", mvmd.ErrConflict, c.RequestedIPv4, other.ID)
+			}
+		}
+		m.Addresses = []string{c.RequestedIPv4}
 	}
 	f.machines[c.ID] = m
 	return m, nil
