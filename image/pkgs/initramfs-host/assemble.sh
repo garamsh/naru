@@ -55,7 +55,10 @@ printf '{\n  "boot_sets": {\n    "%s": {\n      "kernel": {"path": "%s/vmlinux",
 } >/guest/guest.json
 
 # The guest files go under GUEST_IMAGE_DIR, which guest.json's paths name: every directory down to it,
-# then each kernel's directory, then the files, in a fixed order.
+# then each kernel's directory, then the files, in a fixed order. The kernel's unpacker creates no
+# parent directory and skips an entry whose parent it has not unpacked, without a message, so the list
+# is ordered with every directory before its entries and then checked, and a list that is not fails the
+# build (garamsh/naru#356).
 {
   sed "s#@OUT@#/stage#" /initramfs.list
   acc=
@@ -79,7 +82,9 @@ printf '{\n  "boot_sets": {\n    "%s": {\n      "kernel": {"path": "%s/vmlinux",
     echo "file $GUEST_IMAGE_DIR/$f /guest/$f 0644 0 0"
   done
   echo "file $GUEST_IMAGE_DIR/boot-sets.json /boot-sets.json 0644 0 0"
-} >/host.list
+} >/host.raw.list
+naru-cpiolist order /host.raw.list >/host.list
+naru-cpiolist check /host.list
 
 mkdir -p /out
 gen_init_cpio -t "$SOURCE_DATE_EPOCH" /host.list | gzip -9n >/out/initramfs.cpio.gz

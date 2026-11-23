@@ -19,6 +19,7 @@ COPY --from=lib install-go.sh /usr/local/bin/
 COPY --from=gen-init-cpio /gen_init_cpio /usr/local/bin/gen_init_cpio
 COPY --from=src / /src
 RUN : "${NARU_VERSION:?initramfs: NARU_VERSION is the version the image is built for}" \
+ && (cd /src/tooling/disk && go build -trimpath -buildvcs=false -o /usr/local/bin/naru-cpiolist ./cmd/naru-cpiolist) \
  && cd /src/node && go build -trimpath -buildvcs=false \
       -ldflags="-s -w -X github.com/garamsh/naru/lib/init/run.buildVersion=$NARU_VERSION $EXTRA_LDFLAGS" \
       -o /tmp/naru-init ./cmd/naru-init \
@@ -46,7 +47,9 @@ RUN { cat /cacert.crt; if [ -f /testroot/ca.pem ]; then cat /testroot/ca.pem; fi
       kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy kube-network-policies kubectl ctr containerd containerd-shim-runc-v2 runc bridge host-local loopback; do \
       file "/stage/$f" | grep -Eq 'statically linked|static-pie linked' || { echo "initramfs: $f is not a static executable" >&2; exit 1; }; \
     done \
- && sed "s#@OUT@#/stage#" /initramfs.list >/node.list \
+ && sed "s#@OUT@#/stage#" /initramfs.list >/node.raw.list \
+ && naru-cpiolist order /node.raw.list >/node.list \
+ && naru-cpiolist check /node.list \
  && mkdir /out && gen_init_cpio -t "$SOURCE_DATE_EPOCH" /node.list | gzip -9n >/out/node-initrd.cpio.gz
 
 FROM scratch
