@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 )
 
 // setName is the nftables set of a network. A network's name is a DNS label, which has no
@@ -59,6 +60,7 @@ func Ruleset(c Config) string {
 	line("add table inet naru")
 	line("delete table inet naru")
 	line("table inet naru {")
+	leasedSet(c, line)
 
 	nets := sortedNetworks(c.Networks)
 	local := map[string][]netip.Prefix{}
@@ -110,6 +112,7 @@ func Ruleset(c Config) string {
 	line("\tchain forward {")
 	line("\t\ttype filter hook forward priority 0; policy drop;")
 	line("\t\tct state established,related accept")
+	exposureForward(c, line)
 	if c.TapPrefix != "" {
 		if len(members) > 0 {
 			line("\t\tiifname \"%s*\" ip saddr != @members counter drop comment \"forged source\"", c.TapPrefix)
@@ -134,6 +137,112 @@ func Ruleset(c Config) string {
 		}
 	}
 	line("\t}")
+	exposureRules(c, line)
 	line("}")
 	return b.String()
+}
+
+// exposureForward writes the rules of the forward chain that let the LAN reach the backends' NodePorts
+// of the exposures, and nothing else: one rule per forwarded port, from the LAN interface, to that
+// exposure's backends, for a flow the DNAT made.
+func exposureForward(c Config, line func(string, ...any)) {
+	if c.LAN == "" {
+		return
+	}
+	for _, e := range sortedExposures(c.Exposures) {
+		for _, p := range e.forwarded() {
+			line("\t\tiifname \"%s\" ip daddr { %s } %s dport %d ct status dnat ct original ip daddr @leased ct state new accept comment \"%s:%d\"", c.LAN, addrList(e.Backends), p.Protocol, p.NodePort, e.Address, p.Port)
+		}
+	}
+}
+
+// exposureRules writes the chains that forward the LAN's traffic to the exposures' backends (ADR
+// 0085 item 6): a DNAT that picks a backend at random and a source NAT so the reply returns by this
+// host.
+func exposureRules(c Config, line func(string, ...any)) {
+	if c.LAN == "" {
+		return
+	}
+	var forwarded []Exposure
+	for _, e := range sortedExposures(c.Exposures) {
+		if len(e.forwarded()) > 0 {
+			forwarded = append(forwarded, e)
+		}
+	}
+	if len(forwarded) == 0 {
+		return
+	}
+	line("\tchain exposure_dnat {")
+	line("\t\ttype nat hook prerouting priority dstnat; policy accept;")
+	for _, e := range forwarded {
+		for _, p := range e.forwarded() {
+			line("\t\tiifname \"%s\" ip daddr %s ip daddr @leased %s dport %d dnat ip to numgen random mod %d map { %s } comment \"%s\"",
+				c.LAN, e.Address, p.Protocol, p.Port, len(e.Backends), backendMap(e.Backends, p.NodePort), e.Network)
+		}
+	}
+	line("\t}")
+	line("\tchain exposure_snat {")
+	line("\t\ttype nat hook postrouting priority srcnat; policy accept;")
+	// Only a flow to a leased address is source-NATed, not every flow the DNAT of this table made.
+	line("\t\tiifname \"%s\" ct status dnat ct original ip daddr @leased masquerade", c.LAN)
+	line("\t}")
+}
+
+func addrList(in []netip.Addr) string {
+	s := make([]string, len(in))
+	for i, a := range in {
+		s[i] = a.String()
+	}
+	return strings.Join(s, ", ")
+}
+
+// backendMap is the map a numgen picks from: number i is backend i at the NodePort.
+func backendMap(backends []netip.Addr, nodePort int) string {
+	s := make([]string, len(backends))
+	for i, a := range backends {
+		s[i] = fmt.Sprintf("%d : %s . %d", i, a, nodePort)
+	}
+	return strings.Join(s, ", ")
+}
+
+// leasedSet writes the set of the leased addresses that DNAT forwards. Each element has the time its
+// lease has left as its timeout, so the host stops forwarding an address whose lease is not renewed
+// even when hostd has stopped. With no LAN interface there is no set.
+func leasedSet(c Config, line func(string, ...any)) {
+	if c.LAN == "" {
+		return
+	}
+	line("\tset leased {")
+	line("\t\ttype ipv4_addr; flags timeout;")
+	if el := leasedElements(c); el != "" {
+		line("\t\telements = { %s }", el)
+	}
+	line("\t}")
+}
+
+// leasedElements lists the leased addresses that DNAT forwards, each with the whole seconds its lease
+// has left, at least one.
+func leasedElements(c Config) string {
+	var s []string
+	for _, e := range sortedExposures(c.Exposures) {
+		if len(e.forwarded()) == 0 {
+			continue
+		}
+		left := int((e.Deadline.Sub(c.At) + time.Second - 1) / time.Second)
+		s = append(s, fmt.Sprintf("%s timeout %ds", e.Address, max(left, 1)))
+	}
+	return strings.Join(s, ", ")
+}
+
+// leasedRefresh is the script that sets the time left of every leased address again, in one atomic
+// run, and changes no rule.
+func leasedRefresh(c Config) string {
+	if c.LAN == "" {
+		return ""
+	}
+	out := "flush set inet naru leased\n"
+	if el := leasedElements(c); el != "" {
+		out += "add element inet naru leased { " + el + " }\n"
+	}
+	return out
 }

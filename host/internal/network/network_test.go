@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -203,11 +204,20 @@ func (f *fakeRunner) Run(_ context.Context, stdin []byte, name string, args ...s
 	if f.fail || f.failNth[len(f.calls)] {
 		return nil, errors.New(name + " failed")
 	}
-	f.table = string(stdin)
+	if strings.Contains(string(stdin), "add table") {
+		f.table = string(stdin)
+	}
 	return nil, nil
 }
 
 func (f *fakeRunner) last() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.table
+}
+
+// lastScript is the script of the latest call, a refresh of the leased set included.
+func (f *fakeRunner) lastScript() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.calls) == 0 {

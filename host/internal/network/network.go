@@ -7,6 +7,7 @@ package network
 import (
 	"net/netip"
 	"sort"
+	"time"
 )
 
 // Network is a virtual network: a membership set. Its prefix is the Pod and routed space, which no
@@ -54,6 +55,13 @@ type Config struct {
 	// Egress is the interface a network's traffic leaves the cluster by. Empty means a network has
 	// no egress.
 	Egress string
+	// LAN is the interface the host announces exposed addresses on; empty means the host exposes
+	// none.
+	LAN string
+	// Exposures are the leases the host holds; the ruleset forwards their ports.
+	Exposures []Exposure
+	// At is the time the leases' time left is counted from: the instant the ruleset is made.
+	At time.Time
 }
 
 func sortedNetworks(in []Network) []Network {
