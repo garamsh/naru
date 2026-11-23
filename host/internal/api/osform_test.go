@@ -233,6 +233,7 @@ func TestOSForm_TheSeedsMetaDataCarriesAPodPrefixOnlyForAMicroVMThatHasOne(t *te
 	vol := e.rt.contents["web.seed"]
 	assert.True(t, bytes.Contains(vol, []byte("local-hostname: web")), "the control: the meta-data is there")
 	assert.False(t, bytes.Contains(vol, []byte("naru-pod-prefix")))
+}
 
 func TestOSForm_AnAddressTheRequestNamesIsTheMachinesAndItsSeedsAndIsRepeatableByName(t *testing.T) {
 	e := start(t)
