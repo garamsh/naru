@@ -109,10 +109,10 @@ func (h *watchedHost) mountDataDisk(log *slog.Logger) {
 	}
 }
 
-func (h *watchedHost) ReadSeed() ([]byte, []byte, []byte, error) {
-	u, n, m, err := h.Host.ReadSeed()
+func (h *watchedHost) ReadSeed() ([]byte, []byte, error) {
+	u, n, err := h.Host.ReadSeed()
 	h.userData, h.networkConfig = u, n
-	return u, n, m, err
+	return u, n, err
 }
 
 func (h *watchedHost) ApplyNetwork(c netcfg.Config, log *slog.Logger) (netcfg.Applied, error) {

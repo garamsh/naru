@@ -81,8 +81,6 @@ type Spec struct {
 	// Join makes the configuration the join form: the only field of spec, from which init derives
 	// what a host that has not joined an orch runs. It is nil in every other configuration.
 	Join *Join `yaml:"join,omitempty"`
-	// Node is the Node's own place in a Pod network. It is nil when the Node has none.
-	Node *Node `yaml:"node,omitempty"`
 }
 
 // StorageRoot is the directory a storage disk is mounted under, as StorageRoot/<name>, unless it names a mount point.
@@ -297,9 +295,6 @@ type Network struct {
 	Forwarding []Family `yaml:"forwarding"`
 	// Routes are static IPv4 routes, one per destination prefix (docs/architecture/adr/0023-spec-network-routes-are-static-ipv4-routes-init-applies-live.md).
 	Routes []Route `yaml:"routes,omitempty"`
-	// BridgeNetfilter, when true, sets net.bridge.bridge-nf-call-iptables=1 so that Pod-to-Pod traffic
-	// on the bridge CNI passes netfilter hooks and is seen by kube-network-policies (ADR 0086).
-	BridgeNetfilter bool `yaml:"bridgeNetfilter,omitempty"`
 }
 
 // Route sends the traffic for To to the next hop Via, which must be on a network the Node is on.

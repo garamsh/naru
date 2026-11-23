@@ -65,8 +65,8 @@ type node struct {
 	onStep   func(timesync.Result)
 }
 
-func (n *node) ReadSeed() ([]byte, []byte, []byte, error) {
-	return []byte(n.userData), []byte(nodeNetwork), nil, nil
+func (n *node) ReadSeed() ([]byte, []byte, error) {
+	return []byte(n.userData), []byte(nodeNetwork), nil
 }
 func (n *node) ApplyNetwork(netcfg.Config, *slog.Logger) (netcfg.Applied, error) {
 	return netcfg.Applied{}, nil
@@ -79,7 +79,6 @@ func (n *node) FormatBlankDataDisk(config.DataDisk, *slog.Logger) error {
 func (n *node) EnableForwarding([]config.Family) error {
 	return nil
 }
-func (n *node) EnableBridgeNetfilter() error                      { return nil }
 func (n *node) AddRoute(config.Route) error                       { return nil }
 func (n *node) DeleteRoute(config.Route) error                    { return nil }
 func (n *node) WriteFiles([]config.File) error                    { return nil }
