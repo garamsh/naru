@@ -22,9 +22,10 @@ import (
 )
 
 // The control of the positive case in bootset_ready_test.go (ADR 0096): a microVM Node of the default
-// volumes add-on whose initramfs carries a description of the image that names another extension,
-// so the delivery is removed and nothing else is changed. Its first boot is refused as it was before
-// the delivery existed, and its Node API stays up.
+// volumes add-on whose initramfs carries an image that is not built for the version the Node runs,
+// so the initramfs has no image for this release and nothing else is changed: init's source offers an
+// image it skips and takes nothing (a Node with no image of its release, not a source that fails).
+// Its first boot is refused as it was before the delivery existed, and its Node API stays up.
 
 // newc is one file of a cpio archive in the kernel's "newc" format.
 func newc(name, content string) []byte {
@@ -42,7 +43,7 @@ func newc(name, content string) []byte {
 }
 
 // spoilNodeInitramfs writes a copy of the Node initramfs followed by one more archive that replaces the
-// description of the volumes image with one that names another extension. The kernel unpacks the
+// description of the volumes image with one that names another version. The kernel unpacks the
 // archives of a concatenation in order, so the later file wins.
 func spoilNodeInitramfs(t *testing.T, initrd string) string {
 	t.Helper()
@@ -50,7 +51,7 @@ func spoilNodeInitramfs(t *testing.T, initrd string) string {
 	require.NoError(t, err)
 	var tail bytes.Buffer
 	zw := gzip.NewWriter(&tail)
-	_, err = zw.Write(newc("usr/lib/naru/boot-extensions/naru-volumes.json", `{"name":"naru-other","version":"v0","sha256":"`+strings.Repeat("0", 64)+`","services":[]}`))
+	_, err = zw.Write(newc("usr/lib/naru/boot-extensions/naru-volumes.json", `{"name":"naru-volumes","version":"v0","sha256":"`+strings.Repeat("0", 64)+`","services":[]}`))
 	require.NoError(t, err)
 	_, err = zw.Write(newc("TRAILER!!!", ""))
 	require.NoError(t, err)
@@ -106,5 +107,6 @@ func TestNode_ABlankMicroVMNodeWithTheDefaultVolumesAddOnRefusesItsFirstBootWhen
 		}
 		return strings.Contains(log, `no image of "naru-volumes" is stored`)
 	}, 4*time.Minute, 15*time.Second, "the microVM's first boot is refused for want of the image")
+	assert.Contains(t, log, "built for another naru version", "the initramfs's image was offered and skipped for its version")
 	assert.NotContains(t, log, "extension staged from the boot medium")
 }
