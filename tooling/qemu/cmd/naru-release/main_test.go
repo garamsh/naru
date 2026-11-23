@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/garamsh/naru/tooling/qemu/internal/release"
 )
 
 // template is the checked-in release notes template, the one the workflow renders.
@@ -76,4 +78,22 @@ func TestPrevious_PrintsThePredecessorOrNothing(t *testing.T) {
 	require.NoError(t, previous([]string{"v0.1.0-dev.9"}, strings.NewReader("v0.1.0-dev.9\n"), &out))
 	assert.Empty(t, out.String())
 	assert.Error(t, previous(nil, strings.NewReader(""), &out))
+}
+
+func TestCommit_PrintsTheCommitAPinResolvesAndRefusesAComponentNoPinNames(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "image", "pkgs", "baz")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pin.env"), []byte("BAZ_REPO=https://example.test/baz\nBAZ_COMMIT_FROM=example.test/baz/lib\nBAZ_LICENSE=NOASSERTION\n"), 0o644))
+	was := release.CommitOf
+	t.Cleanup(func() { release.CommitOf = was })
+	release.CommitOf = func(r, module string) (string, error) { return strings.Repeat("ab", 20), nil }
+
+	var out bytes.Buffer
+	require.NoError(t, commit([]string{"-root", root, "baz"}, &out))
+	assert.Equal(t, strings.Repeat("ab", 20)+"\n", out.String())
+
+	err := commit([]string{"-root", root, "qux"}, &out)
+	require.Error(t, err, "the control: a component no pin names is refused, so the line above is the pin's")
+	assert.Contains(t, err.Error(), "qux")
 }

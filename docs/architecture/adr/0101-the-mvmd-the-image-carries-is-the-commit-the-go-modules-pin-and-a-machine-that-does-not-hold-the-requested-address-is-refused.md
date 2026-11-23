@@ -15,8 +15,8 @@ Drafted for garamsh/naru#262. It supersedes the part of [ADR 0043](./0043-the-ho
 
 ## Decision
 
-1. **The image's mvmd commit is the one `host/go.mod` pins.** `image/pkgs/mvmd/pin.env` names the repository and the module (`MVMD_COMMIT_FROM`) and holds no commit. `image/pkgs/mvmd-commit.sh` reads that module's version in `host/go.mod`, has go resolve the pseudo-version to the whole commit hash, and `build.sh` passes it to BuildKit as `MVMD_COMMIT`, which the `mvmd` and `guest-initrds` packages take as a build argument and fail without. The release's component list resolves the same way (`release.CommitOf`), so the SBOM names the commit the image was built from.
-2. **The three modules agree or the build fails.** `mvmd-commit.sh` refuses a `tooling/qemu` or `tooling/probe` that pins another version, and a test of `tooling/qemu` does the same.
+1. **The image's mvmd commit is the one `host/go.mod` pins.** `image/pkgs/mvmd/pin.env` names the repository and the module (`MVMD_COMMIT_FROM`) and holds no commit. `naru-release commit mvmd` reads that module's version in `host/go.mod` and has go resolve the pseudo-version to the whole commit hash (`release.CommitOf`); `build.sh` passes it to BuildKit as `MVMD_COMMIT`, which the `mvmd` and `guest-initrds` packages take as a build argument and fail without. The release's component list calls the same function, so the SBOM names the commit the image was built from, and there is one resolver.
+2. **The three modules agree or the lint fails.** `make lint-modules` already fails when two modules of the workspace require one dependency at different versions, which covers `host`, `tooling/qemu` and `tooling/probe`; nothing here checks it a second time.
 3. **The digests of the guest initrds remain checked values.** They cannot be derived, so they move in the pull request that moves the pin; a build at a commit whose initrds differ fails and prints the digest it got and the commit.
 4. **A Machine that does not hold the requested address is refused.** After mvmd creates the Machine, hostd compares its addresses with `address` of the request; when it is not among them hostd removes what the request made and answers 409 naming both addresses.
 
@@ -29,7 +29,7 @@ Drafted for garamsh/naru#262. It supersedes the part of [ADR 0043](./0043-the-ho
 ## Consequences
 
 - Moving the Go modules' pin moves the image's mvmd, and the digests of `image/pkgs/guest-initrds/pin.env` with it; a pull request that moves one and not the other fails to build the image.
-- `build.sh` and the release need `go` and the module's source (the module cache or the proxy) to resolve the hash.
+- `build.sh` and the release need `go` and the module's source (the module cache or the proxy) to resolve the hash, and `build.sh` runs `naru-release` with `go run`.
 - A host with an mvmd older than the Go client now fails a create that asks for an address, where it ran the member at another one before.
 
 ## Signs the decision was wrong

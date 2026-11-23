@@ -13,7 +13,7 @@ variable "SOURCE_DATE_EPOCH" {}
 variable "KBUILD_BUILD_TIMESTAMP" {}
 variable "OUT" {}
 # The mvmd commit the mvmd and guest-initrds packages build: the one the Go modules pin, which
-# build.sh reads with mvmd-commit.sh.
+# build.sh reads with naru-release commit.
 variable "MVMD_COMMIT" {}
 # The version naru-init reports and the naru-orch extension is built for (VERSION of the Makefile).
 variable "NARU_VERSION" {}

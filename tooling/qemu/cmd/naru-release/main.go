@@ -9,6 +9,10 @@
 // naru-release previous <tag> reads release tags, one per line, from standard input and prints the one with the highest
 // SemVer 2.0.0 version below <tag>, or nothing when none is below it.
 //
+// naru-release commit [-root <root>] <component> prints the commit of the component a pin.env under image/ names, resolved
+// from the Go module of its <PREFIX>_COMMIT_FROM when the pin holds none. The image build takes mvmd's commit from it, and
+// so does the SBOM, so the two read one resolver.
+//
 // naru-release notes renders the release notes template with the tag, the commit, the two figures and the build's SHA256SUMS
 // (see -h for the flags) to standard output.
 package main
@@ -42,6 +46,8 @@ func run() error {
 			return previous(os.Args[2:], os.Stdin, os.Stdout)
 		case "notes":
 			return notes(os.Args[2:], os.Stdout)
+		case "commit":
+			return commit(os.Args[2:], os.Stdout)
 		}
 	}
 	var o release.Options
@@ -133,6 +139,31 @@ func previous(args []string, in io.Reader, out io.Writer) error {
 		fmt.Fprintln(out, prev)
 	}
 	return nil
+}
+
+func commit(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("commit", flag.ContinueOnError)
+	root := fs.String("root", ".", "repository root")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: naru-release commit [-root <root>] <component>")
+	}
+	comps, err := release.ReadComponents(*root)
+	if err != nil {
+		return err
+	}
+	for _, c := range comps {
+		if c.Name == fs.Arg(0) {
+			if c.Commit == "" {
+				return fmt.Errorf("commit: %s is not pinned by a commit", c.Name)
+			}
+			_, err := fmt.Fprintln(out, c.Commit)
+			return err
+		}
+	}
+	return fmt.Errorf("commit: no pin.env under %s/image names a component %q", *root, fs.Arg(0))
 }
 
 func notes(args []string, out io.Writer) error {
