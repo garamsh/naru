@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -92,14 +93,18 @@ func Main() {
 		}
 	}
 	var upgrades *upgrade.Upgrader
+	// applied is the engine that holds the configuration the next boot runs, which an upgrade and the
+	// removal of images read spec.extensions from. It is nil until the boot has made one.
+	var applied atomic.Pointer[apply.Engine]
+	extensionSpecs := specsOf(&applied)
 	publish := func() {
 		if err := writeInitStatus(config.InitStatusFile, version(), upgrades); err != nil {
 			log.Warn("write the status naru-hostd reports", "file", config.InitStatusFile, "err", err)
 		}
 	}
 	upgrades = upgrade.NewWith(upgrade.Config{Version: version(), Started: started, Log: log, Changed: publish, Extensions: func() ([]upgrade.Entry, []upgrade.Image, error) {
-		return storedExtensions(configs, extensions)
-	}, Stage: stageExtension(extensions), Unstage: func(sha string) { _ = extensions.Delete(sha) }, Prune: func() { pruneExtensions(configs, extensions, log) }})
+		return nextBootExtensions(extensions, extensionSpecs)
+	}, Stage: stageExtension(extensions), Unstage: func(sha string) { _ = extensions.Delete(sha) }, Prune: func() { pruneExtensions(extensionSpecs, extensions, log) }})
 	upgrades.Detect()
 	server := api.New(api.Deps{
 		Services:   services,
@@ -123,6 +128,7 @@ func Main() {
 	publish()
 	if booted != nil {
 		engine = newEngine(*booted, configs, services, host, issuer, server)
+		applied.Store(engine)
 		server.Attach(engine)
 		log.Info("the apply engine is ready", "revision", booted.Revision)
 		serveMetrics(metricsCtx, booted.Config.Spec.MetricsAddr(), services, server.Revocations, log)
@@ -205,18 +211,26 @@ func ignoreSignals() {
 	signal.Ignore(syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT)
 }
 
-// storedExtensions returns spec.extensions of the stored configuration and the stored images, which
-// an upgrade is checked against (ADR 0055).
-func storedExtensions(configs *store.Store, extensions *extension.Manager) ([]upgrade.Entry, []upgrade.Image, error) {
-	st, err := configs.Load()
-	if errors.Is(err, store.ErrNotFound) {
-		return nil, nil, nil
+// specsOf returns the source of spec.extensions of the configuration the engine in applied holds,
+// which is false while the boot has made none.
+func specsOf(applied *atomic.Pointer[apply.Engine]) func() ([]config.Extension, bool) {
+	return func() ([]config.Extension, bool) {
+		e := applied.Load()
+		if e == nil {
+			return nil, false
+		}
+		_, cfg := e.Config()
+		return cfg.Spec.Extensions, true
 	}
-	if err != nil {
-		return nil, nil, err
-	}
+}
+
+// nextBootExtensions returns spec.extensions of the configuration the next boot runs and the stored
+// images, which an upgrade is checked against and stages a bundle for (ADR 0055). specs gives that
+// configuration: the base at revision 0 on a Node with no store, the newest revision after an apply.
+func nextBootExtensions(extensions *extension.Manager, specs func() ([]config.Extension, bool)) ([]upgrade.Entry, []upgrade.Image, error) {
+	list, _ := specs()
 	var entries []upgrade.Entry
-	for _, e := range st.Config.Spec.Extensions {
+	for _, e := range list {
 		entries = append(entries, upgrade.Entry{Name: e.Name, SHA256: e.SHA256})
 	}
 	if len(entries) == 0 {
@@ -249,17 +263,14 @@ func stageExtension(extensions *extension.Manager) func(name, sha256, version st
 }
 
 // pruneExtensions removes the images built for another version than init's that no pinned entry of
-// the configuration names.
-func pruneExtensions(configs *store.Store, extensions *extension.Manager, log *slog.Logger) {
-	st, err := configs.Load()
-	if errors.Is(err, store.ErrNotFound) {
-		return // nothing is known to be pinned, so nothing is removed
-	}
-	if err != nil {
-		log.Error("read the configuration to remove the extension images of another version", "err", err)
+// the configuration the next boot runs names. Where the boot made no configuration, nothing is known
+// to be pinned, so nothing is removed.
+func pruneExtensions(specs func() ([]config.Extension, bool), extensions *extension.Manager, log *slog.Logger) {
+	list, ok := specs()
+	if !ok {
 		return
 	}
-	if _, err := extensions.Prune(st.Config.Spec.Extensions); err != nil {
+	if _, err := extensions.Prune(list); err != nil {
 		log.Error("remove the extension images of another version", "err", err)
 	}
 }
