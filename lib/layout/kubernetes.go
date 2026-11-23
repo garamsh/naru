@@ -223,6 +223,10 @@ roleRef:
 // NetworkPolicyUser is the user the NetworkPolicy enforcer's client certificate names.
 const NetworkPolicyUser = "system:kube-network-policies"
 
+// NetworkPolicyMetricsAddress is where the enforcer serves its metrics: the loopback, since the
+// configuration names no port that a Node listens on beyond it (ADR 0047 item 4) and nothing scrapes it.
+const NetworkPolicyMetricsAddress = "127.0.0.1:9080"
+
 // NetworkPolicyRBACFile is where a control-plane Node carries NetworkPolicyRBAC, for the add-ons'
 // service to apply.
 const NetworkPolicyRBACFile = KubeDir + "/network-policy-rbac.yaml"
@@ -556,7 +560,9 @@ func (n Node) kubeServices() []service {
 		{
 			Name: "kube-network-policies", Binary: n.binary("kube-network-policies", "/bin/kube-network-policies"), Env: n.kubeEnv(),
 			// The Pod's IP comes from the API server: NRI is off in containerd (ADR 0031 item 10).
-			Args: []string{"--kubeconfig=" + kubePath("kube-network-policies.conf"), "--hostname-override=" + n.Name, "--disable-nri"},
+			Args: []string{"--kubeconfig=" + kubePath("kube-network-policies.conf"), "--hostname-override=" + n.Name, "--disable-nri",
+				// The agent fails open and serves metrics on every address unless told otherwise.
+				"--fail-open=false", "--metrics-bind-address=" + NetworkPolicyMetricsAddress},
 		},
 		{
 			Name: "kubelet", Binary: n.binary("kubelet", "/bin/kubelet"), Env: n.kubeEnv(),

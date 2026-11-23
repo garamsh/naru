@@ -685,7 +685,8 @@ func TestKubernetesUserData_NetworkPolicyEnforcerRunsBeforeTheKubeletWithItsOwnP
 		assert.Equal(t, "/bin/kube-network-policies", binary)
 		assert.Contains(t, args, "--kubeconfig="+layout.KubeDir+"/kube-network-policies.conf")
 		assert.Contains(t, args, "--disable-nri", "NRI is off in containerd, and the agent takes Pod IPs from the API server")
-		assert.NotContains(t, args, "--fail-open", "the agent fails closed (ADR 0086 item 3)")
+		assert.Contains(t, args, "--fail-open=false", "upstream defaults to true: the agent fails closed only when told to (ADR 0086 item 3)")
+		assert.Contains(t, args, "--metrics-bind-address=127.0.0.1:9080", "upstream defaults to :9080 on every address, and a Node listens on no port its configuration does not name (ADR 0047 item 4)")
 		assert.Contains(t, fileContent(t, s, layout.KubeDir+"/kube-network-policies.conf"), "client-certificate: "+layout.KubePKIDir+"/kube-network-policies.crt")
 		assert.True(t, s.Spec.Network.BridgeNetfilter, "the bridge passes Pod traffic to the netfilter hooks the agent's rules sit on")
 	}

@@ -58,3 +58,7 @@ Drafted for garamsh/naru#266, part of goal garamsh/naru#262. It adds to [ADR 003
 - **The measured binary and working set pass the threshold of ADR 0083 on their own**, or the first-packet latency fails a workload of aurora's: the agent moves into the extension of item 10, or an eBPF CNI replaces the bridge.
 - **The first boot's sync takes long enough that Pods wait noticeably:** the agent persists its last policy set to disk and applies it before the API server answers.
 - **A customer needs a policy feature the SIG Network agent does not implement:** that customer sets `networkPolicy: false` and runs the CNI that does; naru's agent is not extended for it.
+
+## Errata
+
+- 2026-11-23: item 3 says the agent "runs without its `--fail-open` flag, so the queue has no bypass". The flag is on unless it is turned off: `pkg/cmd/cmd.go:42` of kube-network-policies at the pinned commit declares `fail-open` with the default `true`, so leaving it out gives the bypass item 3 rejects. The agent is started with `--fail-open=false` ([ADR 0094](./0094-the-network-policy-enforcer-is-a-user-of-its-own-whose-rbac-the-add-ons-service-applies-whenever-the-enforcer-is-on-and-it-is-started-without-nri.md) item 8). The decision stands.
