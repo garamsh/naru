@@ -78,3 +78,13 @@ func TestSigningKeyID_IsWhatGenKubernetesJWKSPrints(t *testing.T) {
 	_, err = naructl.Tool{Bin: "/bin/true"}.SigningKeyID("/ca")
 	assert.ErrorContains(t, err, "no signing key id")
 }
+
+func TestGenKubernetesNode_APodPrefixFromTheSeedIsItsOwnFlagAndNamesNoPrefix(t *testing.T) {
+	tool, out := recorder(t)
+
+	require.NoError(t, tool.GenKubernetesNode(naructl.KubernetesNode{CA: "/ca", Name: "w1-1", PodNetwork: "10.64.0.0/16", PodPrefixFromSeed: true, Out: "/o.yaml"}))
+
+	line := argsOf(t, out)
+	assert.Contains(t, line, "--pod-network 10.64.0.0/16 --pod-prefix-from-seed --out /o.yaml")
+	assert.NotContains(t, line, "--pod-prefix ", "the control: the flag stands in for the prefix")
+}
