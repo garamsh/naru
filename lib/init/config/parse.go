@@ -282,6 +282,9 @@ func (v *validation) files(files []File, services []Service) {
 				v.fail(field+".mode", "must be octal permission bits up to 0777, got %q", f.Mode)
 			}
 		}
+		if err := f.checkTemplate(); err != nil {
+			v.fail(field+".template", "%v", err)
+		}
 		for j, name := range f.Restart {
 			if !running[name] {
 				v.fail(fmt.Sprintf("%s.restart[%d]", field, j), "names no service in spec.services, got %q", name)

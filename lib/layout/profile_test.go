@@ -23,11 +23,7 @@ const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
 func profile(t *testing.T) layout.HostProfile {
 	t.Helper()
-	f := layout.File{Path: "/x", SHA256: digest}
 	return layout.HostProfile{
-		Guest: layout.Manifest{
-			Kernels: map[string]layout.File{"naru": f}, DefaultKernel: "naru", GuestInitrd: f, ConverterInitrd: f,
-		},
 		FirecrackerSHA256: digest,
 		Orch:              layout.ProfileOrch{URL: "https://orch.example:8443", CASHA256: digest},
 		MachinePool:       netip.MustParsePrefix("10.200.0.0/16"),

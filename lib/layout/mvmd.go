@@ -4,102 +4,50 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
-	"sort"
 
 	"github.com/garamsh/naru/lib/wire"
 )
 
-// File is one guest artifact: Path is where it is inside the image, SHA256 the digest of its bytes.
-type File struct {
-	Path   string `json:"path" yaml:"path"`
-	SHA256 string `json:"sha256" yaml:"sha256"`
-}
+var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// Manifest is guest.json, which the initramfs-host package (image/pkgs) writes and the release carries as
-// naru-guest-<version>.json (ADR 0010): the guest kernels and initrds a Node boots Machines from.
-type Manifest struct {
-	Kernels         map[string]File `json:"kernels" yaml:"kernels"`
-	DefaultKernel   string          `json:"default_kernel" yaml:"default_kernel"`
-	GuestInitrd     File            `json:"guest_initrd" yaml:"guest_initrd"`
-	ConverterInitrd File            `json:"converter_initrd" yaml:"converter_initrd"`
-}
+// guestRef is what stands for a value of the booted image's guest.json in the document, until the
+// document is a template: the template action init renders it with (config.File.Render).
+type guestRef struct{ sentinel, action string }
 
 var (
-	namePattern   = regexp.MustCompile(`^[a-z0-9-]{1,63}$`)
-	digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	guestKernels       = guestRef{"@guest:kernels@", "{{json .kernels}}"}
+	guestDefaultKernel = guestRef{"@guest:default_kernel@", "{{json .default_kernel}}"}
+	guestInitrdPath    = guestRef{"@guest:guest_initrd.path@", "{{json .guest_initrd.path}}"}
+	guestInitrdSHA     = guestRef{"@guest:guest_initrd.sha256@", "{{json .guest_initrd.sha256}}"}
+	guestConvPath      = guestRef{"@guest:converter_initrd.path@", "{{json .converter_initrd.path}}"}
+	guestConvSHA       = guestRef{"@guest:converter_initrd.sha256@", "{{json .converter_initrd.sha256}}"}
+	// The converter has one kernel of its own, which is the default.
+	guestConvKernelPath = guestRef{"@guest:converter_kernel.path@", "{{json (index .kernels .default_kernel).path}}"}
+	guestConvKernelSHA  = guestRef{"@guest:converter_kernel.sha256@", "{{json (index .kernels .default_kernel).sha256}}"}
+	guestRefs           = []guestRef{guestKernels, guestDefaultKernel, guestInitrdPath, guestInitrdSHA, guestConvPath, guestConvSHA, guestConvKernelPath, guestConvKernelSHA}
 )
 
-// ReadManifest reads and checks the manifest at path.
-func ReadManifest(path string) (Manifest, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return Manifest{}, err
+// asTemplate turns the marshaled document into the guest template init renders: every `{{` the
+// operator's own strings hold is written as the text it is, and each sentinel, which stands for a
+// whole JSON value, becomes its action.
+func asTemplate(doc []byte) []byte {
+	doc = bytes.ReplaceAll(doc, []byte("{{"), []byte(`{{"{{"}}`))
+	for _, r := range guestRefs {
+		doc = bytes.ReplaceAll(doc, []byte(`"`+r.sentinel+`"`), []byte(r.action))
 	}
-	var m Manifest
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&m); err != nil {
-		return Manifest{}, fmt.Errorf("%s: %w", path, err)
-	}
-	if err := m.Check(); err != nil {
-		return Manifest{}, fmt.Errorf("%s: %w", path, err)
-	}
-	return m, nil
+	return doc
 }
 
-// Check reports the first thing wrong with the manifest: a kernel name outside 1 to 63 characters
-// of [a-z0-9-], a default that is not a declared kernel, or a file without a path or a digest.
-func (m Manifest) Check() error {
-	if len(m.Kernels) == 0 {
-		return fmt.Errorf("no kernel is declared")
-	}
-	names := make([]string, 0, len(m.Kernels))
-	for n := range m.Kernels {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		if !namePattern.MatchString(n) {
-			return fmt.Errorf("kernel name %q is not 1 to 63 characters of [a-z0-9-]", n)
-		}
-		if err := m.Kernels[n].check("kernel " + n); err != nil {
-			return err
-		}
-	}
-	if _, ok := m.Kernels[m.DefaultKernel]; !ok {
-		return fmt.Errorf("default_kernel %q is not one of the declared kernels", m.DefaultKernel)
-	}
-	if err := m.GuestInitrd.check("guest_initrd"); err != nil {
-		return err
-	}
-	return m.ConverterInitrd.check("converter_initrd")
-}
-
-func (f File) check(what string) error {
-	if f.Path == "" || f.Path[0] != '/' {
-		return fmt.Errorf("%s: path %q is not absolute", what, f.Path)
-	}
-	if !digestPattern.MatchString(f.SHA256) {
-		return fmt.Errorf("%s: sha256 %q is not 64 lowercase hex digits", what, f.SHA256)
-	}
-	return nil
-}
-
-// mvmdJSON is mvmd's configuration for the Node: the Firecracker driver on the guest files of the
-// image and every declared kernel, the registry section for the files init writes from
-// spec.registries, supervisors outside mvmd's cgroup, and a Machine network of its own per Node.
+// mvmdJSON is mvmd's configuration for the Node, as the template init renders (spec.files
+// `template: guest`): the Firecracker driver on the guest files of the image and every declared kernel,
+// the registry section for the files init writes from spec.registries, supervisors outside mvmd's
+// cgroup, and a Machine network of its own per Node. The guest kernels, initrds and their digests are
+// not in it: they are the booted image's guest.json (ADR 0010), which init reads at each write, so an
+// upgrade that changes them changes the file with no edit of the configuration (ADR 0106).
 func (n Node) mvmdJSON() ([]byte, error) {
 	if !digestPattern.MatchString(n.FirecrackerSHA256) {
 		return nil, fmt.Errorf("the Firecracker digest %q is not 64 lowercase hex digits", n.FirecrackerSHA256)
-	}
-	g := n.Guest
-	// The converter has one kernel of its own, which is the default.
-	kernel := g.Kernels[g.DefaultKernel]
-	kernels := make(map[string]any, len(g.Kernels))
-	for name, k := range g.Kernels {
-		kernels[name] = map[string]any{"path": k.Path, "sha256": k.SHA256}
 	}
 	prefix := n.MachinePrefix
 	first := prefix.Masked().Addr().Next().String()
@@ -140,7 +88,7 @@ func (n Node) mvmdJSON() ([]byte, error) {
 	if len(n.Storage) > 0 {
 		supervision["dir"] = wire.MvmdStorageMount + "/machines"
 	}
-	return json.MarshalIndent(map[string]any{
+	doc, err := json.MarshalIndent(map[string]any{
 		"registry":  registry,
 		"socket":    map[string]any{"path": MvmdSocket, "mode": "0660"},
 		"state_dir": wire.MvmdStateDir,
@@ -148,12 +96,12 @@ func (n Node) mvmdJSON() ([]byte, error) {
 		"disk":      map[string]any{"mkfs": wire.MkfsPath},
 		"firecracker": map[string]any{
 			"binary": "/bin/firecracker", "binary_sha256": n.FirecrackerSHA256,
-			"kernels": kernels, "default_kernel": g.DefaultKernel,
-			"initrd": g.GuestInitrd.Path, "initrd_sha256": g.GuestInitrd.SHA256,
+			"kernels": guestKernels.sentinel, "default_kernel": guestDefaultKernel.sentinel,
+			"initrd": guestInitrdPath.sentinel, "initrd_sha256": guestInitrdSHA.sentinel,
 		},
 		"conversion": map[string]any{
-			"kernel": kernel.Path, "kernel_sha256": kernel.SHA256,
-			"initrd": g.ConverterInitrd.Path, "initrd_sha256": g.ConverterInitrd.SHA256,
+			"kernel": guestConvKernelPath.sentinel, "kernel_sha256": guestConvKernelSHA.sentinel,
+			"initrd": guestConvPath.sentinel, "initrd_sha256": guestConvSHA.sentinel,
 			"converter": "naru-converter",
 			"vcpus":     2, "memory_bytes": 512 << 20,
 			"output_bytes": 256 << 20, "name_set_bytes": 1 << 20,
@@ -166,4 +114,8 @@ func (n Node) mvmdJSON() ([]byte, error) {
 		"boot_timeout":  "2m",
 		"call_timeout":  "5m",
 	}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return asTemplate(doc), nil
 }

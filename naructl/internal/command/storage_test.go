@@ -66,8 +66,7 @@ func TestGenNode_AStorageSerialWithoutANumberIsRefused(t *testing.T) {
 	dep := newDeployment(t)
 
 	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24",
-		"--api-server", "192.168.0.10", "--machine-prefix", "10.200.1.0/24", "--guest", dep.guest,
-		"--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "n.yaml"), "--storage", "vmdisks=serial:")
+		"--api-server", "192.168.0.10", "--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "n.yaml"), "--storage", "vmdisks=serial:")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error()+out, "names no serial number")
@@ -100,7 +99,7 @@ func TestGenNode_RefusesStorageInitWouldRefuse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			args := []string{
 				"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-				"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
+				"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 			}
 			for _, s := range tt.storage {
 				args = append(args, "--storage", s)

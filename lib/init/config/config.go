@@ -161,6 +161,10 @@ type File struct {
 	Restart []string `yaml:"restart,omitempty"`
 	// Owner is the user and group that own the file. It is root's when nil.
 	Owner *Owner `yaml:"owner,omitempty"`
+	// Template names what Content is rendered from when init writes the file: "guest" renders it as a
+	// Go text/template over the booted image's guest.json (see Render). It is empty for a file written as
+	// it stands.
+	Template string `yaml:"template,omitempty"`
 }
 
 // Owner is a numeric user and group, a file's owner.

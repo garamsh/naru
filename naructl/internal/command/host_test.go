@@ -105,7 +105,7 @@ func TestGenNode_HostLabelsNeedARegionAndTheAuthority(t *testing.T) {
 		return append([]string{
 			"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24",
 			"--api-server", "192.168.0.10", "--machine-prefix", "10.200.1.0/24",
-			"--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out,
+			"--firecracker-sha256", d("7"), "--out", out,
 		}, extra...)
 	}
 	_, err := run(t, args("--host-label", "a=b")...)

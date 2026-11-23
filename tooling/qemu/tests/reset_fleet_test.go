@@ -5,7 +5,6 @@ package tests_test
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"net"
 	"net/http"
 	"path"
@@ -111,10 +110,8 @@ func joinedHost(t *testing.T) (f *fleet, nd *node.Node, id, firstBoot string) {
 	orchURL := "https://" + nodeIP(1) + ":" + orchPort
 	iso := filepath.Join(f.dir, "seed.iso")
 	f.must(nrun("host", "install-seed", "--orch-url", orchURL, "--orch-ca-sha256", f.caSHA, "--enroll-key", f.file("enroll.key", secret[1]+"\n"), "--out", iso), "host install-seed")
-	guest, err := json.Marshal(inputs.Guest)
-	require.NoError(t, err)
 	profile := filepath.Join(f.dir, "host-profile.yaml")
-	f.must(nrun("gen", "host-profile", "--guest", f.file("guest.json", string(guest)), "--firecracker-sha256", inputs.FirecrackerSHA256,
+	f.must(nrun("gen", "host-profile", "--firecracker-sha256", inputs.FirecrackerSHA256,
 		"--machine-pool", "10.77.0.0/16", "--orch-url", orchURL, "--orch-ca-sha256", f.caSHA,
 		"--registry", "host="+nodeIP(1)+":"+joinRegistryPort+",ca="+f.file("registry-ca.pem", string(certs.CA)),
 		"--host-management-prefix", managementPrefix, "--host-egress-interface", "eth0", "--host-tunnel-port", "51820", "--out", profile), "gen host-profile")

@@ -480,3 +480,25 @@ func read(t *testing.T, path string) string {
 	require.NoError(t, err)
 	return string(b)
 }
+
+func TestHost_WriteFilesAndReplaceFileRenderAGuestTemplateFromTheBootedImagesManifest(t *testing.T) {
+	h, _ := testHost(t, nil)
+	h.guestManifest = filepath.Join(t.TempDir(), "guest.json")
+	require.NoError(t, os.WriteFile(h.guestManifest, []byte(`{"guest_initrd":{"sha256":"aa"}}`), 0o644))
+	dir := t.TempDir()
+	tmpl := config.File{Path: filepath.Join(dir, "t.json"), Mode: "0600", Content: `{"d":{{json .guest_initrd.sha256}}}`, Template: config.TemplateGuest}
+	plain := config.File{Path: filepath.Join(dir, "plain"), Content: `{{json .guest_initrd.sha256}}`}
+
+	require.NoError(t, h.WriteFiles([]config.File{tmpl, plain}))
+
+	assert.Equal(t, `{"d":"aa"}`, read(t, tmpl.Path))
+	assert.Equal(t, `{{json .guest_initrd.sha256}}`, read(t, plain.Path), "control: a file with no template is written as it stands")
+
+	require.NoError(t, os.WriteFile(h.guestManifest, []byte(`{"guest_initrd":{"sha256":"bb"}}`), 0o644))
+	require.NoError(t, h.ReplaceFile(tmpl))
+	assert.Equal(t, `{"d":"bb"}`, read(t, tmpl.Path), "the same stored file follows the manifest of the image it boots")
+
+	require.NoError(t, os.Remove(h.guestManifest))
+	assert.Error(t, h.ReplaceFile(tmpl), "no manifest, no file")
+	assert.Equal(t, `{"d":"bb"}`, read(t, tmpl.Path), "a refusal leaves the file as it was")
+}

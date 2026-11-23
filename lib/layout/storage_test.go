@@ -1,13 +1,15 @@
 package layout_test
 
 import (
-	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/layout"
 	"github.com/garamsh/naru/lib/wire"
 )
@@ -20,8 +22,9 @@ func emittedMvmd(t *testing.T, n layout.Node) (mvmd map[string]any, storage []st
 	var c struct {
 		Spec struct {
 			Files []struct {
-				Path    string `yaml:"path"`
-				Content string `yaml:"content"`
+				Path     string `yaml:"path"`
+				Content  string `yaml:"content"`
+				Template string `yaml:"template"`
 			} `yaml:"files"`
 			Storage []struct {
 				Name       string `yaml:"name"`
@@ -32,7 +35,8 @@ func emittedMvmd(t *testing.T, n layout.Node) (mvmd map[string]any, storage []st
 	require.NoError(t, yaml.Unmarshal(data, &c))
 	for _, f := range c.Spec.Files {
 		if f.Path == layout.MvmdConfig {
-			require.NoError(t, json.Unmarshal([]byte(f.Content), &mvmd))
+			mvmd = render(t, config.File{Path: f.Path, Content: f.Content, Template: f.Template},
+				fmt.Sprintf(guestOf, strings.Repeat("1", 64), strings.Repeat("2", 64), strings.Repeat("3", 64)))
 		}
 	}
 	require.NotNil(t, mvmd, "the user-data writes mvmd's configuration")

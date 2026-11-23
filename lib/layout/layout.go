@@ -122,8 +122,8 @@ type Node struct {
 	// (network.no_masquerade) with no route to them, such as the Machine prefixes of the hosts a
 	// tunnel carries them to, which hostd routes through the interface it makes.
 	NoMasquerade []netip.Prefix
-	// Guest is guest.json, and FirecrackerSHA256 the digest of the Firecracker binary.
-	Guest             Manifest
+	// FirecrackerSHA256 is the digest of the Firecracker binary. The guest kernels and initrds have no
+	// field: the booted image's guest.json names them (ADR 0106).
 	FirecrackerSHA256 string
 
 	// Token is the Node's bootstrap token, which its agent presents for a certificate signing
@@ -252,6 +252,8 @@ type file struct {
 	Path    string `yaml:"path"`
 	Mode    string `yaml:"mode,omitempty"`
 	Content string `yaml:"content"`
+	// Template is what init renders Content from when it writes the file ("guest"), empty when none.
+	Template string `yaml:"template,omitempty"`
 	// Owner is the file's numeric owner; root's when nil.
 	Owner *fileOwner `yaml:"owner,omitempty"`
 	// Restart names the services init restarts when the file changes in an apply.
@@ -361,9 +363,6 @@ func (n Node) Check() error {
 		return err
 	}
 	if err := n.checkMembers(); err != nil {
-		return err
-	}
-	if err := n.Guest.Check(); err != nil {
 		return err
 	}
 	if n.Host != nil {
@@ -510,7 +509,7 @@ func (n Node) UserData() ([]byte, error) {
 	for _, p := range n.Peers {
 		c.Spec.Network.Routes = append(c.Spec.Network.Routes, route{To: p.MachinePrefix, Via: p.Address})
 	}
-	c.Spec.Files = []file{{Path: MvmdConfig, Mode: "0600", Content: string(mvmdJSON) + "\n"}}
+	c.Spec.Files = []file{{Path: MvmdConfig, Mode: "0600", Content: string(mvmdJSON) + "\n", Template: "guest"}}
 	certFiles, err := n.certFiles()
 	if err != nil {
 		return nil, err

@@ -87,16 +87,6 @@ func tool(t *testing.T) naructl.Tool {
 	return naructl.Tool{Bin: naructlBin}
 }
 
-// guestFile writes the guest manifest of inputs where naructl reads it.
-func guestFile(t *testing.T) string {
-	t.Helper()
-	b, err := json.Marshal(inputs.Guest)
-	require.NoError(t, err)
-	p := filepath.Join(t.TempDir(), "guest.json")
-	require.NoError(t, os.WriteFile(p, b, 0o600))
-	return p
-}
-
 // userDataFiles is release.UserData with naructl and the test inputs.
 func userDataFiles(t *testing.T) (map[string][]byte, error) {
 	t.Helper()
@@ -117,7 +107,7 @@ func userDataIn(t *testing.T, dir, version string) (map[string][]byte, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "ca.pem"))
 	require.NoError(t, err)
 	testCA = string(b)
-	return release.UserData(tool(t), version, 1794355200, guestFile(t), inputs.FirecrackerSHA256, filepath.Join(dir, "ca.pem"))
+	return release.UserData(tool(t), version, 1794355200, inputs.FirecrackerSHA256, filepath.Join(dir, "ca.pem"))
 }
 
 // testCA is the registry authority of the user-data the tests last asked for.
@@ -205,6 +195,10 @@ func (u userData) file(path string) string {
 	return ""
 }
 
+// guestAction is what stands for a value of the booted image's guest.json in the stored mvmd file, which
+// init renders at each write (ADR 0106); a test of the rest of the file reads it as null.
+var guestAction = regexp.MustCompile(`\{\{json [^}]*\}\}`)
+
 func TestUserData_CarriesTheDeploymentsAddressesAndRoles(t *testing.T) {
 	files, err := userDataFiles(t)
 	require.NoError(t, err)
@@ -230,7 +224,7 @@ func TestUserData_CarriesTheDeploymentsAddressesAndRoles(t *testing.T) {
 				Resolver []string `json:"resolvers"`
 			}
 		}
-		require.NoError(t, json.Unmarshal([]byte(n.file("/run/mvmd/config.json")), &mvmd), tc.file)
+		require.NoError(t, json.Unmarshal(guestAction.ReplaceAll([]byte(n.file("/run/mvmd/config.json")), []byte("null")), &mvmd), tc.file)
 		assert.Equal(t, tc.prefix, mvmd.Network.Prefix, tc.file)
 		assert.Equal(t, tc.gateway, mvmd.Network.Gateway, tc.file)
 		assert.Equal(t, []string{tc.gateway}, mvmd.Network.Resolver, tc.file)
@@ -256,7 +250,7 @@ func TestUserData_RoutesToTheOtherNodesMachinePrefixAndKeepsTheSourceAddress(t *
 				NoMasquerade []string `json:"no_masquerade"`
 			}
 		}
-		require.NoError(t, json.Unmarshal([]byte(n.file("/run/mvmd/config.json")), &mvmd), tc.file)
+		require.NoError(t, json.Unmarshal(guestAction.ReplaceAll([]byte(n.file("/run/mvmd/config.json")), []byte("null")), &mvmd), tc.file)
 		assert.Equal(t, []string{tc.to}, mvmd.Network.NoMasquerade, tc.file)
 	}
 }

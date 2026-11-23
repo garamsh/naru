@@ -89,22 +89,13 @@ func validate(t *testing.T, path string) string {
 
 func d(c string) string { return strings.Repeat(c, 64) }
 
-// guestJSON writes a guest manifest of two kernels and returns its path.
-func guestJSON(t *testing.T) string {
-	t.Helper()
-	p := filepath.Join(t.TempDir(), "guest.json")
-	require.NoError(t, os.WriteFile(p, []byte(`{"kernels":{"naru":{"path":"/k1","sha256":"`+d("a")+`"},"alt":{"path":"/k2","sha256":"`+d("b")+`"}},
-"default_kernel":"naru","guest_initrd":{"path":"/g","sha256":"`+d("c")+`"},"converter_initrd":{"path":"/c","sha256":"`+d("d")+`"}}`), 0o600))
-	return p
-}
-
 type deployment struct {
-	ca, guest string
+	ca string
 }
 
 func newDeployment(t *testing.T) deployment {
 	t.Helper()
-	dep := deployment{ca: filepath.Join(t.TempDir(), "ca"), guest: guestJSON(t)}
+	dep := deployment{ca: filepath.Join(t.TempDir(), "ca")}
 	mustRun(t, "gen", "ca", "--ca-dir", dep.ca)
 	return dep
 }
@@ -117,7 +108,7 @@ func (dep deployment) node(t *testing.T, name string, extra ...string) string {
 	args := []string{
 		"gen", "node", "--ca-dir", dep.ca, "--name", name, "--address", "192.168.0." + index + "0/24",
 		"--api-server", "192.168.0.10", "--machine-prefix", "10.200." + index + ".0/24",
-		"--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out,
+		"--firecracker-sha256", d("7"), "--out", out,
 	}
 	mustRun(t, append(args, extra...)...)
 	return out
@@ -148,8 +139,8 @@ type userData struct {
 			RoleArn                  string `yaml:"roleArn"`
 		} `yaml:"aws"`
 		Files []struct {
-			Path, Mode, Content string
-			Restart             []string
+			Path, Mode, Content, Template string
+			Restart                       []string
 		}
 		PKI *struct {
 			Authorities []struct {
@@ -462,7 +453,7 @@ func TestGenNode_APIServerIsNamedByTheCertificateInitIssuesEvenWhenItIsNoAddress
 	// The Node's own address is 192.168.0.20 and agents dial 192.168.0.10, a forward or a VIP.
 	out := filepath.Join(t.TempDir(), "n.yaml")
 	mustRun(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--control-plane", "--address", "192.168.0.20/24", "--api-server", "192.168.0.10",
-		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out, "--serving-address", "192.168.0.10")
+		"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", out, "--serving-address", "192.168.0.10")
 
 	u := parse(t, out)
 	for _, c := range u.Spec.PKI.Certificates {
@@ -500,7 +491,7 @@ func TestGenNode_DisableLeavesAServiceOutOfTheListAndOfTheRestartListsAndNaruIni
 		assert.NotContains(t, c.Restart, "gaon-scheduler", c.Name)
 	}
 	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"), "--disable", "mvmd")
+		"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"), "--disable", "mvmd")
 	require.Error(t, err, "mvmd cannot be left out")
 	assert.Contains(t, out, `cannot disable "mvmd"`)
 }
@@ -519,7 +510,7 @@ func TestGenNode_BinaryReplacesTheImagesAndOnlyThatOne(t *testing.T) {
 	assert.Equal(t, "/var/lib/naru/inputs/bin/naru-registry", bins["registry"], "the data disk's registry")
 }
 
-func TestGenNode_MvmdConfigNamesEveryKernelTheMachinePrefixAndTheFirecrackerDigest(t *testing.T) {
+func TestGenNode_MvmdConfigNamesTheMachinePrefixAndTheFirecrackerDigestAndLeavesTheGuestToTheImage(t *testing.T) {
 	dep := newDeployment(t)
 	u := parse(t, dep.node(t, "node-2"))
 
@@ -527,9 +518,7 @@ func TestGenNode_MvmdConfigNamesEveryKernelTheMachinePrefixAndTheFirecrackerDige
 	require.True(t, ok)
 	var cfg struct {
 		Firecracker struct {
-			Kernels       map[string]struct{ Path, SHA256 string }
-			DefaultKernel string `json:"default_kernel"`
-			Binary        string `json:"binary_sha256"`
+			Binary string `json:"binary_sha256"`
 		}
 		Network struct {
 			Prefix   string   `json:"ipv4_prefix"`
@@ -537,13 +526,19 @@ func TestGenNode_MvmdConfigNamesEveryKernelTheMachinePrefixAndTheFirecrackerDige
 			Resolver []string `json:"resolvers"`
 		}
 	}
-	require.NoError(t, json.Unmarshal([]byte(body), &cfg))
-	assert.Len(t, cfg.Firecracker.Kernels, 2, "every kernel guest.json declares")
-	assert.Equal(t, "naru", cfg.Firecracker.DefaultKernel)
+	require.NoError(t, json.Unmarshal(mvmdJSON(body), &cfg))
 	assert.Equal(t, d("7"), cfg.Firecracker.Binary)
 	assert.Equal(t, "10.200.2.0/24", cfg.Network.Prefix)
 	assert.Equal(t, "10.200.2.1", cfg.Network.Gateway)
 	assert.Equal(t, []string{"10.200.2.1"}, cfg.Network.Resolver)
+	for _, f := range u.Spec.Files {
+		if f.Path == "/run/mvmd/config.json" {
+			assert.Equal(t, "guest", f.Template, "init renders the guest's kernels and initrds from the image it booted")
+		} else {
+			assert.Empty(t, f.Template, "control: no other file is a template")
+		}
+	}
+	assert.Contains(t, body, "{{json .kernels}}")
 }
 
 func TestGenNode_NetworkConfigNamesTheCardTheRouteTheResolversAndASecondCard(t *testing.T) {
@@ -575,7 +570,7 @@ func TestGenNode_NetworkConfigNamesTheCardTheRouteTheResolversAndASecondCard(t *
 func TestGenNode_NetworkConfigNeedsTheCardAndTheRoute(t *testing.T) {
 	dep := newDeployment(t)
 	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
+		"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 		"--network-config", filepath.Join(t.TempDir(), "n"))
 
 	require.Error(t, err)
@@ -603,7 +598,7 @@ func TestGenNode_ABrokenDescriptionIsRefusedAndAFileInitRejectsIsNotMistakenForV
 	} {
 		args := []string{
 			"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
+			"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 		}
 		_, err := run(t, append(args, bad...)...)
 		assert.Error(t, err, strings.Join(bad, " "))
@@ -634,7 +629,7 @@ func TestGenNode_OverAnExistingWorldReadableFileTheUserDataIsStillPrivate(t *tes
 	require.NoError(t, os.WriteFile(out, []byte("stale"), 0o644))
 
 	mustRun(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--control-plane", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out)
+		"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", out)
 
 	info, err := os.Stat(out)
 	require.NoError(t, err)
@@ -658,7 +653,7 @@ func TestGenNode_ANameThatIsNoDNSLabelIsRefused(t *testing.T) {
 	dep := newDeployment(t)
 	for _, name := range []string{"Node_1", "node 1", "-node", "node-", "a.b", strings.Repeat("a", 64)} {
 		out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", name, "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"))
+			"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"))
 		require.Error(t, err, name)
 		assert.Contains(t, out, "not a DNS label", name)
 	}
@@ -676,7 +671,7 @@ func TestGenNode_AFlagGivenWithoutWhatMakesItApplyIsRefused(t *testing.T) {
 	} {
 		args := []string{
 			"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
+			"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 			c.flag,
 		}
 		if c.value != "" {
@@ -738,7 +733,7 @@ func TestGenNode_RegistryFlagsBecomeSpecRegistriesAndMvmdsRegistrySection(t *tes
 	cfg, ok := u.file("/run/mvmd/config.json")
 	require.True(t, ok)
 	var m struct{ Registry map[string]any }
-	require.NoError(t, json.Unmarshal([]byte(cfg), &m))
+	require.NoError(t, json.Unmarshal(mvmdJSON(cfg), &m))
 	assert.Equal(t, "/run/naru/registry/credentials.json", m.Registry["credentials_file"])
 	assert.Equal(t, "/run/naru/registry/ca.pem", m.Registry["ca_file"])
 	assert.Equal(t, map[string]any{"1.dkr.ecr.ap-northeast-2.amazonaws.com": "ecr-login"}, m.Registry["credential_helpers"])
@@ -818,8 +813,7 @@ func TestGenNode_TheNodeAgentsKeptPairMustCarryTheOrganizationItsSignerRequires(
 func TestGenNode_RefusesARegistryOrAWSFlagThatIsWrong(t *testing.T) {
 	dep := newDeployment(t)
 	base := []string{"gen", "node", "--ca-dir", dep.ca, "--name", "node-2", "--address", "192.168.0.20/24",
-		"--api-server", "192.168.0.10", "--machine-prefix", "10.200.2.0/24", "--guest", dep.guest,
-		"--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "o.yaml")}
+		"--api-server", "192.168.0.10", "--machine-prefix", "10.200.2.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "o.yaml")}
 	for name, extra := range map[string][]string{
 		"a helper and a username":     {"--registry", "host=r.example,helper=h,username=u"},
 		"a username without password": {"--registry", "host=r.example,username=u"},
@@ -953,7 +947,7 @@ func TestGenNode_RefusesMembersTheNodeCannotBeOneOf(t *testing.T) {
 	gen := func(extra ...string) error {
 		_, err := run(t, append([]string{
 			"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--machine-prefix", "10.200.1.0/24",
-			"--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out,
+			"--firecracker-sha256", d("7"), "--out", out,
 		}, extra...)...)
 		return err
 	}

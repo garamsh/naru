@@ -274,7 +274,7 @@ func TestGenNode_HostRevocationPublicKeyIsWrittenToSpecHostAndRefusedWithoutTheH
 	assert.Equal(t, string(pub), parseDaemons(t, with).Spec.Host.RevocationPublicKey, "naru-hostd gets the key that verifies the list")
 	assert.Empty(t, parseDaemons(t, without).Spec.Host.RevocationPublicKey, "control: no flag, no key")
 	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-3", "--address", "192.168.0.12/24", "--api-server", "192.168.0.10",
-		"--machine-prefix", "10.200.3.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--host-revocation-public-key", in.pub,
+		"--machine-prefix", "10.200.3.0/24", "--firecracker-sha256", d("7"), "--host-revocation-public-key", in.pub,
 		"--out", filepath.Join(t.TempDir(), "x"))
 	require.Error(t, err, out)
 	assert.Contains(t, out, "--host-revocation-public-key has no effect without --host-region")
@@ -298,7 +298,7 @@ func TestGenNode_DaemonFlagsRefuseWhatInitWouldRefuseOrWhatDoesNothing(t *testin
 	host := dep.hostFlags(t)
 	base := []string{
 		"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"),
+		"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"),
 	}
 	orch := []string{
 		"--signer", "--extension", orchExtension, "--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
@@ -366,7 +366,7 @@ func TestGenNode_TheOrchKeyAndTheEnrollmentKeyAreNeverPrinted(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "x")
 	args := []string{
 		"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", out,
+		"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", out,
 		"--signer", "--extension", orchExtension, "--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
 		"--orch-member", "naru-node-1=https://192.168.0.10:2380", "--orch-certificate", in.cert, "--orch-ca", in.cert,
 		"--orch-revocation-public-key", in.pub, "--orch-key", in.key,
@@ -400,7 +400,7 @@ func TestGenNode_OrchJoinWritesTheRunningMemberInsteadOfTheClusterAndInitAccepts
 
 	base := []string{
 		"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-		"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"),
+		"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"),
 	}
 	for name, tc := range map[string]struct {
 		extra    []string

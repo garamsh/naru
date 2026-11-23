@@ -80,13 +80,10 @@ func TestTopology_OfTheNaructlBuiltFromTheCheckoutIsTheServicesItsUserDataRuns(t
 	require.NoError(t, tool.GenCA(ca))
 	require.NoError(t, tool.GenToken(ca, "node-1"))
 	d := func(c string) string { return strings.Repeat(c, 64) }
-	guest := filepath.Join(root, "guest.json")
-	require.NoError(t, os.WriteFile(guest, []byte(`{"kernels":{"naru":{"path":"/k","sha256":"`+d("a")+`"}},"default_kernel":"naru",
-"guest_initrd":{"path":"/g","sha256":"`+d("c")+`"},"converter_initrd":{"path":"/c","sha256":"`+d("d")+`"}}`), 0o600))
 	out := filepath.Join(root, "node-1.yaml")
 	require.NoError(t, tool.GenNode(naructl.Node{
 		CA: ca, Name: "node-1", ControlPlane: true, Address: "10.78.0.1/24", APIServer: "10.78.0.1",
-		MachinePrefix: "10.200.1.0/24", Guest: guest, Firecracker: d("7"), Out: out,
+		MachinePrefix: "10.200.1.0/24", Firecracker: d("7"), Out: out,
 	}))
 	b, err := os.ReadFile(out)
 	require.NoError(t, err)

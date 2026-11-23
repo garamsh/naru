@@ -27,7 +27,7 @@ func TestGenNode_PassesEveryFieldAsItsFlagAndTheBinariesInNameOrder(t *testing.T
 
 	require.NoError(t, tool.GenNode(naructl.Node{
 		CA: "/ca", Name: "node-1", ControlPlane: true, Address: "10.78.0.1/24", APIServer: "10.78.0.1",
-		MachinePrefix: "10.200.1.0/24", Guest: "/g.json", Firecracker: "ab", Out: "/o.yaml",
+		MachinePrefix: "10.200.1.0/24", Firecracker: "ab", Out: "/o.yaml",
 		ServingAddresses: []string{"127.0.0.1"}, ExtraNIC: "02:00:00:01:00:01=10.0.2.15/24",
 		TimeServers: []string{"10.0.2.2:5123", "pool.example"}, Storage: []string{"vmdisks=/dev/vdb", "scratch=/dev/vdc"},
 		Binaries: map[string]string{"registry": "/r", "etcd": "/e"}, Disable: []string{"gaon-scheduler"},

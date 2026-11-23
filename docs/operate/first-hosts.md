@@ -45,7 +45,7 @@ It prints `naructl: wrote the key <dir>/root.key (0600) and the certificate requ
 
 ```
 naructl gen node --ca-dir <dir> --name <name> --address <cidr> --mac <mac> --gateway <ip> --nameserver <ip> \
-  --api-server <ip> --machine-prefix <cidr> --guest <naru-guest-version.json> --firecracker-sha256 <hex> \
+  --api-server <ip> --machine-prefix <cidr> --firecracker-sha256 <hex> \
   --control-plane --extension naru-orch=<sha256 of naru-orch-ext-TAG.json> \
   --signer --signer-recovery-public <dir>/recovery.pub --signer-root-csr <dir>/root.csr \
   --signer-peer-listen <address>:<port> --signer-peer-name <address> \
@@ -93,10 +93,10 @@ It prints `naructl: wrote root's authorisation for the signer of naru-<name> to 
 
 ### 6. The host profile
 
-The profile holds what every host admitted from now on is built from: the guest manifest, the Firecracker hash, the Machine pool, orch's address and authority hash, the registry the hosts pull images from, and the management network. A joined host's Node API trusts the authorities orch's callers chain to (the operator authority among them), so the operator's person file reaches it ([upgrade-a-host.md](./upgrade-a-host.md)); `--api-client-ca <file>` adds an authority of your own, such as the one `gen api-client` signs under.
+The profile holds what every host admitted from now on is built from: the Firecracker hash, the Machine pool, orch's address and authority hash, the registry the hosts pull images from, and the management network. A joined host's Node API trusts the authorities orch's callers chain to (the operator authority among them), so the operator's person file reaches it ([upgrade-a-host.md](./upgrade-a-host.md)); `--api-client-ca <file>` adds an authority of your own, such as the one `gen api-client` signs under.
 
 ```
-naructl gen host-profile --guest <naru-guest-version.json> --firecracker-sha256 <hex> --machine-pool <cidr> \
+naructl gen host-profile --firecracker-sha256 <hex> --machine-pool <cidr> \
   --orch-url https://<address>:7500 --orch-ca-sha256 <hex> --registry host=<host:port>,ca=<PEM file> \
   --host-management-prefix <cidr> --host-egress-interface <interface> --out <dir>/host-profile.json
 naructl host profile set -f <dir>/host-profile.json

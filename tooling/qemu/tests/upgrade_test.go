@@ -4,7 +4,6 @@ package tests_test
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -60,10 +59,6 @@ func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, d
 	require.NoError(t, bin.GenCA(caDir))
 	require.NoError(t, bin.GenAPICA(caDir))
 	require.NoError(t, bin.GenAPIClient(caDir, "admin", "127.0.0.1:"+strconv.Itoa(apiPort), admin))
-	guest := filepath.Join(dir, "guest.json")
-	manifest, err := json.Marshal(inputs.Guest)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(guest, manifest, 0o600))
 
 	cfg := node.Config{Name: "node-1", Index: 1, Total: 1, ControlPlane: true, Inputs: inputs, HostPort: hostPort, APIHostPort: apiPort}
 	n := node.QEMUNetwork(1, 1)
@@ -73,7 +68,7 @@ func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, d
 	gen := naructl.Node{
 		CA: caDir, Name: "node-1", ControlPlane: true, PairsAsFiles: true,
 		Address: n.IP + "/" + strconv.Itoa(ones), MAC: n.MAC, Gateway: n.Gateway, Nameservers: n.Nameservers, Search: n.Search,
-		APIServer: n.IP, MachinePrefix: n.MachinePrefix.String(), Guest: guest, Firecracker: inputs.FirecrackerSHA256,
+		APIServer: n.IP, MachinePrefix: n.MachinePrefix.String(), Firecracker: inputs.FirecrackerSHA256,
 		ServingAddresses: []string{"127.0.0.1"}, ExtraNIC: cfg.HostMAC() + "=" + node.HostNICPrefix, Binaries: map[string]string{},
 		Out: filepath.Join(nodeDir, "naru.yaml"), NetworkConfig: filepath.Join(nodeDir, "network-config"),
 	}

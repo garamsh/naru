@@ -117,7 +117,7 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 		steps = append(steps, step{Action{"add-route", r.To.String()}, func() error { return e.deps.Routes.AddRoute(r) }})
 	}
 	for _, f := range next.Spec.Files {
-		if old, ok := fileAt(running.Spec.Files, f.Path); ok && old.Perm() == f.Perm() && old.Content == f.Content && ownerEqual(old.Owner, f.Owner) {
+		if old, ok := fileAt(running.Spec.Files, f.Path); ok && old.Perm() == f.Perm() && old.Content == f.Content && old.Template == f.Template && ownerEqual(old.Owner, f.Owner) {
 			continue
 		}
 		steps = append(steps, step{Action{"write-file", f.Path}, func() error { return e.deps.Files.ReplaceFile(f) }})

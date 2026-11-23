@@ -174,21 +174,25 @@ in-builder-image:
 
 # in-builder-image-upgrade lays out the two kernels the upgrade tests (ADR 0025) put on a running Node,
 # which the upgrade group of image/pkgs builds from the programs and the kernel of the image:
-# next/bzImage is the same tree with the version $(VERSION)-next stamped in, and refuse/bzImage a
+# next/bzImage is the same tree with the version $(VERSION)-next stamped in, refuse/bzImage a
 # naru-init that cannot find its data disk (the linker flag is REFUSE_LDFLAGS of the bake file), so a
-# trial boot of it refuses, with a seed or without, and rolls back by itself. next/extensions/ is the
+# trial boot of it refuses, with a seed or without, and rolls back by itself, and guest/bzImage the
+# tree with the version $(VERSION)-guest on a guest initrd of another digest, with its guest.json
+# beside it, which the test of a changed guest manifest compares with the image's (ADR 0106). next/extensions/ is the
 # naru-orch extension built for that version, which a bundle of it carries (ADR 0084); so does
 # refuse/extensions/.
 UPGRADE := $(BUILD)/upgrade
 in-builder-image-upgrade: in-builder-image
 	@set -e; \
-	for v in next refuse; do \
+	for v in next refuse guest; do \
 	  rm -rf $(UPGRADE)/$$v; mkdir -p $(UPGRADE)/$$v; \
 	  $(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/bzImage-$$v.tar; \
 	  cp $(PKGROOT)/bzImage-$$v/bzImage $(UPGRADE)/$$v/; \
 	  $(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/extension-$$v.tar; \
 	  cp -r $(PKGROOT)/extension-$$v/extensions $(UPGRADE)/$$v/extensions; \
-	done
+	done; \
+	$(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/initramfs-host-guest.tar; \
+	cp $(PKGROOT)/initramfs-host-guest/guest/guest.json $(UPGRADE)/guest/guest.json
 
 # in-builder-disk builds the UEFI disk image from image's outputs: naru.img, a raw GPT
 # disk whose ESP holds the kernel as \EFI\BOOT\BOOTX64.EFI and has room for a second one, and

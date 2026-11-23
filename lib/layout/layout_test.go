@@ -21,13 +21,9 @@ func node(t *testing.T, change func(*layout.Node)) layout.Node {
 	ca, err := pki.New("test")
 	require.NoError(t, err)
 	d := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	f := layout.File{Path: "/x", SHA256: d}
 	n := layout.Node{
 		Name: "node-1", Address: netip.MustParsePrefix("192.168.0.10/24"), APIServer: netip.MustParseAddr("192.168.0.10"),
 		MachinePrefix: netip.MustParsePrefix("10.200.1.0/24"), CA: ca,
-		Guest: layout.Manifest{
-			Kernels: map[string]layout.File{"naru": f}, DefaultKernel: "naru", GuestInitrd: f, ConverterInitrd: f,
-		},
 		FirecrackerSHA256: d, Token: tokenA,
 	}
 	change(&n)
