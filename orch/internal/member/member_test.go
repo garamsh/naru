@@ -1,8 +1,10 @@
 package member_test
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,12 +26,19 @@ func TestStart_RunsEtcdWithPeriodicCompactionABoundedQuotaAndFewFiles(t *testing
 	ca := orchtest.NewCA(t)
 	dir := t.TempDir()
 	files := ca.IssueFiles(t, dir, "m1")
-	peer, client := fmt.Sprintf("https://127.0.0.1:%d", freePort(t)), fmt.Sprintf("https://127.0.0.1:%d", freePort(t))
-
-	m, err := member.Start(t.Context(), member.Config{
-		Name: "m1", DataDir: dir + "/etcd", PeerURL: peer, ClientURL: client, InitialCluster: "m1=" + peer, State: member.StateNew,
-		Cert: files.Cert, Key: files.Key, CA: files.CA,
-	})
+	var m *member.Member
+	var err error
+	for range 5 {
+		peer, client := fmt.Sprintf("https://127.0.0.1:%d", freePort(t)), fmt.Sprintf("https://127.0.0.1:%d", freePort(t))
+		m, err = member.Start(t.Context(), member.Config{
+			Name: "m1", DataDir: dir + "/etcd", PeerURL: peer, ClientURL: client, InitialCluster: "m1=" + peer, State: member.StateNew,
+			Cert: files.Cert, Key: files.Key, CA: files.CA,
+		})
+		// Another test's socket may take a port between its choice and etcd's bind: choose again.
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			break
+		}
+	}
 	require.NoError(t, err)
 	t.Cleanup(m.Close)
 

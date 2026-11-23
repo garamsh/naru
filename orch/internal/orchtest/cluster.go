@@ -3,12 +3,14 @@ package orchtest
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -74,6 +76,9 @@ type Options struct {
 	Metrics prometheus.Registerer
 }
 
+// pickPorts is how a cluster chooses its ports; a test replaces it to make a port taken.
+var pickPorts = freePorts
+
 func freePorts(t testing.TB, n int) []int {
 	t.Helper()
 	var ls []net.Listener
@@ -113,13 +118,35 @@ func Start(t testing.TB, o Options) *Cluster {
 	if o.Log == nil {
 		o.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	ca := o.CA
-	if ca == nil {
-		ca = NewCA(t)
+	if o.CA == nil {
+		o.CA = NewCA(t)
 	}
-	c := &Cluster{CA: ca, Signer: &Signer{CA: ca}, Clock: NewClock(), Log: o.Log, dir: t.TempDir(), opts: o}
+	// A port is free when it is chosen and etcd binds it a moment later, so another test's socket
+	// can take it between the two. The cluster is started again on fresh ports when that happens.
+	var err error
+	for range bindAttempts {
+		var c *Cluster
+		if c, err = launch(t, o); err == nil {
+			return c
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			break
+		}
+	}
+	t.Fatalf("start member: %v", err)
+	return nil
+}
 
-	ports := freePorts(t, 2*o.Members)
+// bindAttempts is how many times a start that finds its port taken is repeated on other ports.
+const bindAttempts = 5
+
+// launch starts a cluster of o.Members on freshly chosen ports, and stops the members that did start
+// when one does not.
+func launch(t testing.TB, o Options) (*Cluster, error) {
+	t.Helper()
+	c := &Cluster{CA: o.CA, Signer: &Signer{CA: o.CA}, Clock: NewClock(), Log: o.Log, dir: t.TempDir(), opts: o}
+
+	ports := pickPorts(t, 2*o.Members)
 	var initial []string
 	for i := range o.Members {
 		initial = append(initial, fmt.Sprintf("m%d=https://127.0.0.1:%d", i, ports[2*i]))
@@ -129,6 +156,9 @@ func Start(t testing.TB, o Options) *Cluster {
 		o   *orchd.Orchd
 		err error
 	}
+	// A member that cannot bind leaves the others waiting for a quorum, so one failure cancels them.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	results := make(chan result, o.Members)
 	for i := range o.Members {
 		cfg, deps := c.member(t, i, ports[2*i], ports[2*i+1])
@@ -136,25 +166,34 @@ func Start(t testing.TB, o Options) *Cluster {
 		c.clientURLs = append(c.clientURLs, cfg.ClientURL)
 		c.cfgs, c.deps = append(c.cfgs, cfg), append(c.deps, deps)
 		go func() {
-			m, err := orchd.Start(context.Background(), cfg, deps)
+			m, err := orchd.Start(ctx, cfg, deps)
 			results <- result{i, m, err}
 		}()
 	}
 	// A member of a new cluster returns once a quorum exists, so all start together.
 	c.Members = make([]*orchd.Orchd, o.Members)
+	var first error
 	for range o.Members {
 		r := <-results
-		if r.err != nil {
-			t.Fatalf("start member: %v", r.err)
+		if r.err != nil && first == nil {
+			first = r.err
+			cancel()
 		}
 		c.Members[r.i] = r.o
 	}
-	t.Cleanup(func() {
+	stop := func() {
 		for _, m := range c.Members {
-			_ = m.Stop()
+			if m != nil {
+				_ = m.Stop()
+			}
 		}
-	})
-	return c
+	}
+	if first != nil {
+		stop()
+		return nil, first
+	}
+	t.Cleanup(stop)
+	return c, nil
 }
 
 // member is member i's configuration and parts; the cluster it starts in is left to the caller.
@@ -185,10 +224,18 @@ func (c *Cluster) member(t testing.TB, i, peerPort, clientPort int) (orchd.Confi
 func (c *Cluster) AddMember(t testing.TB) int {
 	t.Helper()
 	i := len(c.Members)
-	ports := freePorts(t, 2)
-	cfg, deps := c.member(t, i, ports[0], ports[1])
-	cfg.State, cfg.Join = member.StateExisting, c.clientURLs[0]
-	m, err := orchd.Start(context.Background(), cfg, deps)
+	var cfg orchd.Config
+	var deps orchd.Deps
+	var m *orchd.Orchd
+	var err error
+	for range bindAttempts {
+		ports := pickPorts(t, 2)
+		cfg, deps = c.member(t, i, ports[0], ports[1])
+		cfg.State, cfg.Join = member.StateExisting, c.clientURLs[0]
+		if m, err = orchd.Start(context.Background(), cfg, deps); !errors.Is(err, syscall.EADDRINUSE) {
+			break
+		}
+	}
 	if err != nil {
 		t.Fatalf("add member: %v", err)
 	}
