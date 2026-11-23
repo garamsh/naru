@@ -75,3 +75,5 @@ dir /usr/lib/naru/addons/images 0755 0 0
 dir /usr/lib/naru/addons/manifests 0755 0 0
 file /usr/lib/naru/addons/images/coredns.tar @OUT@/addons/images/coredns.tar 0644 0 0
 file /usr/lib/naru/addons/manifests/dns.yaml @OUT@/addons/manifests/dns.yaml 0644 0 0
+file /usr/lib/naru/addons/images/ccm.tar @OUT@/addons/images/ccm.tar 0644 0 0
+file /usr/lib/naru/addons/manifests/cloud-controller.yaml @OUT@/addons/manifests/cloud-controller.yaml 0644 0 0

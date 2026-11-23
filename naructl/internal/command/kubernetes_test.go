@@ -128,6 +128,34 @@ func TestGenKubernetes_AGenWithoutDisableAddonTurnsEveryAddonOnAgain(t *testing.
 	assert.Contains(t, string(data), "name: addons\n")
 }
 
+func TestGenKubernetes_EnableAddonIsWhatEveryNodeReadsAndOnlyAnOptInNameIsAccepted(t *testing.T) {
+	dep := newDeployment(t)
+	dep.kubernetes(t)
+	for _, role := range []string{"control-plane", "worker"} {
+		data, err := os.ReadFile(dep.kubeNode(t, role))
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "--cloud-provider=external", "%s: off by default", role)
+	}
+
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--enable-addon", "cloud-controller")
+	for _, role := range []string{"control-plane", "worker"} {
+		data, err := os.ReadFile(dep.kubeNode(t, role))
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "--cloud-provider=external", "%s: every kubelet", role)
+	}
+	cp, err := os.ReadFile(dep.kubeNode(t, "control-plane"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cp), "cloud-controller.yaml")
+
+	_, err = run(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--enable-addon", "dns")
+	assert.EqualError(t, err, `--enable-addon "dns" is not one of cloud-controller`)
+
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10")
+	data, err := os.ReadFile(dep.kubeNode(t, "worker"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "--cloud-provider=external", "a gen without the flag turns it off again")
+}
+
 func TestGenKubernetes_AControlPlaneNodeAppliesTheAddonsByDefault(t *testing.T) {
 	dep := newDeployment(t)
 	dep.kubernetes(t)

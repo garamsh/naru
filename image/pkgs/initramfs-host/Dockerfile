@@ -36,6 +36,7 @@ COPY --from=kubernetes /usr/bin/ /stage/
 COPY --from=containerd /usr/bin/ /stage/
 COPY --from=cni /usr/bin/ /stage/
 COPY --from=coredns /usr/lib/naru/addons/ /stage/addons/
+COPY --from=ccm /usr/lib/naru/addons/ /stage/addons/
 COPY --from=cacert /etc/ssl/certs/ca-certificates.crt /cacert.crt
 COPY --from=testroot / /testroot/
 # The guest files and the Node's boot set, as the package lays them out under /out/guest.

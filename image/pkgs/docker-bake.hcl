@@ -30,7 +30,7 @@ group "upgrade" {
 
 group "default" {
   targets = ["builder", "toolchain", "util-linux", "e2fsprogs", "liburcu", "libinih", "xfsprogs", "libmnl", "libnftnl", "jansson", "nftables", "cacert",
-    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes", "kube-network-policies", "coredns", "volumes",
+    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes", "kube-network-policies", "coredns", "ccm", "volumes",
     "libseccomp", "containerd", "rolesanywhere",
     "mvmd", "guest-initrds",
     "kernel-host", "kernel-node", "kernel-guest-naru",
@@ -215,6 +215,14 @@ target "coredns" {
   output   = ["type=oci,dest=${OUT}/coredns.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
+# The cloud-controller add-on (ADR 0085): naru-ccm from the repository, an image archive and the manifests.
+target "ccm" {
+  inherits = ["_package"]
+  context  = "ccm"
+  contexts = { src = "../.." }
+  output   = ["type=oci,dest=${OUT}/ccm.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
 # The volume add-on's extension (ADR 0083, 0084): the driver and its sidecars, an image archive and the
 # manifests in a squashfs, with the description make image reads as it reads the naru-orch extension's.
 target "volumes" {
@@ -316,6 +324,7 @@ target "_initramfs" {
     containerd             = "target:containerd"
     cni                    = "target:cni"
     coredns                = "target:coredns"
+    ccm                    = "target:ccm"
     cacert                 = "target:cacert"
   }
 }
