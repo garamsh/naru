@@ -18,7 +18,7 @@ A member that is down for 30 minutes of maintenance is removed too and rejoins e
 
 ## 2. A host that is lost
 
-1. Move what it runs: groups place their members on other hosts that fit when the host stops answering; `naructl host drain <host ID>` does it ahead of time while the host still answers.
+1. Move what it runs: a stateless group keeps its count on the hosts that answer, so its member is made on another host that fits with no command (`TestFleet_AStatelessMemberOfAHostThatStopsAnsweringIsMadeOnTheOtherHostWithNoDrain`, `tooling/qemu/tests/lost_host_fleet_test.go`), and a stateful member waits until its fence has lapsed before it is made elsewhere (`TestFleet_GroupsKeepTheCountRollDrainReplaceOnALabelChangeAndFenceAStatefulMember`, `tooling/qemu/tests/orch_fleet_test.go`). `naructl host drain <host ID>` moves the members ahead of time while the host still answers.
 2. Forget it: `naructl host remove <host ID>`. It frees the host's Machine prefix, and its certificate stays valid.
 3. Revoke the certificate: `naructl operator revoke --admin <admin> --passphrase-file <passphrase file> --serial <serial>` (the serial from the host's records, or from `naructl signer register-host` when the pair was issued offline, [rotate-a-host.md](./rotate-a-host.md)).
 4. A replacement joins as a new host: [first-hosts.md](./first-hosts.md) steps 8 and 9.
