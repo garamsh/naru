@@ -37,6 +37,9 @@ type Host interface {
 	MountDataDisk(config.DataDisk) error
 	// EnableForwarding turns forwarding on for the families.
 	EnableForwarding([]config.Family) error
+	// EnableBridgeNetfilter sets net.bridge.bridge-nf-call-iptables=1 so Pod-to-Pod traffic on
+	// the bridge CNI passes netfilter hooks (ADR 0086).
+	EnableBridgeNetfilter() error
 	// AddRoute installs a static route of spec.network.routes.
 	AddRoute(config.Route) error
 	// WriteFiles writes the files the configuration carries.
@@ -155,6 +158,11 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	}
 	if err := host.EnableForwarding(cfg.Spec.Network.Forwarding); err != nil {
 		return store.Stored{}, err
+	}
+	if cfg.Spec.Network.BridgeNetfilter {
+		if err := host.EnableBridgeNetfilter(); err != nil {
+			return store.Stored{}, err
+		}
 	}
 	addRoutes(host, cfg.Spec.Network.Routes, log)
 	if err := host.WriteFiles(cfg.Spec.Files); err != nil {

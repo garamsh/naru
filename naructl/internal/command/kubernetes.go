@@ -26,6 +26,7 @@ func genKubernetes(fs *pflag.FlagSet) runner {
 	endpoint := fs.String("endpoint", "", "the address of the API server")
 	adminAddress := fs.String("admin-address", "", "the host:port admin.conf dials, when it is not the endpoint on the API port (a forward)")
 	disableAddons := fs.StringArray("disable-addon", nil, "a cluster add-on the cluster does not run ("+strings.Join(layout.Addons, ", ")+"), repeatable: its objects are the cluster owner's, and the Nodes neither apply nor remove them")
+	disableNetworkPolicy := fs.Bool("disable-network-policy", false, "leave kube-network-policies out of every Node's topology: no enforcement, no sysctl, no PKI pair, no RBAC (ADR 0086, ADR 0094)")
 	issuers := fs.StringArray("service-account-issuer", nil, "a ServiceAccount issuer, an https URL, repeatable: the first signs the tokens and the API server accepts them all and the in-cluster issuer (ADR 0087)")
 	algorithm := fs.String("service-account-algorithm", string(pki.DefaultAlgorithm), "the algorithm of the ServiceAccount key made: RS256 or ES256; a key already there is kept, and an algorithm named that differs from its refuses")
 	rotate := fs.String("rotate-service-account-key", "", "make a new ServiceAccount key that signs, and keep the public key of the one it replaces so that its tokens stay valid; the value is the key id (kid) of the signing key being replaced, which gen kubernetes-jwks prints, so that a run repeated after it succeeded is refused, not applied twice")
@@ -75,6 +76,17 @@ func genKubernetes(fs *pflag.FlagSet) runner {
 			}
 		} else if err := pki.WriteFile(disabled, []byte(strings.Join(*disableAddons, "\n")+"\n"), 0o644); err != nil {
 			return err
+		}
+		// The flag file for network policy follows the same toggle pattern: present means disabled.
+		disabledNP := filepath.Join(*caDir, pki.DisableNetworkPolicyFile)
+		if *disableNetworkPolicy {
+			if err := pki.WriteFile(disabledNP, nil, 0o644); err != nil {
+				return err
+			}
+		} else {
+			if err := os.Remove(disabledNP); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
 		}
 		// Unlike the add-ons, the issuers are kept when the flag is absent: dropping them would break the
 		// federation of a cluster silently (ADR 0087).
@@ -380,6 +392,11 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 		}
 		if b, rerr := os.ReadFile(filepath.Join(caDir, pki.DisabledAddonsFile)); rerr == nil {
 			k.DisabledAddons = strings.Fields(string(b))
+		} else if !errors.Is(rerr, os.ErrNotExist) {
+			return rerr
+		}
+		if _, rerr := os.Stat(filepath.Join(caDir, pki.DisableNetworkPolicyFile)); rerr == nil {
+			k.DisableNetworkPolicy = true
 		} else if !errors.Is(rerr, os.ErrNotExist) {
 			return rerr
 		}

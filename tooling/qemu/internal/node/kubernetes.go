@@ -49,6 +49,8 @@ type KubeSpec struct {
 	// volumes (naru-local: XFS, mounted by init, the first storage disk) or offers whole as a block
 	// volume (naru-block), so that the volume add-on has a disk to serve (ADR 0083).
 	VolumeDisk string
+	// DisableNetworkPolicy leaves kube-network-policies out of every Node's topology (ADR 0086).
+	DisableNetworkPolicy bool
 	// ServiceAccountIssuers are gen kubernetes --service-account-issuer, the first of which signs
 	// (ADR 0087), and ServiceAccountAlgorithm is --service-account-algorithm. A cluster with issuers
 	// keeps the authority's directory until Stop, as CADir, so that a test reads the signing key.
@@ -126,6 +128,7 @@ func StartKubernetes(spec KubeSpec) (cluster *KubeCluster, err error) {
 	apiServer := QEMUNetwork(1, total).IP
 	gen := naructl.KubernetesCluster{
 		CADir: caDir, Endpoint: apiServer, AdminAddress: "127.0.0.1:" + strconv.Itoa(port), DisableAddons: spec.DisableAddons,
+		DisableNetworkPolicy:  spec.DisableNetworkPolicy,
 		ServiceAccountIssuers: spec.ServiceAccountIssuers, ServiceAccountAlgorithm: spec.ServiceAccountAlgorithm,
 	}
 	if err := spec.Naructl.GenKubernetesCluster(gen); err != nil {
@@ -143,7 +146,7 @@ func StartKubernetes(spec KubeSpec) (cluster *KubeCluster, err error) {
 		if err := os.WriteFile(filepath.Join(caDir, "sa.key.previous"), key, 0o600); err != nil {
 			return nil, err
 		}
-		if err := spec.Naructl.GenKubernetesCluster(naructl.KubernetesCluster{CADir: caDir, Endpoint: apiServer, AdminAddress: gen.AdminAddress, DisableAddons: spec.DisableAddons, RotateServiceAccountKey: kid}); err != nil {
+		if err := spec.Naructl.GenKubernetesCluster(naructl.KubernetesCluster{CADir: caDir, Endpoint: apiServer, AdminAddress: gen.AdminAddress, DisableAddons: spec.DisableAddons, DisableNetworkPolicy: spec.DisableNetworkPolicy, RotateServiceAccountKey: kid}); err != nil {
 			return nil, err
 		}
 	}

@@ -36,6 +36,7 @@ func (t Tool) GenKubernetes(caDir, endpoint, adminAddress string, disableAddons 
 type KubernetesCluster struct {
 	CADir, Endpoint, AdminAddress string
 	DisableAddons                 []string
+	DisableNetworkPolicy          bool
 	// ServiceAccountIssuers are --service-account-issuer, the first of which signs, and
 	// ServiceAccountAlgorithm is --service-account-algorithm.
 	ServiceAccountIssuers   []string
@@ -52,6 +53,9 @@ func (t Tool) GenKubernetesCluster(k KubernetesCluster) error {
 	}
 	for _, name := range k.DisableAddons {
 		args = append(args, "--disable-addon", name)
+	}
+	if k.DisableNetworkPolicy {
+		args = append(args, "--disable-network-policy")
 	}
 	for _, issuer := range k.ServiceAccountIssuers {
 		args = append(args, "--service-account-issuer", issuer)

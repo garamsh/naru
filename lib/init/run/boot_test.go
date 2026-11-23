@@ -79,6 +79,7 @@ func (n *node) FormatBlankDataDisk(config.DataDisk, *slog.Logger) error {
 func (n *node) EnableForwarding([]config.Family) error {
 	return nil
 }
+func (n *node) EnableBridgeNetfilter() error                      { return nil }
 func (n *node) AddRoute(config.Route) error                       { return nil }
 func (n *node) DeleteRoute(config.Route) error                    { return nil }
 func (n *node) WriteFiles([]config.File) error                    { return nil }

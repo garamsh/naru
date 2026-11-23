@@ -450,6 +450,28 @@ func TestHost_EnableForwardingWritesOnlyTheNamedFamilies(t *testing.T) {
 	assert.Equal(t, "1", read(t, v4))
 }
 
+func TestHost_EnableBridgeNetfilterWritesOneToTheBridgeCallFile(t *testing.T) {
+	h, _ := testHost(t, nil)
+	dir := filepath.Join(h.procSys, "net/bridge")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	file := filepath.Join(dir, "bridge-nf-call-iptables")
+	require.NoError(t, os.WriteFile(file, []byte("0"), 0o644))
+	other := filepath.Join(dir, "bridge-nf-call-ip6tables")
+	require.NoError(t, os.WriteFile(other, []byte("0"), 0o644))
+
+	require.NoError(t, h.EnableBridgeNetfilter())
+
+	assert.Equal(t, "1", read(t, file))
+	assert.Equal(t, "0", read(t, other), "only the IPv4 hook is turned on")
+}
+
+func TestHost_EnableBridgeNetfilterFailsWhenTheKernelHasNoBridgeNetfilter(t *testing.T) {
+	// The control: the file does not exist because the module is not there, and the error says so.
+	h, _ := testHost(t, nil)
+
+	assert.ErrorIs(t, h.EnableBridgeNetfilter(), os.ErrNotExist)
+}
+
 func read(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

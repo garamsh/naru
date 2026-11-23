@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -26,7 +27,8 @@ type kubeSpec struct {
 			FormatBlank bool   `yaml:"formatBlank"`
 		} `yaml:"dataDisk"`
 		Network struct {
-			Routes []struct {
+			BridgeNetfilter bool `yaml:"bridgeNetfilter"`
+			Routes          []struct {
 				To  string `yaml:"to"`
 				Via string `yaml:"via"`
 			} `yaml:"routes"`
@@ -124,7 +126,7 @@ func TestKubernetesUserData_WorkerRunsTheKubeletAndTheProxyAndNoControlPlane(t *
 			running = append(running, sv.Name)
 		}
 	}
-	assert.Equal(t, []string{"containerd", "addon-image-coredns", "addon-image-volumes", "kubelet", "kube-proxy"}, running, "what a worker runs")
+	assert.Equal(t, []string{"containerd", "addon-image-coredns", "addon-image-volumes", "kube-network-policies", "kubelet", "kube-proxy"}, running, "what a worker runs")
 }
 
 func TestKubernetesUserData_ControlPlaneRunsEveryServiceInTheTopologysOrder(t *testing.T) {
@@ -433,7 +435,10 @@ func TestKubernetesUserData_ControlPlaneAppliesTheEnabledAddonsWithItsOwnPairAnd
 }
 
 func TestKubernetesUserData_DisabledDNSIsNeitherAppliedNorGivenAPairButItsImageIsStillImported(t *testing.T) {
-	s := kubeUserData(t, kubeNode(t, true, func(n *layout.Node) { n.Kube.DisabledAddons = []string{"dns", "volumes"} }))
+	s := kubeUserData(t, kubeNode(t, true, func(n *layout.Node) {
+		n.Kube.DisabledAddons = []string{"dns", "volumes"}
+		n.Kube.DisableNetworkPolicy = true
+	}))
 
 	assert.NotContains(t, serviceNames(s), "addons", "no add-on is left to apply")
 	for _, c := range s.Spec.PKI.Certificates {
@@ -656,4 +661,145 @@ func TestKubernetesUserData_AnAppliedKeyChangeRestartsTheServicesThatReadTheKeys
 	}
 	assert.Equal(t, []string{"kube-apiserver", "kube-controller-manager"}, restarts["/run/kubernetes/pki/sa.key"])
 	assert.Equal(t, []string{"kube-apiserver"}, restarts["/run/kubernetes/pki/sa.pub"])
+}
+
+// certificate is the pair of spec.pki that the test finds by name.
+func certificate(t *testing.T, s kubeSpec, name string) (cn, org string, found bool) {
+	t.Helper()
+	for _, c := range s.Spec.PKI.Certificates {
+		if c.Name == name {
+			return c.CommonName, c.Organization, true
+		}
+	}
+	return "", "", false
+}
+
+func TestKubernetesUserData_NetworkPolicyEnforcerRunsBeforeTheKubeletWithItsOwnPairAndKubeconfigAndTheNodeBridgesThroughNetfilter(t *testing.T) {
+	for _, controlPlane := range []bool{true, false} {
+		s := kubeUserData(t, kubeNode(t, controlPlane, nil))
+
+		names := serviceNames(s)
+		require.Contains(t, names, "kube-network-policies", "control-plane %v", controlPlane)
+		assert.Less(t, slices.Index(names, "kube-network-policies"), slices.Index(names, "kubelet"), "no Pod starts unenforced")
+		args, binary, _ := serviceByName(t, s, "kube-network-policies")
+		assert.Equal(t, "/bin/kube-network-policies", binary)
+		assert.Contains(t, args, "--kubeconfig="+layout.KubeDir+"/kube-network-policies.conf")
+		assert.Contains(t, args, "--disable-nri", "NRI is off in containerd, and the agent takes Pod IPs from the API server")
+		assert.Contains(t, args, "--fail-open=false", "upstream defaults to true: the agent fails closed only when told to (ADR 0086 item 3)")
+		assert.Contains(t, args, "--metrics-bind-address=127.0.0.1:9080", "upstream defaults to :9080 on every address, and a Node listens on no port its configuration does not name (ADR 0047 item 4)")
+		assert.Contains(t, fileContent(t, s, layout.KubeDir+"/kube-network-policies.conf"), "client-certificate: "+layout.KubePKIDir+"/kube-network-policies.crt")
+		assert.True(t, s.Spec.Network.BridgeNetfilter, "the bridge passes Pod traffic to the netfilter hooks the agent's rules sit on")
+	}
+}
+
+func TestKubernetesUserData_NetworkPolicyEnforcerIsOutOfAControlPlaneNodesPairsFilesAndServicesWhenTheClusterTurnsItOff(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, func(n *layout.Node) { n.Kube.DisableNetworkPolicy = true }))
+
+	assert.NotContains(t, serviceNames(s), "kube-network-policies")
+	_, _, found := certificate(t, s, "kube-network-policies")
+	assert.False(t, found, "no pair is issued for an agent that does not run")
+	for _, f := range s.Spec.Files {
+		assert.NotContains(t, f.Path, "kube-network-policies")
+		assert.NotEqual(t, layout.NetworkPolicyRBACFile, f.Path)
+	}
+	assert.False(t, s.Spec.Network.BridgeNetfilter)
+	args, _, _ := serviceByName(t, s, "addons")
+	assert.NotContains(t, args, layout.NetworkPolicyRBACFile)
+}
+
+func TestKubernetesUserData_WorkerCarriesTheEnforcersPairAsFilesOnlyWhileTheClusterRunsIt(t *testing.T) {
+	on := kubeUserData(t, kubeNode(t, false, nil))
+	off := kubeUserData(t, kubeNode(t, false, func(n *layout.Node) { n.Kube.DisableNetworkPolicy = true }))
+
+	for _, ext := range []string{".crt", ".key"} {
+		assert.NotEmpty(t, fileContent(t, on, layout.KubePKIDir+"/kube-network-policies"+ext))
+	}
+	for _, f := range off.Spec.Files {
+		assert.NotContains(t, f.Path, "kube-network-policies", "a worker of a cluster that turned it off carries nothing of it")
+	}
+	assert.NotContains(t, serviceNames(off), "kube-network-policies")
+	assert.False(t, off.Spec.Network.BridgeNetfilter)
+}
+
+func TestKubernetesUserData_NetworkPolicyEnforcerIsAUserOfItsOwnWithNoGroup(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, nil))
+
+	cn, org, found := certificate(t, s, "kube-network-policies")
+	require.True(t, found)
+	assert.Equal(t, layout.NetworkPolicyUser, cn)
+	assert.Empty(t, org, "system:nodes would name a group the Node authorizer does not decide for and nothing binds")
+
+	n := kubeNode(t, false, nil)
+	files := map[string]string{}
+	for _, f := range kubeUserData(t, n).Spec.Files {
+		files[f.Path] = f.Content
+	}
+	block, _ := pem.Decode([]byte(files[layout.KubePKIDir+"/kube-network-policies.crt"]))
+	require.NotNil(t, block)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	assert.Equal(t, layout.NetworkPolicyUser, cert.Subject.CommonName)
+	assert.Empty(t, cert.Subject.Organization)
+}
+
+func TestKubernetesUserData_ControlPlaneAppliesTheEnforcersRBACWhateverAddonsAreDisabled(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, func(n *layout.Node) { n.Kube.DisabledAddons = []string{"dns", "volumes"} }))
+
+	args, _, restart := serviceByName(t, s, "addons")
+	assert.Equal(t, "on-failure", restart)
+	assert.Contains(t, args, layout.NetworkPolicyRBACFile)
+	assert.NotContains(t, args, layout.AddonsDir+"/manifests/dns.yaml", "the disabled add-on stays out")
+	assert.Equal(t, layout.NetworkPolicyRBAC, fileContent(t, s, layout.NetworkPolicyRBACFile))
+	_, _, found := certificate(t, s, "addons")
+	assert.True(t, found, "the service applies as the add-ons' pair")
+	assert.NotEmpty(t, fileContent(t, s, layout.KubeDir+"/addons.conf"))
+
+	// The control: a Worker applies nothing, so it carries no manifest.
+	for _, f := range kubeUserData(t, kubeNode(t, false, nil)).Spec.Files {
+		assert.NotEqual(t, layout.NetworkPolicyRBACFile, f.Path)
+	}
+}
+
+func TestNetworkPolicyRBAC_GrantsExactlyTheThreeListsAndWatchesTheEnforcerReadsToTheUserItsPairNames(t *testing.T) {
+	type object struct {
+		Kind  string `yaml:"kind"`
+		Rules []struct {
+			APIGroups []string `yaml:"apiGroups"`
+			Resources []string `yaml:"resources"`
+			Verbs     []string `yaml:"verbs"`
+		} `yaml:"rules"`
+		Subjects []struct{ Kind, Name string } `yaml:"subjects"`
+		RoleRef  struct{ Kind, Name string }   `yaml:"roleRef"`
+		Metadata struct{ Name string }         `yaml:"metadata"`
+	}
+	var roles, bindings []object
+	dec := yaml.NewDecoder(strings.NewReader(layout.NetworkPolicyRBAC))
+	for {
+		var o object
+		if err := dec.Decode(&o); err != nil {
+			break
+		}
+		switch o.Kind {
+		case "ClusterRole":
+			roles = append(roles, o)
+		case "ClusterRoleBinding":
+			bindings = append(bindings, o)
+		}
+	}
+	require.Len(t, roles, 1)
+	require.Len(t, bindings, 1)
+
+	var granted []string
+	for _, r := range roles[0].Rules {
+		assert.Equal(t, []string{"list", "watch"}, r.Verbs, "the least: no get, no write")
+		for _, g := range r.APIGroups {
+			for _, res := range r.Resources {
+				granted = append(granted, g+"/"+res)
+			}
+		}
+	}
+	assert.ElementsMatch(t, []string{"/pods", "/namespaces", "networking.k8s.io/networkpolicies"}, granted)
+	assert.Equal(t, []struct{ Kind, Name string }{{"User", layout.NetworkPolicyUser}}, bindings[0].Subjects, "the binding names the CN the agent's pair is issued with")
+	assert.Equal(t, roles[0].Metadata.Name, bindings[0].RoleRef.Name)
+	assert.Equal(t, "ClusterRole", bindings[0].RoleRef.Kind)
 }

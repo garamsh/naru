@@ -55,24 +55,25 @@ spec:
 
 // recorder is both Host and Services and records the order of their calls.
 type recorder struct {
-	raw        string
-	network    string
-	readErr    error
-	networkErr error
-	filesErr   error
-	diskErr    error
-	formatErr  error
-	forwardErr error
-	prepareErr error
-	sealErr    error
-	issueErr   error
-	timeErr    error
-	routeErr   error
-	storageErr error
-	extErr     error
-	startErr   error
-	apiErr     error
-	api        *store.Stored
+	raw                string
+	network            string
+	readErr            error
+	networkErr         error
+	filesErr           error
+	diskErr            error
+	formatErr          error
+	forwardErr         error
+	bridgeNetfilterErr error
+	prepareErr         error
+	sealErr            error
+	issueErr           error
+	timeErr            error
+	routeErr           error
+	storageErr         error
+	extErr             error
+	startErr           error
+	apiErr             error
+	api                *store.Stored
 
 	stored  *store.Stored
 	loadErr error
@@ -216,6 +217,11 @@ func (r *recorder) EnableForwarding(f []config.Family) error {
 	r.calls = append(r.calls, "forward")
 	r.forwarded = f
 	return r.forwardErr
+}
+
+func (r *recorder) EnableBridgeNetfilter() error {
+	r.calls = append(r.calls, "bridge-netfilter")
+	return r.bridgeNetfilterErr
 }
 
 func (r *recorder) AddRoute(rt config.Route) error {
@@ -683,4 +689,36 @@ spec:
 	r = &recorder{raw: replace(t, validConfig, "    label: NARUDATA\n", "    label: NARUDATA\n    formatBlank: true\n")}
 	require.NoError(t, run(r))
 	assert.False(t, r.formatted.FirstBlank)
+}
+
+func withBridgeNetfilter(t *testing.T, doc string) string {
+	t.Helper()
+	return replace(t, doc, "    forwarding: [ipv4]\n", "    forwarding: [ipv4]\n    bridgeNetfilter: true\n")
+}
+
+func TestRun_SetsBridgeNetfilterAfterForwardingWhenTheConfigurationAsksForIt(t *testing.T) {
+	r := &recorder{raw: withBridgeNetfilter(t, validConfig)}
+
+	require.NoError(t, run(r))
+
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "bridge-netfilter", "files", "registries", "prepare", "seal", "start mvmd"}, r.calls)
+}
+
+func TestRun_LeavesBridgeNetfilterAloneWhenTheConfigurationDoesNotAskForIt(t *testing.T) {
+	// The control of the test above: the same configuration without the setting.
+	r := &recorder{raw: validConfig}
+
+	require.NoError(t, run(r))
+
+	assert.NotContains(t, r.calls, "bridge-netfilter")
+}
+
+func TestRun_RefusesTheBootWhenBridgeNetfilterCannotBeSetAndStartsNoService(t *testing.T) {
+	boom := errors.New("no br_netfilter")
+	r := &recorder{raw: withBridgeNetfilter(t, validConfig), bridgeNetfilterErr: boom}
+
+	err := run(r)
+
+	assert.ErrorIs(t, err, boom)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "bridge-netfilter"}, r.calls, "a Node whose policy cannot be enforced does not start its Pods")
 }

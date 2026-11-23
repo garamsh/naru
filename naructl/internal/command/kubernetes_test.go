@@ -82,15 +82,39 @@ func TestGenKubernetes_WritesTheAdminKubeconfigAndKeepsTheKeysOnASecondRun(t *te
 
 func TestGenKubernetes_DisableAddonIsWhatTheControlPlaneNodeReadsAndAnUnknownNameIsRefused(t *testing.T) {
 	dep := newDeployment(t)
-	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "dns", "--disable-addon", "volumes")
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "dns", "--disable-addon", "volumes", "--disable-network-policy")
 
 	data, err := os.ReadFile(dep.kubeNode(t, "control-plane"))
 	require.NoError(t, err)
 
-	assert.NotContains(t, string(data), "name: addons\n", "a cluster without DNS and volumes has nothing for the add-ons service to apply")
+	assert.NotContains(t, string(data), "name: addons\n", "a cluster without DNS, volumes and the enforcer has nothing for the add-ons service to apply")
 	_, err = run(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-addon", "nope")
 	require.Error(t, err)
 	assert.EqualError(t, err, `--disable-addon "nope" is not one of dns, volumes`)
+}
+
+func TestGenKubernetes_DisableNetworkPolicyIsWhatEveryNodeReadsAndAGenWithoutItTurnsTheEnforcerOnAgain(t *testing.T) {
+	dep := newDeployment(t)
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10", "--disable-network-policy")
+	_, err := os.Stat(filepath.Join(dep.ca, pki.DisableNetworkPolicyFile))
+	require.NoError(t, err, "the marker is in the CA directory beside disabled-addons")
+
+	for _, role := range []string{"control-plane", "worker"} {
+		data, err := os.ReadFile(dep.kubeNode(t, role))
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "kube-network-policies", role)
+		assert.NotContains(t, string(data), "bridgeNetfilter", role)
+	}
+
+	mustRun(t, "gen", "kubernetes", "--ca-dir", dep.ca, "--endpoint", "192.168.0.10")
+	_, err = os.Stat(filepath.Join(dep.ca, pki.DisableNetworkPolicyFile))
+	assert.ErrorIs(t, err, os.ErrNotExist, "a run without the flag removes the marker")
+	for _, role := range []string{"control-plane", "worker"} {
+		data, err := os.ReadFile(dep.kubeNode(t, role))
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "name: kube-network-policies\n", role)
+		assert.Contains(t, string(data), "bridgeNetfilter: true", role)
+	}
 }
 
 func TestGenKubernetes_AGenWithoutDisableAddonTurnsEveryAddonOnAgain(t *testing.T) {
