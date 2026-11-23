@@ -97,7 +97,7 @@ func (f *FakeHosts) List(context.Context) ([]groups.Host, error) {
 				if t.Form == groups.FormImage {
 					mc.Image = t.Version
 				} else {
-					mc.BootSet = t.NodeVersion
+					mc.BootSet = h.specs[m].BootSet
 				}
 				g.Machines = append(g.Machines, mc)
 			}

@@ -206,7 +206,7 @@ func planRetries(gs GroupState, o Observed, hosts []Host, keep []MemberState) []
 		m.Host = h.ID
 		out = append(out, Action{
 			Kind: ActionCreate, Group: spec.Name, Member: m, Host: h.ID,
-			Spec:   MachineSpec{ID: m.MachineID, Template: spec.Template, PodPrefix: m.PodPrefix, Fenced: spec.Stateful},
+			Spec:   MachineSpec{ID: m.MachineID, Template: spec.Template, BootSet: bootSetOn(spec.Template, h), PodPrefix: m.PodPrefix, Fenced: spec.Stateful},
 			Reason: fmt.Sprintf("tries again after %d refused create(s)", m.CreateFailures),
 		})
 		for i := range hosts {
@@ -262,7 +262,7 @@ func planCreates(gs GroupState, o Observed, hosts []Host, pods *podPrefixes, pre
 		}
 		out = append(out, Action{
 			Kind: ActionCreate, Group: spec.Name, Member: m, Host: h.ID,
-			Spec:   MachineSpec{ID: id, Template: spec.Template, PodPrefix: m.PodPrefix, Fenced: spec.Stateful},
+			Spec:   MachineSpec{ID: id, Template: spec.Template, BootSet: bootSetOn(spec.Template, h), PodPrefix: m.PodPrefix, Fenced: spec.Stateful},
 			Reason: createReason(len(keep), retiring, spec.Count),
 		})
 		onHost[h.ID]++

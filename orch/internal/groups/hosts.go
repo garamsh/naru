@@ -9,6 +9,9 @@ import (
 type MachineSpec struct {
 	ID       string
 	Template Template
+	// BootSet is the boot set an OS-form template boots on the host that creates it, as
+	// ResolveBootSet names it; empty for the image form.
+	BootSet string
 	// PodPrefix is the Pod prefix the Machine is routed, or empty.
 	PodPrefix string
 	// Fenced makes the Machine start only while its fence deadline is armed.

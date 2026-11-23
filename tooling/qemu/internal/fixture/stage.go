@@ -57,6 +57,7 @@ type Sources struct {
 //	bin/naru-storageprobe              reports on a storage disk (ADR 0027)
 //	bin/naru-loginprobe                reports a Node's listeners, shells and terminal readers (ADR 0047)
 //	bin/naru-nftprobe                  prints the host's nftables counters (harness.md)
+//	bin/naru-lanclient                 connects to a leased LAN address and prints the answers (harness.md)
 //	bin/naru-keyprobe                  scans for the private keys of given authorities (harness.md)
 //	registry/                          see WriteRegistry
 //
@@ -100,6 +101,7 @@ func Stage(src Sources, out string) (Inputs, error) {
 		{"tooling/qemu", "./cmd/naru-storageprobe", filepath.Join(bin, "naru-storageprobe")},
 		{"tooling/qemu", "./cmd/naru-loginprobe", filepath.Join(bin, "naru-loginprobe")},
 		{"tooling/qemu", "./cmd/naru-nftprobe", filepath.Join(bin, "naru-nftprobe")},
+		{"tooling/qemu", "./cmd/naru-lanclient", filepath.Join(bin, "naru-lanclient")},
 		{"tooling/qemu", "./cmd/naru-keyprobe", filepath.Join(bin, "naru-keyprobe")},
 		{"tooling/qemu", "./cmd/naru-mvmdlist", filepath.Join(bin, "naru-mvmdlist")},
 		{"tooling/qemu", "./cmd/naru-mvmroute", filepath.Join(bin, "naru-mvmroute")},

@@ -37,12 +37,16 @@ const (
 
 // Host is an admitted host the reconciler may lease an address to. LAN is the interface it
 // announces on; a host with none is no candidate. Networks are the networks it runs a microVM on.
-// Silent is an admitted host that did not answer this pass: it is no candidate for a new address,
-// and keeps the ones it holds for SilentGrace.
+// Members maps each network to the addresses of its running microVMs, so the reconciler knows
+// which of an exposure's backends run on a given network on this host; a host that runs none of
+// an exposure's backends on the exposure's network is no candidate for it. Silent is an admitted
+// host that did not answer this pass: it is no candidate for a new address, and keeps the ones
+// it holds for SilentGrace.
 type Host struct {
 	ID       string
 	LAN      string
 	Networks []string
+	Members  map[string][]string
 	Silent   bool
 }
 
@@ -126,11 +130,17 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 // Choose returns the host that should hold the address among the candidates, by rendezvous
 // hashing, so a lost host moves only its own addresses and a returned host takes back only its own.
-// A candidate is a host that answered, with a LAN interface, that runs a microVM on the network.
-func Choose(address, network string, hosts []Host) (string, bool) {
+// A candidate is a host that answered, with a LAN interface, that runs a microVM on the network,
+// and that runs at least one of the exposure's backends on that network (ADR 0085 item 6, as
+// amended by #296). Members is keyed by network so a backend address on one network cannot match
+// a microVM of the same address on a different network.
+func Choose(address, network string, backends []string, hosts []Host) (string, bool) {
 	best, bestScore := "", uint64(0)
 	for _, h := range hosts {
 		if h.Silent || h.LAN == "" || !slices.Contains(h.Networks, network) {
+			continue
+		}
+		if !slices.ContainsFunc(backends, func(b string) bool { return slices.Contains(h.Members[network], b) }) {
 			continue
 		}
 		sum := sha256.Sum256([]byte(address + "\x00" + h.ID))
@@ -139,6 +149,18 @@ func Choose(address, network string, hosts []Host) (string, bool) {
 		}
 	}
 	return best, best != ""
+}
+
+// localBackends returns the backends from the exposure that run on h's network, by intersection
+// with h.Members[network].
+func localBackends(h Host, network string, backends []string) []string {
+	var out []string
+	for _, b := range backends {
+		if slices.Contains(h.Members[network], b) {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // Reconcile runs one pass. For each exposure it renews the lease on its host while that host is
@@ -275,7 +297,7 @@ func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, re
 		}
 		return r.store.DeleteExposure(ctx, rec)
 	}
-	want, ok := Choose(rec.Address, rec.Network, hosts)
+	want, ok := Choose(rec.Address, rec.Network, rec.Backends, hosts)
 	if rec.Host != "" && silent(hosts, rec.Host) {
 		want, ok = rec.Host, true // slow, not known gone: renewed where it is, and not moved and moved back
 	}
@@ -284,7 +306,7 @@ func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, re
 		if !r.vacated(ctx, hosts, rec, start) {
 			return nil
 		}
-		next.Host, next.LeaseUntil, next.Phase = "", time.Time{}, orchapi.ExposurePending
+		next.Host, next.LeaseUntil, next.LeasedBackends, next.Phase = "", time.Time{}, nil, orchapi.ExposurePending
 		if err := r.store.UpdateExposure(ctx, next, rec); err != nil {
 			return err
 		}
@@ -297,16 +319,27 @@ func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, re
 		}
 		return nil
 	}
+	// The lease carries only the backends that run on the announcing host on the exposure's
+	// network. For a silent holder whose Members are unknown, the last-leased backends are used so
+	// the host keeps receiving the same list it already accepted (ADR 0085 item 6, as amended by
+	// #296). LeasedBackends is written with the deadline in one UpdateExposure.
+	local := rec.LeasedBackends
+	for _, h := range hosts {
+		if h.ID == want && !h.Silent {
+			local = localBackends(h, rec.Network, rec.Backends)
+			break
+		}
+	}
 	// The deadline is stored before the host is asked, and the store write and the renewal both
 	// end within CallTimeout of start. The host receives the renewal by then and holds the address
 	// LeaseSeconds after that, so this is never earlier than the end of its lease, however long
 	// the renewal takes or whichever leader asks next.
 	until := start.Add(CallTimeout + LeaseSeconds*time.Second)
-	next.Host, next.LeaseUntil = want, until
+	next.Host, next.LeaseUntil, next.LeasedBackends = want, until, local
 	if err := r.store.UpdateExposure(ctx, next, rec); err != nil {
 		return err
 	}
-	l := Lease{Network: rec.Network, Ports: rec.Ports, Backends: rec.Backends, ProxyProtocol: rec.ProxyProtocol, Seconds: LeaseSeconds}
+	l := Lease{Network: rec.Network, Ports: rec.Ports, Backends: local, ProxyProtocol: rec.ProxyProtocol, Seconds: LeaseSeconds}
 	if err := r.hosts.Put(ctx, want, rec.Address, l); err != nil {
 		return fmt.Errorf("lease on host %s: %w", want, err)
 	}

@@ -56,6 +56,10 @@ const (
 	// HostdEnrollKeyFile is where init writes spec.host.orch.enrollKey, 0600 and root's, which is hostd's.
 	HostdEnrollKeyFile = "/run/naru-hostd/enroll.key"
 
+	// OrchBootSetTrustRootFile is where init writes spec.orch.bootSetTrustRoot when given; orchd
+	// reads it with --boot-set-trust-root.
+	OrchBootSetTrustRootFile = OrchRunDir + "/boot-set-trust-root.json"
+
 	// The ports of the metrics listeners, on the address spec.metrics.listen names.
 	InitMetricsPort   = 9100
 	HostdMetricsPort  = 9101
@@ -109,6 +113,20 @@ type Orch struct {
 	// empty. Both exist for tests (ADR 0088).
 	EtcdQuotaBytes          int64  `yaml:"etcdQuotaBytes,omitempty"`
 	EtcdCompactionRetention string `yaml:"etcdCompactionRetention,omitempty"`
+	// BootSetStore is the https URL or directory path of the release assets the Node boot sets
+	// are added from. Empty adds no boot sets (orchd's --boot-set-store).
+	BootSetStore string `yaml:"bootSetStore,omitempty"`
+	// BootSetTrustRoot is the content of the Sigstore trusted_root.json that verifies a release;
+	// empty uses the public-good root orchd has built in (orchd's --boot-set-trust-root).
+	BootSetTrustRoot string `yaml:"bootSetTrustRoot,omitempty"`
+	// BootSetIdentity is the certificate identity a release is signed by; a trailing * is a
+	// prefix of at least https://github.com/<owner>/<repo>/; {version} is the version asked for.
+	// Empty uses orchd's default: the release workflow of garamsh/naru at the version's tag
+	// (orchd's --boot-set-identity).
+	BootSetIdentity string `yaml:"bootSetIdentity,omitempty"`
+	// BootSetIssuer is the OIDC issuer of the certificate a release is signed with. Empty uses
+	// orchd's default: https://token.actions.githubusercontent.com (orchd's --boot-set-issuer).
+	BootSetIssuer string `yaml:"bootSetIssuer,omitempty"`
 }
 
 // SignerSection is the signer this Node runs (spec.signer).
@@ -297,6 +315,37 @@ func (v *validation) orch(cfg NodeConfig) {
 	}
 	if o.EtcdQuotaBytes < 0 {
 		v.fail("spec.orch.etcdQuotaBytes", "must not be negative, got %d", o.EtcdQuotaBytes)
+	}
+	if o.BootSetStore != "" {
+		if strings.Contains(o.BootSetStore, "://") && !strings.HasPrefix(o.BootSetStore, "https://") {
+			v.fail("spec.orch.bootSetStore", "must be an https URL or a directory path, got %q", o.BootSetStore)
+		} else if strings.HasPrefix(o.BootSetStore, "https://") {
+			u, err := url.Parse(o.BootSetStore)
+			if err != nil || u.Hostname() == "" {
+				v.fail("spec.orch.bootSetStore", "must be an https URL with a host, got %q", o.BootSetStore)
+			}
+		}
+	}
+	if o.BootSetTrustRoot != "" && !json.Valid([]byte(o.BootSetTrustRoot)) {
+		v.fail("spec.orch.bootSetTrustRoot", "must be valid JSON")
+	}
+	if o.BootSetIdentity != "" {
+		p, isPrefix := strings.CutSuffix(o.BootSetIdentity, "*")
+		if strings.Contains(p, "*") {
+			v.fail("spec.orch.bootSetIdentity", "may have a * only at its end")
+		} else if isPrefix {
+			after, ok := strings.CutPrefix(p, "https://github.com/")
+			parts := strings.SplitN(after, "/", 3)
+			if !ok || len(parts) < 3 || parts[0] == "" || parts[1] == "" {
+				v.fail("spec.orch.bootSetIdentity", "prefix must start with https://github.com/<owner>/<repo>/ (the trailing slash is required)")
+			}
+		}
+	}
+	if o.BootSetIssuer != "" {
+		u, err := url.Parse(o.BootSetIssuer)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+			v.fail("spec.orch.bootSetIssuer", "must be an https URL, got %q", o.BootSetIssuer)
+		}
 	}
 	if _, err := netip.ParseAddrPort(o.listen()); err != nil {
 		v.fail("spec.orch.listen", "must be an IP address and a port, got %q", o.Listen)
@@ -636,6 +685,19 @@ func orchService(o Orch, node string, m *Metrics) (Service, []File) {
 	if o.RecoveryPublicKey != "" {
 		args = append(args, "--recovery-public-key="+OrchRunDir+"/recovery.pub")
 		files = append(files, File{Path: OrchRunDir + "/recovery.pub", Mode: "0644", Content: o.RecoveryPublicKey, Restart: restart})
+	}
+	if o.BootSetStore != "" {
+		args = append(args, "--boot-set-store="+o.BootSetStore)
+	}
+	if o.BootSetTrustRoot != "" {
+		args = append(args, "--boot-set-trust-root="+OrchBootSetTrustRootFile)
+		files = append(files, File{Path: OrchBootSetTrustRootFile, Mode: "0644", Content: o.BootSetTrustRoot, Restart: restart})
+	}
+	if o.BootSetIdentity != "" {
+		args = append(args, "--boot-set-identity="+o.BootSetIdentity)
+	}
+	if o.BootSetIssuer != "" {
+		args = append(args, "--boot-set-issuer="+o.BootSetIssuer)
 	}
 	return Service{
 		Name: OrchService, Binary: orchBinary, Args: append(args, metricsFlag(m, OrchMetricsPort)...),

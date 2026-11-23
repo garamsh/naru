@@ -3,7 +3,6 @@ package groups
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 )
@@ -52,8 +51,9 @@ func constraintGaps(spec GroupSpec, h Host) []string {
 	return gaps
 }
 
-// placementGaps adds what only a new member needs of a host.
-func placementGaps(spec GroupSpec, h Host) []string {
+// hostGaps adds to the constraints what makes a host unfit to take a new member of any template:
+// it is also the eligibility of a host for the boot set the group needs.
+func hostGaps(spec GroupSpec, h Host) []string {
 	gaps := constraintGaps(spec, h)
 	if !h.Ready {
 		gaps = append(gaps, "not ready")
@@ -61,13 +61,24 @@ func placementGaps(spec GroupSpec, h Host) []string {
 	if h.Draining {
 		gaps = append(gaps, "draining")
 	}
-	if v := spec.Template.NodeVersion; v != "" && !slices.Contains(h.NodeVersions, v) {
+	return gaps
+}
+
+// placementGaps adds what only this template needs of a host.
+func placementGaps(spec GroupSpec, h Host) []string {
+	gaps := hostGaps(spec, h)
+	if v := spec.Template.NodeVersion; v != "" && !offersNodeVersion(v, h) {
 		gaps = append(gaps, fmt.Sprintf("node version %s is outside the host's %v", v, h.NodeVersions))
 	}
 	if h.Capacity.CPUs < spec.Template.CPUs || h.Capacity.MemoryMiB < spec.Template.MemoryMiB {
 		gaps = append(gaps, "not enough free capacity")
 	}
 	return gaps
+}
+
+func offersNodeVersion(v string, h Host) bool {
+	_, ok := ResolveBootSet(v, h.NodeVersions)
+	return ok
 }
 
 func score(spec GroupSpec, h Host) int {

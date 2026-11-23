@@ -88,6 +88,10 @@ type Deps struct {
 	// pools and exposures, and the leader keeps each exposure's lease on a host renewed; without it
 	// those endpoints answer 501.
 	NewExposureHosts func(inv inventory.Service) ExposureHosts
+	// BootSets, with NewBootSetHosts, turns on the adding of the boot sets the groups' node
+	// versions need to the hosts that lack them. The leader runs it beside the groups engine.
+	BootSets        groups.ReleaseStore
+	NewBootSetHosts func(inv inventory.Service) groups.BootSetHosts
 	// Reconciler replaces the groups engine, for a test of the leader seam.
 	Reconciler Reconciler
 	Clock      inventory.Clock
@@ -263,6 +267,12 @@ func (o *Orchd) assemble(m *member.Member) bool {
 		exposureSvc = exposures.New(exposuresetcd.New(m.Client()), networkStore, eh, invStore, d.Clock)
 		reconcilers = append(reconcilers, exposures.NewReconciler(exposures.Config{
 			Hosts: eh, Exposures: exposuresetcd.New(leaderKV), Networks: networkStore, Clock: d.Clock, Log: d.Log,
+		}))
+	}
+	if d.BootSets != nil && d.NewBootSetHosts != nil {
+		reconcilers = append(reconcilers, groups.NewBootSets(groups.BootSetConfig{
+			Hosts: d.NewBootSetHosts(svc), Store: groupsetcd.New(leaderKV), Releases: d.BootSets, Clock: groupClock{d.Clock},
+			Events: groupsetcd.NewEvents(leaderInv), Interval: c.GroupInterval, Log: d.Log,
 		}))
 	}
 	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})

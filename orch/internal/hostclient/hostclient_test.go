@@ -72,6 +72,23 @@ func newHost(t *testing.T) *fakeHost {
 
 func (f *fakeHost) addr() string { u, _ := url.Parse(f.srv.URL); return u.Host }
 
+func (f *fakeHost) body(key string) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bodies[key]
+}
+
+func (f *fakeHost) saw(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.requests {
+		if r == key {
+			return true
+		}
+	}
+	return false
+}
+
 // client is a client that has listed the hosts of inv, as the engine's pass does before it calls one.
 func client(inv inventory) *hostclient.Client {
 	c := hostclient.New(inv, &http.Client{Transport: &http.Transport{TLSClientConfig: insecure()}}, nil)
@@ -154,14 +171,14 @@ func TestCreateSendsTheImageForm(t *testing.T) {
 func TestCreateSendsTheOSForm(t *testing.T) {
 	h := newHost(t)
 	c := client(inventory{{ID: "h", Address: h.addr()}})
-	err := c.Create(t.Context(), "h", groups.MachineSpec{ID: "db-1", Template: groups.Template{
-		Form: groups.FormOS, CPUs: 1, MemoryMiB: 128, NodeVersion: "node-2", Disks: []groups.Disk{{Name: "data", SizeBytes: 2 << 30}},
+	err := c.Create(t.Context(), "h", groups.MachineSpec{ID: "db-1", BootSet: "naru-node-v0-4-0", Template: groups.Template{
+		Form: groups.FormOS, CPUs: 1, MemoryMiB: 128, NodeVersion: "v0.4.0", Disks: []groups.Disk{{Name: "data", SizeBytes: 2 << 30}},
 	}})
 	require.NoError(t, err)
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(h.bodies["POST /v1/microvms"], &got))
-	require.Equal(t, "node-2", got["bootSet"])
+	require.Equal(t, "naru-node-v0-4-0", got["bootSet"])
 	require.EqualValues(t, 2<<30, got["dataDisk"])
 	require.Equal(t, base64.StdEncoding.EncodeToString([]byte(groups.DefaultUserData)), got["seed"], "no user-data gives the default")
 	require.Empty(t, got["image"])
