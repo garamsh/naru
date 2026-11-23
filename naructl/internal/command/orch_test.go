@@ -44,14 +44,25 @@ type fakeOrch struct {
 	// drains are the calls "drain <id>" and "undrain <id>", in order.
 	drains []string
 	// networks and deletedNetworks are what the network commands sent.
-	networks        []sentNetwork
-	deletedNetworks []string
+	networks []sentNetwork
+	// pools and deletedPools are what the address-pool commands sent, and releasedExposures the "<network>/<id>" of
+	// each exposure delete.
+	pools             []sentPool
+	deletedPools      []string
+	releasedExposures []string
+	deletedNetworks   []string
 	// restored is the body and the hash header of the last PUT /v1/restore, and restoreStatus the
 	// status it is answered with (zero is 204). latest is what GET /v1/snapshots/latest returns.
 	restored      []byte
 	restoredSHA   string
 	restoreStatus int
 	latest        []byte
+}
+
+// sentPool is an address pool as a PUT carried it.
+type sentPool struct {
+	name string
+	spec orchapi.AddressPoolSpec
 }
 
 // sentNetwork is a network as a PUT carried it.
@@ -141,6 +152,35 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 		f.networks = append(f.networks, sentNetwork{r.PathValue("name"), spec})
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(orchapi.Network{Name: r.PathValue("name"), Prefix: spec.Prefix, APIEndpoint: spec.APIEndpoint})
+	})
+	mux.HandleFunc("PUT /v1/address-pools/{name}", func(w http.ResponseWriter, r *http.Request) {
+		var spec orchapi.AddressPoolSpec
+		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		f.pools = append(f.pools, sentPool{r.PathValue("name"), spec})
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(orchapi.AddressPool{Name: r.PathValue("name"), CIDRs: spec.CIDRs, Networks: spec.Networks})
+	})
+	mux.HandleFunc("GET /v1/address-pools", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]orchapi.AddressPool{{Name: "lan", CIDRs: []string{"192.168.0.80/29"}, Networks: []string{"lab"}}})
+	})
+	mux.HandleFunc("DELETE /v1/address-pools/{name}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.deletedPools = append(f.deletedPools, r.PathValue("name"))
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /v1/exposures", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]orchapi.Exposure{{ID: "d.web.0a1b2c3d", Network: "lab", Address: "192.168.0.80", Host: "h1", Phase: orchapi.ExposureAnnounced}})
+	})
+	mux.HandleFunc("DELETE /v1/networks/{name}/exposures/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.releasedExposures = append(f.releasedExposures, r.PathValue("name")+"/"+r.PathValue("id"))
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /v1/networks", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode([]orchapi.Network{{Name: "edge", Prefix: "10.8.0.0/24"}, {Name: "lab", Prefix: "10.9.0.0/24", APIEndpoint: "10.9.0.2"}})
