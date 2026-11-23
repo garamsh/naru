@@ -65,16 +65,18 @@ func TestDiskBytes_MeasuresTheNearestDirectoryThatExists(t *testing.T) {
 
 func TestShouldDefrag(t *testing.T) {
 	const mib = 1 << 20
-	const quota = 512 * mib // a share of 64 MiB
+	const quota = 500 * mib // a high-water mark of 400 MiB
 	tests := []struct {
 		name        string
 		size, inUse int64
 		want        bool
 	}{
-		{"a large database that is mostly free pages", 400 * mib, 20 * mib, true},
-		{"a large database that holds its data", 400 * mib, 300 * mib, false},
-		{"a database under a share of the quota", 63 * mib, 1 * mib, false},
-		{"a database at a share of the quota and exactly half free", 64 * mib, 32 * mib, true},
+		{"a database at the high-water mark that is mostly free pages", 400 * mib, 20 * mib, true},
+		{"a database over the high-water mark with a third of it free", 465 * mib, 300 * mib, true},
+		{"a database at the high-water mark with exactly a tenth free", 400 * mib, 360 * mib, true},
+		{"a database over the high-water mark that holds its data", 450 * mib, 420 * mib, false},
+		{"a database below the high-water mark that is mostly free pages", 399 * mib, 1 * mib, false},
+		{"a database below the high-water mark with a third of it free", 300 * mib, 200 * mib, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -103,8 +105,8 @@ func TestHousekeeper_DefragmentsADatabaseCompactionLeftMostlyFree(t *testing.T) 
 	require.NoError(t, err)
 	st, err := cl.Status(t.Context(), cl.Endpoints()[0])
 	require.NoError(t, err)
-	const quota = 256 << 20
-	require.Greater(t, st.DbSize, int64(quota/member.DefragShare), "the history made a database worth defragmenting")
+	const quota = 56 << 20
+	require.True(t, member.ShouldDefrag(quota, st.DbSize, st.DbSizeInUse), "the history made a database worth defragmenting")
 	require.Less(t, st.DbSizeInUse, st.DbSize/2, "compaction left most of it free")
 
 	h := &member.Housekeeper{Client: cl, Quota: quota, Now: time.Now, Log: slog.New(slog.DiscardHandler)}
@@ -261,7 +263,7 @@ func TestHousekeeper_DisarmsTheNoSpaceAlarmOfAMemberOnlyOnceItsDatabaseIsWellUnd
 func TestHousekeeper_DefragmentsNoMemberWhileOneIsOutAndTriesTheRestAfterOneFails(t *testing.T) {
 	const quota = 512 << 20
 	cl := fakeMembers(3)
-	cl.dbSize, cl.inUse = 100<<20, 1<<20
+	cl.dbSize, cl.inUse = 450<<20, 1<<20
 	cl.failDefrag = map[string]bool{cl.members[0].ClientURLs[0]: true}
 	h := &member.Housekeeper{Client: cl, Quota: quota, Now: time.Now, Log: slog.New(slog.DiscardHandler)}
 
@@ -271,7 +273,7 @@ func TestHousekeeper_DefragmentsNoMemberWhileOneIsOutAndTriesTheRestAfterOneFail
 	assert.Len(t, cl.defragged, 3, "a member whose defragmentation fails does not keep the others from theirs")
 
 	out := fakeMembers(3, 2)
-	out.dbSize, out.inUse = 100<<20, 1<<20
+	out.dbSize, out.inUse = 450<<20, 1<<20
 	h = &member.Housekeeper{Client: out, Quota: quota, Now: time.Now, Log: slog.New(slog.DiscardHandler)}
 	require.NoError(t, h.Pass(t.Context()))
 	assert.Empty(t, out.defragged, "a defragmentation blocks its member, so none runs while another is out")
