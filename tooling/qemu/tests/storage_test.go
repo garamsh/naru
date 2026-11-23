@@ -28,10 +28,15 @@ const (
 	storageMark = "storage disk mounted"
 )
 
-func withStorageDisk(c *node.Config) {
+// withExtraDisk gives the Node the blank extra disk and spec.storage naming it, without the probe.
+func withExtraDisk(c *node.Config) {
 	c.ExtraDisk = extraSize
 	c.VirtioDisks = true
 	c.Storage = []node.Storage{{Name: "vmdisks", Device: "/dev/vdb", MountPoint: storageDir}}
+}
+
+func withStorageDisk(c *node.Config) {
+	withExtraDisk(c)
 	c.StorageProbe = storageDir
 }
 

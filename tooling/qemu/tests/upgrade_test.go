@@ -43,21 +43,15 @@ const storeFile = wire.DataMount + "/config/store.yaml"
 // returns the Node and the admin's client file once the Node answers.
 func startUpgradeNode(t *testing.T) (*node.Node, string) {
 	t.Helper()
-	return startUpgradeNodeOn(t, tool, inputs, copyBootDisk(t))
+	return startUpgradeNodeOn(t, tool, inputs, copyBootDisk(t), addNothing)
 }
 
 // startUpgradeNodeOn is startUpgradeNode for the naructl bin, which writes the authorities, the
 // admin's client and the user-data, the inputs the data disk carries, and the boot disk to boot,
-// which the Node writes to.
-func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, disk string) (*node.Node, string) {
-	t.Helper()
-	return startUpgradeNodeStoring(t, bin, inputs, disk, false)
-}
-
-// startUpgradeNodeStoring is startUpgradeNodeOn for a Node that, when storage is set, also has a
-// blank storage disk at /dev/vdb which spec.storage names and init mounts at wire.MvmdStorageMount
-// (ADR 0027), as a gen node host with storage has.
-func startUpgradeNodeStoring(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, disk string, storage bool) (*node.Node, string) {
+// which the Node writes to. configure sets what the case adds to the Node's configuration and to
+// the host `gen node` writes the user-data of, as node.ClusterSpec.Configure does for a cluster;
+// the plain case passes addNothing.
+func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, disk string, configure func(*node.Config, *naructl.Node)) (*node.Node, string) {
 	t.Helper()
 	dir := t.TempDir()
 	caDir := filepath.Join(dir, "ca")
@@ -72,10 +66,6 @@ func startUpgradeNodeStoring(t *testing.T, bin naructl.Tool, inputs fixture.Inpu
 	require.NoError(t, os.WriteFile(guest, manifest, 0o600))
 
 	cfg := node.Config{Name: "node-1", Index: 1, Total: 1, ControlPlane: true, Inputs: inputs, HostPort: hostPort, APIHostPort: apiPort}
-	if storage {
-		withStorageDisk(&cfg)
-		cfg.StorageProbe = ""
-	}
 	n := node.QEMUNetwork(1, 1)
 	ones, _ := net.IPMask(net.ParseIP(n.Netmask).To4()).Size()
 	nodeDir := filepath.Join(dir, "node-1")
@@ -87,9 +77,7 @@ func startUpgradeNodeStoring(t *testing.T, bin naructl.Tool, inputs fixture.Inpu
 		ServingAddresses: []string{"127.0.0.1"}, ExtraNIC: cfg.HostMAC() + "=" + node.HostNICPrefix, Binaries: map[string]string{},
 		Out: filepath.Join(nodeDir, "naru.yaml"), NetworkConfig: filepath.Join(nodeDir, "network-config"),
 	}
-	if storage {
-		gen.Storage = []string{"vmdisks=/dev/vdb"}
-	}
+	configure(&cfg, &gen)
 	require.NoError(t, bin.GenNode(gen))
 	userData, err := os.ReadFile(gen.Out)
 	require.NoError(t, err)
@@ -109,6 +97,9 @@ func startUpgradeNodeStoring(t *testing.T, bin naructl.Tool, inputs fixture.Inpu
 	eventually(t, "the Node API answers an admin", func() bool { return ctlWith(bin, admin, "version").Err == nil })
 	return nd, admin
 }
+
+// addNothing is the configure of a Node with nothing added.
+func addNothing(*node.Config, *naructl.Node) {}
 
 func freeLoopbackPort(t *testing.T) int {
 	t.Helper()

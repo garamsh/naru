@@ -13,6 +13,7 @@ import (
 
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
+	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
 // The release upgrade test installs a published release and upgrades it in place to the next one.
@@ -27,19 +28,50 @@ const (
 )
 
 func TestRelease_AHostInstalledFromOneReleaseUpgradesInPlaceToTheNextAndKeepsItsData(t *testing.T) {
-	upgradeBetweenReleases(t, false)
+	upgradeBetweenReleases(t, plainRelease)
 }
 
 // A gen node host with a storage disk and a static network-config upgraded in place was the case of
 // a trial boot that was refused and rolled back (#263); no release test had it.
 func TestRelease_AHostWithAStorageDiskUpgradesInPlaceToTheNextAndMountsItAgain(t *testing.T) {
-	upgradeBetweenReleases(t, true)
+	upgradeBetweenReleases(t, releaseCase{
+		Configure: func(c *node.Config, g *naructl.Node) {
+			withExtraDisk(c)
+			for _, s := range c.Storage {
+				g.Storage = append(g.Storage, s.Name+"="+s.Device)
+			}
+		},
+		Installed: func(t *testing.T, nd *node.Node) {
+			require.True(t, nd.Has(formatted, "device=/dev/vdb"), "the control: the first boot formatted the storage disk the entry names")
+			require.True(t, nd.Has(storageMark, "device=/dev/vdb"), "and mounted it")
+		},
+		Upgraded: func(t *testing.T, nd *node.Node, mark int) {
+			assert.True(t, nd.HasAfter(mark, storageMark, "device=/dev/vdb"), "the upgraded boot mounted the storage disk again")
+			assert.False(t, nd.HasAfter(mark, "storage disk not prepared"), "and did not refuse its entry")
+			assert.False(t, nd.HasAfter(mark, "boot refused"), "and refused no part of the boot")
+		},
+	})
 }
 
-// upgradeBetweenReleases installs the release in FROM, upgrades it to the one in TO and checks the
-// Node promoted it; with storage, on a Node whose spec.storage names a disk it also checks init
-// mounted that disk again and refused nothing.
-func upgradeBetweenReleases(t *testing.T, storage bool) {
+// releaseCase is what a release upgrade test adds to the host it installs: Configure sets it on the
+// Node's configuration and the host `gen node` writes, Installed checks the boot of the release in
+// FROM, and Upgraded checks the console after mark, the length of the console when the upgrade began.
+type releaseCase struct {
+	Configure func(*node.Config, *naructl.Node)
+	Installed func(t *testing.T, nd *node.Node)
+	Upgraded  func(t *testing.T, nd *node.Node, mark int)
+}
+
+// plainRelease is the case of a host with nothing added.
+var plainRelease = releaseCase{
+	Configure: addNothing,
+	Installed: func(*testing.T, *node.Node) {},
+	Upgraded:  func(*testing.T, *node.Node, int) {},
+}
+
+// upgradeBetweenReleases installs the release in FROM on the host the case describes, upgrades it to
+// the one in TO and checks the Node promoted it and the case's own checks.
+func upgradeBetweenReleases(t *testing.T, c releaseCase) {
 	t.Helper()
 	fromDir, toDir := os.Getenv(fromReleaseEnv), os.Getenv(toReleaseEnv)
 	var unset []string
@@ -67,19 +99,15 @@ func upgradeBetweenReleases(t *testing.T, storage bool) {
 	to := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(bundles[0]), "naru-host-upgrade-"), ".tar")
 	require.NotEqual(t, from.Version, to, "the two directories hold two releases")
 
-	nd, admin := startUpgradeNodeStoring(t, fromTool, from.Inputs, from.BootDisk, storage)
+	nd, admin := startUpgradeNodeOn(t, fromTool, from.Inputs, from.BootDisk, c.Configure)
 	before, err := statusOf(fromTool, admin)
 	require.NoError(t, err)
 	require.Equal(t, from.Version, before.Version, "the Node runs the release it was installed from")
 	require.Equal(t, "default", before.Slot)
 	require.NoError(t, ctlWith(fromTool, admin, "apply", "-f", patchFile(t, idle("1m"))).Err)
 	stored := storeOf(t, nd)
-	var mark int
-	if storage {
-		require.True(t, nd.Has(formatted, "device=/dev/vdb"), "the control: the first boot formatted the storage disk the entry names")
-		require.True(t, nd.Has(storageMark, "device=/dev/vdb"), "and mounted it")
-		mark = len(nd.Console())
-	}
+	c.Installed(t, nd)
+	mark := len(nd.Console())
 
 	r := ctlWith(toTool, admin, "upgrade", "--bundle", bundles[0], "--sums", filepath.Join(toDir, "SHA256SUMS"))
 
@@ -97,9 +125,5 @@ func upgradeBetweenReleases(t *testing.T, storage bool) {
 	services := ctlWith(toTool, admin, "services")
 	require.NoError(t, services.Err, services.refusal())
 	assert.Contains(t, services.Stdout, "naru49-idle", "the Node lists the service the applied configuration names")
-	if storage {
-		assert.True(t, nd.HasAfter(mark, storageMark, "device=/dev/vdb"), "the upgraded boot mounted the storage disk again")
-		assert.False(t, nd.HasAfter(mark, "storage disk not prepared"), "and did not refuse its entry")
-		assert.False(t, nd.HasAfter(mark, "boot refused"), "and refused no part of the boot")
-	}
+	c.Upgraded(t, nd, mark)
 }
