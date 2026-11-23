@@ -18,6 +18,7 @@ COPY --from=lib install-go.sh /usr/local/bin/
 COPY --from=gen-init-cpio /gen_init_cpio /usr/local/bin/gen_init_cpio
 COPY --from=src / /src
 RUN : "${NARU_VERSION:?initramfs: NARU_VERSION is the version the image is built for}" \
+ && (cd /src/tooling/disk && go build -trimpath -buildvcs=false -o /usr/local/bin/naru-cpiolist ./cmd/naru-cpiolist) \
  && cd /src/host && go build -trimpath -buildvcs=false \
       -ldflags="-s -w -X github.com/garamsh/naru/lib/init/run.buildVersion=$NARU_VERSION $EXTRA_LDFLAGS" \
       -o /tmp/naru-init ./cmd/naru-init \
