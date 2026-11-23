@@ -1,6 +1,6 @@
 # ADR 0093: the cloud-controller add-on is opt-in and is the cluster's LoadBalancer implementation, and one switch turns it and the kubelets' external provider on together, amending ADR 0085 items 1, 9 and 12
 
-> Status: accepted
+> Status: superseded by [ADR 0114](./0114-naru-runs-no-kubernetes-or-gaon-and-their-layouts-programs-images-tests-and-documents-are-removed.md)
 > Date: 2026-11-23
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

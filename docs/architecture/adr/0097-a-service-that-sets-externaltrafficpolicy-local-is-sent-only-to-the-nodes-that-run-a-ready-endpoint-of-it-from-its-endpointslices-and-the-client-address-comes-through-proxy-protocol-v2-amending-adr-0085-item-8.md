@@ -1,6 +1,6 @@
 # ADR 0097: a Service that sets externalTrafficPolicy Local is sent only to the Nodes that run a ready endpoint of it, from its EndpointSlices, and the client's address comes through PROXY protocol v2, amending ADR 0085 item 8
 
-> Status: accepted
+> Status: superseded by [ADR 0114](./0114-naru-runs-no-kubernetes-or-gaon-and-their-layouts-programs-images-tests-and-documents-are-removed.md)
 > Date: 2026-11-23
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
