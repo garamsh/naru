@@ -212,3 +212,42 @@ func TestFleet_RotatingAHostRevokesAnOfflinePairRegisteredBySerialAndTheHostServ
 	r = hctl(provisioner, []string{"microvm", "list"})
 	require.NoError(t, r.Err, r.Stderr)
 }
+
+// Recovering a lost host (docs/operate/recover-a-member-or-host.md part 2): the operator forgets the host
+// with `naructl host remove` and revokes its certificates by the host ID with `naructl signer revoke-host`,
+// which needs no serial. Every serial the signer holds for the host reads revoked afterwards, and orch
+// refuses the handshake of a client that presents the host's pair.
+func TestFleet_ARemovedLostHostIsRevokedByItsIDAndOrchRefusesItsPair(t *testing.T) {
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 1})
+	f.startOrch()
+	h := f.hosts()[0]
+	f.enrollAndAdmit("eu-1")
+	hosts := f.hostList(1)
+	require.Len(t, hosts, 1)
+	id := hosts[0].ID
+
+	crt, key := hostPairOnDisk(t, f.node(h), f.dir, "lost")
+	serial := serialOfFile(t, crt)
+	orchAddr := f.forward(1, orchPort)
+	code, err := heartbeatStatus(orchAddr, crt, key)
+	require.NoError(t, err, "control: orch takes the host's pair before the host is revoked")
+	require.Equal(t, http.StatusNoContent, code)
+
+	signerFlags := []string{"--admin", f.root.file, "--passphrase-file", f.pass, "--host-id", id, "--config", f.c.API.Admin}
+	listed := f.must(nrun(append([]string{"signer", "lookup-host"}, signerFlags...)...), "look the host's serials up")
+	require.Contains(t, listed, serial+" valid", "the signer holds the host's serial and it is not revoked yet")
+
+	f.must(f.orch("host", "remove", id), "forget the lost host")
+	out := f.must(nrun(append([]string{"signer", "revoke-host"}, signerFlags...)...), "revoke the lost host by its ID")
+	assert.Contains(t, out, serial+" revoked", "revoke-host reports the host's serial revoked")
+	assert.NotContains(t, out, " valid", "no serial of the host is left valid")
+
+	listed = f.must(nrun(append([]string{"signer", "lookup-host"}, signerFlags...)...), "look the host's serials up again")
+	assert.Contains(t, listed, serial+" revoked", "the signer reads every serial of the host as revoked")
+	assert.NotContains(t, listed, " valid")
+
+	eventually(t, "orch refuses the handshake of the lost host's pair", func() bool {
+		_, err := heartbeatStatus(orchAddr, crt, key)
+		return err != nil
+	})
+}
