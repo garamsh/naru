@@ -14,5 +14,7 @@ type Store interface {
 	// returns inventory.ErrConflict otherwise.
 	PutGroup(ctx context.Context, g groups.GroupSpec, prev *groups.GroupSpec) error
 	GetGroup(ctx context.Context, name string) (groups.GroupSpec, error)
+	// DeleteGroup removes the group and the records of its members in one step, and returns
+	// inventory.ErrConflict while a member is not gone.
 	DeleteGroup(ctx context.Context, name string) error
 }
