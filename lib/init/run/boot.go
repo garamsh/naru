@@ -3,24 +3,45 @@ package run
 import (
 	"context"
 	"log/slog"
+	"syscall"
 
 	"github.com/garamsh/naru/lib/init/apply"
 	"github.com/garamsh/naru/lib/init/boot"
+	"github.com/garamsh/naru/lib/init/bootmedia"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/extension"
 	"github.com/garamsh/naru/lib/init/linux"
 	"github.com/garamsh/naru/lib/init/pki"
 	"github.com/garamsh/naru/lib/init/store"
 	"github.com/garamsh/naru/lib/init/timesync"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // bootHost is the machine with the means to mount the system extensions.
 type bootHost struct {
 	*linux.Host
 	extensions *extension.Manager
+	// sources are the places the Node's extension images may come with it (ADR 0096).
+	sources []extension.Source
 }
 
+func (h bootHost) ProvideExtensions(specs []config.Extension) { h.extensions.Provide(specs, h.sources) }
+
 func (h bootHost) MountExtensions(specs []config.Extension) error { return h.extensions.Mount(specs) }
+
+// bootSources returns the places the Node's extension images may come with it, in the order they are
+// asked. A Node that has none of a place gets no offer from it (ADR 0096).
+func bootSources() []extension.Source {
+	return []extension.Source{
+		bootmedia.ESP{
+			SysClassBlock: "/sys/class/block", DevDir: "/dev", GUID: wire.ESPGUID,
+			// Not /run/naru/esp, where an upgrade mounts the partition to write it.
+			Mountpoint: "/run/naru/esp-extensions",
+			Mount:      syscall.Mount, Unmount: syscall.Unmount,
+		},
+		bootmedia.Dir{Root: bootmedia.BootExtensionsDir},
+	}
+}
 
 // timedHost is the machine as the boot sequence reaches it, with its clock.
 type timedHost interface {

@@ -170,4 +170,13 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 	assert.NotEmpty(t, version)
 	assert.NotEmpty(t, bootID)
 	t.Logf("the microVM's Node API answered version %s, boot ID %s", version, bootID)
+
+	// Nothing delivered the volumes extension to the blank data disk hostd made: init took it from
+	// the Node's initramfs at the first boot (ADR 0096).
+	rows := extensionRows(t, file)
+	var mounted bool
+	for _, row := range rows {
+		mounted = mounted || (len(row) > 0 && row[len(row)-1] == "/usr/lib/naru/extensions/naru-volumes")
+	}
+	assert.True(t, mounted, "naru-volumes is stored and mounted: %v", rows)
 }

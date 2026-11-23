@@ -325,6 +325,7 @@ target "_initramfs" {
     cni                    = "target:cni"
     coredns                = "target:coredns"
     ccm                    = "target:ccm"
+    volumes                = "target:volumes"
     cacert                 = "target:cacert"
   }
 }

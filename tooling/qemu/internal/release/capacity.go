@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 const (
@@ -15,6 +17,33 @@ const (
 	// firstEntryOffset is where the first GPT partition entry is: the table starts at LBA 2.
 	firstEntryOffset = 2 * sectorBytes
 )
+
+// LayoutName is the file `naru-disk -layout` writes beside the boot disk (image/host/disk/build.sh):
+// {"extensionRoom": N}, what the ESP spends on the extensions it carries (ADR 0096). A disk built
+// before it has none, and spends nothing.
+const LayoutName = "naru-esp.json"
+
+// ExtensionRoom reads from dir, the boot disk's directory, the room the ESP spends on its
+// extensions. The ESP's room for kernels is the partition less this.
+func ExtensionRoom(dir string) (int64, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, LayoutName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var l struct {
+		ExtensionRoom int64 `json:"extensionRoom"`
+	}
+	if err := json.Unmarshal(raw, &l); err != nil {
+		return 0, fmt.Errorf("%s: %w", LayoutName, err)
+	}
+	if l.ExtensionRoom < 0 {
+		return 0, fmt.Errorf("%s: a negative extension room", LayoutName)
+	}
+	return l.ExtensionRoom, nil
+}
 
 // ESPBytes reads the size of the first partition of the raw GPT disk image at path: the ESP.
 func ESPBytes(path string) (int64, error) {
@@ -103,6 +132,24 @@ func CheckSuccessor(prev BundleManifestJSON, kernelBytes int64) error {
 	if room := prev.TrialRoom(); kernelBytes > room {
 		return fmt.Errorf("the kernel of %d bytes does not fit the trial slot of a Node installed from %s: its ESP of %d bytes holds that release's kernel of %d bytes and %d bytes more",
 			kernelBytes, prev.Version, prev.ESPOf(), prev.Kernel.Bytes, room)
+	}
+	return nil
+}
+
+// MaxNodeInitramfsBytes is the largest Node initramfs a release ships: the 256 MiB of ADR 0083, which
+// the extension the initramfs carries for a blank Node's first boot counts against (ADR 0096).
+const MaxNodeInitramfsBytes = 256 << 20
+
+// checkNodeInitramfs refuses a Node initramfs larger than MaxNodeInitramfsBytes, and says the size
+// it found on standard output as the release's figure.
+func checkNodeInitramfs(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("release: the Node initramfs is %d bytes (the limit is %d)\n", info.Size(), MaxNodeInitramfsBytes)
+	if info.Size() > MaxNodeInitramfsBytes {
+		return fmt.Errorf("the Node initramfs of %d bytes is larger than the %d bytes ADR 0083 allows: the extension it carries for the first boot counts against it", info.Size(), MaxNodeInitramfsBytes)
 	}
 	return nil
 }
