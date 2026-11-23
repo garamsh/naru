@@ -51,7 +51,8 @@ type kubeSpec struct {
 			Serial string `yaml:"serial"`
 		} `yaml:"storage"`
 		Node *struct {
-			CNIConf string `yaml:"cniConf"`
+			PodPrefix string `yaml:"podPrefix"`
+			CNIConf   string `yaml:"cniConf"`
 		} `yaml:"node"`
 		Extensions []map[string]string `yaml:"extensions"`
 		PKI        struct {
@@ -879,7 +880,7 @@ func TestKubernetesCheck_WithTheCloudControllerANodeIsNamedAfterItsGroupMember(t
 	require.NoError(t, kubeNode(t, false, func(n *layout.Node) { n.Name = "worker" }).Check(), "control: without the add-on any DNS label is a Node's name")
 }
 
-func TestKubernetesUserData_APodPrefixFromTheSeedLeavesItOutOfTheUserDataAndHasInitWriteTheCNIFile(t *testing.T) {
+func TestKubernetesUserData_InitWritesTheCNIFileFromSpecNodeWhichNamesThePodPrefixUnlessTheSeedGivesIt(t *testing.T) {
 	seeded := func(n *layout.Node) {
 		n.Kube.PodPrefix, n.Kube.Peers, n.Kube.PodPrefixFromSeed = netip.Prefix{}, nil, true
 	}
@@ -887,19 +888,18 @@ func TestKubernetesUserData_APodPrefixFromTheSeedLeavesItOutOfTheUserDataAndHasI
 
 	require.NotNil(t, s.Spec.Node)
 	assert.Equal(t, layout.CNIConfDir+"/10-naru.conflist", s.Spec.Node.CNIConf)
+	assert.Empty(t, s.Spec.Node.PodPrefix, "the seed gives it")
 	assert.Empty(t, s.Spec.Network.Routes, "the host routes the members' Pod prefixes")
-	for _, f := range s.Spec.Files {
-		assert.NotEqual(t, s.Spec.Node.CNIConf, f.Path, "init writes the file from the prefix")
-	}
 
-	// The control: the baked form writes the file and names no spec.node.
+	// The control: the baked form names the prefix in the same section. Neither form has the file in
+	// its files, which init derives.
 	b := kubeUserData(t, kubeNode(t, false, nil))
-	assert.Nil(t, b.Spec.Node)
-	var baked bool
-	for _, f := range b.Spec.Files {
-		baked = baked || f.Path == layout.CNIConfDir+"/10-naru.conflist"
+	require.NotNil(t, b.Spec.Node)
+	assert.Equal(t, "10.64.2.0/24", b.Spec.Node.PodPrefix)
+	assert.Equal(t, s.Spec.Node.CNIConf, b.Spec.Node.CNIConf)
+	for _, f := range append(s.Spec.Files, b.Spec.Files...) {
+		assert.NotEqual(t, s.Spec.Node.CNIConf, f.Path)
 	}
-	assert.True(t, baked)
 }
 
 func TestKubernetesUserData_ANodeWithAPodPrefixFromTheSeedRefusesOneOfItsOwnAndPeers(t *testing.T) {

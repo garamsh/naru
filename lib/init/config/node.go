@@ -96,6 +96,8 @@ func ApplySeedMeta(cfg NodeConfig, meta []byte) (NodeConfig, error) {
 		return cfg, fmt.Errorf("the seed's meta-data %s: %w", SeedPodPrefixKey, errors.Join(v.errs...))
 	}
 	cfg.Spec.Node = &n
+	// Only the CNI file follows the prefix: derive reads no entry of spec.files that withCNIFile
+	// touches, so Parse's derive step need not run again.
 	cfg.Spec.Files = withCNIFile(cfg.Spec.Files, cfg.Spec.Node)
 	return cfg, nil
 }

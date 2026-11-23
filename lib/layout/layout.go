@@ -799,8 +799,9 @@ func (n Node) registryEntries() []registryEntry {
 	return out
 }
 
-// nodeSpec is spec.node: the Node takes its Pod prefix from the seed's meta-data and init writes the
-// CNI configuration for it at CNIConf.
+// nodeSpec is spec.node: init writes the CNI configuration for PodPrefix at CNIConf. PodPrefix is
+// absent when the Node takes it from the seed's meta-data.
 type nodeSpec struct {
-	CNIConf string `yaml:"cniConf"`
+	PodPrefix string `yaml:"podPrefix,omitempty"`
+	CNIConf   string `yaml:"cniConf"`
 }

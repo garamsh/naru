@@ -563,8 +563,11 @@ func (n Node) kubeUserData() ([]byte, error) {
 	if !k.DisableNetworkPolicy {
 		c.Spec.Network.BridgeNetfilter = true
 	}
-	if k.PodPrefixFromSeed {
-		c.Spec.Node = &nodeSpec{CNIConf: CNIConfDir + "/10-naru.conflist"}
+	// init writes the bridge CNI configuration from spec.node (config.CNIConflist) for every Node; the
+	// Pod prefix is named here unless the seed's meta-data gives it.
+	c.Spec.Node = &nodeSpec{CNIConf: CNIConfDir + "/10-naru.conflist"}
+	if !k.PodPrefixFromSeed {
+		c.Spec.Node.PodPrefix = k.PodPrefix.String()
 	}
 	for _, p := range k.Peers {
 		c.Spec.Network.Routes = append(c.Spec.Network.Routes, route{To: p.PodPrefix, Via: p.Address})
@@ -866,16 +869,6 @@ current-context: default
 // pairs, and on a control-plane Node the ServiceAccount keys, which are not issued at boot.
 func (n Node) kubeFiles() ([]file, error) {
 	k := n.kube()
-	cni, err := json.MarshalIndent(map[string]any{
-		"cniVersion": "1.0.0", "name": "naru",
-		"plugins": []any{map[string]any{
-			"type": "bridge", "bridge": "cni0", "isGateway": true, "isDefaultGateway": true, "ipMasq": false, "hairpinMode": true,
-			"ipam": map[string]any{"type": "host-local", "ranges": [][]map[string]string{{{"subnet": k.PodPrefix.String()}}}},
-		}},
-	}, "", "  ")
-	if err != nil {
-		return nil, err
-	}
 	kubelet, err := yaml.Marshal(map[string]any{
 		"apiVersion": "kubelet.config.k8s.io/v1beta1", "kind": "KubeletConfiguration",
 		"address": n.Address.Addr().String(), "port": 10250,
@@ -913,10 +906,6 @@ func (n Node) kubeFiles() ([]file, error) {
 		{Path: kubePath("kubelet.yaml"), Mode: "0644", Content: string(kubelet)},
 		{Path: kubePath("kube-proxy.yaml"), Mode: "0644", Content: string(proxy)},
 		{Path: kubePath("kube-proxy.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-proxy", "kube-proxy")},
-	}
-	if !k.PodPrefixFromSeed {
-		// With the prefix from the seed, init writes this file (spec.node.cniConf).
-		files = append(files, file{Path: CNIConfDir + "/10-naru.conflist", Mode: "0644", Content: string(cni) + "\n"})
 	}
 	if !k.DisableNetworkPolicy {
 		files = append(files, file{Path: kubePath("kube-network-policies.conf"), Mode: "0644", Content: n.kubeconfig(NetworkPolicyUser, "kube-network-policies")})
