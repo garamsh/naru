@@ -24,7 +24,7 @@ func renderNotes(t *testing.T, sumsText string, extra ...string) (string, error)
 	f := filepath.Join(t.TempDir(), "SHA256SUMS")
 	require.NoError(t, os.WriteFile(f, []byte(sumsText), 0o644))
 	pin := filepath.Join(t.TempDir(), "pin.env")
-	require.NoError(t, os.WriteFile(pin, []byte("CACERT_DATE=2026-11-05\nCACERT_URL=https://curl.se/ca/cacert-2026-11-05.pem\n"), 0o644))
+	require.NoError(t, os.WriteFile(pin, []byte("CACERT_DATE=2026-11-05\nCACERT_URL=https://curl.se/ca/cacert-2026-11-05.pem\nCACERT_SHA256=ab\nCACERT_LICENSE=MPL-2.0\n"), 0o644))
 	args := append([]string{"-template", template, "-sums", f, "-cacert-pin", pin, "-tag", "v0.1.0-dev.13", "-commit", "abc123",
 		"-esp-bytes", "536870912", "-upgrade-kernel-bytes", "211239936"}, extra...)
 	var out bytes.Buffer

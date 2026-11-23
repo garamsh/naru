@@ -30,7 +30,7 @@ func TestRenderNotes_AnUnknownFieldIsAnError(t *testing.T) {
 
 func TestReadCACertDate_ReadsTheDateOfThePinAndRefusesAPinWithoutOne(t *testing.T) {
 	var n Notes
-	require.NoError(t, n.ReadCACertDate("# a comment\nCACERT_URL=https://curl.se/ca/cacert-2026-11-05.pem\nCACERT_DATE=2026-11-05\n"))
+	require.NoError(t, n.ReadCACertDate("# a comment\nCACERT_URL=https://curl.se/ca/cacert-2026-11-05.pem\nCACERT_SHA256=ab\nCACERT_LICENSE=MPL-2.0\nCACERT_DATE=2026-11-05\n"))
 	assert.Equal(t, "2026-11-05", n.CACertDate)
-	assert.ErrorContains(t, (&Notes{}).ReadCACertDate("CACERT_URL=x\n"), "no CACERT_DATE")
+	assert.ErrorContains(t, (&Notes{}).ReadCACertDate("CACERT_URL=x\nCACERT_SHA256=ab\nCACERT_LICENSE=MPL-2.0\n"), "no CACERT_DATE")
 }

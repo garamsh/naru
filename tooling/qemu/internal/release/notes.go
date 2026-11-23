@@ -52,12 +52,17 @@ func (n *Notes) ReadSums(sums []byte) error {
 	return nil
 }
 
-// ReadCACertDate fills CACertDate from the text of image/pkgs/cacert/pin.env. It fails when the pin
-// has no CACERT_DATE, since the notes would then state no date for the bundle.
+// ReadCACertDate fills CACertDate from the text of image/pkgs/cacert/pin.env, read by parsePin like
+// every other pin: the date is the Version of the cacert component. It fails when the pin has no
+// cacert component or no date, since the notes would then state no date for the bundle.
 func (n *Notes) ReadCACertDate(pin string) error {
-	for _, line := range strings.Split(pin, "\n") {
-		if m := pinLine.FindStringSubmatch(strings.TrimSpace(line)); m != nil && m[1] == "CACERT_DATE" {
-			n.CACertDate = strings.Trim(m[2], `'"`)
+	cs, err := parsePin("image/pkgs/cacert/pin.env", pin)
+	if err != nil {
+		return err
+	}
+	for _, c := range cs {
+		if c.Name == "cacert" && c.Version != "" {
+			n.CACertDate = c.Version
 			return nil
 		}
 	}
