@@ -71,3 +71,20 @@ func TestAnExposerReachesExactlyItsExposureAndMemberRoutes(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, w.Code, route)
 	}
 }
+
+func TestOnlyAnOperatorDeclaresAnExposureOfANetwork(t *testing.T) {
+	call := func(role identity.Role, method string) int {
+		h := New(Deps{Auth: asRole{identity.Identity{Subject: "x", Role: role}}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		r := httptest.NewRequest(method, "/v1/networks/lab/exposures/api", strings.NewReader("{}"))
+		r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{{}}}}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	for _, role := range []identity.Role{identity.RoleReader, identity.RoleExposer, identity.RoleHost} {
+		require.Equal(t, http.StatusForbidden, call(role, http.MethodPut), "%s may not declare one", role)
+	}
+	require.Equal(t, http.StatusNotImplemented, call(identity.RoleOperator, http.MethodPut), "control: the operator reaches the handler, whose service this test leaves out")
+	require.Equal(t, http.StatusNotImplemented, call(identity.RoleReader, http.MethodGet), "control: a reader may read it")
+	require.Equal(t, http.StatusForbidden, call(identity.RoleExposer, http.MethodGet), "an exposer reads its exposures at its own route")
+}

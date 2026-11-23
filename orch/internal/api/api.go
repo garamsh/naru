@@ -64,11 +64,11 @@ type Exposures interface {
 	ApplyPool(ctx context.Context, by, name string, spec orchapi.AddressPoolSpec) (orchapi.AddressPool, error)
 	Pools(ctx context.Context) ([]orchapi.AddressPool, error)
 	DeletePool(ctx context.Context, by, name string) error
-	ApplyExposure(ctx context.Context, by, network, id string, spec orchapi.ExposureSpec) (orchapi.Exposure, error)
-	Exposure(ctx context.Context, network, id string) (orchapi.Exposure, error)
-	Exposures(ctx context.Context, network string) ([]orchapi.Exposure, error)
+	ApplyExposure(ctx context.Context, by, owner, network, id string, spec orchapi.ExposureSpec) (orchapi.Exposure, error)
+	Exposure(ctx context.Context, as, network, id string) (orchapi.Exposure, error)
+	Exposures(ctx context.Context, as, network string) ([]orchapi.Exposure, error)
 	AllExposures(ctx context.Context) ([]orchapi.Exposure, error)
-	DeleteExposure(ctx context.Context, by, network, id string) error
+	DeleteExposure(ctx context.Context, by, as, network, id string) error
 }
 
 // Deps is what the handlers call.
@@ -127,6 +127,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/exposures/{id}", h.guard(auth.Expose, h.exposureGet))
 	mux.HandleFunc("PUT /v1/exposures/{id}", h.guard(auth.Expose, h.exposureApply))
 	mux.HandleFunc("DELETE /v1/exposures/{id}", h.guard(auth.Expose, h.exposureDelete))
+	mux.HandleFunc("PUT /v1/networks/{name}/exposures/{id}", h.guard(auth.Operate, h.operatorExposureApply))
+	mux.HandleFunc("GET /v1/networks/{name}/exposures/{id}", h.guard(auth.Read, h.operatorExposureGet))
 	mux.HandleFunc("DELETE /v1/networks/{name}/exposures/{id}", h.guard(auth.Operate, h.operatorExposureDelete))
 	mux.HandleFunc("GET /v1/crl", h.crl)
 	mux.HandleFunc("POST /v1/admit", h.guard(auth.Operate, h.admit))
@@ -554,7 +556,7 @@ func (h *handler) exposureList(w http.ResponseWriter, r *http.Request, who ident
 		writeError(w, r, err)
 		return
 	}
-	out, err := svc.Exposures(r.Context(), n)
+	out, err := svc.Exposures(r.Context(), orchapi.OwnerExposer, n)
 	reply(w, r, out, err)
 }
 
@@ -564,7 +566,7 @@ func (h *handler) exposureGet(w http.ResponseWriter, r *http.Request, who identi
 		writeError(w, r, err)
 		return
 	}
-	out, err := svc.Exposure(r.Context(), n, r.PathValue("id"))
+	out, err := svc.Exposure(r.Context(), orchapi.OwnerExposer, n, r.PathValue("id"))
 	reply(w, r, out, err)
 }
 
@@ -576,7 +578,7 @@ func (h *handler) exposureApply(w http.ResponseWriter, r *http.Request, who iden
 	}
 	var spec orchapi.ExposureSpec
 	if decode(w, r, &spec) {
-		out, err := svc.ApplyExposure(r.Context(), who.Subject, n, r.PathValue("id"), spec)
+		out, err := svc.ApplyExposure(r.Context(), who.Subject, orchapi.OwnerExposer, n, r.PathValue("id"), spec)
 		reply(w, r, out, err)
 	}
 }
@@ -587,22 +589,49 @@ func (h *handler) exposureDelete(w http.ResponseWriter, r *http.Request, who ide
 		writeError(w, r, err)
 		return
 	}
-	if err := svc.DeleteExposure(r.Context(), who.Subject, n, r.PathValue("id")); err != nil {
+	if err := svc.DeleteExposure(r.Context(), who.Subject, orchapi.OwnerExposer, n, r.PathValue("id")); err != nil {
 		writeError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// operatorExposureDelete releases an exposure of the network the path names, for the exposures a
-// revoked exposer's controller left behind.
+// operatorExposureApply makes or changes the operator's exposure of the network the path names. It
+// is the exposer's call under the operator's owner, so the same stage runs with the operator's
+// table of backend ports (ADR 0102).
+func (h *handler) operatorExposureApply(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	svc, err := h.exposures()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var spec orchapi.ExposureSpec
+	if decode(w, r, &spec) {
+		out, err := svc.ApplyExposure(r.Context(), who.Subject, orchapi.OwnerOperator, r.PathValue("name"), r.PathValue("id"), spec)
+		reply(w, r, out, err)
+	}
+}
+
+// operatorExposureGet shows one exposure of the network the path names, of whichever owner.
+func (h *handler) operatorExposureGet(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	svc, err := h.exposures()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	out, err := svc.Exposure(r.Context(), orchapi.OwnerOperator, r.PathValue("name"), r.PathValue("id"))
+	reply(w, r, out, err)
+}
+
+// operatorExposureDelete releases an exposure of the network the path names, of whichever owner: an
+// operator's own, and the exposures a revoked exposer's controller left behind.
 func (h *handler) operatorExposureDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
 	svc, err := h.exposures()
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	if err := svc.DeleteExposure(r.Context(), who.Subject, r.PathValue("name"), r.PathValue("id")); err != nil {
+	if err := svc.DeleteExposure(r.Context(), who.Subject, orchapi.OwnerOperator, r.PathValue("name"), r.PathValue("id")); err != nil {
 		writeError(w, r, err)
 		return
 	}

@@ -21,25 +21,33 @@ type addressPoolFile struct {
 	orchapi.AddressPoolSpec
 }
 
-// readAddressPool reads a pool from a YAML or JSON file, refusing a field a pool does not have.
-func readAddressPool(path string) (string, orchapi.AddressPoolSpec, error) {
+// readStrictFile reads a YAML or JSON file into v, refusing a field v does not have.
+func readStrictFile(path, what string, v any) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", orchapi.AddressPoolSpec{}, fmt.Errorf("read the address pool file: %w", err)
+		return fmt.Errorf("read the %s file: %w", what, err)
 	}
 	var doc map[string]any
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return "", orchapi.AddressPoolSpec{}, fmt.Errorf("%s: %w", path, err)
+		return fmt.Errorf("%s: %w", path, err)
 	}
 	js, err := json.Marshal(doc)
 	if err != nil {
-		return "", orchapi.AddressPoolSpec{}, fmt.Errorf("%s: %w", path, err)
+		return fmt.Errorf("%s: %w", path, err)
 	}
-	var f addressPoolFile
 	dec := json.NewDecoder(bytes.NewReader(js))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f); err != nil {
-		return "", orchapi.AddressPoolSpec{}, fmt.Errorf("%s: %w", path, err)
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
+}
+
+// readAddressPool reads a pool from a YAML or JSON file, refusing a field a pool does not have.
+func readAddressPool(path string) (string, orchapi.AddressPoolSpec, error) {
+	var f addressPoolFile
+	if err := readStrictFile(path, "address pool", &f); err != nil {
+		return "", orchapi.AddressPoolSpec{}, err
 	}
 	if f.Name == "" {
 		return "", orchapi.AddressPoolSpec{}, fmt.Errorf("%s: the address pool has no name", path)
@@ -138,9 +146,9 @@ func exposureList(fs *pflag.FlagSet) runner {
 			return err
 		}
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "NETWORK\tEXPOSURE\tADDRESS\tHOST\tPHASE")
+		_, _ = fmt.Fprintln(tw, "NETWORK\tEXPOSURE\tOWNER\tADDRESS\tHOST\tPHASE")
 		for _, e := range es {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Network, e.ID, e.Address, e.Host, e.Phase)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Network, e.ID, e.Owner, e.Address, e.Host, e.Phase)
 		}
 		return tw.Flush()
 	}
@@ -162,6 +170,70 @@ func exposureDelete(fs *pflag.FlagSet) runner {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "naructl: exposure %s of network %s is being released\n", args[1], args[0])
+		return nil
+	}
+}
+
+// exposureFile is an operator's exposure file: its id and the spec orch keeps, whose network it
+// names.
+type exposureFile struct {
+	ID string `json:"id"`
+	orchapi.ExposureSpec
+}
+
+func exposureApply(fs *pflag.FlagSet) runner {
+	o := newOrchFlags(fs)
+	file := o.fs.StringP("file", "f", "", "the exposure's file, YAML or JSON: id, network, pool, requestedAddress, ports (protocol, port, backendPort), backends and optionally proxyProtocol")
+	return func(args []string, stdout, stderr io.Writer) error {
+		if err := o.check(args, 0); err != nil {
+			return err
+		}
+		if err := require(o.fs, "file"); err != nil {
+			return err
+		}
+		var f exposureFile
+		if err := readStrictFile(*file, "exposure", &f); err != nil {
+			return err
+		}
+		if f.ID == "" || f.Network == "" {
+			return fmt.Errorf("%s: the exposure needs an id and a network", *file)
+		}
+		_, cl, err := o.connect()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := withTimeout()
+		defer cancel()
+		e, err := cl.ApplyNetworkExposure(ctx, f.Network, f.ID, f.ExposureSpec)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "naructl: exposure %s of network %s applied: address %s, %s\n", e.ID, e.Network, e.Address, e.Phase)
+		return nil
+	}
+}
+
+func exposureGet(fs *pflag.FlagSet) runner {
+	o := newOrchFlags(fs)
+	return func(args []string, stdout, stderr io.Writer) error {
+		if err := o.check(args, 2); err != nil {
+			return err
+		}
+		_, cl, err := o.connect()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := withTimeout()
+		defer cancel()
+		e, err := cl.NetworkExposure(ctx, args[0], args[1])
+		if err != nil {
+			return err
+		}
+		out, err := json.MarshalIndent(e, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "%s\n", out)
 		return nil
 	}
 }

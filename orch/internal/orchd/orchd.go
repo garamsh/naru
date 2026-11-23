@@ -269,7 +269,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 		machines = eh
 		exposureSvc = exposures.New(exposuresetcd.New(m.Client()), networkStore, eh, invStore, d.Clock)
 		reconcilers = append(reconcilers, exposures.NewReconciler(exposures.Config{
-			Hosts: eh, Exposures: exposuresetcd.New(leaderKV), Networks: networkStore, Clock: d.Clock, Log: d.Log,
+			Hosts: eh, Exposures: exposuresetcd.New(leaderKV), Networks: networkStore, Events: invStore, Clock: d.Clock, Log: d.Log,
 		}))
 	}
 	if d.BootSets != nil && d.NewBootSetHosts != nil {

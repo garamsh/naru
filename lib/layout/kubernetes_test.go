@@ -914,3 +914,20 @@ func TestKubernetesUserData_ANodeWithAPodPrefixFromTheSeedRefusesOneOfItsOwnAndP
 		})
 	}
 }
+
+func TestKubernetesUserData_TheAPIServersCertificateNamesTheServingAddresses(t *testing.T) {
+	apiserver := func(n layout.Node) []string {
+		for _, c := range kubeUserData(t, n).Spec.PKI.Certificates {
+			if c.Name == "apiserver" {
+				return c.IPAddresses
+			}
+		}
+		t.Fatal("no apiserver pair")
+		return nil
+	}
+	named := apiserver(kubeNode(t, true, func(n *layout.Node) {
+		n.ServingAddresses = []netip.Addr{netip.MustParseAddr("192.168.0.112"), netip.MustParseAddr("192.168.0.10")}
+	}))
+	assert.Equal(t, []string{"192.168.0.10", "10.96.0.1", "192.168.0.112"}, named, "the LAN address is named, and one already named is not named twice")
+	assert.NotContains(t, apiserver(kubeNode(t, true, nil)), "192.168.0.112", "control: a Node given none names none")
+}

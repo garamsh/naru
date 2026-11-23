@@ -84,6 +84,7 @@ type Config struct {
 	Hosts     Hosts
 	Exposures Exposures
 	Networks  Networks
+	Events    Log
 	Clock     Clock
 	Interval  time.Duration
 	Log       *slog.Logger
@@ -94,6 +95,7 @@ type Reconciler struct {
 	hosts    Hosts
 	store    Exposures
 	networks Networks
+	events   Log
 	clock    Clock
 	interval time.Duration
 	log      *slog.Logger
@@ -102,6 +104,9 @@ type Reconciler struct {
 	// new leader starts the grace again.
 	mu          sync.Mutex
 	silentSince map[string]time.Time
+	// refused holds the exposures this reconciler has already recorded a refusal of, by network and id,
+	// so the event is written once and not on every pass; a new leader records it again.
+	refused map[string]bool
 }
 
 // NewReconciler returns a Reconciler.
@@ -109,7 +114,7 @@ func NewReconciler(c Config) *Reconciler {
 	if c.Interval <= 0 {
 		c.Interval = DefaultInterval
 	}
-	return &Reconciler{hosts: c.Hosts, store: c.Exposures, networks: c.Networks, clock: c.Clock, interval: c.Interval, log: c.Log, silentSince: map[string]time.Time{}}
+	return &Reconciler{hosts: c.Hosts, store: c.Exposures, networks: c.Networks, events: c.Events, clock: c.Clock, interval: c.Interval, log: c.Log, silentSince: map[string]time.Time{}, refused: map[string]bool{}}
 }
 
 // Run reconciles every interval until ctx ends, and returns ctx's error.
@@ -287,6 +292,38 @@ func (r *Reconciler) vacated(ctx context.Context, hosts []Host, rec Record, now 
 	return !now.Before(rec.LeaseUntil.Add(Skew))
 }
 
+// EventExposureRefused is the event of a stored exposure the reconciler does not lease because a port
+// falls outside its owner's row of BackendPorts, or its owner has none: one stored before ADR 0102.
+const EventExposureRefused = "exposure.refused"
+
+// refuse returns the error that keeps rec from being leased, nil when it may be. It logs the refusal
+// at error level on every pass and records the event once.
+func (r *Reconciler) refuse(ctx context.Context, rec Record) error {
+	var err error
+	for _, p := range rec.Ports {
+		if err = checkBackendPort(rec.Owner, p.BackendPort); err != nil {
+			break
+		}
+	}
+	if err == nil {
+		return nil
+	}
+	reason := "stored before ADR 0102: delete it and let its owner re-apply (" + err.Error() + ")"
+	r.log.Error("exposure not leased", "exposure", rec.ID, "network", rec.Network, "reason", reason)
+	key := rec.Network + "/" + rec.ID
+	r.mu.Lock()
+	first := !r.refused[key]
+	r.refused[key] = true
+	r.mu.Unlock()
+	if first {
+		ev := orchapi.Event{Time: r.clock.Now(), Type: EventExposureRefused, Subject: rec.ID, Detail: map[string]string{"network": rec.Network, "address": rec.Address, "reason": reason}}
+		if aerr := r.events.AppendEvent(ctx, ev); aerr != nil {
+			r.log.Error("exposure refusal not recorded", "exposure", rec.ID, "err", aerr.Error())
+		}
+	}
+	return err
+}
+
 func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, rec Record) error {
 	start := r.clock.Now()
 	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
@@ -296,6 +333,9 @@ func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, re
 			return nil // its lease may still run: wait for the confirmation or the deadline
 		}
 		return r.store.DeleteExposure(ctx, rec)
+	}
+	if err := r.refuse(ctx, rec); err != nil {
+		return nil // nothing is leased for it, so no host is asked for what it will refuse on every pass
 	}
 	want, ok := Choose(rec.Address, rec.Network, rec.Backends, hosts)
 	if rec.Host != "" && silent(hosts, rec.Host) {

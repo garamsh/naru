@@ -146,7 +146,7 @@ func (h *ExposureHosts) Put(ctx context.Context, hostID, address string, l expos
 	defer cancel()
 	ports := make([]hostapi.ExposurePort, len(l.Ports))
 	for i, p := range l.Ports {
-		ports[i] = hostapi.ExposurePort{Protocol: p.Protocol, Port: p.Port, NodePort: p.NodePort}
+		ports[i] = hostapi.ExposurePort{Protocol: p.Protocol, Port: p.Port, BackendPort: p.BackendPort}
 	}
 	_, err = c.PutExposure(ctx, address, hostapi.ExposureRequest{Network: l.Network, Ports: ports, Backends: l.Backends, ProxyProtocol: l.ProxyProtocol, LeaseSeconds: l.Seconds})
 	return err

@@ -84,7 +84,7 @@ func TestAnExposerIsScopedToItsNetworkAndTheLeaderLeasesItsAddress(t *testing.T)
 	b := o.c.CA.Issue(t, identity.ExposerPrefix+"b", identity.RoleExposer)
 	ca, cb := o.c.Client(t, 0, &a), o.c.Client(t, 0, &b)
 	spec := func(network, pool, backend string) orchapi.ExposureSpec {
-		return orchapi.ExposureSpec{Network: network, Pool: pool, Backends: []string{backend}, Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 443, NodePort: 30443}}}
+		return orchapi.ExposureSpec{Network: network, Pool: pool, Backends: []string{backend}, Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 443, BackendPort: 30443}}}
 	}
 
 	e, err := ca.ApplyExposure(ctx, "web", spec("a", "lan", "10.1.0.5"))

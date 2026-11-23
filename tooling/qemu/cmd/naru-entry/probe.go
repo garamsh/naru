@@ -36,6 +36,7 @@ func probe(addr string) {
 	go receive(&mu, seen)
 	go listenEach(plainPort, plain)
 	go listenEach(proxyPort, proxied)
+	go listenEach(apiPort, plain)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/probe", func(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +81,9 @@ func probe(addr string) {
 const (
 	plainPort = 30080
 	proxyPort = 30443
+	// apiPort is outside a Service's range: the operator's exposure of ADR 0102 forwards to it, as it
+	// does to a member's API server.
+	apiPort = 6443
 )
 
 func listenEach(port int, handle func(net.Conn)) {

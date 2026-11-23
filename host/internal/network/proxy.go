@@ -110,16 +110,16 @@ func (c idleConn) CloseWrite() error {
 	return nil
 }
 
-// proxy accepts the connections of one listener and carries each to a backend's NodePort behind a
+// proxy accepts the connections of one listener and carries each to a backend's BackendPort behind a
 // PROXY protocol v2 header.
 type proxy struct {
-	ln       net.Listener
-	nodePort int
-	dial     func(ctx context.Context, addr string) (net.Conn, error)
-	limit    *limiter
-	idle     time.Duration
-	log      *slog.Logger
-	cancel   context.CancelFunc // closes the listener and every connection
+	ln          net.Listener
+	backendPort int
+	dial        func(ctx context.Context, addr string) (net.Conn, error)
+	limit       *limiter
+	idle        time.Duration
+	log         *slog.Logger
+	cancel      context.CancelFunc // closes the listener and every connection
 
 	mu       sync.Mutex
 	backends []netip.Addr
@@ -224,7 +224,7 @@ func (p *proxy) connect(ctx context.Context) net.Conn {
 	defer stop()
 	for _, i := range order {
 		dctx, cancel := context.WithTimeout(ctx, dialTimeout)
-		c, err := p.dial(dctx, netip.AddrPortFrom(backends[i], uint16(p.nodePort)).String())
+		c, err := p.dial(dctx, netip.AddrPortFrom(backends[i], uint16(p.backendPort)).String())
 		cancel()
 		if err == nil {
 			return c

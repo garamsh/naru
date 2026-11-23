@@ -79,7 +79,7 @@ func startProxy(t *testing.T, dial func(ctx context.Context, addr string) (net.C
 		o(e.x)
 	}
 	x := web(true)
-	x.Ports = []network.ExposurePort{{Protocol: "tcp", Port: 443, NodePort: 30443}}
+	x.Ports = []network.ExposurePort{{Protocol: "tcp", Port: 443, BackendPort: 30443}}
 	require.NoError(t, e.x.Put(context.Background(), x, time.Minute))
 	return &proxyEnv{exposureEnv: e, listen: <-ready}
 }
@@ -88,7 +88,7 @@ func TestProxy_TheHeaderIsTheFirstWriteOnTheBackendConnection(t *testing.T) {
 	clientSide, backendSide := net.Pipe()
 	backend := &recordedConn{Conn: clientSide}
 	p := startProxy(t, func(_ context.Context, addr string) (net.Conn, error) {
-		assert.Contains(t, []string{"10.8.0.5:30443", "10.8.0.6:30443"}, addr, "a backend at the NodePort")
+		assert.Contains(t, []string{"10.8.0.5:30443", "10.8.0.6:30443"}, addr, "a backend at the BackendPort")
 		return backend, nil
 	})
 

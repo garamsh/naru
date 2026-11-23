@@ -23,8 +23,8 @@ var (
 	ErrOutsideLAN = errors.New("the address is not inside any prefix of the LAN interface")
 	// ErrTaken is an address answered by an ARP probe: another host on the LAN already holds it.
 	ErrTaken = errors.New("the address is held by another host on the LAN")
-	// ErrInvalid is an exposure that is malformed: a port outside its range, a NodePort outside
-	// Kubernetes' range, a repeated port, no backend, or a UDP port with the PROXY protocol.
+	// ErrInvalid is an exposure that is malformed: a port or a BackendPort outside
+	// 1 to 65535, a repeated port, no backend, or a UDP port with the PROXY protocol.
 	ErrInvalid = errors.New("the exposure is invalid")
 )
 
@@ -37,19 +37,12 @@ const (
 	UDP Protocol = "udp"
 )
 
-// The range of a Service's nodePort. Kubernetes allocates them from 30000 to 32767 unless the API
-// server's --service-node-port-range says otherwise (https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport);
-// naru does not change it.
-const (
-	NodePortFirst = 30000
-	NodePortLast  = 32767
-)
-
-// ExposurePort is a port of an exposure: the port on the address and the NodePort it goes to.
+// ExposurePort is a port of an exposure: the port on the address and the BackendPort it goes to
+// on the backends. Which ports a caller may name is orch's policy (ADR 0102); the host forwards what its lease says.
 type ExposurePort struct {
-	Protocol Protocol `json:"protocol"`
-	Port     int      `json:"port"`
-	NodePort int      `json:"nodePort"`
+	Protocol    Protocol `json:"protocol"`
+	Port        int      `json:"port"`
+	BackendPort int      `json:"backendPort"`
 }
 
 // Exposure is a lease on a LAN address: the host owns the address and forwards its ports to the
@@ -142,8 +135,8 @@ func (e Exposure) Validate() error {
 			return fmt.Errorf("%w: protocol %q", ErrInvalid, p.Protocol)
 		case p.Port < 1 || p.Port > 65535:
 			return fmt.Errorf("%w: port %d", ErrInvalid, p.Port)
-		case p.NodePort < NodePortFirst || p.NodePort > NodePortLast:
-			return fmt.Errorf("%w: nodePort %d is outside %d-%d", ErrInvalid, p.NodePort, NodePortFirst, NodePortLast)
+		case p.BackendPort < 1 || p.BackendPort > 65535:
+			return fmt.Errorf("%w: backendPort %d", ErrInvalid, p.BackendPort)
 		case seen[key]:
 			return fmt.Errorf("%w: %s port %d twice", ErrInvalid, p.Protocol, p.Port)
 		case e.Proxy && p.Protocol == UDP:

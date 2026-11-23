@@ -131,7 +131,13 @@ func (m *Manager) restoreLeases(s state, c Config) []Exposure {
 		}
 		if why != nil {
 			if m.Log != nil {
-				m.Log.Info("dropped a lease at load", "address", e.Address.String(), "reason", why.Error())
+				// A lease that fails Validate is one a rule of the host no longer accepts, such as a file
+				// written before a field was renamed: an operator has to act on it, so it is a warning.
+				level := slog.LevelInfo
+				if errors.Is(why, ErrInvalid) {
+					level = slog.LevelWarn
+				}
+				m.Log.Log(context.Background(), level, "dropped a lease at load", "address", e.Address.String(), "reason", why.Error())
 			}
 			continue
 		}

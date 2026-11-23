@@ -51,6 +51,8 @@ type fakeOrch struct {
 	deletedPools      []string
 	releasedExposures []string
 	deletedNetworks   []string
+	// declared is each "<network>/<id>" an exposure apply sent, with its spec.
+	declared map[string]orchapi.ExposureSpec
 	// restored is the body and the hash header of the last PUT /v1/restore, and restoreStatus the
 	// status it is answered with (zero is 204). latest is what GET /v1/snapshots/latest returns.
 	restored      []byte
@@ -174,7 +176,24 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /v1/exposures", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode([]orchapi.Exposure{{ID: "d.web.0a1b2c3d", Network: "lab", Address: "192.168.0.80", Host: "h1", Phase: orchapi.ExposureAnnounced}})
+		_ = json.NewEncoder(w).Encode([]orchapi.Exposure{{ID: "d.web.0a1b2c3d", Network: "lab", Owner: orchapi.OwnerExposer, Address: "192.168.0.80", Host: "h1", Phase: orchapi.ExposureAnnounced}})
+	})
+	mux.HandleFunc("PUT /v1/networks/{name}/exposures/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var spec orchapi.ExposureSpec
+		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		if f.declared == nil {
+			f.declared = map[string]orchapi.ExposureSpec{}
+		}
+		f.declared[r.PathValue("name")+"/"+r.PathValue("id")] = spec
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(orchapi.Exposure{ID: r.PathValue("id"), Network: r.PathValue("name"), Owner: orchapi.OwnerOperator, Address: spec.RequestedAddress, Phase: orchapi.ExposurePending})
+	})
+	mux.HandleFunc("GET /v1/networks/{name}/exposures/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(orchapi.Exposure{ID: r.PathValue("id"), Network: r.PathValue("name"), Owner: orchapi.OwnerOperator, Address: "192.168.0.112", Phase: orchapi.ExposureAnnounced})
 	})
 	mux.HandleFunc("DELETE /v1/networks/{name}/exposures/{id}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()

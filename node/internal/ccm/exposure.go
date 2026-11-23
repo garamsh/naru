@@ -54,7 +54,7 @@ func Spec(svc *v1.Service, nodes []*v1.Node, network, pool string) (orchapi.Expo
 		if p.NodePort == 0 {
 			return spec, errNodePort
 		}
-		spec.Ports = append(spec.Ports, orchapi.ExposurePort{Protocol: proto, Port: int(p.Port), NodePort: int(p.NodePort)})
+		spec.Ports = append(spec.Ports, orchapi.ExposurePort{Protocol: proto, Port: int(p.Port), BackendPort: int(p.NodePort)})
 	}
 	spec.Backends = Backends(nodes)
 	if len(spec.Backends) == 0 {
@@ -89,7 +89,8 @@ func Status(e orchapi.Exposure) *v1.LoadBalancerStatus {
 	return &v1.LoadBalancerStatus{Ingress: []v1.LoadBalancerIngress{{IP: e.Address}}}
 }
 
-// Orphans returns the ids of the exposures no Service of type LoadBalancer still has. A Service
+// Orphans returns the ids of the exposures the controller owns that no Service of type LoadBalancer
+// still has. An exposure of another owner, which the operator declared, is never an orphan. A Service
 // that is being deleted still has its exposure: the finalizer's removal calls the delete.
 func Orphans(exposures []orchapi.Exposure, services []v1.Service) []string {
 	live := map[string]bool{}
@@ -101,7 +102,7 @@ func Orphans(exposures []orchapi.Exposure, services []v1.Service) []string {
 	}
 	var out []string
 	for _, e := range exposures {
-		if !live[e.ID] {
+		if e.Owner == orchapi.OwnerExposer && !live[e.ID] {
 			out = append(out, e.ID)
 		}
 	}

@@ -94,7 +94,7 @@ func startExposures(t *testing.T) exposureServer {
 func goodExposure() hostapi.ExposureRequest {
 	return hostapi.ExposureRequest{
 		Network:      "a",
-		Ports:        []hostapi.ExposurePort{{Protocol: "tcp", Port: 443, NodePort: 30443}, {Protocol: "udp", Port: 53, NodePort: 30053}},
+		Ports:        []hostapi.ExposurePort{{Protocol: "tcp", Port: 443, BackendPort: 30443}, {Protocol: "udp", Port: 53, BackendPort: 30053}},
 		Backends:     []string{"10.8.0.5", "10.8.0.6"},
 		LeaseSeconds: 15,
 	}
@@ -168,8 +168,8 @@ func TestExposure_Refusals(t *testing.T) {
 		{"bad network name", ok, change(func(r *hostapi.ExposureRequest) { r.Network = "A_" })},
 		{"no ports", ok, change(func(r *hostapi.ExposureRequest) { r.Ports = nil })},
 		{"port 0", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].Port = 0 })},
-		{"node port above the range", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].NodePort = 32768 })},
-		{"node port below the range", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].NodePort = 29999 })},
+		{"backend port above 65535", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].BackendPort = 65536 })},
+		{"backend port 0", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].BackendPort = 0 })},
 		{"protocol sctp", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].Protocol = "sctp" })},
 		{"the same port twice", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[1] = r.Ports[0] })},
 		{"no backends", ok, change(func(r *hostapi.ExposureRequest) { r.Backends = nil })},
@@ -200,8 +200,9 @@ func TestExposure_Refusals(t *testing.T) {
 				r.ProxyProtocol = "v2"
 				r.Ports = r.Ports[:1]
 			}),
-			"the lowest node port":  change(func(r *hostapi.ExposureRequest) { r.Ports[0].NodePort = 30000 }),
-			"the highest node port": change(func(r *hostapi.ExposureRequest) { r.Ports[0].NodePort = 32767 }),
+			"the lowest backend port":  change(func(r *hostapi.ExposureRequest) { r.Ports[0].BackendPort = 1 }),
+			"an API server's port":     change(func(r *hostapi.ExposureRequest) { r.Ports[0].BackendPort = 6443 }),
+			"the highest backend port": change(func(r *hostapi.ExposureRequest) { r.Ports[0].BackendPort = 65535 }),
 		} {
 			e := startExposures(t)
 			code, b := e.do(t, e.as(t, ProvisionerOrganization), "PUT", ok, body())
