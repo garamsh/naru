@@ -60,6 +60,11 @@ func (s *store) GetGroup(_ context.Context, name string) (groups.GroupSpec, erro
 
 func (s *store) DeleteGroup(_ context.Context, name string) error {
 	delete(s.groups, name)
+	for id, m := range s.members {
+		if m.Group == name {
+			delete(s.members, id)
+		}
+	}
 	return nil
 }
 

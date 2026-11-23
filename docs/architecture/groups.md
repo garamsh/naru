@@ -42,7 +42,7 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
   - A call to a host has the deadline of its context alone (5 minutes, `callTimeout`); the HTTP client's own timeout is not a second one, so a create that outlasts it is not cut and made again.
   - The inventory is read once per pass, by the host list, and the calls of that pass use the hosts it returned; a host that is not in it is not admitted for the pass.
   - A host's tunnel and microVM probes (`hostclient.NetHosts`) answer with the last good answer until 3 consecutive probes have failed (`probeFailures`, K = 3), so the network reconciler keeps the host's peers and routes through one or two failed probes and drops them at the third; a success resets the count, and a host that has not answered once is reported as failed.
-- **Forgotten members** are written as gone and never deleted; their IDs are not reused.
+- **Forgotten members** are written as gone and are not deleted while their group lives, so a live group does not reuse their IDs. Deleting the group deletes their records with it, in one etcd transaction that holds only while the group exists, every member of it is gone and no member record changed since they were read; a group applied again under the name numbers its members from 1, and its first member takes the template's first address (garamsh/naru#366).
 
 ## Rationale
 
@@ -52,8 +52,8 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
 ## Open questions
 
 - **Clock between orch and the hosts.** The wait compares the deadline orch armed with orch's clock, and the host ends the VMM by its own. No margin is added; the engine does not yet know the skew it must tolerate.
-- **A group that is deleted.** The engine lists the groups the store holds, so the members of a removed group are not reconciled. The API therefore refuses to delete a group that has a member that is not gone: lowering `count` to zero removes them first.
-- **Tombstones.** Forgotten members stay in the store; compaction waits until their number matters.
+- **A group that is deleted.** The engine lists the groups the store holds, so the members of a removed group are not reconciled. The API therefore refuses to delete a group that has a member that is not gone: lowering `count` to zero removes them first. The engine deletes the machine of a gone member when its lost host returns only while the member's record and group exist, so a machine a lost host still runs after its group was deleted stays there, as it did before the records were ended; a group applied again under the name may then give that member's ID and address to a new member.
+- **Tombstones.** Forgotten members of a live group stay in the store; compaction waits until their number matters.
 - **Repeated holds.** A wait that lasts is recorded on every pass; the events adapter writes it once per 10 minutes. The adapter's memory is per leader, so a new leader writes it again.
 - **Event log.** The inventory's event log keeps the newest 20000 events (`maxEvents`), trimmed on each group event; admin events written in a transaction do not trim it themselves. See [orch.md](./orch.md).
 - **Group and event records.** The store interface the engine consumes lists groups and members and writes members; the API layer (`orch/internal/groupsvc`) writes groups and reads events.

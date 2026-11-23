@@ -125,16 +125,44 @@ func decodeGroup(key, value []byte) (groups.GroupSpec, error) {
 	return wire.Spec(a), nil
 }
 
-// DeleteGroup removes the group record; the group's members are not touched.
+// DeleteGroup removes the group record and the records of its members in one transaction, so a
+// group applied again under the name numbers its members from 1. It returns inventory.ErrConflict
+// while a member is not gone, or when a member record changed between the read and the write.
 func (s *Store) DeleteGroup(ctx context.Context, name string) error {
-	resp, err := s.kv.Delete(ctx, groupPrefix+name)
+	key := groupPrefix + name
+	resp, err := s.kv.Get(ctx, memberPrefix, clientv3.WithPrefix())
 	if err != nil {
 		return err
 	}
-	if resp.Deleted == 0 {
-		return inventory.ErrNotFound
+	cond := []clientv3.Cmp{
+		clientv3.Compare(clientv3.CreateRevision(key), ">", 0),
+		clientv3.Compare(clientv3.ModRevision(memberPrefix), "<", resp.Header.Revision+1).WithPrefix(),
 	}
-	return nil
+	ops := []clientv3.Op{clientv3.OpDelete(key)}
+	for _, kv := range resp.Kvs {
+		var r member
+		if err := json.Unmarshal(kv.Value, &r); err != nil {
+			return fmt.Errorf("record %s: %w", kv.Key, err)
+		}
+		if r.Group != name {
+			continue
+		}
+		if groups.Phase(r.Phase) != groups.PhaseGone {
+			return fmt.Errorf("%w: member %s is not gone", inventory.ErrConflict, r.ID)
+		}
+		ops = append(ops, clientv3.OpDelete(string(kv.Key)))
+	}
+	t, err := s.kv.Txn(ctx).If(cond...).Then(ops...).Commit()
+	if err != nil {
+		return err
+	}
+	if t.Succeeded {
+		return nil
+	}
+	if _, err := s.GetGroup(ctx, name); err != nil {
+		return err
+	}
+	return inventory.ErrConflict
 }
 
 // ListGroups returns every group, in name order.

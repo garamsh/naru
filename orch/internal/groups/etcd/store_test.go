@@ -365,3 +365,78 @@ func TestARefusedCreatesCountAndWaitAreKeptOnTheMemberRecord(t *testing.T) {
 	require.Equal(t, 2, all[0].CreateFailures)
 	require.True(t, retry.Equal(all[0].RetryAt))
 }
+
+func TestDeletingAGroupEndsItsMembersRecordsAndNoOtherGroups(t *testing.T) {
+	s, _ := newStore(t)
+	for _, g := range []string{"web", "web-x"} {
+		require.NoError(t, s.PutGroup(t.Context(), spec(g), nil))
+	}
+	put := func(id, group string, phase groups.Phase) groups.Member {
+		m, err := s.PutMember(t.Context(), groups.Member{ID: id, Group: group, Host: "h1", MachineID: id, Phase: phase})
+		require.NoError(t, err)
+		return m
+	}
+	put("web-1", "web", groups.PhaseGone)
+	running := put("web-2", "web", groups.PhasePending)
+	put("web-x-1", "web-x", groups.PhaseGone)
+	ids := func() []string {
+		all, err := s.ListMembers(t.Context())
+		require.NoError(t, err)
+		var out []string
+		for _, m := range all {
+			out = append(out, m.ID)
+		}
+		return out
+	}
+
+	require.ErrorIs(t, s.DeleteGroup(t.Context(), "web"), inventory.ErrConflict, "a member that is not gone holds the group")
+	_, err := s.GetGroup(t.Context(), "web")
+	require.NoError(t, err, "and nothing is deleted")
+	require.Equal(t, []string{"web-1", "web-2", "web-x-1"}, ids())
+
+	running.Phase = groups.PhaseGone
+	_, err = s.PutMember(t.Context(), running)
+	require.NoError(t, err)
+	require.NoError(t, s.DeleteGroup(t.Context(), "web"))
+	require.Equal(t, []string{"web-x-1"}, ids(), "the group's members end with it; another group's, whose name it prefixes, stay")
+	_, err = s.GetGroup(t.Context(), "web-x")
+	require.NoError(t, err)
+	require.ErrorIs(t, s.DeleteGroup(t.Context(), "web"), inventory.ErrNotFound)
+}
+
+// A group deleted and applied again under its name numbers its members from 1, so its first member
+// takes the template's first address (garamsh/naru#366). The control: while the group lives, a
+// gone member keeps its number and the next member is cp-2, which the template gives no address.
+func TestAGroupAppliedAgainAfterItsDeleteStartsAtItsFirstMemberAndAddress(t *testing.T) {
+	s, _ := newStore(t)
+	cp := groups.GroupSpec{
+		Name: "cp", Count: 1, Region: "kr-1", Rollout: groups.Rollout{MaxUnavailable: 1},
+		Template: groups.Template{Form: groups.FormOS, CPUs: 1, MemoryMiB: 256, NodeVersion: "naru-node-v1", Addresses: []string{"10.77.1.10"}},
+	}
+	host := groups.Host{ID: "h1", Region: "kr-1", Ready: true, NodeVersions: []string{"naru-node-v1"}, MachinePrefixes: []string{"10.77.1.0/24"}, Capacity: groups.Capacity{CPUs: 8, MemoryMiB: 8192}}
+	plan := func() []groups.Action {
+		o := groups.Observed{Now: time.Unix(100, 0).UTC(), Hosts: []groups.Host{host}}
+		var err error
+		o.Groups, err = s.ListGroups(t.Context())
+		require.NoError(t, err)
+		o.Members, err = s.ListMembers(t.Context())
+		require.NoError(t, err)
+		return groups.Plan(groups.Evaluate(o), o)
+	}
+	require.NoError(t, s.PutGroup(t.Context(), cp, nil))
+	_, err := s.PutMember(t.Context(), groups.Member{ID: "cp-1", Group: "cp", Host: "h1", MachineID: "cp-1", Phase: groups.PhaseGone})
+	require.NoError(t, err)
+
+	control := plan()
+	require.Len(t, control, 1)
+	require.Equal(t, groups.ActionHold, control[0].Kind)
+	require.Contains(t, control[0].Reason, "member cp-2 has no address", "control: the live group does not reuse cp-1")
+
+	require.NoError(t, s.DeleteGroup(t.Context(), "cp"))
+	require.NoError(t, s.PutGroup(t.Context(), cp, nil))
+	got := plan()
+	require.Len(t, got, 1)
+	require.Equal(t, groups.ActionCreate, got[0].Kind, got[0].Reason)
+	require.Equal(t, "cp-1", got[0].Member.ID)
+	require.Equal(t, "10.77.1.10", got[0].Spec.Address)
+}
