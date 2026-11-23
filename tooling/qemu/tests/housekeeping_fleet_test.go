@@ -127,23 +127,14 @@ func TestFleet_TheHousekeeperKeepsEtcdUnderItsQuotaThroughMoreWritesThanTheQuota
 	eventually(t, "a member leads", func() bool { return f.leader(f.controls()) != 0 })
 
 	// About 400 KiB a set, one every 6 seconds, which keeps the live data well under the quota, until more than twice the
-	// quota has been written and a defragmentation has been seen. Without compaction and defragmentation the quota is
-	// spent and the sets fail with "database space exceeded". The 6-second interval keeps the write rate low enough
-	// that the housekeeping probes can complete between writes in QEMU.
-	deadline := time.Now().Add(15 * time.Minute)
+	// quota has been written. Without compaction the quota is spent and the sets fail with "database space exceeded".
+	// The test does not wait for a defragmentation: etcd reuses the pages compaction frees, so the database levels off
+	// under the quota with about a third of it free, and the housekeeper defragments only a database that is at least
+	// half free pages (ShouldDefrag). Defragmentation is the subject of the two tests below, which fill the quota.
+	// The 6-second interval keeps the write rate low enough that the housekeeping probes can complete between writes in QEMU.
 	tick := time.NewTicker(6 * time.Second)
 	defer tick.Stop()
-	var written int
-	defragSeen := func() bool {
-		for _, i := range f.controls() {
-			if f.node(i).Has(defragmented) {
-				return true
-			}
-		}
-		return false
-	}
-	for n := 0; written < 2*quota || !defragSeen(); n++ {
-		require.True(t, time.Now().Before(deadline), "after %d bytes written the housekeeper had not defragmented a member", written)
+	for n, written := 0, 0; written < 2*quota; n++ {
 		<-tick.C
 		res := f.bloatedProfile(1, n)
 		f.must(res, "a write while the quota is smaller than what has been written")
