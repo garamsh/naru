@@ -90,6 +90,34 @@ func TestReadComponents_ReadsTarballsGitPinsAndQuotedLicences(t *testing.T) {
 	assert.False(t, got[0].Copyleft())
 }
 
+func TestReadComponents_ACommitPinnedByAModuleIsTheCommitTheModuleNamesAndARepoWithNeitherIsRefused(t *testing.T) {
+	pin := func(lines string) string {
+		return writeTree(t, map[string]string{"image/pkgs/baz/pin.env": "BAZ_REPO=https://example.test/baz\n" + lines + "BAZ_LICENSE=NOASSERTION\n"})
+	}
+	root := pin("BAZ_COMMIT_FROM=example.test/baz/lib\n")
+	was := release.CommitOf
+	t.Cleanup(func() { release.CommitOf = was })
+	var asked []string
+	release.CommitOf = func(r, module string) (string, error) {
+		asked = append(asked, r+" "+module)
+		return strings.Repeat("ab", 20), nil
+	}
+
+	got, err := release.ReadComponents(root)
+
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, strings.Repeat("ab", 20), got[0].Commit)
+	assert.Equal(t, got[0].Commit, got[0].Version)
+	assert.Equal(t, []string{root + " example.test/baz/lib"}, asked, "the module's version is what was asked for")
+
+	// The control: the same pin with neither a commit nor a module to take it from is refused, so
+	// the commit above came from the module and from nowhere else.
+	_, err = release.ReadComponents(pin(""))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "BAZ_COMMIT_FROM")
+}
+
 func TestReadComponents_EveryPinOfTheRepositoryStatesALicense(t *testing.T) {
 	got, err := release.ReadComponents(repoRoot(t))
 

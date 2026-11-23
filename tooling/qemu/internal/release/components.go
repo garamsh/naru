@@ -1,9 +1,11 @@
 package release
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -18,8 +20,39 @@ type Component struct {
 	Name, Version, License string
 	URL, SHA256            string
 	Repo, Commit           string
+	// CommitFrom is the module whose version in host/go.mod names the commit, for a component
+	// whose commit is not written in its pin.env (mvmd's, which host's Go client is built from).
+	CommitFrom string
 	// Pin is the pin.env the component is in, relative to the root.
 	Pin string
+}
+
+// CommitOf returns the commit that the version of module in root/host/go.mod names, which go
+// resolves from the pseudo-version. It is a variable so that a test needs no network.
+var CommitOf = func(root, module string) (string, error) {
+	run := func(args ...string) ([]byte, error) {
+		cmd := exec.Command("go", append([]string{"list", "-m"}, args...)...)
+		cmd.Dir = filepath.Join(root, "host")
+		cmd.Env = append(os.Environ(), "GOWORK=off")
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("go list -m %v in %s: %w", args, cmd.Dir, err)
+		}
+		return out, nil
+	}
+	version, err := run("-f", "{{.Version}}", module)
+	if err != nil {
+		return "", err
+	}
+	out, err := run("-json", module+"@"+strings.TrimSpace(string(version)))
+	if err != nil {
+		return "", err
+	}
+	var m struct{ Origin struct{ Hash string } }
+	if err := json.Unmarshal(out, &m); err != nil || len(m.Origin.Hash) != 40 {
+		return "", fmt.Errorf("go did not resolve %s@%s to a commit", module, strings.TrimSpace(string(version)))
+	}
+	return m.Origin.Hash, nil
 }
 
 var pinLine = regexp.MustCompile(`^([A-Z][A-Z0-9_]*)=(.*)$`)
@@ -45,6 +78,14 @@ func ReadComponents(root string) ([]Component, error) {
 			return err
 		}
 		for _, c := range cs {
+			if c.Commit == "" && c.CommitFrom != "" {
+				if c.Commit, err = CommitOf(root, c.CommitFrom); err != nil {
+					return fmt.Errorf("%s: %w", rel, err)
+				}
+				if c.Version == "" {
+					c.Version = c.Commit
+				}
+			}
 			if prev, dup := seen[c.Name]; dup {
 				return fmt.Errorf("%s: %s is also pinned in %s", rel, c.Name, prev)
 			}
@@ -85,7 +126,7 @@ func parsePin(rel, text string) ([]Component, error) {
 	for _, p := range prefixes {
 		c := Component{
 			Name: strings.ToLower(strings.ReplaceAll(p, "_", "-")), Pin: rel,
-			URL: kv[p+"_URL"], SHA256: kv[p+"_SHA256"], Repo: kv[p+"_REPO"], Commit: kv[p+"_COMMIT"], License: kv[p+"_LICENSE"],
+			URL: kv[p+"_URL"], SHA256: kv[p+"_SHA256"], Repo: kv[p+"_REPO"], Commit: kv[p+"_COMMIT"], CommitFrom: kv[p+"_COMMIT_FROM"], License: kv[p+"_LICENSE"],
 			Version: kv[p+"_VERSION"],
 		}
 		if c.Version == "" {
@@ -94,8 +135,8 @@ func parsePin(rel, text string) ([]Component, error) {
 		switch {
 		case c.License == "":
 			return nil, fmt.Errorf("%s: %s_LICENSE is missing: state the SPDX licence expression of %s", rel, p, c.Name)
-		case c.Repo != "" && c.Commit == "":
-			return nil, fmt.Errorf("%s: %s_REPO has no %s_COMMIT", rel, p, p)
+		case c.Repo != "" && c.Commit == "" && c.CommitFrom == "":
+			return nil, fmt.Errorf("%s: %s_REPO has no %s_COMMIT and no %s_COMMIT_FROM", rel, p, p, p)
 		case c.URL != "" && c.SHA256 == "":
 			return nil, fmt.Errorf("%s: %s_URL has no %s_SHA256", rel, p, p)
 		}

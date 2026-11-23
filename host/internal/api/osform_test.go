@@ -281,6 +281,25 @@ func TestOSForm_AnAddressMvmdRefusesIsRefusedAsMvmdAnswers(t *testing.T) {
 	}
 }
 
+func TestOSForm_AMachineThatDoesNotHoldTheRequestedAddressFailsTheRequestAndIsRemoved(t *testing.T) {
+	e := start(t)
+	c := e.as(t, ProvisionerOrganization)
+	body := osBody()
+	body["address"] = "10.1.0.20"
+
+	e.rt.ignoreRequested = true
+	code, b := e.do(t, c, "POST", "/v1/microvms", body)
+	assert.Equal(t, 409, code, string(b))
+	assert.Contains(t, string(b), "10.1.0.20")
+	assert.NotContains(t, e.rt.machines, "web", "no microVM runs at an address the certificates do not name")
+	assert.Empty(t, e.rt.disks, "what the request made is removed")
+
+	// The control: the same request against an mvmd that takes the address succeeds.
+	e.rt.ignoreRequested = false
+	code, b = e.do(t, c, "POST", "/v1/microvms", body)
+	assert.Equal(t, 201, code, string(b))
+}
+
 func TestHost_ReportsTheMachinePrefixesMvmdGivesAddressesFrom(t *testing.T) {
 	e := start(t)
 	code, b := e.do(t, e.as(t, "naru:host-reader"), "GET", "/v1/host", nil)

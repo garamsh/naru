@@ -8,13 +8,14 @@
 FROM builder AS build
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG SOURCE_DATE_EPOCH
+ARG MVMD_COMMIT
 ENV TZ=UTC LC_ALL=C SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     GOPATH=/go GOCACHE=/gocache \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 COPY --from=lib gitfetch.sh install-go.sh /usr/local/bin/
 COPY pin.env /pin.env
 WORKDIR /build
-RUN . /pin.env && gitfetch.sh "$MVMD_REPO" "$MVMD_COMMIT" src
+RUN . /pin.env && : "${MVMD_COMMIT:?build.sh passes the commit the Go modules pin}" && gitfetch.sh "$MVMD_REPO" "$MVMD_COMMIT" src
 RUN cd src \
  && for p in mvmd mvmd-supervisor; do \
       go build -trimpath -buildvcs=false -ldflags='-s -w' -o /build/$p ./daemon/cmd/$p; \
