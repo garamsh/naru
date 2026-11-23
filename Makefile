@@ -322,14 +322,15 @@ test-count:
 # test-release-upgrade installs the release in FROM and upgrades the Node in place to the release in
 # TO, both directories as `gh release download <tag>` writes them (docs/architecture/image.md). It
 # is run before a release is cut, on the previous release and the candidate. It needs what test-qemu
-# needs, builds nothing and fails, never skips, when no test passed.
+# needs, builds nothing and fails when no test passed or when a test skipped but the control-host
+# one, which skips for a FROM that predates ADR 0084 (fixture.FirstCarriedExtensions).
 test-release-upgrade:
 	@test -n "$(FROM)" -a -n "$(TO)" || { echo "usage: make $@ FROM=<release dir> TO=<release dir>" >&2; exit 2; }
 	@set -e; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
 	if ! (cd tooling/qemu && NARU_FROM_RELEASE_DIR=$(abspath $(FROM)) NARU_TO_RELEASE_DIR=$(abspath $(TO)) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestRelease_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
-	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='TestRelease_'
+	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='TestRelease_' SKIP_ALLOW=TestRelease_AControlHostRunningTheExtensionUpgradesWithTheBundleAloneAndMountsTheNewImage
 
 # test-harness drives naru-cluster as an external harness does (docs/architecture/harness.md): from
 # a directory outside the checkout, against the output of `make release`, with the gaon binaries

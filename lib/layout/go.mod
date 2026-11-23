@@ -17,6 +17,8 @@ require (
 	golang.org/x/crypto v0.58.0 // indirect
 )
 
+replace github.com/garamsh/naru/lib/hostapi => ../hostapi
+
 replace github.com/garamsh/naru/lib/identity => ../identity
 
 replace github.com/garamsh/naru/lib/atomicfile => ../atomicfile

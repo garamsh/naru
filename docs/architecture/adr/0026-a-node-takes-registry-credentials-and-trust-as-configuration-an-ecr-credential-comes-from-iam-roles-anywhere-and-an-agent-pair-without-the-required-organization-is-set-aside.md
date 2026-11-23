@@ -56,3 +56,4 @@ Drafted for garamsh/naru#65, part of garamsh/naru#62 (E4) and garamsh/aurora#749
 ## Errata
 
 - 2026-11-15: paths moved in the image split ([ADR 0054](./0054-the-image-is-split-into-image-host-and-image-node-with-what-both-carry-in-image-common-and-the-nodes-initramfs-has-its-own-list.md)): `image/cacert/`, `image/ecr-login/` and `image/rolesanywhere/` are under `image/common/`.
+- 2026-11-23: item 12 gives the registry key as `password=P`; `naructl gen node --registry` takes `password-file=FILE`, a file read when the user-data is written, and refuses `password` as an unknown key. The decision stands; `config.md` states the form.

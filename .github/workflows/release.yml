@@ -253,7 +253,7 @@ jobs:
           # The text is docs/operate/release-notes.md.tmpl; the figures and the SHA-256 lines come from this build.
           (cd tooling/qemu && go run ./cmd/naru-release notes -template ../../docs/operate/release-notes.md.tmpl \
             -sums ../../release/SHA256SUMS -tag "$TAG" -commit "$COMMIT" -esp-bytes "$ESP_BYTES" \
-            -upgrade-kernel-bytes "$UPGRADE_KERNEL_BYTES" $flags) >notes.md
+            -upgrade-kernel-bytes "$UPGRADE_KERNEL_BYTES" -cacert-pin ../../image/pkgs/cacert/pin.env $flags) >notes.md
           cat notes.md
 
       # cosign signs SHA256SUMS keyless: Fulcio issues a certificate for this workflow's OIDC

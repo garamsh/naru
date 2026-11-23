@@ -43,13 +43,15 @@ const storeFile = wire.DataMount + "/config/store.yaml"
 // returns the Node and the admin's client file once the Node answers.
 func startUpgradeNode(t *testing.T) (*node.Node, string) {
 	t.Helper()
-	return startUpgradeNodeOn(t, tool, inputs, copyBootDisk(t))
+	return startUpgradeNodeOn(t, tool, inputs, copyBootDisk(t), addNothing)
 }
 
 // startUpgradeNodeOn is startUpgradeNode for the naructl bin, which writes the authorities, the
 // admin's client and the user-data, the inputs the data disk carries, and the boot disk to boot,
-// which the Node writes to.
-func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, disk string) (*node.Node, string) {
+// which the Node writes to. configure sets what the case adds to the Node's configuration and to
+// the host `gen node` writes the user-data of, as node.ClusterSpec.Configure does for a cluster;
+// the plain case passes addNothing.
+func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, disk string, configure func(*node.Config, *naructl.Node)) (*node.Node, string) {
 	t.Helper()
 	dir := t.TempDir()
 	caDir := filepath.Join(dir, "ca")
@@ -75,6 +77,7 @@ func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, d
 		ServingAddresses: []string{"127.0.0.1"}, ExtraNIC: cfg.HostMAC() + "=" + node.HostNICPrefix, Binaries: map[string]string{},
 		Out: filepath.Join(nodeDir, "naru.yaml"), NetworkConfig: filepath.Join(nodeDir, "network-config"),
 	}
+	configure(&cfg, &gen)
 	require.NoError(t, bin.GenNode(gen))
 	userData, err := os.ReadFile(gen.Out)
 	require.NoError(t, err)
@@ -94,6 +97,9 @@ func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, d
 	eventually(t, "the Node API answers an admin", func() bool { return ctlWith(bin, admin, "version").Err == nil })
 	return nd, admin
 }
+
+// addNothing is the configure of a Node with nothing added.
+func addNothing(*node.Config, *naructl.Node) {}
 
 func freeLoopbackPort(t *testing.T) int {
 	t.Helper()

@@ -61,6 +61,9 @@ func (u *Upgrader) removePending() error {
 
 // finish records how the upgrade ended and removes what staged it.
 func (u *Upgrader) finish(o Outcome) error {
+	if u.cfg.Changed != nil {
+		defer u.cfg.Changed()
+	}
 	o.Time = u.cfg.Now().UTC().Format("2006-01-02T15:04:05Z")
 	if err := writeJSON(u.cfg.StateDir, lastFile, o); err != nil {
 		return err

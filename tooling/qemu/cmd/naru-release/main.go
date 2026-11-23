@@ -138,7 +138,8 @@ func previous(args []string, in io.Reader, out io.Writer) error {
 func notes(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("notes", flag.ContinueOnError)
 	var n release.Notes
-	var tmpl, sums string
+	var tmpl, sums, cacertPin string
+	fs.StringVar(&cacertPin, "cacert-pin", "", "image/pkgs/cacert/pin.env, whose CACERT_DATE the notes state")
 	fs.StringVar(&tmpl, "template", "", "the release notes template (docs/operate/release-notes.md.tmpl)")
 	fs.StringVar(&sums, "sums", "", "the build's SHA256SUMS")
 	fs.StringVar(&n.Tag, "tag", "", "the release's tag")
@@ -149,8 +150,8 @@ func notes(args []string, out io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if tmpl == "" || sums == "" || n.Tag == "" || n.Commit == "" || n.ESPBytes <= 0 || n.UpgradeKernelBytes <= 0 {
-		return fmt.Errorf("notes: -template, -sums, -tag, -commit, -esp-bytes and -upgrade-kernel-bytes are required")
+	if tmpl == "" || sums == "" || n.Tag == "" || n.Commit == "" || n.ESPBytes <= 0 || n.UpgradeKernelBytes <= 0 || cacertPin == "" {
+		return fmt.Errorf("notes: -template, -sums, -tag, -commit, -esp-bytes, -upgrade-kernel-bytes and -cacert-pin are required")
 	}
 	text, err := os.ReadFile(tmpl)
 	if err != nil {
@@ -161,6 +162,13 @@ func notes(args []string, out io.Writer) error {
 		return err
 	}
 	if err := n.ReadSums(b); err != nil {
+		return err
+	}
+	pin, err := os.ReadFile(cacertPin)
+	if err != nil {
+		return err
+	}
+	if err := n.ReadCACertDate(string(pin)); err != nil {
 		return err
 	}
 	rendered, err := release.RenderNotes(string(text), n)
