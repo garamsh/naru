@@ -59,6 +59,9 @@ type Options struct {
 	// NewNetworkHosts gives the network reconciler its hosts; without it no host is told its
 	// networks. NetworkInterval is the pause between its passes; it defaults to 200 ms.
 	NewNetworkHosts func(inv inventory.Service) netrec.Hosts
+	// NewPrefixHosts gives the prefix recorder the Machine prefixes the hosts report; without it none is
+	// recorded.
+	NewPrefixHosts  func(inv inventory.Service) inventory.PrefixHosts
 	NetworkInterval time.Duration
 	// Log receives the members' logs; it defaults to discarding them.
 	Log *slog.Logger
@@ -212,7 +215,7 @@ func (c *Cluster) member(t testing.TB, i, peerPort, clientPort int) (orchd.Confi
 		Listen: "127.0.0.1:0", ClientCA: files.CA, SnapshotDir: filepath.Join(dir, "snapshots"),
 		LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval, GroupInterval: o.GroupInterval, NetworkInterval: o.NetworkInterval,
 	}
-	deps := orchd.Deps{Signer: c.Signer, Auth: auth.Revocations{List: &identity.RevocationList{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, NewExposureHosts: o.NewExposureHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name), RevocationKey: c.CA.RevocationKey()}
+	deps := orchd.Deps{Signer: c.Signer, Auth: auth.Revocations{List: &identity.RevocationList{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, NewPrefixHosts: o.NewPrefixHosts, NewExposureHosts: o.NewExposureHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name), RevocationKey: c.CA.RevocationKey()}
 	if i < len(o.CRLPeers) {
 		deps.CRLPeer = o.CRLPeers[i]
 	}

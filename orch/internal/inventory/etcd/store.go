@@ -252,6 +252,40 @@ func (s *Store) Reserve(ctx context.Context, hostID string, pick func([]netip.Pr
 	return inventory.Allocation{}, inventory.ErrConflict
 }
 
+func (s *Store) ClaimPrefix(ctx context.Context, a inventory.Allocation) error {
+	a.ReservedUntil = time.Time{}
+	key := allocPrefix + a.Prefix
+	hostKey := hostPrefix + a.HostID
+	for range casRetries {
+		var cur inventory.Allocation
+		rev, err := s.get(ctx, key, &cur)
+		var cmp clientv3.Cmp
+		switch {
+		case errors.Is(err, inventory.ErrNotFound):
+			cmp = clientv3.Compare(clientv3.CreateRevision(key), "=", 0)
+		case err != nil:
+			return err
+		case cur.HostID == a.HostID && cur.ReservedUntil.IsZero():
+			return nil
+		case cur.HostID == a.HostID, !cur.ReservedUntil.IsZero() && !cur.ReservedUntil.After(s.now()):
+			cmp = clientv3.Compare(clientv3.ModRevision(key), "=", rev)
+		default:
+			return inventory.ErrAllocationTaken
+		}
+		resp, err := s.kv.Txn(ctx).If(cmp, clientv3.Compare(clientv3.CreateRevision(hostKey), ">", 0)).Then(clientv3.OpPut(key, encode(a))).Commit()
+		if err != nil {
+			return err
+		}
+		if resp.Succeeded {
+			return nil
+		}
+		if _, err := s.GetHost(ctx, a.HostID); err != nil {
+			return err
+		}
+	}
+	return inventory.ErrConflict
+}
+
 func (s *Store) Release(ctx context.Context, a inventory.Allocation) error {
 	key := allocPrefix + a.Prefix
 	_, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.Value(key), "=", encode(a))).Then(clientv3.OpDelete(key)).Commit()
@@ -331,8 +365,20 @@ func (s *Store) RemoveHost(ctx context.Context, id string, ev orchapi.Event) (in
 			return h, err
 		}
 		ops := append([]clientv3.Op{clientv3.OpDelete(key)}, s.eventOps(ev)...)
-		if h.MachinePrefix != "" {
-			ops = append(ops, clientv3.OpDelete(allocPrefix+h.MachinePrefix))
+		// Every prefix the host holds is freed: the one orch gave a joined host and the ones a host
+		// reported (ClaimPrefix).
+		held, err := s.kv.Get(ctx, allocPrefix, clientv3.WithPrefix())
+		if err != nil {
+			return h, err
+		}
+		for _, kv := range held.Kvs {
+			var a inventory.Allocation
+			if err := json.Unmarshal(kv.Value, &a); err != nil {
+				return h, fmt.Errorf("record %s: %w", kv.Key, err)
+			}
+			if a.HostID == id {
+				ops = append(ops, clientv3.OpDelete(string(kv.Key)))
+			}
 		}
 		resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", rev)).Then(ops...).Commit()
 		if err != nil {

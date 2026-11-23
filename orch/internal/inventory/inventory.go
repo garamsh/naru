@@ -29,6 +29,9 @@ var (
 	ErrNoProfile = errors.New("no host profile is set")
 	// ErrAllocationTaken is the store's answer to an admission whose prefix another admission took first.
 	ErrAllocationTaken = errors.New("the prefix was allocated meanwhile")
+	// ErrPrefixUnrecorded is the admission of a joined host while an admitted host has no Machine prefix
+	// recorded: the pool must not give out a prefix that host holds.
+	ErrPrefixUnrecorded = errors.New("an admitted host's Machine prefix is not recorded")
 	// ErrAlreadyAdmitted is the store's answer to an enrollment write that finds the host admitted.
 	ErrAlreadyAdmitted = errors.New("the host is admitted")
 )
@@ -45,6 +48,8 @@ const (
 	EventCodeRefused = "host.admission-refused"
 	EventRemoved     = "host.removed"
 	EventProfileSet  = "host-profile.set"
+	// EventPrefixConflict is a Machine prefix a host reports that another host holds.
+	EventPrefixConflict = "host.prefix-conflict"
 )
 
 // Key is an enrollment key as orch stores it: the SHA-256 of the secret, never the secret.

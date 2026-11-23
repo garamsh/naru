@@ -88,6 +88,10 @@ type Deps struct {
 	// pools and exposures, and the leader keeps each exposure's lease on a host renewed; without it
 	// those endpoints answer 501.
 	NewExposureHosts func(inv inventory.Service) ExposureHosts
+	// NewPrefixHosts returns the recorder's view of the hosts' Machine prefixes. With it the leader
+	// records each admitted host's prefixes beside the groups engine; without it none is recorded, and
+	// the admission of a joined host waits for every admitted host's prefix.
+	NewPrefixHosts func(inv inventory.Service) inventory.PrefixHosts
 	// BootSets, with NewBootSetHosts, turns on the adding of the boot sets the groups' node
 	// versions need to the hosts that lack them. The leader runs it beside the groups engine.
 	BootSets        groups.ReleaseStore
@@ -261,6 +265,9 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	}
 	if d.NewNetworkHosts != nil {
 		reconcilers = append(reconcilers, netrec.New(netrec.Config{Hosts: d.NewNetworkHosts(svc), Networks: networkStore, Interval: c.NetworkInterval, Log: d.Log}))
+	}
+	if d.NewPrefixHosts != nil {
+		reconcilers = append(reconcilers, inventory.NewRecorder(leaderInv, d.NewPrefixHosts(svc), d.Clock, c.NetworkInterval, d.Log))
 	}
 	var exposureSvc api.Exposures
 	var machines exposures.Machines
