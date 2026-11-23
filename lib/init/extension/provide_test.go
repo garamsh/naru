@@ -25,6 +25,14 @@ type fakeSource struct {
 
 func (s *fakeSource) Name() string { return s.name }
 
+// releasing is a source that counts how often it is told the stage is over.
+type releasing struct {
+	fakeSource
+	released int
+}
+
+func (s *releasing) Release() error { s.released++; return nil }
+
 func (s *fakeSource) Offer(name string) (extension.Offer, error) {
 	s.asked++
 	if s.err != nil {
@@ -101,4 +109,20 @@ func TestManager_ProvideWithNoSourceLeavesTheRefusalToMount(t *testing.T) {
 	n.mgr.Provide([]config.Extension{{Name: "naru-volumes"}}, nil)
 
 	require.ErrorContains(t, n.mgr.Mount([]config.Extension{{Name: "naru-volumes"}}), `no image of "naru-volumes" is stored`)
+}
+
+func TestManager_ProvideTellsASourceThatHoldsMemoryThatTheStageIsOverWhetherOrNotItWasUsed(t *testing.T) {
+	for name, stored := range map[string]bool{"the image is staged from it": false, "the store already holds the image": true} {
+		t.Run(name, func(t *testing.T) {
+			n := newNode(t)
+			if stored {
+				n.put(t, manifest("naru-volumes", version))
+			}
+			src := &releasing{fakeSource: fakeSource{name: "initramfs", image: manifest("naru-volumes", version), version: version}}
+
+			n.mgr.Provide([]config.Extension{{Name: "naru-volumes"}}, []extension.Source{src})
+
+			assert.Equal(t, 1, src.released)
+		})
+	}
 }

@@ -6,7 +6,8 @@
 # of it refuses (ADR 0025). The archive is made by the kernel's own gen_init_cpio with every time
 # SOURCE_DATE_EPOCH and compressed with gzip -9n, which stores no name or time: the same inputs give
 # the same bytes. The root bundle is the cacert package's, with the throwaway root of the `testroot`
-# context appended when a test image has one (ADR 0026); a release has none.
+# context appended when a test image has one (ADR 0026); a release has none. The volumes extension
+# rides as the .sqfs file and its description, for init to stage into a blank Node's store (ADR 0096).
 FROM builder AS build
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG SOURCE_DATE_EPOCH
@@ -36,6 +37,7 @@ COPY --from=containerd /usr/bin/ /stage/
 COPY --from=cni /usr/bin/ /stage/
 COPY --from=coredns /usr/lib/naru/addons/ /stage/addons/
 COPY --from=ccm /usr/lib/naru/addons/ /stage/addons/
+COPY --from=volumes /extensions/ /stage/extensions/
 COPY --from=cacert /etc/ssl/certs/ca-certificates.crt /cacert.crt
 COPY --from=testroot / /testroot/
 COPY initramfs.list /initramfs.list

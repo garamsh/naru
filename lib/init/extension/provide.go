@@ -29,6 +29,13 @@ type Source interface {
 	Offer(name string) (Offer, error)
 }
 
+// Releaser is a Source that holds memory until it is told the stage is over: init's copy of its
+// initramfs holds the images it carries in a tmpfs (ADR 0096).
+type Releaser interface {
+	// Release frees what the source holds.
+	Release() error
+}
+
 // Provide stores, for each unpinned entry of specs whose image built for init's version is not in
 // the store, the image the first of sources that holds one offers (ADR 0096). The store is the
 // Node's own, so an image it holds, whatever put it there, is never replaced, and an entry with a
@@ -36,6 +43,7 @@ type Source interface {
 // another version, is logged and the next is asked; Provide returns no error, since Mount, which
 // runs next, refuses the boot with the reason when no image is there.
 func (m *Manager) Provide(specs []config.Extension, sources []Source) {
+	defer m.release(sources)
 	var done []string
 	for _, e := range specs {
 		if e.SHA256 != "" || slices.Contains(done, e.Name) {
@@ -48,6 +56,17 @@ func (m *Manager) Provide(specs []config.Extension, sources []Source) {
 		for _, src := range sources {
 			if m.provide(e.Name, src) {
 				break
+			}
+		}
+	}
+}
+
+// release frees what the sources that hold memory hold: the stage is the last reader.
+func (m *Manager) release(sources []Source) {
+	for _, src := range sources {
+		if r, ok := src.(Releaser); ok {
+			if err := r.Release(); err != nil {
+				m.log.Warn("extension source not released", "source", src.Name(), "err", err)
 			}
 		}
 	}
