@@ -246,9 +246,9 @@ func (n *Node) Reboot() error {
 	return n.launch()
 }
 
-// RebootGracefully presses Ctrl-Alt-Del on the Node, which init takes as a request to reboot: it
-// stops the services, syncs and unmounts the data disk, and powers the machine down, which ends the
-// QEMU process. It then starts the Node again as Reboot does, so a write the Node completed before
+// RebootGracefully presses the Node's ACPI power button (the monitor's system_powerdown), which init
+// takes as a request to power off: it stops the services, syncs and unmounts the data disk, and powers
+// the machine down, which ends the QEMU process. It then starts the Node again as Reboot does, so a write the Node completed before
 // the call is on its disks. It gives up, with the Node stopped, when the Node has not shut down
 // within timeout. It must not be called while a WaitFor is in progress.
 func (n *Node) RebootGracefully(timeout time.Duration) error {
@@ -256,20 +256,20 @@ func (n *Node) RebootGracefully(timeout time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("connect to the QEMU monitor: %w", err)
 	}
-	_, err = conn.Write([]byte("sendkey ctrl-alt-del\n"))
+	_, err = conn.Write([]byte("system_powerdown\n"))
 	// The monitor acts on the command when it reads it; closing the connection first loses nothing,
 	// but give it a moment so that a refused command is not cut off.
 	time.Sleep(500 * time.Millisecond)
 	_ = conn.Close()
 	if err != nil {
 		n.Stop()
-		return fmt.Errorf("press Ctrl-Alt-Del: %w", err)
+		return fmt.Errorf("press the power button: %w", err)
 	}
 	select {
 	case <-n.done:
 	case <-time.After(timeout):
 		n.Stop()
-		return errors.New("the Node did not shut down after Ctrl-Alt-Del")
+		return errors.New("the Node did not shut down after the power button")
 	}
 	n.Stop()
 	return n.launch()
@@ -397,7 +397,7 @@ func CapturePath(dir string) string { return filepath.Join(dir, "net0.pcap") }
 // never starts.
 func SerialSocketPath(dir string) string { return socketPath("serial", dir) }
 
-// MonitorSocketPath is the socket of a Node's QEMU monitor, which RebootGracefully types a key into. It is
+// MonitorSocketPath is the socket of a Node's QEMU monitor, which RebootGracefully sends system_powerdown to. It is
 // named as SerialSocketPath is, for the same limit.
 func MonitorSocketPath(dir string) string { return socketPath("monitor", dir) }
 
