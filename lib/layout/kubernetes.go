@@ -712,12 +712,12 @@ func (n Node) kubeServices() []service {
 const restartOnFailure = "on-failure"
 
 // ctrImportArgs are the arguments of ctr, containerd's client, that import the image of add-on a from
-// AddonsDir/images into the namespace the CRI reads. --base-name gives the archive's tag and its digest
-// image the name naru.local/<name>, which the manifests reference, and --label pins both.
+// AddonsDir/images into the namespace the CRI reads and pin it. The Node names nothing: the archive names
+// its image by the reference the manifests use (ADR 0105), and ctr takes that name as it is.
 func ctrImportArgs(a addon) []string {
 	return []string{
-		"--address", ContainerdSocket, "--namespace", "k8s.io", "images", "import", "--digests",
-		"--base-name", "naru.local/" + a.Image, "--label", "io.cri-containerd.pinned=pinned", path.Join(a.dir(), "images", a.Image+".tar"),
+		"--address", ContainerdSocket, "--namespace", "k8s.io", "images", "import",
+		"--label", "io.cri-containerd.pinned=pinned", path.Join(a.dir(), "images", a.Image+".tar"),
 	}
 }
 

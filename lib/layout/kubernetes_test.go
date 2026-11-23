@@ -455,7 +455,7 @@ func TestKubernetesUserData_DisabledDNSIsNeitherAppliedNorGivenAPairButItsImageI
 	assert.NotContains(t, serviceNames(s), "addon-image-volumes", "a disabled volume add-on's extension is large: it is not imported")
 }
 
-func TestKubernetesUserData_EveryNodeImportsTheAddonImagesUnderTheNameTheManifestsUseAndPinsThemUntilThatSucceeds(t *testing.T) {
+func TestKubernetesUserData_EveryNodeImportsTheAddonImagesUnderTheNameTheirArchivesCarryAndPinsThemUntilThatSucceeds(t *testing.T) {
 	for _, controlPlane := range []bool{true, false} {
 		s := kubeUserData(t, kubeNode(t, controlPlane, nil))
 
@@ -463,9 +463,10 @@ func TestKubernetesUserData_EveryNodeImportsTheAddonImagesUnderTheNameTheManifes
 		assert.Equal(t, "/bin/ctr", binary)
 		assert.Equal(t, "on-failure", restart)
 		line := strings.Join(args, " ")
-		assert.Contains(t, line, "--namespace k8s.io images import --digests", "the CRI reads the k8s.io namespace")
-		assert.Contains(t, line, "--base-name naru.local/coredns ", "without it ctr names the image import-<date>, and the manifest's reference is never created")
-		assert.Contains(t, line, "--label io.cri-containerd.pinned=pinned", "the tag and the digest image are pinned as they are imported")
+		assert.Contains(t, line, "--namespace k8s.io images import", "the CRI reads the k8s.io namespace")
+		assert.Contains(t, line, "--label io.cri-containerd.pinned=pinned", "the image is pinned as it is imported")
+		assert.NotContains(t, line, "--digests", "ctr adds a digest name of the archive's index, which no manifest references")
+		assert.NotContains(t, line, "--base-name", "the archive names its image by the manifests' reference and ctr takes the name as it is")
 		assert.Equal(t, layout.AddonsDir+"/images/coredns.tar", args[len(args)-1])
 		assert.NotContains(t, serviceNames(s), "addon-pin-coredns")
 	}
@@ -501,7 +502,7 @@ func TestKubernetesUserData_VolumesAreAnUnpinnedExtensionWhoseManifestsAndImageA
 	assert.Equal(t, "/bin/ctr", binary)
 	assert.Equal(t, "on-failure", restart)
 	assert.Equal(t, dir+"/images/volumes.tar", imp[len(imp)-1])
-	assert.Contains(t, strings.Join(imp, " "), "--base-name naru.local/volumes ")
+	assert.NotContains(t, strings.Join(imp, " "), "--base-name", "the archive names its image")
 	names := serviceNames(cp)
 	assert.Less(t, slicesIndex(names, "containerd"), slicesIndex(names, "addon-image-volumes"))
 }
@@ -839,7 +840,7 @@ func TestKubernetesUserData_TurningTheCloudControllerOnGivesEveryKubeletAnExtern
 		assert.Equal(t, "/bin/ctr", binary)
 		assert.Equal(t, "on-failure", restart)
 		assert.Equal(t, layout.AddonsDir+"/images/ccm.tar", args[len(args)-1])
-		assert.Contains(t, strings.Join(args, " "), "--base-name naru.local/ccm ")
+		assert.NotContains(t, strings.Join(args, " "), "--base-name", "the archive names its image")
 		if controlPlane {
 			apply, _, _ := serviceByName(t, s, "addons")
 			assert.Contains(t, apply, "-f")

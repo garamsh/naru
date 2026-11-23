@@ -14,7 +14,7 @@ ENV TZ=UTC LC_ALL=C SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     GOPATH=/go GOCACHE=/gocache GOFLAGS=-mod=readonly \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 RUN : "${NARU_VERSION:?volumes: NARU_VERSION is the version the extension is built for}"
-COPY --from=lib gitfetch.sh install-go.sh /usr/local/bin/
+COPY --from=lib gitfetch.sh install-go.sh addon-image.sh /usr/local/bin/
 COPY pin.env /pin.env
 COPY volumes.yaml.in /volumes.yaml.in
 WORKDIR /build
@@ -34,23 +34,14 @@ RUN . /pin.env && gitfetch.sh "$REGISTRAR_REPO" "$REGISTRAR_COMMIT" registrar \
  && go build -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X main.version=$REGISTRAR_VERSION" -o /build/csi-node-driver-registrar ./cmd/csi-node-driver-registrar \
  && install-go.sh "$GOTOOLCHAIN" /build/csi-node-driver-registrar /build/csi-node-driver-registrar.checked
 # The image: one uncompressed layer with the three programs, in an OCI layout whose index names it for
-# containerd (io.containerd.image.name), and the manifests that name it by digest.
-RUN mkdir -p /oci/blobs/sha256 /rootfs /tree/addons/images /tree/addons/manifests \
+# containerd (io.containerd.image.name) by the reference the manifests use. addon-image.sh makes the
+# archive and prints that reference, which is written into volumes.yaml and checked against the archive.
+RUN mkdir -p /rootfs /tree/addons/images /tree/addons/manifests \
  && for p in naru-volumes csi-provisioner csi-node-driver-registrar; do install -m 0755 "/build/$p.checked" "/rootfs/$p"; done \
- && tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner --format=gnu -cf /layer.tar -C /rootfs naru-volumes csi-provisioner csi-node-driver-registrar \
- && layer=$(sha256sum /layer.tar | cut -d' ' -f1) \
- && printf '{"architecture":"amd64","os":"linux","config":{"Entrypoint":["/naru-volumes"]},"rootfs":{"type":"layers","diff_ids":["sha256:%s"]}}' "$layer" >/config.json \
- && config=$(sha256sum /config.json | cut -d' ' -f1) \
- && printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%s","size":%s},"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"sha256:%s","size":%s}]}' \
-      "$config" "$(stat -c %s /config.json)" "$layer" "$(stat -c %s /layer.tar)" >/manifest.json \
- && digest=$(sha256sum /manifest.json | cut -d' ' -f1) \
- && cp /layer.tar /oci/blobs/sha256/$layer && cp /config.json /oci/blobs/sha256/$config && cp /manifest.json /oci/blobs/sha256/$digest \
- && printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%s","size":%s,"annotations":{"io.containerd.image.name":"naru.local/volumes:release"}}]}' \
-      "$digest" "$(stat -c %s /manifest.json)" >/oci/index.json \
- && printf '{"imageLayoutVersion":"1.0.0"}' >/oci/oci-layout \
- && tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner --format=gnu -cf /tree/addons/images/volumes.tar -C /oci . \
- && sed "s#@VOLUMES_IMAGE@#naru.local/volumes@sha256:$digest#" /volumes.yaml.in >/tree/addons/manifests/volumes.yaml \
- && ! grep -q '@[A-Z_]*@' /tree/addons/manifests/volumes.yaml
+ && ref=$(addon-image.sh build volumes naru-volumes /rootfs /tree/addons/images/volumes.tar) \
+ && sed "s#@VOLUMES_IMAGE@#$ref#" /volumes.yaml.in >/tree/addons/manifests/volumes.yaml \
+ && ! grep -q '@[A-Z_]*@' /tree/addons/manifests/volumes.yaml \
+ && addon-image.sh check volumes /tree/addons/images/volumes.tar /tree/addons/manifests/volumes.yaml
 # The extension: the same squashfs as the extension package makes (zstd, one processor, root ownership,
 # times fixed by SOURCE_DATE_EPOCH), with no service: the add-on runs in Pods.
 RUN name=naru-volumes tree=/tree \
