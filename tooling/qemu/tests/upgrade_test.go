@@ -51,6 +51,14 @@ func startUpgradeNode(t *testing.T) (*node.Node, string) {
 // which the Node writes to.
 func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, disk string) (*node.Node, string) {
 	t.Helper()
+	return startUpgradeNodeStoring(t, bin, inputs, disk, false)
+}
+
+// startUpgradeNodeStoring is startUpgradeNodeOn for a Node that, when storage is set, also has a
+// blank storage disk at /dev/vdb which spec.storage names and init mounts at wire.MvmdStorageMount
+// (ADR 0027), as a gen node host with storage has.
+func startUpgradeNodeStoring(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, disk string, storage bool) (*node.Node, string) {
+	t.Helper()
 	dir := t.TempDir()
 	caDir := filepath.Join(dir, "ca")
 	apiPort, hostPort := freeLoopbackPort(t), freeLoopbackPort(t)
@@ -64,6 +72,10 @@ func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, d
 	require.NoError(t, os.WriteFile(guest, manifest, 0o600))
 
 	cfg := node.Config{Name: "node-1", Index: 1, Total: 1, ControlPlane: true, Inputs: inputs, HostPort: hostPort, APIHostPort: apiPort}
+	if storage {
+		withStorageDisk(&cfg)
+		cfg.StorageProbe = ""
+	}
 	n := node.QEMUNetwork(1, 1)
 	ones, _ := net.IPMask(net.ParseIP(n.Netmask).To4()).Size()
 	nodeDir := filepath.Join(dir, "node-1")
@@ -74,6 +86,9 @@ func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, d
 		APIServer: n.IP, MachinePrefix: n.MachinePrefix.String(), Guest: guest, Firecracker: inputs.FirecrackerSHA256,
 		ServingAddresses: []string{"127.0.0.1"}, ExtraNIC: cfg.HostMAC() + "=" + node.HostNICPrefix, Binaries: map[string]string{},
 		Out: filepath.Join(nodeDir, "naru.yaml"), NetworkConfig: filepath.Join(nodeDir, "network-config"),
+	}
+	if storage {
+		gen.Storage = []string{"vmdisks=/dev/vdb"}
 	}
 	require.NoError(t, bin.GenNode(gen))
 	userData, err := os.ReadFile(gen.Out)
