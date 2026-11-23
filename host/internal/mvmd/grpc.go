@@ -138,7 +138,23 @@ func (g *GRPC) Info(ctx context.Context) (Info, error) {
 	for _, k := range r.GetKernels() {
 		i.Kernels = append(i.Kernels, Kernel{Name: k.GetName(), Digest: k.GetDigest(), Default: k.GetIsDefault()})
 	}
+	for _, b := range r.GetBootSets() {
+		i.BootSets = append(i.BootSets, BootSet{
+			Name: b.GetName(), KernelDigest: b.GetKernelDigest(), InitrdDigest: b.GetInitrdDigest(), Origin: bootSetOrigin(b.GetOrigin()),
+		})
+	}
 	return i, nil
+}
+
+// bootSetOrigin is the word the host API says of how a boot set came to be offered.
+func bootSetOrigin(o v1alpha2.BootSetOrigin) string {
+	switch o {
+	case v1alpha2.BootSetOrigin_BOOT_SET_ORIGIN_CONFIGURED:
+		return "configured"
+	case v1alpha2.BootSetOrigin_BOOT_SET_ORIGIN_ADDED:
+		return "added"
+	}
+	return ""
 }
 
 func (g *GRPC) Pull(ctx context.Context, repository, digest string) error {

@@ -65,7 +65,17 @@ func (f *fakeRuntime) Info(ctx context.Context) (mvmd.Info, error) {
 			return mvmd.Info{}, err
 		}
 	}
-	return f.info, f.err
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Like mvmd, the boot sets offered are the configured ones and the ones added, by name.
+	info := f.info
+	info.BootSets = slices.Clone(f.info.BootSets)
+	for _, b := range f.bootSets {
+		b.Origin = "added"
+		info.BootSets = append(info.BootSets, b)
+	}
+	sort.Slice(info.BootSets, func(i, j int) bool { return info.BootSets[i].Name < info.BootSets[j].Name })
+	return info, f.err
 }
 
 func (f *fakeRuntime) Pull(_ context.Context, repo, digest string) error {

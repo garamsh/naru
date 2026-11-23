@@ -51,11 +51,22 @@ type Resources struct {
 }
 
 // MvmdInfo is what GET /v1/host says of mvmd: the runtime API version it serves, its driver, and
-// the guest kernels a microVM can boot.
+// the guest kernels an image-form microVM can boot and the boot sets an OS-form microVM can: the
+// ones the node's configuration names and the ones added through POST /v1/boot-sets.
 type MvmdInfo struct {
-	Version string   `json:"version"`
-	Driver  string   `json:"driver"`
-	Kernels []Kernel `json:"kernels"`
+	Version  string    `json:"version"`
+	Driver   string    `json:"driver"`
+	Kernels  []Kernel  `json:"kernels"`
+	BootSets []BootSet `json:"bootSets"`
+}
+
+// BootSet is a boot set the host offers: its name, the SHA-256 digests of its files and how the host
+// came to offer it, `configured` or `added`.
+type BootSet struct {
+	Name            string `json:"name"`
+	KernelSHA256    string `json:"kernelSha256"`
+	InitramfsSHA256 string `json:"initramfsSha256"`
+	Origin          string `json:"origin,omitempty"`
 }
 
 // Upgrade is how the last upgrade of the host's naru ended, as init records it.
