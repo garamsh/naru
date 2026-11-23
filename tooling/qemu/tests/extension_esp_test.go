@@ -78,7 +78,7 @@ func TestNode_ABlankNodeWithTheDefaultVolumesAddOnRefusesItsFirstBootWhenTheESPC
 
 	nd, _ := startUpgradeNodeOn(t, tool, blankInputs(), disk, withVolumesExtension)
 
-	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, `no image of "naru-volumes" is stored`), "the boot is refused as it was before the delivery")
+	require.NoError(t, nd.WaitFor(context.Background(), bootTimeout, "boot refused", "is stored; an upgrade bundle"), "the boot is refused as it was before the delivery")
 	assert.False(t, nd.Has("extension staged from the boot medium"))
 }
 
