@@ -175,13 +175,11 @@ func TestFleet_TwoHostsInstalledFromOneSeedEnrollAreAdmittedWithTheirOwnIdentity
 	iso := filepath.Join(f.dir, "seed.iso")
 	f.must(nrun("host", "install-seed", "--orch-url", orchURL, "--orch-ca-sha256", f.caSHA, "--enroll-key", f.file("enroll.key", secret[1]+"\n"), "--out", iso), "host install-seed")
 
-	// The host profile is what orch builds each host's configuration from: the guest manifest and
-	// Firecracker the image carries, the pool each host's Machine prefix is taken from, the
+	// The host profile is what orch builds each host's configuration from: the Firecracker the image carries,
+	// the pool each host's Machine prefix is taken from, the
 	// registry the microVM's image is pulled from, and the management network.
-	guest, err := json.Marshal(inputs.Guest)
-	require.NoError(t, err)
 	profile := filepath.Join(f.dir, "host-profile.yaml")
-	f.must(nrun("gen", "host-profile", "--guest", f.file("guest.json", string(guest)), "--firecracker-sha256", inputs.FirecrackerSHA256,
+	f.must(nrun("gen", "host-profile", "--firecracker-sha256", inputs.FirecrackerSHA256,
 		"--machine-pool", "10.77.0.0/16", "--orch-url", orchURL, "--orch-ca-sha256", f.caSHA,
 		"--registry", "host="+nodeIP(1)+":"+joinRegistryPort+",ca="+f.file("registry-ca.pem", string(certs.CA)),
 		"--host-management-prefix", managementPrefix, "--host-egress-interface", "eth0", "--host-tunnel-port", "51820", "--out", profile), "gen host-profile")

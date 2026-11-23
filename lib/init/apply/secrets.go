@@ -39,6 +39,7 @@ var shown = map[string]bool{
 	".spec.network.forwarding[]":               true,
 	".spec.files[].path":                       true,
 	".spec.files[].mode":                       true,
+	".spec.files[].template":                   true,
 	".spec.files[].restart[]":                  true,
 	".spec.pki.authorities[].name":             true,
 	".spec.pki.authorities[].certificate":      true,

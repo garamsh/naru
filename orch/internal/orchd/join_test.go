@@ -37,11 +37,7 @@ func (h host) seeded(secret string) orchapi.EnrollRequest {
 
 func profileYAML(t *testing.T, pool string, registries ...layout.Registry) []byte {
 	t.Helper()
-	f := layout.File{Path: "/x", SHA256: joinDigest}
 	p := layout.HostProfile{
-		Guest: layout.Manifest{
-			Kernels: map[string]layout.File{"naru": f}, DefaultKernel: "naru", GuestInitrd: f, ConverterInitrd: f,
-		},
 		FirecrackerSHA256: joinDigest,
 		Orch:              layout.ProfileOrch{URL: "https://orch.example:8443", CASHA256: joinDigest},
 		MachinePool:       netip.MustParsePrefix(pool),

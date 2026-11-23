@@ -36,7 +36,7 @@ func TestShownKeepsOnlyWhatIsListedAndRedactsEveryPassword(t *testing.T) {
 // person who adds the field decides whether it may be shown.
 func TestEveryFieldOfTheProfileIsDecidedForShown(t *testing.T) {
 	var shownFields = map[string]bool{
-		"Guest": true, "FirecrackerSHA256": true, "TimeServers": true, "Registries": true, "AWS": true,
+		"FirecrackerSHA256": true, "TimeServers": true, "Registries": true, "AWS": true,
 		"MetricsListen": true, "Network": true, "Storage": true, "Extensions": true, "Orch": true,
 		"APIClientCA": true, "MachinePool": true,
 	}

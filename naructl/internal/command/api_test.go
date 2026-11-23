@@ -158,7 +158,7 @@ func TestGenNode_AnAPIDirectoryThatHoldsNoAuthorityIsRefused(t *testing.T) {
 	require.NoError(t, os.Mkdir(filepath.Join(dep.ca, "api"), 0o750))
 
 	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-2", "--address", "192.168.0.20/24", "--api-server", "192.168.0.10",
-		"--machine-prefix", "10.200.2.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "n.yaml"))
+		"--machine-prefix", "10.200.2.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "n.yaml"))
 
 	require.Error(t, err, "a half-made authority would silently leave the Node without an API")
 	assert.Contains(t, out, "Node API authority")

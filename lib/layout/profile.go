@@ -41,7 +41,6 @@ var ErrRedacted = errors.New("the host profile holds " + Redacted + " where a se
 // nothing that is one host's own: no certificate, token, authority key or address. A YAML document
 // of this type is what naructl gen host-profile writes and orch stores.
 type HostProfile struct {
-	Guest             Manifest      `yaml:"guest"`
 	FirecrackerSHA256 string        `yaml:"firecrackerSHA256"`
 	TimeServers       []string      `yaml:"timeServers,omitempty"`
 	Registries        []Registry    `yaml:"registries,omitempty"`
@@ -205,10 +204,10 @@ func (p HostProfile) Node(h JoinedHost) (Node, error) {
 	}
 	return Node{
 		Name: h.ID, Mode: HostOnly,
-		Address:       netip.PrefixFrom(h.Address, 32),
-		MachinePrefix: h.MachinePrefix,
-		Guest:         p.Guest, FirecrackerSHA256: p.FirecrackerSHA256,
-		TimeServers: p.TimeServers, Registries: p.Registries, AWS: p.AWS, MetricsListen: p.MetricsListen,
+		Address:           netip.PrefixFrom(h.Address, 32),
+		MachinePrefix:     h.MachinePrefix,
+		FirecrackerSHA256: p.FirecrackerSHA256,
+		TimeServers:       p.TimeServers, Registries: p.Registries, AWS: p.AWS, MetricsListen: p.MetricsListen,
 		HostNetwork: p.Network, Storage: p.Storage, Extensions: p.Extensions,
 		Host: &Host{
 			Region: h.Region, Labels: h.Labels, Certificate: h.Certificate, KeyFile: HostKeyFile,

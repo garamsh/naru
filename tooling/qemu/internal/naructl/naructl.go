@@ -272,17 +272,17 @@ type Node struct {
 	// Extra are further gen node flags, each as given on the command line ("--signer").
 	Extra []string
 	// Binaries maps a service's name to its executable's path on the Node.
-	Binaries                          map[string]string
-	Disable                           []string
-	MachinePrefix, Guest, Firecracker string
-	Out, NetworkConfig                string
+	Binaries                   map[string]string
+	Disable                    []string
+	MachinePrefix, Firecracker string
+	Out, NetworkConfig         string
 }
 
 // GenNode has naructl write the Node's user-data to n.Out, and its network-config to
 // n.NetworkConfig when that is set.
 func (t Tool) GenNode(n Node) error {
 	args := []string{"gen", "node", t.caDirFlag(), n.CA, "--name", n.Name, "--address", n.Address,
-		"--api-server", n.APIServer, "--machine-prefix", n.MachinePrefix, "--guest", n.Guest,
+		"--api-server", n.APIServer, "--machine-prefix", n.MachinePrefix,
 		"--firecracker-sha256", n.Firecracker, "--out", n.Out}
 	flag := func(name string, values ...string) {
 		for _, v := range values {

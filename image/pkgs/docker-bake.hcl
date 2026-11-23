@@ -28,7 +28,7 @@ variable "REFUSE_LDFLAGS" { default = "-X github.com/garamsh/naru/lib/init/linux
 # which differ from the image's in naru-init (ADR 0025), and the naru-orch extension built for the
 # next and the refusing version, which the bundles of an upgrade carry (ADR 0084).
 group "upgrade" {
-  targets = ["bzImage-next", "bzImage-refuse", "extension-next", "extension-refuse"]
+  targets = ["bzImage-next", "bzImage-refuse", "bzImage-guest", "initramfs-host-guest", "extension-next", "extension-refuse", "extension-guest"]
 }
 
 group "default" {
@@ -168,6 +168,15 @@ target "extension-next" {
   output   = ["type=oci,dest=${OUT}/extension-next.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
+# The extension of the guest variant, whose version is ${NARU_VERSION}-guest.
+target "extension-guest" {
+  inherits = ["_package"]
+  context  = "extension"
+  contexts = { naru = "target:naru" }
+  args     = { NARU_VERSION = "${NARU_VERSION}-guest" }
+  output   = ["type=oci,dest=${OUT}/extension-guest.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
 target "extension-refuse" {
   inherits = ["_package"]
   context  = "extension"
@@ -272,6 +281,15 @@ target "guest-initrds" {
   output   = ["type=oci,dest=${OUT}/guest-initrds.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
+# The Guest Agent's initrd with bytes after its trailer, so the guest.json of an image built on it
+# names a digest the image's own does not (ADR 0106).
+target "guest-initrds-changed" {
+  inherits = ["_package"]
+  context  = "guest-initrds-changed"
+  contexts = { guest-initrds = "target:guest-initrds" }
+  output   = ["type=oci,dest=${OUT}/guest-initrds-changed.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
 # The kernels share one Dockerfile and, with it, the unpacked sources; _kernel names what differs.
 # The Node's kernel is the Host's configuration plus its own, as the boot set the Host boots a Node
 # from (ADR 0054). The image takes bzImage, whose embedded initramfs is the Host's, from the group
@@ -364,6 +382,12 @@ target "initramfs-node-next" {
   output   = ["type=oci,dest=${OUT}/initramfs-node-next.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
+target "initramfs-node-guest" {
+  inherits = ["_initramfs-node"]
+  args     = { NARU_VERSION = "${NARU_VERSION}-guest" }
+  output   = ["type=oci,dest=${OUT}/initramfs-node-guest.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
 target "initramfs-node-refuse" {
   inherits = ["_initramfs-node"]
   args     = { NARU_VERSION = "${NARU_VERSION}-refuse", EXTRA_LDFLAGS = REFUSE_LDFLAGS }
@@ -382,6 +406,14 @@ target "initramfs-host-next" {
   contexts = { initramfs-node = "target:initramfs-node-next" }
   args     = { NARU_VERSION = "${NARU_VERSION}-next" }
   output   = ["type=oci,dest=${OUT}/initramfs-host-next.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+# The guest variant: the next version's tree on the changed guest initrd, which no other variant changes.
+target "initramfs-host-guest" {
+  inherits = ["_initramfs-host"]
+  contexts = { initramfs-node = "target:initramfs-node-guest", guest-initrds = "target:guest-initrds-changed" }
+  args     = { NARU_VERSION = "${NARU_VERSION}-guest" }
+  output   = ["type=oci,dest=${OUT}/initramfs-host-guest.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
 target "initramfs-host-refuse" {
@@ -409,6 +441,12 @@ target "bzImage-next" {
   inherits = ["_bzimage"]
   contexts = { initramfs = "target:initramfs-host-next" }
   output   = ["type=oci,dest=${OUT}/bzImage-next.tar,rewrite-timestamp=true,compression=uncompressed"]
+}
+
+target "bzImage-guest" {
+  inherits = ["_bzimage"]
+  contexts = { initramfs = "target:initramfs-host-guest" }
+  output   = ["type=oci,dest=${OUT}/bzImage-guest.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
 target "bzImage-refuse" {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,6 +29,13 @@ func routes(t *testing.T, path string) []struct{ To, Via string } {
 	return u.Spec.Network.Routes
 }
 
+// guestAction is what stands for a value of the booted image's guest.json in the stored file: init
+// renders it at each write (ADR 0106), so a test of the rest of the file reads it as null.
+var guestAction = regexp.MustCompile(`\{\{json [^}]*\}\}`)
+
+// mvmdJSON is the stored mvmd configuration with the guest's values left out.
+func mvmdJSON(content string) []byte { return guestAction.ReplaceAll([]byte(content), []byte("null")) }
+
 // mvmdNetwork returns the network section of the mvmd configuration a user-data file carries.
 func mvmdNetwork(t *testing.T, path string) map[string]any {
 	t.Helper()
@@ -35,7 +43,7 @@ func mvmdNetwork(t *testing.T, path string) map[string]any {
 	content, ok := u.file("/run/mvmd/config.json")
 	require.True(t, ok)
 	var cfg struct{ Network map[string]any }
-	require.NoError(t, json.Unmarshal([]byte(content), &cfg))
+	require.NoError(t, json.Unmarshal(mvmdJSON(content), &cfg))
 	return cfg.Network
 }
 
@@ -79,7 +87,7 @@ func TestGenNode_RefusesAPeerItCannotRouteTo(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			args := []string{
 				"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-				"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
+				"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 			}
 			for _, p := range tt.peers {
 				args = append(args, "--peer", p)
@@ -106,7 +114,7 @@ func TestGenNode_RefusesANoMasqueradeThatIsNotACanonicalIPv4Prefix(t *testing.T)
 	for _, bad := range []string{"10.200.3.5/24", "fd00::/64", "10.200.3.0"} {
 		args := []string{
 			"gen", "node", "--ca-dir", dep.ca, "--name", "node-1", "--address", "192.168.0.10/24", "--api-server", "192.168.0.10",
-			"--machine-prefix", "10.200.1.0/24", "--guest", dep.guest, "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
+			"--machine-prefix", "10.200.1.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "x"),
 			"--no-masquerade", bad,
 		}
 

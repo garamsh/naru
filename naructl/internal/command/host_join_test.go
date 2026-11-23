@@ -67,7 +67,7 @@ func TestHostInstallSeed_Refusals(t *testing.T) {
 // profileFlags are the flags of a minimal gen host-profile.
 func profileFlags(t *testing.T, out string, extra ...string) []string {
 	t.Helper()
-	return append([]string{"gen", "host-profile", "--guest", guestJSON(t), "--firecracker-sha256", d("7"),
+	return append([]string{"gen", "host-profile", "--firecracker-sha256", d("7"),
 		"--machine-pool", "10.200.0.0/16", "--orch-url", "https://orch.example:8443", "--orch-ca-sha256", d("b"), "--out", out}, extra...)
 }
 

@@ -33,7 +33,6 @@ func (s *service) Profile(ctx context.Context) ([]byte, error) {
 // keeps its host, CA, user name and helper, and a password it holds is replaced by layout.Redacted.
 func shown(p layout.HostProfile) layout.HostProfile {
 	out := layout.HostProfile{
-		Guest:             p.Guest,
 		FirecrackerSHA256: p.FirecrackerSHA256,
 		TimeServers:       p.TimeServers,
 		AWS:               p.AWS,

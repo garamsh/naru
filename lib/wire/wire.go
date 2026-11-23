@@ -24,6 +24,10 @@ const (
 	MvmdStorageMount = DataMount + "/mvmd-storage"
 	// MkfsPath is the mkfs.ext4 the image carries (ADR 0011), which init runs and mvmd's disk.mkfs names.
 	MkfsPath = "/bin/mkfs.ext4"
+	// GuestManifest is guest.json, which the image carries beside the guest kernels and initrds it
+	// names (ADR 0010). A file of spec.files with `template: guest` is rendered from it at each write,
+	// so the digests a configuration names are the booted image's own.
+	GuestManifest = "/usr/lib/naru/guest/guest.json"
 	// ESPGUID is the fixed partition GUID of the EFI system partition of the image's disk, which
 	// image/host/disk/disk.env also holds as ESP_GUID (ADR 0020). The partition is found by it, not
 	// by a device name.

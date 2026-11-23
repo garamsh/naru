@@ -151,3 +151,20 @@ func TestParse_AcceptsAFormatBlankDataDiskNamedByLabel(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, cfg.Spec.DataDisk.FormatBlank)
 }
+
+func TestParse_ChecksAFileTemplateWhereItIsStoredSoABadOneNeverReachesABoot(t *testing.T) {
+	good := strings.Replace(valid, "      mode: \"0600\"\n      content: |\n        {\"listen\": \":8080\"}", "      mode: \"0600\"\n      template: guest\n      content: |\n        {\"d\": {{json .guest_initrd.sha256}}}", 1)
+	require.NotEqual(t, valid, good)
+	cfg, err := config.Parse([]byte(good))
+	require.NoError(t, err)
+	assert.Equal(t, config.TemplateGuest, cfg.Spec.Files[0].Template)
+
+	for name, doc := range map[string]string{
+		"an unknown template": strings.Replace(good, "template: guest", "template: host", 1),
+		"a broken template":   strings.Replace(good, "{{json .guest_initrd.sha256}}", "{{json", 1),
+	} {
+		_, err := config.Parse([]byte(doc))
+		require.Error(t, err, name)
+		assert.Contains(t, fields(t, err), "spec.files[0].template", name)
+	}
+}

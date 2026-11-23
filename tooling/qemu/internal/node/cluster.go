@@ -1,7 +1,6 @@
 package node
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -381,11 +380,10 @@ func freePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// gaonFiles are what naructl wrote for a gaon cluster: the CA, the test host's client pair and the
-// guest manifest the Nodes' mvmd configuration is made from.
+// gaonFiles are what naructl wrote for a gaon cluster: the CA and the test host's client pair.
 type gaonFiles struct {
-	caDir, guest string
-	client       naructl.Client
+	caDir  string
+	client naructl.Client
 	// etcdClient is the directory naructl gen etcd-client wrote, set when the control plane has
 	// several members.
 	etcdClient string
@@ -409,7 +407,7 @@ type hostFiles struct {
 }
 
 func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
-	g := &gaonFiles{caDir: filepath.Join(spec.Dir, "ca"), guest: filepath.Join(spec.Dir, "guest.json"), ports: map[int]int{},
+	g := &gaonFiles{caDir: filepath.Join(spec.Dir, "ca"), ports: map[int]int{},
 		hosts: map[int]*hostFiles{}, extraForwards: map[int][]Forward{}, forwarded: map[string]map[string]string{}}
 	for i := 1; i <= spec.N; i++ {
 		if !spec.secondNIC(i) {
@@ -431,20 +429,14 @@ func newGaonFiles(spec ClusterSpec) (*gaonFiles, error) {
 			g.forwarded[name][guest] = "127.0.0.1:" + strconv.Itoa(fp)
 		}
 	}
-	manifest, err := json.Marshal(spec.Inputs.Guest)
-	if err != nil {
-		return nil, err
-	}
 	if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(g.guest, manifest, 0o600); err != nil {
 		return nil, err
 	}
 	if err := spec.Naructl.GenCA(g.caDir); err != nil {
 		return nil, err
 	}
 	clientDir := filepath.Join(spec.Dir, "client")
+	var err error
 	if g.client, err = spec.Naructl.GenClient(g.caDir, "naru-test-host", clientDir); err != nil {
 		return nil, err
 	}
@@ -506,8 +498,8 @@ func (g *gaonFiles) node(c Config, spec ClusterSpec) (userData, networkConfig []
 		CA: g.caDir, Name: c.Name, ControlPlane: c.ControlPlane, PairsAsFiles: !spec.BootPKI,
 		Address: n.IP + "/" + strconv.Itoa(ones), MAC: n.MAC, Gateway: n.Gateway, Nameservers: n.Nameservers, Search: n.Search,
 		APIServer: spec.apiServer(), MachinePrefix: n.MachinePrefix.String(),
-		Guest: g.guest, Firecracker: spec.Inputs.FirecrackerSHA256,
-		Disable: spec.Disable, Binaries: map[string]string{},
+		Firecracker: spec.Inputs.FirecrackerSHA256,
+		Disable:     spec.Disable, Binaries: map[string]string{},
 		Out: filepath.Join(dir, "naru.yaml"), NetworkConfig: filepath.Join(dir, "network-config"),
 	}
 	if c.hostNIC() {

@@ -56,13 +56,12 @@ func hostInstallSeed(fs *pflag.FlagSet) runner {
 // none for what is one host's own.
 func genHostProfile(fs *pflag.FlagSet) runner {
 	var (
-		p                                                   layout.HostProfile
-		timeServers, registries, storage, extensions        list
-		awsRegion, awsTrustAnchor, awsProfile, awsRole      string
-		hostMgmt, hostEgress, apiClientCA, guest, pool, out string
-		hostTunnelPort                                      int
+		p                                              layout.HostProfile
+		timeServers, registries, storage, extensions   list
+		awsRegion, awsTrustAnchor, awsProfile, awsRole string
+		hostMgmt, hostEgress, apiClientCA, pool, out   string
+		hostTunnelPort                                 int
 	)
-	fs.StringVar(&guest, "guest", "", "naru-guest-<version>.json, the guest manifest")
 	fs.StringVar(&p.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
 	fs.Var(&timeServers, "time-server", "an SNTP server init sets the clock from, host or host:port, repeatable and asked in order")
 	fs.Var(&registries, "registry", "a registry mvmd pulls from, host=<host[:port]> then any of ca=<PEM file>, username=<name> with password-file=<file>, or helper=<name>, comma-separated, repeatable; the profile then carries the password, so its file is 0600")
@@ -82,7 +81,7 @@ func genHostProfile(fs *pflag.FlagSet) runner {
 	fs.StringVar(&p.Orch.CASHA256, "orch-ca-sha256", "", "the hex SHA-256 of the authority orch's certificate chains to")
 	fs.StringVar(&out, "out", "", "the profile to write (0600 when it carries a registry's password, else 0644)")
 	return func(args []string, stdout, stderr io.Writer) error {
-		if err := require(fs, "guest", "firecracker-sha256", "machine-pool", "orch-url", "orch-ca-sha256", "out"); err != nil {
+		if err := require(fs, "firecracker-sha256", "machine-pool", "orch-url", "orch-ca-sha256", "out"); err != nil {
 			return err
 		}
 		if fs.NArg() != 0 {
@@ -95,9 +94,6 @@ func genHostProfile(fs *pflag.FlagSet) runner {
 			return err
 		}
 		var err error
-		if p.Guest, err = layout.ReadManifest(guest); err != nil {
-			return err
-		}
 		if p.MachinePool, err = netip.ParsePrefix(pool); err != nil {
 			return fmt.Errorf("--machine-pool: %w", err)
 		}

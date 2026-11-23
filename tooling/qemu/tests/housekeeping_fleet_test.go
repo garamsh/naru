@@ -3,7 +3,6 @@
 package tests_test
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -98,14 +97,12 @@ func TestFleet_TheLeaderRemovesAMemberThatStaysOutOnlyWhileTheOthersAnswerAndItR
 // defragmentation must give back.
 func (f *fleet) bloatedProfile(via, n int) result {
 	f.t.Helper()
-	guest, err := json.Marshal(inputs.Guest)
-	require.NoError(f.t, err)
 	certs, err := fixture.ServerCerts(net.ParseIP(nodeIP(1)))
 	require.NoError(f.t, err)
 	bundle := strings.Repeat(string(certs.CA), 400)
 	profile := filepath.Join(f.dir, fmt.Sprintf("bloated-%d.yaml", n))
 	orchURL := "https://" + nodeIP(1) + ":" + orchPort
-	f.must(nrun("gen", "host-profile", "--guest", f.file("guest.json", string(guest)), "--firecracker-sha256", inputs.FirecrackerSHA256,
+	f.must(nrun("gen", "host-profile", "--firecracker-sha256", inputs.FirecrackerSHA256,
 		"--machine-pool", "10.77.0.0/16", "--orch-url", orchURL, "--orch-ca-sha256", f.caSHA,
 		"--registry", "host="+nodeIP(1)+":"+joinRegistryPort+",ca="+f.file("registry-ca.pem", bundle),
 		"--host-management-prefix", managementPrefix, "--host-egress-interface", "eth0", "--host-tunnel-port", "51820", "--out", profile), "gen host-profile")

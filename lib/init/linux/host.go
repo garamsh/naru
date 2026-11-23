@@ -66,7 +66,9 @@ type Host struct {
 
 	seedMountPoint string
 	resolvConf     string
-	links          links
+	// guestManifest is guest.json, which a file with a guest template is rendered from.
+	guestManifest string
+	links         links
 
 	dataMountPoint string
 	// mvmdStorage is the storage mount point that mvmdState's disks, snapshots and disk snapshots are linked into.
@@ -107,6 +109,7 @@ func NewHost(diskWait time.Duration, reaper *Reaper) *Host {
 		mvmdStorage:    wire.MvmdStorageMount,
 		mvmdState:      wire.MvmdStateDir,
 		resolvConf:     resolvConf,
+		guestManifest:  wire.GuestManifest,
 		links:          netlinkLinks{},
 		carrierWait:    carrierWait,
 		time:           timesync.New(SystemClock{}, timesync.UDP{Now: time.Now}),

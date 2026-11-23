@@ -206,10 +206,17 @@ func (h *Host) writeResolvConf(search []string, nameservers []netip.Addr) error 
 	return writeFile(h.resolvConf, []byte(resolvContent(search, nameservers)), 0o644)
 }
 
+// readGuestManifest is the booted image's guest.json.
+func (h *Host) readGuestManifest() ([]byte, error) { return os.ReadFile(h.guestManifest) }
+
 // WriteFiles writes the files of the configuration, creating their directories.
 func (h *Host) WriteFiles(files []config.File) error {
 	for _, f := range files {
-		if err := writeFile(f.Path, []byte(f.Content), f.Perm()); err != nil {
+		content, err := f.Render(h.readGuestManifest)
+		if err != nil {
+			return err
+		}
+		if err := writeFile(f.Path, content, f.Perm()); err != nil {
 			return fmt.Errorf("write %s: %w", f.Path, err)
 		}
 		if f.Owner != nil {
@@ -232,7 +239,11 @@ func (h *Host) ReplaceFile(f config.File) error {
 	if f.Owner != nil {
 		opts = append(opts, atomicfile.Owner(int(f.Owner.UID), int(f.Owner.GID)))
 	}
-	if err := atomicfile.Write(f.Path, []byte(f.Content), f.Perm(), opts...); err != nil {
+	content, err := f.Render(h.readGuestManifest)
+	if err != nil {
+		return err
+	}
+	if err := atomicfile.Write(f.Path, content, f.Perm(), opts...); err != nil {
 		return fmt.Errorf("write %s: %w", f.Path, err)
 	}
 	return nil
