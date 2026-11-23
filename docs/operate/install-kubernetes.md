@@ -15,7 +15,7 @@ naructl gen api-client --ca-dir <ca-dir> --role admin --endpoint <endpoint> --ou
 
 `gen api-ca` makes the Node API's authority; with it in `<ca-dir>`, `gen kubernetes-node` gives each Node a Node API, and `<ca-dir>/admin-api.yaml` is the `<client file>` of step 3 (`--endpoint` names another Node when you pass it to a command). Step 3 needs the API.
 
-The second writes the front-proxy authority, the ServiceAccount key pair and the administrator's `admin.conf` (mode `0600`). Add `--disable-addon dns` or `--disable-addon volumes` (repeatable) to leave an add-on out; the file it writes, `<ca-dir>/disabled-addons`, is read by step 2, so run this step before it. A later `gen kubernetes` without the flag turns every add-on on again.
+The second writes the front-proxy authority, the ServiceAccount key pair and the administrator's `admin.conf` (mode `0600`). Add `--disable-addon dns` or `--disable-addon volumes` (repeatable) to leave an add-on out; the file it writes, `<ca-dir>/disabled-addons`, is read by step 2, so run this step before it. A later `gen kubernetes` without the flag turns every add-on on again. The cloud-controller add-on (`LoadBalancer` Services) is off by default; turn it on with `naructl gen kubernetes --enable-addon cloud-controller` ([ADR 0093](../architecture/adr/0093-the-cloud-controller-add-on-is-opt-in-and-is-the-clusters-load-balancer-implementation-and-one-switch-turns-it-and-the-kubelets-external-provider-on-together-amending-adr-0085-items-1-9-and-12.md)); make its credential and Secret first, or every Node stays tainted.
 
 ## 2. The Nodes' user-data
 

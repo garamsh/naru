@@ -130,7 +130,10 @@ func TestKubernetesUserData_WorkerRunsTheKubeletAndTheProxyAndNoControlPlane(t *
 }
 
 func TestKubernetesUserData_ControlPlaneRunsEveryServiceInTheTopologysOrder(t *testing.T) {
-	n := kubeNode(t, true, func(n *layout.Node) { n.Kube.LocalRegistry = true })
+	n := kubeNode(t, true, func(n *layout.Node) {
+		n.Kube.LocalRegistry = true
+		n.Kube.EnabledAddons = []string{"cloud-controller"}
+	})
 
 	s := kubeUserData(t, n)
 
@@ -802,4 +805,73 @@ func TestNetworkPolicyRBAC_GrantsExactlyTheThreeListsAndWatchesTheEnforcerReadsT
 	assert.Equal(t, []struct{ Kind, Name string }{{"User", layout.NetworkPolicyUser}}, bindings[0].Subjects, "the binding names the CN the agent's pair is issued with")
 	assert.Equal(t, roles[0].Metadata.Name, bindings[0].RoleRef.Name)
 	assert.Equal(t, "ClusterRole", bindings[0].RoleRef.Kind)
+}
+
+func kubeletArgs(t *testing.T, s kubeSpec) []string {
+	t.Helper()
+	args, _, _ := serviceByName(t, s, "kubelet")
+	return args
+}
+
+func TestKubernetesUserData_TheCloudControllerIsOffUnlessTheClusterTurnsItOn(t *testing.T) {
+	for _, controlPlane := range []bool{true, false} {
+		s := kubeUserData(t, kubeNode(t, controlPlane, nil))
+
+		assert.NotContains(t, kubeletArgs(t, s), "--cloud-provider=external", "an external provider taints every Node until a controller with a credential initializes it")
+		assert.NotContains(t, serviceNames(s), "addon-image-ccm")
+		if controlPlane {
+			args, _, _ := serviceByName(t, s, "addons")
+			assert.NotContains(t, strings.Join(args, " "), "cloud-controller.yaml")
+		}
+	}
+}
+
+func TestKubernetesUserData_TurningTheCloudControllerOnGivesEveryKubeletAnExternalProviderAndImportsItsImage(t *testing.T) {
+	for _, controlPlane := range []bool{true, false} {
+		s := kubeUserData(t, kubeNode(t, controlPlane, func(n *layout.Node) { n.Kube.EnabledAddons = []string{"cloud-controller"} }))
+
+		assert.Contains(t, kubeletArgs(t, s), "--cloud-provider=external", "control plane %v", controlPlane)
+		args, binary, restart := serviceByName(t, s, "addon-image-ccm")
+		assert.Equal(t, "/bin/ctr", binary)
+		assert.Equal(t, "on-failure", restart)
+		assert.Equal(t, layout.AddonsDir+"/images/ccm.tar", args[len(args)-1])
+		assert.Contains(t, strings.Join(args, " "), "--base-name naru.local/ccm ")
+		if controlPlane {
+			apply, _, _ := serviceByName(t, s, "addons")
+			assert.Contains(t, apply, "-f")
+			assert.Contains(t, strings.Join(apply, " "), layout.AddonsDir+"/manifests/cloud-controller.yaml")
+		}
+	}
+}
+
+func TestKubernetesUserData_DisablingAnotherAddonLeavesTheCloudControllerOn(t *testing.T) {
+	s := kubeUserData(t, kubeNode(t, true, func(n *layout.Node) {
+		n.Kube.EnabledAddons = []string{"cloud-controller"}
+		n.Kube.DisabledAddons = []string{"dns", "volumes"}
+	}))
+
+	apply, _, _ := serviceByName(t, s, "addons")
+	assert.Contains(t, strings.Join(apply, " "), "cloud-controller.yaml", "it is the one add-on left to apply")
+	assert.NotContains(t, strings.Join(apply, " "), "dns.yaml")
+}
+
+func TestKubernetesUserData_RefusesAnUnknownAddonToEnable(t *testing.T) {
+	_, err := kubeNode(t, true, func(n *layout.Node) { n.Kube.EnabledAddons = []string{"dns"} }).UserData()
+
+	require.Error(t, err, "dns is on by default: it is disabled, not enabled")
+	assert.Contains(t, err.Error(), "cloud-controller")
+	_, err = kubeNode(t, true, func(n *layout.Node) { n.Kube.EnabledAddons = []string{"cloud-controller"} }).UserData()
+	require.NoError(t, err, "control: the opt-in add-on is accepted")
+}
+
+func TestKubernetesCheck_WithTheCloudControllerANodeIsNamedAfterItsGroupMember(t *testing.T) {
+	on := func(name string) layout.Node {
+		return kubeNode(t, false, func(n *layout.Node) { n.Name = name; n.Kube.EnabledAddons = []string{"cloud-controller"} })
+	}
+	require.NoError(t, on("workers-3").Check(), "a group member's name")
+	require.NoError(t, on("naru-cp-12").Check(), "the group's name may hold dashes")
+	for _, name := range []string{"worker", "workers-x", "web01"} {
+		require.ErrorContains(t, on(name).Check(), "not a group member's name", name)
+	}
+	require.NoError(t, kubeNode(t, false, func(n *layout.Node) { n.Name = "worker" }).Check(), "control: without the add-on any DNS label is a Node's name")
 }

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -81,37 +82,85 @@ const (
 	AddonManager = "naru-addons"
 )
 
-// Addons are the cluster add-ons by name: each has the manifests <addonDir>/manifests/<name>.yaml and
-// a node setting (KubeNode.DisabledAddons) that turns it off.
-var Addons = []string{"dns", "volumes"}
-
-// addonDir is the directory that holds an add-on's manifests and image: AddonsDir for what the
-// initramfs carries, and the add-on's own extension for the volume add-on.
-func addonDir(name string) string {
-	if name == "volumes" {
-		return path.Join("/usr/lib/naru/extensions", VolumesExtension, "addons")
-	}
-	return AddonsDir
+// addon is one cluster add-on: its manifests are <dir>/manifests/<Name>.yaml and its image is imported from
+// <dir>/images/<Image>.tar as the init service addon-image-<Image>.
+type addon struct {
+	Name  string
+	Image string
+	// Dir is where the image and manifests are; empty for AddonsDir, what the initramfs carries.
+	Dir string
+	// OptIn is an add-on that runs only when the cluster turns it on (KubeNode.EnabledAddons); the others run
+	// unless it turns them off (KubeNode.DisabledAddons).
+	OptIn bool
+	// ImageWhenOff keeps the image imported when the add-on is off; a disabled volume add-on's is large, so it is not.
+	ImageWhenOff bool
 }
+
+// addonTable is every cluster add-on, in the order init imports their images. The image services, the
+// manifests the addons service applies, the names naructl accepts and the Kubernetes Topology all come from it.
+var addonTable = []addon{
+	{Name: "dns", Image: "coredns", ImageWhenOff: true},
+	{Name: "volumes", Image: "volumes", Dir: path.Join("/usr/lib/naru/extensions", VolumesExtension, "addons")},
+	// cloud-controller is opt-in because with it the kubelet runs with --cloud-provider=external and every Node
+	// stays tainted until the controller, which needs the credential an operator makes, initializes it (ADR 0093).
+	{Name: "cloud-controller", Image: "ccm", OptIn: true},
+}
+
+func addonNames(optIn bool) []string {
+	var names []string
+	for _, a := range addonTable {
+		if a.OptIn == optIn {
+			names = append(names, a.Name)
+		}
+	}
+	return names
+}
+
+// Addons are the cluster add-ons that run unless the cluster turns them off (KubeNode.DisabledAddons).
+var Addons = addonNames(false)
+
+// OptInAddons are the cluster add-ons that run only when the cluster turns them on (KubeNode.EnabledAddons).
+var OptInAddons = addonNames(true)
+
+// addonByName is the add-on of the name; the names are checked before it is asked.
+func addonByName(name string) addon {
+	return addonTable[slices.IndexFunc(addonTable, func(a addon) bool { return a.Name == name })]
+}
+
+func (a addon) dir() string {
+	if a.Dir == "" {
+		return AddonsDir
+	}
+	return a.Dir
+}
+
+func (a addon) imageService() string { return "addon-image-" + a.Image }
 
 // Kubernetes is the Topology of a Kubernetes Node: the services in the order init starts them.
 var Kubernetes = Topology{
-	Services: []Service{
-		{Name: "registry"},
-		{Name: "containerd"},
-		{Name: "addon-image-coredns"},
-		{Name: "addon-image-volumes"},
-		{Name: "etcd", ControlPlane: true},
-		{Name: "kube-apiserver", ControlPlane: true},
-		{Name: "kube-controller-manager", ControlPlane: true},
-		{Name: "kube-scheduler", ControlPlane: true},
-		{Name: "kube-network-policies"},
-		{Name: "kubelet"},
-		{Name: "kube-proxy"},
-		{Name: "addons", ControlPlane: true},
-	},
+	Services: slices.Concat(
+		[]Service{{Name: "registry"}, {Name: "containerd"}},
+		imageServices(),
+		[]Service{
+			{Name: "etcd", ControlPlane: true},
+			{Name: "kube-apiserver", ControlPlane: true},
+			{Name: "kube-controller-manager", ControlPlane: true},
+			{Name: "kube-scheduler", ControlPlane: true},
+			{Name: "kube-network-policies"},
+			{Name: "kubelet"},
+			{Name: "kube-proxy"},
+			{Name: "addons", ControlPlane: true},
+		}),
 	APIServer: "kube-apiserver",
 	Agent:     "kubelet",
+}
+
+func imageServices() []Service {
+	var out []Service
+	for _, a := range addonTable {
+		out = append(out, Service{Name: a.imageService()})
+	}
+	return out
 }
 
 // KubePeer is another Node of the cluster: its address, which is the next hop to its Pods, and the
@@ -158,6 +207,10 @@ type KubeNode struct {
 	// DisabledAddons are the names of the add-ons (Addons) the cluster does not run: the control-plane
 	// Node neither applies nor removes their objects, which the cluster's owner keeps (ADR 0083).
 	DisabledAddons []string
+	// EnabledAddons are the names of the opt-in add-ons (OptInAddons) the cluster runs. A control-plane Node applies
+	// them with the others, and every Node's kubelet takes its Node's identity from the external cloud provider
+	// when cloud-controller is among them (ADR 0093).
+	EnabledAddons []string
 	// BlockSerials are the serial numbers of the disks the Node offers whole as block volumes
 	// (class naru-block), besides Node.Storage, which is where its local volumes are (ADR 0083).
 	BlockSerials []string
@@ -270,6 +323,9 @@ var (
 	frontProxy       = pairSpec{"front-proxy-client", "front-proxy-client"}
 )
 
+// memberID is the form of a group member's name, which orch gives as <group>-<number>.
+var memberID = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?-[0-9]+$`)
+
 func kubePath(name string) string { return path.Join(KubeDir, name) }
 
 func pkiPath(name string) string { return path.Join(KubePKIDir, name) }
@@ -287,6 +343,8 @@ func (n Node) checkKube() error {
 		return errors.New("a Node needs a name")
 	case !dnsLabel.MatchString(n.Name):
 		return fmt.Errorf("the name %q is not a DNS label; it is the Node's name in the cluster", n.Name)
+	case n.externalCloud() && !memberID.MatchString(n.Name):
+		return fmt.Errorf("the name %q is not a group member's name (<group>-<number>): with the cloud-controller add-on the kubelet's hostname is the member's name, which is how the node controller finds the member (ADR 0085 item 9)", n.Name)
 	case !n.Address.IsValid() || !n.Address.Addr().Is4():
 		return errors.New("the address is not an IPv4 address with a prefix length")
 	case !n.APIServer.IsValid() || !n.APIServer.Is4():
@@ -313,6 +371,8 @@ func (n Node) checkKube() error {
 		return errors.New("a ServiceAccount issuer is a plain https URL (a host and a path of letters, digits and - . _ ~ segments, no userinfo, query, fragment, trailing slash or space), and none is repeated")
 	case !validAddons(k.DisabledAddons):
 		return fmt.Errorf("an add-on to disable is not one of %s", strings.Join(Addons, ", "))
+	case !validOptIn(k.EnabledAddons):
+		return fmt.Errorf("an add-on to enable is not one of %s", strings.Join(OptInAddons, ", "))
 	case !validBlockSerials(k.BlockSerials, n.Storage):
 		return errors.New("a block disk's serial number is empty, repeated, or the serial of a storage disk")
 	case k.RegistryCA != "" && !path.IsAbs(k.RegistryCA):
@@ -420,6 +480,11 @@ func validAddons(names []string) bool {
 	return !slices.ContainsFunc(names, func(name string) bool { return !slices.Contains(Addons, name) })
 }
 
+// validOptIn reports whether every name is an opt-in add-on.
+func validOptIn(names []string) bool {
+	return !slices.ContainsFunc(names, func(name string) bool { return !slices.Contains(OptInAddons, name) })
+}
+
 // validBlockSerials reports whether the serials are distinct, non-empty, and none is a storage
 // disk's: init formats and mounts a storage disk, and the driver never touches a block disk's content.
 func validBlockSerials(serials []string, storage []StorageDisk) bool {
@@ -458,10 +523,16 @@ func (n Node) appliesObjects() bool {
 	return len(n.enabledAddons()) > 0 || !n.kube().DisableNetworkPolicy
 }
 
-// enabledAddons are the add-ons the Node's cluster runs, in the order of Addons.
+// enabledAddons are the add-ons the Node's cluster runs: those of Addons it did not disable, then the opt-in
+// ones it enabled, each in its list's order.
 func (n Node) enabledAddons() []string {
-	return slices.DeleteFunc(slices.Clone(Addons), func(name string) bool { return slices.Contains(n.kube().DisabledAddons, name) })
+	on := slices.DeleteFunc(slices.Clone(Addons), func(name string) bool { return slices.Contains(n.kube().DisabledAddons, name) })
+	return append(on, slices.DeleteFunc(slices.Clone(OptInAddons), func(name string) bool { return !slices.Contains(n.kube().EnabledAddons, name) })...)
 }
+
+// externalCloud reports whether the cluster runs the cloud-controller add-on, so that every kubelet runs with
+// an external cloud provider.
+func (n Node) externalCloud() bool { return slices.Contains(n.enabledAddons(), "cloud-controller") }
 
 // kubeUserData is the user-data of a Kubernetes Node.
 func (n Node) kubeUserData() ([]byte, error) {
@@ -520,8 +591,6 @@ func (n Node) kubeServices() []service {
 	list := []service{
 		{Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")), Args: []string{"-listen", RegistryAddr, "-dir", path.Join(InputsDir, "registry")}},
 		{Name: "containerd", Binary: n.binary("containerd", "/bin/containerd"), Args: []string{"--config", kubePath("containerd.toml")}, Env: n.kubeEnv()},
-		{Name: "addon-image-coredns", Binary: n.binary("addon-image-coredns", "/bin/ctr"), RestartPolicy: restartOnFailure, Args: ctrImportArgs("coredns")},
-		{Name: "addon-image-volumes", Binary: n.binary("addon-image-volumes", "/bin/ctr"), RestartPolicy: restartOnFailure, Args: ctrImportArgs("volumes")},
 		{Name: "etcd", Binary: n.binary("etcd", "/bin/etcd"), Args: n.etcdArgs()},
 		{
 			Name: "kube-apiserver", Binary: n.binary("kube-apiserver", "/bin/kube-apiserver"),
@@ -582,9 +651,10 @@ func (n Node) kubeServices() []service {
 	if k.DisableNetworkPolicy {
 		list = slices.DeleteFunc(list, func(s service) bool { return s.Name == "kube-network-policies" })
 	}
-	if !slices.Contains(n.enabledAddons(), "volumes") {
-		list = slices.DeleteFunc(list, func(s service) bool { return s.Name == "addon-image-volumes" })
-	}
+	enabled := n.enabledAddons()
+	images := n.addonImageServices(enabled)
+	at := slices.IndexFunc(list, func(s service) bool { return s.Name == "etcd" })
+	list = slices.Insert(list, at, images...)
 	if k.ControlPlane && n.appliesObjects() {
 		args := []string{
 			"apply", "--kubeconfig=" + kubePath("addons.conf"), "--cache-dir=" + kubePath("addons-cache"),
@@ -593,8 +663,8 @@ func (n Node) kubeServices() []service {
 		if !k.DisableNetworkPolicy {
 			args = append(args, "-f", NetworkPolicyRBACFile)
 		}
-		for _, name := range n.enabledAddons() {
-			args = append(args, "-f", path.Join(addonDir(name), "manifests", name+".yaml"))
+		for _, name := range enabled {
+			args = append(args, "-f", path.Join(addonByName(name).dir(), "manifests", name+".yaml"))
 		}
 		list = append(list, service{Name: "addons", Binary: n.binary("addons", "/bin/kubectl"), Args: args, RestartPolicy: restartOnFailure})
 	}
@@ -610,6 +680,9 @@ func (n Node) kubeServices() []service {
 		case list[i].Name == "kubelet" && k.Token != "":
 			list[i].Args = append(list[i].Args, "--bootstrap-kubeconfig="+KubeBootstrapKubeconfig, "--cert-dir="+KubeletRoot+"/pki")
 		}
+		if list[i].Name == "kubelet" && n.externalCloud() {
+			list[i].Args = append(list[i].Args, "--cloud-provider=external")
+		}
 		if list[i].Name == "kubelet" && n.offersVolumes() {
 			list[i].Args = append(list[i].Args, "--node-labels="+VolumesNodeLabel+"=true")
 		}
@@ -623,14 +696,26 @@ func (n Node) kubeServices() []service {
 // restartOnFailure is the restart policy of a service that runs until it succeeds.
 const restartOnFailure = "on-failure"
 
-// ctrImportArgs are the arguments of ctr, containerd's client, that import the add-on image name from
+// ctrImportArgs are the arguments of ctr, containerd's client, that import the image of add-on a from
 // AddonsDir/images into the namespace the CRI reads. --base-name gives the archive's tag and its digest
 // image the name naru.local/<name>, which the manifests reference, and --label pins both.
-func ctrImportArgs(name string) []string {
+func ctrImportArgs(a addon) []string {
 	return []string{
 		"--address", ContainerdSocket, "--namespace", "k8s.io", "images", "import", "--digests",
-		"--base-name", "naru.local/" + name, "--label", "io.cri-containerd.pinned=pinned", path.Join(addonDir(name), "images", name+".tar"),
+		"--base-name", "naru.local/" + a.Image, "--label", "io.cri-containerd.pinned=pinned", path.Join(a.dir(), "images", a.Image+".tar"),
 	}
+}
+
+// addonImageServices are the services that import the images of the add-ons that are enabled, and of those
+// whose image stays imported when they are off, in the table's order.
+func (n Node) addonImageServices(enabled []string) []service {
+	var out []service
+	for _, a := range addonTable {
+		if slices.Contains(enabled, a.Name) || a.ImageWhenOff {
+			out = append(out, service{Name: a.imageService(), Binary: n.binary(a.imageService(), "/bin/ctr"), RestartPolicy: restartOnFailure, Args: ctrImportArgs(a)})
+		}
+	}
+	return out
 }
 
 // kubePKI is a control-plane Node's spec.pki: the cluster's authority, whose key lets init issue each
