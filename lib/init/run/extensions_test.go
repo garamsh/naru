@@ -1,7 +1,6 @@
 package run
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/init/apply"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/extension"
 	"github.com/garamsh/naru/lib/init/store"
@@ -58,58 +58,75 @@ func putImage(t *testing.T, s *extension.Store, content string) string {
 	return digest
 }
 
-func TestPruneExtensions_RemovesWhatNoPinnedEntryNamesAndLogsWhenTheConfigurationCannotBeRead(t *testing.T) {
-	dir := t.TempDir()
-	images := extension.NewStore(filepath.Join(dir, "extensions"), filepath.Join(dir, "probe"), 1<<20, imageMounter{})
-	var logs bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&logs, nil))
-	manager := extension.NewManager(images, imageMounter{}, filepath.Join(dir, "mnt"), "v2", log)
-	pinned := putImage(t, images, manifestOf("tools", "v1"))
-	stale := putImage(t, images, manifestOf("naru-orch", "v1"))
-	configs := store.New(filepath.Join(dir, "config"))
-	cfg, err := config.Parse([]byte(prunableDoc))
-	require.NoError(t, err)
-	cfg.Spec.Extensions = []config.Extension{{Name: "tools", SHA256: pinned}, {Name: "naru-orch"}}
-	require.NoError(t, configs.Save(store.Stored{Config: cfg}))
-
-	pruneExtensions(configs, manager, log)
-
-	left, err := manager.List()
-	require.NoError(t, err)
-	require.Len(t, left, 1, "the control: with a readable configuration the unpinned image of another version is removed")
-	assert.Equal(t, pinned, left[0].SHA256)
-	assert.NotContains(t, logs.String(), "level=ERROR")
-	assert.NotEqual(t, stale, left[0].SHA256)
-
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "config", store.FileName), []byte("not: [valid"), 0o600))
-	pruneExtensions(configs, manager, log)
-
-	assert.Contains(t, logs.String(), "level=ERROR", "an unreadable configuration is logged, not dropped")
-	assert.Contains(t, logs.String(), "read the configuration to remove the extension images")
+// specsOf is the source run gives pruneExtensions and nextBootExtensions: the configuration an
+// engine holds, or none where the boot made no engine.
+func specsOf(e *apply.Engine) func() ([]config.Extension, bool) {
+	return func() ([]config.Extension, bool) {
+		if e == nil {
+			return nil, false
+		}
+		_, cfg := e.Config()
+		return cfg.Spec.Extensions, true
+	}
 }
 
-func TestStoredExtensions_AHostWithNoStoredRevisionNamesTheExtensionsItsBaseRuns(t *testing.T) {
+func engineWith(t *testing.T, revision int, entries ...config.Extension) *apply.Engine {
+	t.Helper()
+	cfg, err := config.Parse([]byte(prunableDoc))
+	require.NoError(t, err)
+	cfg.Spec.Extensions = entries
+	return apply.New(apply.Deps{}, store.Stored{Revision: revision, Config: cfg})
+}
+
+func extensionFixture(t *testing.T, log *slog.Logger) (*extension.Store, *extension.Manager) {
+	t.Helper()
 	dir := t.TempDir()
 	images := extension.NewStore(filepath.Join(dir, "extensions"), filepath.Join(dir, "probe"), 1<<20, imageMounter{})
-	manager := extension.NewManager(images, imageMounter{}, filepath.Join(dir, "mnt"), "v1", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	pinned := putImage(t, images, manifestOf("naru-orch", "v1"))
-	configs := store.New(filepath.Join(dir, "config"))
-	base, err := config.Parse([]byte(prunableDoc))
+	return images, extension.NewManager(images, imageMounter{}, filepath.Join(dir, "mnt"), "v2", log)
+}
+
+func TestPruneExtensions_RemovesWhatNoPinnedEntryOfTheNextBootsConfigurationNames(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for name, revision := range map[string]int{"revision 0": 0, "after an apply": 3} {
+		t.Run(name, func(t *testing.T) {
+			images, manager := extensionFixture(t, log)
+			pinned := putImage(t, images, manifestOf("tools", "v1"))
+			putImage(t, images, manifestOf("naru-orch", "v1"))
+			e := engineWith(t, revision, config.Extension{Name: "tools", SHA256: pinned}, config.Extension{Name: "naru-orch"})
+
+			pruneExtensions(specsOf(e), manager, log)
+
+			left, err := manager.List()
+			require.NoError(t, err)
+			require.Len(t, left, 1, "the unpinned image of another version is removed, as a revision 0 host must too")
+			assert.Equal(t, pinned, left[0].SHA256)
+		})
+	}
+
+	images, manager := extensionFixture(t, log)
+	putImage(t, images, manifestOf("naru-orch", "v1"))
+	pruneExtensions(specsOf(nil), manager, log)
+	left, err := manager.List()
 	require.NoError(t, err)
-	base.Spec.Extensions = []config.Extension{{Name: "naru-orch", SHA256: pinned}}
-	ran := func() *config.NodeConfig { return &base }
+	assert.Len(t, left, 1, "the control: where the boot made no configuration nothing is known to be pinned and nothing is removed")
+}
 
-	entries, stored, err := storedExtensions(configs, manager, ran)
+func TestNextBootExtensions_NamesTheEntriesOfTheConfigurationTheNextBootRuns(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	images, manager := extensionFixture(t, log)
+	pinned := putImage(t, images, manifestOf("naru-orch", "v1"))
 
+	entries, stored, err := nextBootExtensions(manager, specsOf(engineWith(t, 0, config.Extension{Name: "naru-orch", SHA256: pinned})))
 	require.NoError(t, err)
 	assert.Equal(t, []upgrade.Entry{{Name: "naru-orch", SHA256: pinned}}, entries, "a revision-0 digest-pinned entry is counted")
 	assert.Len(t, stored, 1)
 
-	stored0 := base
-	stored0.Spec.Extensions = []config.Extension{{Name: "tools"}}
-	require.NoError(t, configs.Save(store.Stored{Revision: 1, Config: stored0}))
-	entries, _, err = storedExtensions(configs, manager, ran)
-
+	entries, _, err = nextBootExtensions(manager, specsOf(engineWith(t, 4, config.Extension{Name: "tools"})))
 	require.NoError(t, err)
-	assert.Equal(t, []upgrade.Entry{{Name: "tools"}}, entries, "the control: a stored revision is what the next boot runs, and wins")
+	assert.Equal(t, []upgrade.Entry{{Name: "tools"}}, entries, "the control: after an apply the newest revision's entries are the ones counted")
+
+	entries, stored, err = nextBootExtensions(manager, specsOf(nil))
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+	assert.Empty(t, stored)
 }
