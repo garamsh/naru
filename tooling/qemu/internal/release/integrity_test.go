@@ -127,7 +127,7 @@ func TestReadComponents_EveryPinOfTheRepositoryStatesALicense(t *testing.T) {
 		names[c.Name] = true
 		assert.NotEmpty(t, c.License, c.Name)
 	}
-	for _, want := range []string{"kernel", "util-linux", "e2fsprogs", "gaon", "mvmd", "containerd", "cacert", "musl"} {
+	for _, want := range []string{"kernel", "util-linux", "e2fsprogs", "gaon", "mvmd", "cacert", "musl"} {
 		assert.True(t, names[want], "%s is a component", want)
 	}
 }

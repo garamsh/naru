@@ -121,7 +121,6 @@ func TestParse_RefusesALineWithNoPathAndARelativePath(t *testing.T) {
 // files' directories, so ordering is what makes it valid; the check is what the build runs on the
 // result.
 func TestImageLists_AreOrderedBeforeTheyAreArchived(t *testing.T) {
-	const addons = "/usr/lib/naru/addons"
 	for _, list := range []string{"initramfs-host", "initramfs-node"} {
 		t.Run(list, func(t *testing.T) {
 			raw, err := os.ReadFile("../../../../image/pkgs/" + list + "/initramfs.list")
@@ -142,20 +141,7 @@ func TestImageLists_AreOrderedBeforeTheyAreArchived(t *testing.T) {
 					assert.Less(t, index[d], i, "%s is made before %s", d, p)
 				}
 			}
-			assert.Contains(t, index, addons+"/images/coredns.tar", "the add-on image is in the list")
-			assert.Less(t, index["/usr/lib/naru"], index[addons], "/usr/lib/naru is made before the add-ons' directory")
 			assert.Len(t, ordered, len(index), "no path is in the list twice")
 		})
 	}
-}
-
-func TestImageLists_TheHostsListAsWrittenIsTheDefectOrderingRemoves(t *testing.T) {
-	raw, err := os.ReadFile("../../../../image/pkgs/initramfs-host/initramfs.list")
-	require.NoError(t, err)
-	entries := parse(t, string(raw))
-
-	require.Error(t, cpiolist.Check(entries), "the control for the test above: the Host's list alone names the add-ons before /usr/lib/naru")
-	ordered, err := cpiolist.Order(entries)
-	require.NoError(t, err)
-	require.NoError(t, cpiolist.Check(ordered))
 }

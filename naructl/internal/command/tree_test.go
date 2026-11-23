@@ -95,7 +95,9 @@ var (
 )
 
 // TestDocs_EveryNaructlInvocationNamesACommandAndFlagsItHas reads each document under docs/ and
-// checks that the naructl commands it shows exist and take the flags it gives them.
+// checks that the naructl commands it shows exist and take the flags it gives them. An ADR is left
+// out: its body is frozen once merged (docs/architecture/README.md §Rules 2), so it keeps naming a
+// command a later ADR removed.
 func TestDocs_EveryNaructlInvocationNamesACommandAndFlagsItHas(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "docs")
 	if _, err := os.Stat(root); err != nil {
@@ -103,7 +105,8 @@ func TestDocs_EveryNaructlInvocationNamesACommandAndFlagsItHas(t *testing.T) {
 	}
 	checked := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(path) != ".md" || strings.Contains(path, string(filepath.Separator)+"convention"+string(filepath.Separator)) {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".md" || strings.Contains(path, string(filepath.Separator)+"convention"+string(filepath.Separator)) ||
+			strings.Contains(path, string(filepath.Separator)+"adr"+string(filepath.Separator)) {
 			return err
 		}
 		b, err := os.ReadFile(path)
