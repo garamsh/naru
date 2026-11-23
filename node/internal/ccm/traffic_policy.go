@@ -5,17 +5,23 @@ import (
 )
 
 const (
-	// ReasonLocalPolicy is the reason of the Warning event a Service that sets externalTrafficPolicy
-	// Local receives.
-	ReasonLocalPolicy = "ExternalTrafficPolicyLocalNotSupported"
+	// ReasonLocalPolicy is the reason of the event a Service that sets externalTrafficPolicy Local
+	// receives.
+	ReasonLocalPolicy = "ExternalTrafficPolicyLocal"
 
-	localPolicyMessage = "naru-ccm does not support externalTrafficPolicy Local: the address forwards to the NodePort of every Node, whether or not it runs an endpoint (ADR 0085 item 8)"
+	localPolicyMessage = "naru-ccm sends this Service's external traffic only to the Nodes that run a ready endpoint of it, as externalTrafficPolicy Local asks; " +
+		"the client's address reaches the backend with the annotation " + ProxyProtocolAnnotation + ": v2, not through Local (ADR 0097)"
 )
 
+// wantsLocal reports whether the Service asks that only Nodes with a local endpoint receive its traffic.
+func wantsLocal(svc *v1.Service) bool {
+	return svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyLocal
+}
+
 // LocalPolicyNotice is the event a Service that sets externalTrafficPolicy Local is told, and false for
-// a Service that does not: the exposure it gets is the cluster behaviour's, so the Service is told.
+// a Service that does not.
 func LocalPolicyNotice(svc *v1.Service) (reason, message string, ok bool) {
-	if svc.Spec.ExternalTrafficPolicy != v1.ServiceExternalTrafficPolicyLocal {
+	if !wantsLocal(svc) {
 		return "", "", false
 	}
 	return ReasonLocalPolicy, localPolicyMessage, true

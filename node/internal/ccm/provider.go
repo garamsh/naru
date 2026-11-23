@@ -27,6 +27,7 @@ type Provider struct {
 
 	// events is set by Initialize, before the service controller asks for the LoadBalancer.
 	events record.EventRecorder
+	ends   Endpoints
 }
 
 var _ cloudprovider.Interface = (*Provider)(nil)
@@ -60,8 +61,12 @@ func (p *Provider) Initialize(b cloudprovider.ControllerClientBuilder, stop <-ch
 	ctx, cancel := context.WithCancel(context.Background())
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kube.CoreV1().Events(metav1.NamespaceAll)})
+	p.ends = kubeEndpoints{kube: kube}
 	p.events = broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: ProviderName + "-ccm"})
 	go func() { <-stop; cancel(); broadcaster.Shutdown() }()
+	go NewResyncer(p.newLoadBalancer(), kube).Run(ctx, func(key string, err error) {
+		p.log.Error("resync of a Service that sets Local failed", "service", key, "err", err.Error())
+	})
 	go func() {
 		t := time.NewTicker(SweepInterval)
 		defer t.Stop()
@@ -111,7 +116,11 @@ func (p *Provider) LoadBalancer() (cloudprovider.LoadBalancer, bool) {
 	if !p.cfg.LoadBalancerOn() {
 		return nil, false
 	}
-	return NewLoadBalancer(p.orch, p.cfg.Network, p.cfg.Pool, p.events), true
+	return p.newLoadBalancer(), true
+}
+
+func (p *Provider) newLoadBalancer() *LoadBalancer {
+	return NewLoadBalancer(p.orch, p.cfg.Network, p.cfg.Pool, p.events, p.ends)
 }
 
 // InstancesV2 is the node controller's side.

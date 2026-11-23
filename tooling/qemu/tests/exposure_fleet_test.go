@@ -350,10 +350,11 @@ func TestFleet_ARevokedExposersCredentialIsRefusedAtOnce(t *testing.T) {
 	assert.NotErrorIs(t, last, context.DeadlineExceeded, "not a timeout")
 }
 
-// A Service that sets externalTrafficPolicy Local is told so by an event (ADR 0085 item 8) and is given the
-// exposure of a cluster Service: orch is handed every Node as a backend, so the announcing host forwards to
-// each of them and not to the one a Local policy would keep.
-func TestFleet_AnExposureForAServiceThatAsksForLocalForwardsToEveryNodeAndAClientReachesIt(t *testing.T) {
+// A Service that sets externalTrafficPolicy Local is sent only to the Nodes that run an endpoint of it (ADR 0097,
+// amending ADR 0085 item 8): naru-ccm hands orch those Nodes as the backends, so a client outside the network
+// reaches the Service, the host of a Node with no endpoint is not leased the address, and the address moves to
+// the host of the Node the endpoint moved to.
+func TestFleet_ALocalServiceIsReachedThroughTheNodeWithItsEndpointAndNoOtherHostIsLeased(t *testing.T) {
 	target := lbAddress + ":80"
 	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1024, capture: true, userData: withLANInterface,
 		services: []node.ExtraService{
@@ -369,30 +370,35 @@ func TestFleet_AnExposureForAServiceThatAsksForLocalForwardsToEveryNodeAndAClien
 
 	ctx := context.Background()
 	exposer := f.exposerClient(netA)
-	// The spec naru-ccm builds for a Service with externalTrafficPolicy Local is this one: the policy is not in it.
-	_, err := exposer.ApplyExposure(ctx, lbService, orchapi.ExposureSpec{
-		Network: netA, Pool: "lan", Backends: []string{vm1.ip, vm2.ip},
-		Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 80, NodePort: plainNode}},
-	})
+	client := f.node(lanClient)
+	reaches := func() bool { return strings.HasPrefix(answerOf(client, target), "src=10.") }
+	holds := func(i int) bool { return strings.Contains(lanLine(f.node(i), "lan-addr"), lbAddress+"/32") }
+	announcedBy := func(host string) func() bool {
+		return func() bool {
+			e, err := exposer.Exposure(ctx, lbService)
+			return err == nil && e.Phase == orchapi.ExposureAnnounced && e.Host == host
+		}
+	}
+	// spec is what naru-ccm stores for a Local Service whose only ready endpoint runs on the Node at backend.
+	spec := func(backend string) orchapi.ExposureSpec {
+		return orchapi.ExposureSpec{Network: netA, Pool: "lan", Backends: []string{backend},
+			Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 80, NodePort: plainNode}}}
+	}
+
+	// The endpoint runs on the first Node: its host answers, the other holds nothing and forwards nothing.
+	_, err := exposer.ApplyExposure(ctx, lbService, spec(vm1.ip))
 	require.NoError(t, err)
-	var holderNode int
-	eventually(t, "a host announces the address", func() bool {
-		e, err := exposer.Exposure(ctx, lbService)
-		if err != nil || e.Phase != orchapi.ExposureAnnounced {
-			return false
-		}
-		for i, id := range hostIDs {
-			if id == e.Host && (i == h1 || i == h2) {
-				holderNode = i
-			}
-		}
-		return holderNode != 0
-	})
-	eventually(t, "the client outside the network reaches a microVM through the address", func() bool {
-		return strings.HasPrefix(answerOf(f.node(lanClient), target), "src=10.")
-	})
-	eventually(t, "the announcing host forwards to both Nodes", func() bool {
-		dnat := lanLine(f.node(holderNode), "nft-dnat")
-		return strings.Contains(dnat, vm1.ip) && strings.Contains(dnat, vm2.ip)
-	})
+	eventually(t, "the host of the Node with the endpoint announces the address", announcedBy(hostIDs[h1]))
+	eventually(t, "the client outside the network reaches the Service", func() bool { return holds(h1) && reaches() })
+	assert.False(t, holds(h2), "the host of the Node with no endpoint is not leased the address")
+	assert.Contains(t, lanLine(f.node(h1), "nft-dnat"), vm1.ip)
+	assert.NotContains(t, lanLine(f.node(h1), "nft-dnat"), vm2.ip, "the Node with no endpoint is no backend")
+	assert.NotContains(t, lanLine(f.node(h2), "nft-dnat"), lbAddress, "nothing is forwarded from the other host")
+
+	// The endpoint moves to the second Node (the slices changed): the exposure is stored again with it, and the
+	// address moves to its host.
+	_, err = exposer.ApplyExposure(ctx, lbService, spec(vm2.ip))
+	require.NoError(t, err)
+	eventually(t, "the address is announced by the host of the Node the endpoint moved to", announcedBy(hostIDs[h2]))
+	eventually(t, "the client reaches the Service again through it", func() bool { return holds(h2) && !holds(h1) && reaches() })
 }

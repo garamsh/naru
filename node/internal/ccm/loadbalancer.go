@@ -25,14 +25,16 @@ type LoadBalancer struct {
 	network string
 	pool    string
 	events  record.EventRecorder
+	ends    Endpoints
 }
 
 var _ cloudprovider.LoadBalancer = (*LoadBalancer)(nil)
 
 // NewLoadBalancer returns the service controller's side of the provider for one network and pool.
-// The recorder carries the events a Service is told; nil tells nobody.
-func NewLoadBalancer(o Orch, network, pool string, events record.EventRecorder) *LoadBalancer {
-	return &LoadBalancer{orch: o, network: network, pool: pool, events: events}
+// The recorder carries the events a Service is told; nil tells nobody. ends says where the endpoints
+// of a Service that sets Local run.
+func NewLoadBalancer(o Orch, network, pool string, events record.EventRecorder, ends Endpoints) *LoadBalancer {
+	return &LoadBalancer{orch: o, network: network, pool: pool, events: events, ends: ends}
 }
 
 // notFound reports whether orch answered that there is no such exposure.
@@ -61,6 +63,10 @@ func (l *LoadBalancer) GetLoadBalancerName(_ context.Context, _ string, svc *v1.
 // EnsureLoadBalancer asks orch for the exposure and returns its address once a host announces it.
 func (l *LoadBalancer) EnsureLoadBalancer(ctx context.Context, _ string, svc *v1.Service, nodes []*v1.Node) (*v1.LoadBalancerStatus, error) {
 	l.notify(svc)
+	nodes, err := l.selectNodes(ctx, svc, nodes)
+	if err != nil {
+		return nil, err
+	}
 	spec, err := Spec(svc, nodes, l.network, l.pool)
 	if errors.Is(err, errNodePort) {
 		return nil, api.NewRetryError(err.Error(), retryAfter)
@@ -78,14 +84,31 @@ func (l *LoadBalancer) EnsureLoadBalancer(ctx context.Context, _ string, svc *v1
 	return Status(e), nil
 }
 
-// notify tells the Service what its exposure is not: a Warning event for each notice its spec earns.
+// selectNodes is the stage that chooses the Nodes the exposure sends to: with Local, those that run a
+// ready endpoint of the Service, and the controller asks again while there are none.
+func (l *LoadBalancer) selectNodes(ctx context.Context, svc *v1.Service, nodes []*v1.Node) ([]*v1.Node, error) {
+	var ready map[string]bool
+	if wantsLocal(svc) {
+		var err error
+		if ready, err = l.ends.ReadyNodes(ctx, svc); err != nil {
+			return nil, fmt.Errorf("endpoints of %s/%s: %w", svc.Namespace, svc.Name, err)
+		}
+	}
+	picked := SelectNodes(svc, nodes, ready)
+	if wantsLocal(svc) && len(Backends(picked)) == 0 {
+		return nil, api.NewRetryError(fmt.Sprintf("no Node with an IPv4 InternalIP runs a ready endpoint of %s/%s", svc.Namespace, svc.Name), retryAfter)
+	}
+	return picked, nil
+}
+
+// notify tells the Service what its exposure is not: an event for each notice its spec earns.
 // The recorder folds a repeated event into a count, so every pass of the controller may call it.
 func (l *LoadBalancer) notify(svc *v1.Service) {
 	if l.events == nil {
 		return
 	}
 	if reason, message, ok := LocalPolicyNotice(svc); ok {
-		l.events.Event(svc, v1.EventTypeWarning, reason, message)
+		l.events.Event(svc, v1.EventTypeNormal, reason, message)
 	}
 }
 
