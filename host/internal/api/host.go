@@ -83,6 +83,7 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 		out.Mvmd.Kernels = []mvmd.Kernel{}
 	}
 	out.Mvmd.BootSets = hostBootSets(rt.BootSets)
+	out.Mvmd.MachinePrefixes = append([]string{}, rt.MachinePrefixes...)
 	out.Free = hostapi.Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateAvailableBytes}
 	for _, m := range machines {
 		if m.State != mvmd.StateRunning && m.State != mvmd.StatePaused {

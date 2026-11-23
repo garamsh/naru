@@ -3,7 +3,7 @@ module github.com/garamsh/naru/host
 go 1.26.0
 
 require (
-	github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261114055347-b1a60cd64967
+	github.com/garamsh/mvmd/lib/runtimeapi v0.0.0-20261123093720-234340e769d9
 	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000
 	github.com/prometheus/client_golang v1.25.0
 	github.com/stretchr/testify v1.12.1

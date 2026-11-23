@@ -35,6 +35,10 @@ type GroupPolicy struct {
 // zero gives each member a Pod prefix of that length out of the network's prefix. RootDiskBytes
 // sizes the root disk of an image-form microVM and is required for it. UserData is the user-data
 // of an OS-form microVM, used as written; empty gives "#cloud-config\n".
+//
+// Addresses fixes the IPv4 address of an OS-form member by its number: member <group>-<n> has
+// Addresses[n-1]. A member whose number is past the list is held (ADR 0099). Each is inside the
+// Machine prefix of the host that places the member.
 type GroupTemplate struct {
 	Form          string      `json:"form"`
 	CPUs          int         `json:"cpus"`
@@ -47,6 +51,7 @@ type GroupTemplate struct {
 	PodPrefixBits int         `json:"podPrefixBits,omitempty"`
 	RootDiskBytes int64       `json:"rootDiskBytes,omitempty"`
 	UserData      string      `json:"userData,omitempty"`
+	Addresses     []string    `json:"addresses,omitempty"`
 }
 
 // PreferredLabel scores a host that carries Key=Value by Weight when a member is placed.

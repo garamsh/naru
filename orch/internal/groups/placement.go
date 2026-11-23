@@ -64,9 +64,14 @@ func hostGaps(spec GroupSpec, h Host) []string {
 	return gaps
 }
 
-// placementGaps adds what only this template needs of a host.
-func placementGaps(spec GroupSpec, h Host) []string {
+// placementGaps adds what only this template, and the member being placed, needs of a host.
+func placementGaps(spec GroupSpec, memberID string, h Host) []string {
 	gaps := hostGaps(spec, h)
+	if addr, ok, err := memberAddress(spec.Template, spec.Name, memberID); err != nil {
+		gaps = append(gaps, err.Error())
+	} else if ok {
+		gaps = append(gaps, addressGaps(addr, h)...)
+	}
 	if v := spec.Template.NodeVersion; v != "" && !offersNodeVersion(v, h) {
 		gaps = append(gaps, fmt.Sprintf("node version %s is outside the host's %v", v, h.NodeVersions))
 	}
@@ -91,15 +96,15 @@ func score(spec GroupSpec, h Host) int {
 	return s
 }
 
-// Place picks the host for a new member of spec: among hosts that break no constraint, the
+// Place picks the host for the new member memberID of spec: among hosts that break no constraint, the
 // highest preferred-label score, then the fewest members of the group (onHost counts them
 // by host ID), then the most free memory, then the lowest ID. It reads nothing else.
-func Place(spec GroupSpec, hosts []Host, onHost map[string]int) (Host, error) {
+func Place(spec GroupSpec, memberID string, hosts []Host, onHost map[string]int) (Host, error) {
 	var best *Host
 	refused := map[string][]string{}
 	for i := range hosts {
 		h := hosts[i]
-		if gaps := placementGaps(spec, h); len(gaps) > 0 {
+		if gaps := placementGaps(spec, memberID, h); len(gaps) > 0 {
 			refused[h.ID] = gaps
 			continue
 		}

@@ -297,7 +297,7 @@ func matches(m mvmd.Machine, sizes map[string]uint64, p plan) bool {
 		return false
 	}
 	if !samePolicy(m.Policy, c.Policy) || m.BootSet != c.BootSet || m.Cmdline != c.Cmdline ||
-		!slices.Equal(m.RoutedPrefixes, c.RoutedPrefixes) {
+		!slices.Equal(m.RoutedPrefixes, c.RoutedPrefixes) || (c.RequestedIPv4 != "" && !slices.Contains(m.Addresses, c.RequestedIPv4)) {
 		return false
 	}
 	wantDisks := slices.Clone(c.Disks)

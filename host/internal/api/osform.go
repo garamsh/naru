@@ -28,7 +28,7 @@ const (
 
 // isOSForm reports whether the request carries a field only the OS form has.
 func isOSForm(r hostapi.CreateRequest) bool {
-	return r.BootSet != "" || r.Cmdline != "" || len(r.Seed) > 0 || r.DataDisk > 0 || r.PodPrefix != ""
+	return r.BootSet != "" || r.Cmdline != "" || len(r.Seed) > 0 || r.DataDisk > 0 || r.PodPrefix != "" || r.Address != ""
 }
 
 // validRoutedPrefix reports whether mvmd would route the prefix to a Machine: an IPv4 prefix of /16
@@ -87,6 +87,14 @@ func validateOS(r hostapi.CreateRequest) (plan, []string, string) {
 			routed = []string{r.PodPrefix}
 		}
 	}
+	var requested string
+	if r.Address != "" {
+		if a, err := netip.ParseAddr(r.Address); err != nil || !a.Is4() || a.String() != r.Address {
+			bad("address")
+		} else {
+			requested = r.Address
+		}
+	}
 	fields = append(fields, checkRules("networkPolicy.egress", r.NetworkPolicy.Egress)...)
 	fields = append(fields, checkRules("networkPolicy.ingress", r.NetworkPolicy.Ingress)...)
 	// The volume mvmd is given is the seed's, not the user-data's: it must fit mvmd's bound. The
@@ -104,7 +112,7 @@ func validateOS(r hostapi.CreateRequest) (plan, []string, string) {
 		userData: r.Seed,
 		create: mvmd.Create{
 			ID: r.Name, CPU: r.CPU, MemoryBytes: r.Memory, Policy: r.NetworkPolicy,
-			BootSet: r.BootSet, Cmdline: r.Cmdline, RoutedPrefixes: routed, RestartOnBoot: restartOnBoot(r.RestartOnBoot, true), Fenced: r.Fenced,
+			BootSet: r.BootSet, Cmdline: r.Cmdline, RoutedPrefixes: routed, RequestedIPv4: requested, RestartOnBoot: restartOnBoot(r.RestartOnBoot, true), Fenced: r.Fenced,
 			Disks: []mvmd.Attachment{{ID: diskID(r.Name, dataDiskName)}},
 		},
 	}

@@ -14,6 +14,8 @@ type MachineSpec struct {
 	BootSet string
 	// PodPrefix is the Pod prefix the Machine is routed, or empty.
 	PodPrefix string
+	// Address is the IPv4 address the Machine is to have, or empty.
+	Address string
 	// Fenced makes the Machine start only while its fence deadline is armed.
 	Fenced bool
 }

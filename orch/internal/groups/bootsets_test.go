@@ -49,11 +49,11 @@ func TestPlace_TakesTheBootSetNamedByTheVersion(t *testing.T) {
 	s.Template.NodeVersion = "v0.4.0"
 	h := okHost("a")
 	h.NodeVersions = []string{"naru"}
-	_, err := groups.Place(s, []groups.Host{h}, nil)
+	_, err := groups.Place(s, "g-1", []groups.Host{h}, nil)
 	require.ErrorIs(t, err, groups.ErrNoHost, "control: no boot set for the version")
 
 	h.NodeVersions = []string{"naru", "naru-node-v0-4-0"}
-	got, err := groups.Place(s, []groups.Host{h}, nil)
+	got, err := groups.Place(s, "g-1", []groups.Host{h}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "a", got.ID)
 }

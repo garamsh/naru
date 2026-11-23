@@ -219,7 +219,7 @@ func (g *GRPC) CreateMachine(ctx context.Context, cr Create) (Machine, error) {
 		MachineId: cr.ID, RequestId: createRequestID, ImageDigest: cr.ImageDigest,
 		Resources:     &v1alpha2.Resources{CpuCount: cr.CPU, MemoryBytes: cr.MemoryBytes},
 		RootDiskBytes: cr.RootDiskBytes, NetworkPolicy: policyToProto(cr.Policy), RoutedPrefixes: cr.RoutedPrefixes,
-		RestartOnBoot: cr.RestartOnBoot, Fenced: cr.Fenced,
+		RestartOnBoot: cr.RestartOnBoot, Fenced: cr.Fenced, RequestedIpv4: cr.RequestedIPv4,
 	}
 	if cr.BootSet != "" {
 		req.OsBoot = &v1alpha2.OsBoot{BootSet: cr.BootSet, KernelCmdline: cr.Cmdline}
