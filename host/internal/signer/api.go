@@ -38,6 +38,8 @@ func (s *Signer) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/revoke", handleSigned(s, s.Revoke))
 	mux.HandleFunc("POST /v1/reissue-host", handleSigned(s, s.ReissueHost))
 	mux.HandleFunc("POST /v1/retire-host", handleSigned(s, func(signed []byte) (struct{}, error) { return struct{}{}, s.RetireHost(signed) }))
+	mux.HandleFunc("POST /v1/lookup-host", handleSigned(s, s.LookupHost))
+	mux.HandleFunc("POST /v1/revoke-host", handleSigned(s, s.RevokeHost))
 	mux.HandleFunc("POST /v1/register-host", handleSigned(s, func(signed []byte) (struct{}, error) { return struct{}{}, s.RegisterHost(signed) }))
 	mux.HandleFunc("POST /v1/reissue-root", handleSigned(s, s.ReissueRoot))
 	mux.HandleFunc("POST /v1/crl", handleSigned(s, s.PushCRL))

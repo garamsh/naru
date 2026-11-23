@@ -38,6 +38,8 @@ type fakeSigner struct {
 	onCall func(path string)
 	// authorities is what GET /v1/ca answers, which needs no signature.
 	authorities identity.Authorities
+	// hostSerials is what the lookup and the revocation of a host answer.
+	hostSerials identity.HostSerials
 }
 
 func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
@@ -46,7 +48,8 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 	l, err := net.Listen("unix", f.socket)
 	require.NoError(t, err)
 	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/exposer": identity.ActionIssueExposer, "/v1/revoke": identity.ActionRevoke,
-		"/v1/reissue-host": identity.ActionReissueHost, "/v1/register-host": identity.ActionRegisterHost, "/v1/retire-host": identity.ActionRetireHost}
+		"/v1/reissue-host": identity.ActionReissueHost, "/v1/register-host": identity.ActionRegisterHost, "/v1/retire-host": identity.ActionRetireHost,
+		"/v1/lookup-host": identity.ActionLookupHost, "/v1/revoke-host": identity.ActionRevokeHost}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/ca" {
 			_ = json.NewEncoder(w).Encode(f.authorities)
@@ -68,6 +71,10 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 		}
 		if r.URL.Path == "/v1/revoke" || r.URL.Path == "/v1/register-host" || r.URL.Path == "/v1/retire-host" {
 			_, _ = w.Write([]byte("crl"))
+			return
+		}
+		if r.URL.Path == "/v1/lookup-host" || r.URL.Path == "/v1/revoke-host" {
+			_ = json.NewEncoder(w).Encode(f.hostSerials)
 			return
 		}
 		if r.URL.Path == "/v1/reissue-host" {
@@ -389,4 +396,43 @@ func TestSignerRegisterHost_SendsTheSerialOfTheCertificateAndRefusesAnotherHosts
 	var req identity.RegisterHostRequest
 	require.NoError(t, json.Unmarshal(f.got["/v1/register-host"], &req))
 	assert.Equal(t, identity.RegisterHostRequest{HostID: "h-1", Serial: cert.SerialNumber.Text(16)}, req)
+}
+
+func TestSignerLookupHostAndRevokeHost_SignTheHostIDAndPrintTheSerialsTheSignerAnswers(t *testing.T) {
+	pool := x509.NewCertPool()
+	pool.AddCert(caOf(t).cert)
+	f := startFakeSigner(t, pool)
+	f.hostSerials = identity.HostSerials{HostID: "h-1", Serials: []identity.HostSerial{{Serial: "abc"}, {Serial: "def", Revoked: true}}}
+	admin, pass := adminFile(t, identity.RoleOperator, "pw")
+
+	text, err := run(t, "signer", "lookup-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-1", "--socket", f.socket)
+	require.NoError(t, err, text)
+	var req identity.HostSerialsRequest
+	require.NoError(t, json.Unmarshal(f.got["/v1/lookup-host"], &req))
+	assert.Equal(t, identity.HostSerialsRequest{HostID: "h-1"}, req)
+	assert.Contains(t, text, "abc valid")
+	assert.Contains(t, text, "def revoked")
+	assert.NotContains(t, f.got, "/v1/revoke-host", "a lookup revokes nothing")
+
+	text, err = run(t, "signer", "revoke-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-1", "--socket", f.socket)
+	require.NoError(t, err, text)
+	require.NoError(t, json.Unmarshal(f.got["/v1/revoke-host"], &req))
+	assert.Equal(t, identity.HostSerialsRequest{HostID: "h-1"}, req)
+	assert.Contains(t, text, "revoked every serial")
+}
+
+func TestSignerRevokeHost_NeedsAHostIDAndReportsTheSignersRefusal(t *testing.T) {
+	pool := x509.NewCertPool()
+	pool.AddCert(caOf(t).cert)
+	f := startFakeSigner(t, pool)
+	admin, pass := adminFile(t, identity.RoleOperator, "pw")
+
+	_, err := run(t, "signer", "revoke-host", "--admin", admin, "--passphrase-file", pass, "--socket", f.socket)
+	require.Error(t, err)
+	assert.NotContains(t, f.got, "/v1/revoke-host", "nothing is sent without a host ID")
+
+	f.status = http.StatusConflict
+	_, err = run(t, "signer", "revoke-host", "--admin", admin, "--passphrase-file", pass, "--host-id", "h-9", "--socket", f.socket)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "409", "control: the same call is sent, the signer refuses it")
 }
