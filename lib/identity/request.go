@@ -29,6 +29,8 @@ const (
 	ActionReissueHost   = "reissue-host"
 	ActionRegisterHost  = "register-host"
 	ActionRetireHost    = "retire-host"
+	ActionLookupHost    = "lookup-host"
+	ActionRevokeHost    = "revoke-host"
 	ActionBundle        = "bundle"
 	ActionRestore       = "restore"
 	ActionReplicate     = "replicate"
@@ -86,6 +88,26 @@ type RetireHostRequest struct {
 type RegisterHostRequest struct {
 	HostID string `json:"hostID"`
 	Serial string `json:"serial"`
+}
+
+// HostSerialsRequest is the body of ActionLookupHost and ActionRevokeHost: the host whose serials the
+// signer lists, or revokes whole.
+type HostSerialsRequest struct {
+	HostID string `json:"hostID"`
+}
+
+// HostSerial is a serial the signer holds for a host, in lowercase hexadecimal, and whether the
+// revocation list carries it.
+type HostSerial struct {
+	Serial  string `json:"serial"`
+	Revoked bool   `json:"revoked"`
+}
+
+// HostSerials is the answer to ActionLookupHost and ActionRevokeHost: every serial the signer holds for
+// the host, as the revocation list stands once the call is done.
+type HostSerials struct {
+	HostID  string       `json:"hostID"`
+	Serials []HostSerial `json:"serials"`
 }
 
 // RestoreRequest is the body of ActionRestore: the lowercase hexadecimal SHA-256 of the sealed

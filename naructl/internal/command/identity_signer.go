@@ -465,6 +465,64 @@ func signerRegisterHost(fs *pflag.FlagSet) runner {
 	}
 }
 
+// signerLookupHost lists every serial the signer holds for a host, so that a lost host's certificate
+// can be revoked with the host ID alone.
+func signerLookupHost(fs *pflag.FlagSet) runner {
+	return signerHostSerials(fs, identity.ActionLookupHost, "/v1/lookup-host", func(stdout io.Writer, got identity.HostSerials) {
+		_, _ = fmt.Fprintf(stdout, "naructl: the signer holds %d serial(s) for %s; naructl signer revoke-host revokes every one, naructl operator revoke --serial one\n", len(got.Serials), got.HostID)
+		printHostSerials(stdout, got)
+	})
+}
+
+// signerRevokeHost has the signer revoke every serial it holds for a host.
+func signerRevokeHost(fs *pflag.FlagSet) runner {
+	return signerHostSerials(fs, identity.ActionRevokeHost, "/v1/revoke-host", func(stdout io.Writer, got identity.HostSerials) {
+		_, _ = fmt.Fprintf(stdout, "naructl: revoked every serial the signer holds for %s\n", got.HostID)
+		printHostSerials(stdout, got)
+	})
+}
+
+// signerHostSerials is the command that signs action for --host-id, posts it to path and prints the
+// answer with report.
+func signerHostSerials(fs *pflag.FlagSet, action, path string, report func(io.Writer, identity.HostSerials)) runner {
+	admin := fs.String("admin", "", "root's or an operator's encrypted person file")
+	pass := fs.String("passphrase-file", "", "file holding the person file's passphrase")
+	hostID := fs.String("host-id", "", "the host whose serials the signer holds")
+	sg := addSignerFlags(fs)
+	return func(_ []string, stdout, _ io.Writer) error {
+		if err := sg.check(fs); err != nil {
+			return err
+		}
+		if err := require(fs, "admin", "passphrase-file", "host-id"); err != nil {
+			return err
+		}
+		signed, err := signAs(*admin, *pass, action, identity.HostSerialsRequest{HostID: *hostID})
+		if err != nil {
+			return err
+		}
+		body, err := signerCall(sg, http.MethodPost, path, signed)
+		if err != nil {
+			return err
+		}
+		var got identity.HostSerials
+		if err := json.Unmarshal(body, &got); err != nil {
+			return fmt.Errorf("the signer's answer: %w", err)
+		}
+		report(stdout, got)
+		return nil
+	}
+}
+
+func printHostSerials(stdout io.Writer, got identity.HostSerials) {
+	for _, h := range got.Serials {
+		state := "valid"
+		if h.Revoked {
+			state = "revoked"
+		}
+		_, _ = fmt.Fprintf(stdout, "%s %s\n", h.Serial, state)
+	}
+}
+
 // addressIPs is the host API's address when it is an IP, which the new serving certificate has to
 // name for the clients that connect by it.
 func (h hostPair) addressIPs() []net.IP {

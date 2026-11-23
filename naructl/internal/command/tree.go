@@ -34,7 +34,9 @@ rotate-host makes a new key for --host-id, has the signer issue a host certifica
 the host through its API (--host-client, a provisioner's client file) and, once the host reports to orch with it,
 has the signer revoke every older serial it holds for the host. A failure before that leaves the old pair valid
 and in use; the new key is sent to the host and written nowhere else. register-host records the serial of the certificate --cert, one gen node wrote offline, for a host
-the signer did not admit, so that rotate-host can revoke it. Both are root's or an operator's.
+the signer did not admit, so that rotate-host can revoke it. lookup-host lists every serial the signer holds for --host-id and whether each is
+revoked, and revoke-host revokes all of them in one signed list, for a host that is lost; a host the signer holds no serial for is refused, and
+register-host is what records one. All of them are root's or an operator's.
 
 Each takes exactly one of --socket, the one naru-signer serves on this host, and --config, an admin's client
 file for a Node's API, which forwards to the signer of --endpoint. The signer checks every request's signature
@@ -138,6 +140,8 @@ func newRoot() *cobra.Command {
 			leaf("bundle", "write the authorities sealed to the recovery key", signerBundle),
 			leaf("rotate-host", "replace a host's key pair through the signer: install the new pair on the host, then revoke the old serials", signerRotateHost),
 			leaf("register-host", "record the serial of a host's offline certificate so rotate-host can revoke it", signerRegisterHost),
+			leaf("lookup-host", "list every serial the signer holds for a host ID", signerLookupHost),
+			leaf("revoke-host", "revoke every serial the signer holds for a host ID, for a host that is lost", signerRevokeHost),
 			leaf("reissue-root", "sign a request for a new root certificate with the recovery key", signerReissueRoot),
 			leaf("restore", "fill a blank signer from a bundle", signerRestore)), signerLong, ""),
 		parent("extension", "store, list and remove system extension images on a Node",
