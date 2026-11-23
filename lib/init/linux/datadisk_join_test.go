@@ -48,6 +48,21 @@ func TestHost_FormatBlankDataDiskTakesTheFirstBlankDiskThatIsNotTheBootDiskForAJ
 	assert.ErrorContains(t, r.host.FormatBlankDataDisk(dataDisk, r.log), "3 blank disks")
 }
 
+func TestHost_FormatBlankDataDiskSkipsTheDiskHoldingTheESPWhateverItsName(t *testing.T) {
+	devices := map[string]string{"sda": disk(t, 4<<20, nil), "sdb": disk(t, 4<<20, nil)}
+
+	r := newFormatRig(t, devices)
+	withBootPartition(t, r.host, "sdb", wire.ESPGUID)
+	require.NoError(t, r.host.FormatBlankDataDisk(firstBlankDisk, r.log))
+	assert.Equal(t, filepath.Join(r.host.devDir, "sda"), formatted(r), "the ESP is on sdb, so sda is the first blank disk")
+
+	// The control: with the ESP on sda, the first blank disk is sdb, so the skipped disk follows the ESP.
+	r = newFormatRig(t, devices)
+	withBootPartition(t, r.host, "sda", wire.ESPGUID)
+	require.NoError(t, r.host.FormatBlankDataDisk(firstBlankDisk, r.log))
+	assert.Equal(t, filepath.Join(r.host.devDir, "sdb"), formatted(r))
+}
+
 func TestHost_FormatBlankDataDiskPrefersTheLabelledDiskToABlankOneForAJoinForm(t *testing.T) {
 	r := newFormatRig(t, map[string]string{"vda": disk(t, 4<<20, nil), "vdb": ext4test.Image(t, "NARUDATA", "verity", nil)})
 
