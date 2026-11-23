@@ -105,6 +105,10 @@ func TestFleet_AnOperatorTheSignerIssuedACertificateToAddsABootSetToAnEnrolledHo
 // unit. A reader's upgrade is the control: the same certificate path is accepted by the handshake and
 // refused by role.
 func TestFleet_AnOperatorTheSignerIssuedACertificateToUpgradesAnEnrolledHostThroughItsNodeAPI(t *testing.T) {
+	// The host enrollAndAdmit makes keeps the Node API authority of gen node and never applies a join
+	// configuration, so its Node API is not the joined host's that ADR 0100 decides; the harness cannot yet
+	// reach the Node API of a seed-joined host (garamsh/naru#369).
+	t.Skip("the harness host is not a seed-joined host and its Node API is not reachable: garamsh/naru#369")
 	want := os.Getenv("NARU_VERSION")
 	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
 	next := want + "-next"
