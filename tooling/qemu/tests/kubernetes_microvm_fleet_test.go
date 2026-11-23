@@ -30,6 +30,9 @@ import (
 // Node whose group has no network and so no Pod prefix: its seed names none, init writes no CNI file,
 // and it stays NotReady beside the other two.
 //
+// Every wait of the scenario is bounded by kubeTimeout, since a Kubernetes Node takes minutes to run
+// and the fleet's eventually allows three.
+//
 // Pods reaching each other is not checked here: a microVM Node has no registry to pull the sandbox
 // and test images from (garamsh/naru#346).
 func TestFleet_TwoKubernetesNodesThatAreMicroVMsOfOneMemberGroupsAreReadyWithTheirPodPrefixFromTheSeed(t *testing.T) {
@@ -60,7 +63,11 @@ func TestFleet_TwoKubernetesNodesThatAreMicroVMsOfOneMemberGroupsAreReadyWithThe
 			MachinePrefixes []string `json:"machinePrefixes"`
 		} `json:"mvmd"`
 	}
-	eventually(t, "the host lists the boot set and its Machine prefix", func() bool {
+	wait := func(what string, cond func() bool) {
+		t.Helper()
+		require.Eventually(t, cond, kubeTimeout, 5*time.Second, what)
+	}
+	wait("the host lists the boot set and its Machine prefix", func() bool {
 		r := call("host")
 		return r.Err == nil && strings.Contains(r.Stdout, set) && json.Unmarshal([]byte(r.Stdout), &host) == nil && len(host.Mvmd.MachinePrefixes) > 0
 	})
@@ -122,7 +129,7 @@ template:
 	}{{"cp1", "control-plane", cpAddr, "kube"}, {"w1", "worker", wAddr, "kube"}, {"bare", "worker", bareAddr, ""}} {
 		f.must(f.orch("group", "apply", "-f", group(g.name, g.role, g.addr, g.network)), "apply "+g.name)
 	}
-	eventually(t, "all three members run", func() bool {
+	wait("all three members run", func() bool {
 		for _, n := range []string{"cp1", "w1", "bare"} {
 			if g, ok := f.group(1, n); !ok || g.count("running") != 1 {
 				return false
@@ -136,24 +143,59 @@ template:
 	defer stop()
 	var last string
 	defer func() { t.Logf("the last kubectl answer:\n%s", last) }()
-	states := func() map[string]string {
+	type readiness struct{ ready, message string }
+	nodes := func() map[string]readiness {
 		out, err := exec.Command("kubectl", "--kubeconfig", filepath.Join(ca, "admin.conf"), "--server", "https://"+kube,
-			"--tls-server-name", cpAddr.String(), "--request-timeout=20s", "get", "nodes", "--no-headers").CombinedOutput()
+			"--tls-server-name", cpAddr.String(), "--request-timeout=20s", "get", "nodes", "-o", "json").CombinedOutput()
 		last = string(out)
-		got := map[string]string{}
-		if err != nil {
+		got := map[string]readiness{}
+		var list struct {
+			Items []struct {
+				Metadata struct{ Name string } `json:"metadata"`
+				Status   struct {
+					Conditions []struct{ Type, Status, Message string } `json:"conditions"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err != nil || json.Unmarshal(out, &list) != nil {
 			return got
 		}
-		for _, line := range strings.Split(string(out), "\n") {
-			if f := strings.Fields(line); len(f) >= 2 {
-				got[f[0]] = f[1]
+		for _, n := range list.Items {
+			for _, c := range n.Status.Conditions {
+				if c.Type == "Ready" {
+					got[n.Metadata.Name] = readiness{c.Status, c.Message}
+				}
 			}
 		}
 		return got
 	}
-	require.Eventually(t, func() bool {
-		s := states()
-		return s["cp1-1"] == "Ready" && s["w1-1"] == "Ready" && s["bare-1"] != ""
-	}, 12*time.Minute, 5*time.Second, "the two Nodes with a Pod prefix from the seed are Ready, and the third has joined")
-	assert.Equal(t, "NotReady", states()["bare-1"], "the control: a Node whose seed names no Pod prefix has no CNI configuration and is not Ready")
+	wait("the two Nodes with a Pod prefix from the seed are Ready, and the third has joined", func() bool {
+		n := nodes()
+		_, joined := n["bare-1"]
+		return n["cp1-1"].ready == "True" && n["w1-1"].ready == "True" && joined
+	})
+
+	// The control: the third Node is not Ready for the one reason the seed's prefix removes. The kubelet
+	// reports it in the Ready condition, which any other failure (a lease, a certificate) would not.
+	wait("the third Node reports that no CNI configuration was found", func() bool {
+		b := nodes()["bare-1"]
+		return b.ready == "False" && strings.Contains(b.message, "NetworkPluginNotReady")
+	})
+	assert.NotEqual(t, "True", nodes()["bare-1"].ready)
+
+	// Read back the setup: each seeded Node's Pod prefix is the one orch cut from the network, inside
+	// it, and the two differ, so the prefix that made the Nodes Ready is each member's own.
+	podNetwork := netip.MustParsePrefix(node.KubePodNetwork)
+	var seeded []netip.Prefix
+	for _, name := range []string{"cp1-1", "w1-1"} {
+		var vm struct {
+			PodPrefix string `json:"podPrefix"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(f.must(call("microvm", "get", name), "read "+name)), &vm))
+		p, err := netip.ParsePrefix(vm.PodPrefix)
+		require.NoError(t, err, "%s has a Pod prefix", name)
+		assert.True(t, podNetwork.Contains(p.Addr()) && p.Bits() == 24, "%s's Pod prefix %s is a /24 of %s", name, p, podNetwork)
+		seeded = append(seeded, p)
+	}
+	assert.NotEqual(t, seeded[0], seeded[1], "each member has a prefix of its own")
 }
