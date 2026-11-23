@@ -28,6 +28,10 @@ groups=("${@:-default}")
 # The version the image is built for (the Makefile's VERSION): naru-init reports it and the
 # naru-orch extension names it.
 : "${NARU_VERSION:?pkgs: NARU_VERSION is the version the image is built for}"
+# The mvmd commit the image carries is the one the Go modules pin (mvmd-commit.sh), so the daemon and
+# the client hostd is compiled against are one version.
+MVMD_COMMIT=$("$here/mvmd-commit.sh")
+export MVMD_COMMIT
 docker=${DOCKER:-docker}
 if ! "$docker" version >/dev/null 2>&1; then
   echo "pkgs: no container engine is reachable by this user: $docker version fails" >&2

@@ -90,6 +90,56 @@ func TestReadComponents_ReadsTarballsGitPinsAndQuotedLicences(t *testing.T) {
 	assert.False(t, got[0].Copyleft())
 }
 
+func TestReadComponents_ACommitPinnedByAModuleIsTheCommitTheModuleNames(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"image/pkgs/baz/pin.env": "BAZ_REPO=https://example.test/baz\nBAZ_COMMIT_FROM=example.test/baz/lib\nBAZ_LICENSE=NOASSERTION\n",
+	})
+	was := release.CommitOf
+	t.Cleanup(func() { release.CommitOf = was })
+	var asked []string
+	release.CommitOf = func(r, module string) (string, error) {
+		asked = append(asked, r+" "+module)
+		return strings.Repeat("ab", 20), nil
+	}
+
+	got, err := release.ReadComponents(root)
+
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, strings.Repeat("ab", 20), got[0].Commit)
+	assert.Equal(t, got[0].Commit, got[0].Version)
+	assert.Equal(t, []string{root + " example.test/baz/lib"}, asked)
+}
+
+func TestReadComponents_ARepoWithNeitherACommitNorAModuleToTakeItFromIsRefused(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"image/pkgs/baz/pin.env": "BAZ_REPO=https://example.test/baz\nBAZ_LICENSE=NOASSERTION\n",
+	})
+
+	_, err := release.ReadComponents(root)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "BAZ_COMMIT_FROM")
+}
+
+func TestTheModulesOfTheRepositoryPinOneMvmdCommit(t *testing.T) {
+	root := repoRoot(t)
+	version := func(dir string) string {
+		b, err := os.ReadFile(filepath.Join(root, dir, "go.mod"))
+		require.NoError(t, err)
+		for _, line := range strings.Split(string(b), "\n") {
+			if f := strings.Fields(line); len(f) == 2 && f[0] == "github.com/garamsh/mvmd/lib/runtimeapi" {
+				return f[1]
+			}
+		}
+		t.Fatalf("%s/go.mod does not require mvmd's runtimeapi", dir)
+		return ""
+	}
+	want := version("host")
+	assert.Equal(t, want, version("tooling/qemu"))
+	assert.Equal(t, want, version("tooling/probe"), "the image carries the mvmd host/go.mod pins, and the tests run the others' client against it")
+}
+
 func TestReadComponents_EveryPinOfTheRepositoryStatesALicense(t *testing.T) {
 	got, err := release.ReadComponents(repoRoot(t))
 

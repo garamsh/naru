@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
@@ -192,6 +193,13 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 	if err != nil {
 		s.dropMade("", made, false)
 		return mvmd.Machine{}, nil, err
+	}
+	// An mvmd that predates the requested address (mvmd#817) ignores the field and gives another one.
+	// The Node's certificates name the requested address, so a Machine that does not hold it is
+	// removed and the request fails, and nothing runs at an address the certificates do not name.
+	if want := p.create.RequestedIPv4; want != "" && !slices.Contains(m.Addresses, want) {
+		s.dropMade(m.ID, made, false)
+		return mvmd.Machine{}, nil, fmt.Errorf("%w: mvmd gave the Machine %v and not the requested %s; the mvmd of this host does not take a requested address", mvmd.ErrConflict, m.Addresses, want)
 	}
 	if osForm {
 		seedID, seedSize, err := s.makeSeed(ctx, p, m, &made)

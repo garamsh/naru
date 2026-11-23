@@ -12,6 +12,9 @@ variable "SOURCE_DATE_EPOCH" {}
 # The kernel's build timestamp, from image/build.env with SOURCE_DATE_EPOCH.
 variable "KBUILD_BUILD_TIMESTAMP" {}
 variable "OUT" {}
+# The mvmd commit the mvmd and guest-initrds packages build: the one the Go modules pin, which
+# build.sh reads with mvmd-commit.sh.
+variable "MVMD_COMMIT" {}
 # The version naru-init reports and the naru-orch extension is built for (VERSION of the Makefile).
 variable "NARU_VERSION" {}
 # The directory holding ca.pem, the throwaway root a test image trusts, or nothing (ADR 0026).
@@ -255,6 +258,7 @@ target "rolesanywhere" {
 target "mvmd" {
   inherits = ["_package"]
   context  = "mvmd"
+  args     = { SOURCE_DATE_EPOCH = SOURCE_DATE_EPOCH, MVMD_COMMIT = MVMD_COMMIT }
   output   = ["type=oci,dest=${OUT}/mvmd.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
@@ -264,6 +268,7 @@ target "guest-initrds" {
   inherits = ["_package"]
   context  = "guest-initrds"
   contexts = { mvmd-pin = "mvmd" }
+  args     = { SOURCE_DATE_EPOCH = SOURCE_DATE_EPOCH, MVMD_COMMIT = MVMD_COMMIT }
   output   = ["type=oci,dest=${OUT}/guest-initrds.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 

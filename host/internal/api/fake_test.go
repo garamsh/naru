@@ -28,6 +28,9 @@ type fakeRuntime struct {
 	calls    []string
 	failAt   map[string]error
 	contents map[string][]byte
+	// ignoreRequested makes CreateMachine give its own address and not the requested one, as an mvmd
+	// that predates mvmd#817 does.
+	ignoreRequested bool
 	// stops counts the StopMachine calls that reached mvmd.
 	stops int
 	// undoErrs are the context errors the StopMachine and DeleteMachine calls found.
@@ -180,7 +183,9 @@ func (f *fakeRuntime) CreateMachine(_ context.Context, c mvmd.Create) (mvmd.Mach
 				return mvmd.Machine{}, fmt.Errorf("%w: %s is held by %s", mvmd.ErrConflict, c.RequestedIPv4, other.ID)
 			}
 		}
-		m.Addresses = []string{c.RequestedIPv4}
+		if !f.ignoreRequested {
+			m.Addresses = []string{c.RequestedIPv4}
+		}
 	}
 	f.machines[c.ID] = m
 	return m, nil
