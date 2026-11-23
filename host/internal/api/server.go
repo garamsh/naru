@@ -43,7 +43,12 @@ type Deps struct {
 	// Networks holds the host's virtual networks and the tunnel's peers. Nil means the host was
 	// started without them: the calls that need them are 501, and a microVM is created on none.
 	Networks Networks
-	Log      *slog.Logger
+	// Exposures holds the host's leases on LAN addresses (ADR 0085). Nil means the host was started
+	// without a LAN interface: the calls that need it are 501.
+	Exposures Exposures
+	// LANInterface is the interface the host announces exposed addresses on, as /v1/host reports it.
+	LANInterface string
+	Log          *slog.Logger
 	// Metrics is the registry the host API's metrics are registered on, made once by the composition site.
 	Metrics prometheus.Registerer
 	// Revocations is the list the listener checks clients against; its age and last fetch error are
@@ -110,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/tunnel", s.getTunnel)
 	mux.HandleFunc("PUT /v1/identity", s.putIdentity)
 	s.routeBootSets(mux)
+	s.routeExposures(mux)
 	s.routeReset(mux)
 	return s.recovering(s.logged(s.authorised(s.leaderToken(mux))))
 }

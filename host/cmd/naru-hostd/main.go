@@ -65,6 +65,7 @@ func main() {
 		tunnel     = flag.String("tunnel", "wg-naru", "name of the WireGuard interface, which hostd creates; empty turns the tunnel off")
 		tunnelKey  = flag.String("tunnel-key", "/var/lib/naru/hostd/wg.key", "the tunnel's private key, generated 0600 on first start")
 		netState   = flag.String("networks-state", "/var/lib/naru/hostd/networks.json", "file the networks, members and peers are kept in across restarts, mode 0600")
+		lan        = flag.String("lan-interface", "", "interface the host announces exposed LAN addresses on (ADR 0085); empty exposes none; needs --management-prefix")
 		tunnelPort = flag.Int("tunnel-port", 51820, "UDP port the tunnel listens on")
 	)
 	flag.Parse()
@@ -88,12 +89,16 @@ func main() {
 		return
 	}
 
+	if *lan != "" && *management == "" {
+		log.Error("--lan-interface needs --management-prefix: the exposed addresses are forwarded to a network's members")
+		os.Exit(1)
+	}
 	var nets api.Networks
 	var netMgr *network.Manager
 	if *management != "" {
 		m, err := networkManager(context.Background(), networkConfig{
 			management: *management, tapPrefix: *tapPrefix, egress: *egress,
-			tunnel: *tunnel, tunnelKey: *tunnelKey, tunnelPort: *tunnelPort, state: *netState,
+			tunnel: *tunnel, tunnelKey: *tunnelKey, tunnelPort: *tunnelPort, state: *netState, lan: *lan,
 		})
 		if err != nil {
 			log.Error("cannot set up the virtual networks", "err", err.Error())
@@ -151,6 +156,15 @@ func main() {
 	if netMgr != nil {
 		startReconciler(ctx, netMgr, rt, log)
 	}
+	var exposures api.Exposures
+	if *lan != "" {
+		x, err := startExposer(ctx, netMgr, *lan, log)
+		if err != nil {
+			log.Error("cannot set up the exposures", "err", err.Error())
+			os.Exit(1)
+		}
+		exposures = x
+	}
 
 	var hostPair api.Identity
 	if *orchURL != "" {
@@ -180,7 +194,7 @@ func main() {
 		log.Warn("cannot tell the host's ID; the reset call is off", "err", err.Error())
 	}
 	// A reset of the data disk deletes serving.pem, so the pair that serves after it is the configuration's.
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
 		HostID: resetID, ResetMarker: *resetMarker, Reboot: rebootInit, CheckPair: pairAfterReset(revocations, *cert)})
 	if *metricsAddr != "" {
 		go func() {
