@@ -59,8 +59,7 @@ type Config struct {
 	// has no gateway, so the Node still has no route off the host. Without it the NIC is
 	// restrict=on, as image.md describes.
 	HostReach bool
-	// MemoryMiB is the Node's memory; 0 is 3072. A Kubernetes Node's initramfs holds the control-plane
-	// programs, so it asks for more (ADR 0031).
+	// MemoryMiB is the Node's memory; 0 is 3072.
 	MemoryMiB int
 	// CPUs is the Node's virtual CPUs; 0 is 2.
 	CPUs int

@@ -21,9 +21,8 @@ const GuestRoot = wire.DataMount + "/inputs"
 type Inputs struct {
 	// Dir is the tree on the host; it becomes GuestRoot on every Node's data disk.
 	Dir string
-	// Image is the OCI image the registry serves, and Sandbox the image of a Kubernetes Pod's sandbox
-	// container, which shares its layer. A release's inputs name no Sandbox: the Image is then both.
-	Image, Sandbox Image
+	// Image is the OCI image the registry serves.
+	Image Image
 	// FirecrackerSHA256 is the digest of the Firecracker binary the image carries.
 	FirecrackerSHA256 string
 	// Guest names the guest kernels and initrds the image carries, by their paths inside it and
@@ -61,7 +60,7 @@ type Sources struct {
 //	bin/naru-keyprobe                  scans for the private keys of given authorities (harness.md)
 //	registry/                          see WriteRegistry
 //
-// The extensions make image built (extensions/naru-orch.sqfs and naru-volumes.sqfs) are stored beside
+// The extension make image built (extensions/naru-orch.sqfs) is stored beside
 // the tree, in the form of a Node's extension store (ExtensionStore).
 //
 // The guest kernel, the initrds and mkfs.ext4 are not staged: the image carries them (ADR 0010,
@@ -115,14 +114,11 @@ func Stage(src Sources, out string) (Inputs, error) {
 	if err != nil {
 		return Inputs{}, err
 	}
-	if in.Image, in.Sandbox, err = WriteRegistry(filepath.Join(out, "registry"), entry, runtime.GOARCH); err != nil {
+	if in.Image, err = WriteRegistry(filepath.Join(out, "registry"), entry, runtime.GOARCH); err != nil {
 		return Inputs{}, err
 	}
-	if in.Extension, err = stageExtension(src.ImageDir, ExtensionStore(out)); err != nil {
-		return Inputs{}, err
-	}
-	image, info := VolumesExtensionAssets(filepath.Join(src.ImageDir, ExtensionDir))
-	return in, storeVolumes(info, image, in.Extension.StoreDir)
+	in.Extension, err = stageExtension(src.ImageDir, ExtensionStore(out))
+	return in, err
 }
 
 // ExtensionStore is where Stage lays out the extension store of the inputs tree at dir: beside it,

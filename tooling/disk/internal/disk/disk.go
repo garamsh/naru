@@ -7,9 +7,6 @@ package disk
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -55,97 +52,10 @@ const (
 	slotGrowth = 2
 )
 
-// Where the extension images and their index are in the ESP (ADR 0096): the 8.3 names of the file
-// system, so an image's own name is in the index, and init reads the index from the same names.
-const (
-	ExtensionDir   = "EXT"
-	ExtensionIndex = "EXT/INDEX.JSN"
-)
-
-// ExtensionRoom is the room an ESP needs for images that hold size bytes together: their
-// clusters, the file allocation tables' two copies (a 64th of them with 512-byte clusters), the
-// index and a MiB of slack, a whole number of MiB. It is added to the room the slots need, so an
-// extension takes nothing of what an upgrade's kernel has.
-func ExtensionRoom(size int64) int64 {
-	if size == 0 {
-		return 0
-	}
-	return roundUp(size+size/64+mib, mib)
-}
-
 // ESPBytes is the size of the ESP of a disk built with a kernel of kernelSize bytes: the larger of
 // 1 GiB and Slots slots of slotGrowth kernels each with slack, a whole number of MiB (ADR 0037).
 func ESPBytes(kernelSize int64) int64 {
 	return max(minESPBytes, roundUp(Slots*slotGrowth*kernelSize+espSlackByte, mib))
-}
-
-// Layout is what a disk spent on its extensions, which the release reads from the file naru-disk
-// writes beside the disk (-layout) instead of recomputing it: the ESP's room for kernels is its
-// size less ExtensionRoom (ADR 0096).
-type Layout struct {
-	ExtensionRoom int64 `json:"extensionRoom"`
-}
-
-// Layout returns the layout of the disk Build writes for s.
-func (s Spec) Layout() (Layout, error) {
-	_, _, total, err := loadExtensions(s.Extensions)
-	return Layout{ExtensionRoom: ExtensionRoom(total)}, err
-}
-
-// Extension is a system extension the disk carries: Description is the extension build's
-// <name>.json (name, version, sha256, services) and its image is <name>.sqfs beside it.
-type Extension struct {
-	Description string
-}
-
-type described struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
-}
-
-// indexEntry and index are what the file ExtensionIndex holds; lib/init/bootmedia.Index reads the
-// same fields, which the QEMU test of a blank Node boots a disk to prove.
-type indexEntry struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
-	Bytes   int64  `json:"bytes"`
-	File    string `json:"file"`
-}
-
-type index struct {
-	Extensions []indexEntry `json:"extensions"`
-}
-
-// load reads the description and checks that the image beside it has the digest it names.
-func (e Extension) load() (entry indexEntry, image string, err error) {
-	raw, err := os.ReadFile(e.Description)
-	if err != nil {
-		return entry, "", err
-	}
-	var d described
-	if err := json.Unmarshal(raw, &d); err != nil {
-		return entry, "", fmt.Errorf("%s: %w", e.Description, err)
-	}
-	if d.Name == "" || d.Version == "" || d.SHA256 == "" {
-		return entry, "", fmt.Errorf("%s: no name, version and sha256", e.Description)
-	}
-	image = e.Description[:len(e.Description)-len(filepath.Ext(e.Description))] + ".sqfs"
-	f, err := os.Open(image)
-	if err != nil {
-		return entry, "", err
-	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	n, err := io.Copy(h, f)
-	if err != nil {
-		return entry, "", err
-	}
-	if got := hex.EncodeToString(h.Sum(nil)); got != d.SHA256 {
-		return entry, "", fmt.Errorf("%s has the SHA-256 %s, not the %s that %s names", image, got, d.SHA256, e.Description)
-	}
-	return indexEntry{Name: d.Name, Version: d.Version, SHA256: d.SHA256, Bytes: n}, image, nil
 }
 
 // Spec says what to build.
@@ -156,9 +66,6 @@ type Spec struct {
 	Stamp time.Time
 	// DiskGUID and ESPGUID are the GUIDs of the disk and of its one partition.
 	DiskGUID, ESPGUID string
-	// Extensions are the system extensions the ESP carries beside the kernel, for init to take into a
-	// blank Node's store at its first boot (ADR 0096).
-	Extensions []Extension
 }
 
 // Build writes the disk image Out and reads the kernel back from it.
@@ -173,11 +80,7 @@ func Build(s Spec) error {
 		return err
 	}
 
-	entries, images, extBytes, err := loadExtensions(s.Extensions)
-	if err != nil {
-		return err
-	}
-	espBytes := ESPBytes(kernelSize) + ExtensionRoom(extBytes)
+	espBytes := ESPBytes(kernelSize)
 	tmp, err := os.MkdirTemp(filepath.Dir(s.Out), "naru-disk-")
 	if err != nil {
 		return err
@@ -185,7 +88,7 @@ func Build(s Spec) error {
 	defer func() { _ = os.RemoveAll(tmp) }()
 
 	esp := filepath.Join(tmp, "esp.img")
-	if err := makeESP(esp, espBytes, s.Stamp, kernel, kernelSize, entries, images); err != nil {
+	if err := makeESP(esp, espBytes, s.Stamp, kernel, kernelSize); err != nil {
 		return err
 	}
 	if err := assemble(s, esp, espBytes); err != nil {
@@ -194,7 +97,7 @@ func Build(s Spec) error {
 	return verify(s, kernel)
 }
 
-func makeESP(esp string, length int64, stamp time.Time, kernel io.Reader, kernelSize int64, entries []indexEntry, images []string) error {
+func makeESP(esp string, length int64, stamp time.Time, kernel io.Reader, kernelSize int64) error {
 	if err := os.WriteFile(esp, nil, 0o644); err != nil {
 		return err
 	}
@@ -213,56 +116,7 @@ func makeESP(esp string, length int64, stamp time.Time, kernel io.Reader, kernel
 		_ = v.Close()
 		return err
 	}
-	if err := addExtensions(v, entries, images); err != nil {
-		_ = v.Close()
-		return err
-	}
 	return v.Close()
-}
-
-// loadExtensions reads each extension, names its file in the ESP E0.SQF, E1.SQF and so on, and
-// returns the index entries, the image paths and the images' total size.
-func loadExtensions(exts []Extension) (entries []indexEntry, images []string, total int64, err error) {
-	for i, e := range exts {
-		entry, image, err := e.load()
-		if err != nil {
-			return nil, nil, 0, err
-		}
-		for _, have := range entries {
-			if have.Name == entry.Name {
-				return nil, nil, 0, fmt.Errorf("the extension %q is given twice", entry.Name)
-			}
-		}
-		entry.File = fmt.Sprintf("E%d.SQF", i)
-		entries = append(entries, entry)
-		images = append(images, image)
-		total += entry.Bytes
-	}
-	return entries, images, total, nil
-}
-
-func addExtensions(v *fat.Volume, entries []indexEntry, images []string) error {
-	if len(entries) == 0 {
-		return nil
-	}
-	for i, e := range entries {
-		f, err := os.Open(images[i])
-		if err != nil {
-			return err
-		}
-		err = v.Add(ExtensionDir+"/"+e.File, f, e.Bytes)
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
-			return err
-		}
-	}
-	raw, err := json.Marshal(index{Extensions: entries})
-	if err != nil {
-		return err
-	}
-	return v.Add(ExtensionIndex, bytes.NewReader(raw), int64(len(raw)))
 }
 
 // copySparse copies src into dst from offset off and writes no block of zeros, so a hole of dst,

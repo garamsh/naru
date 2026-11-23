@@ -8,12 +8,10 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,23 +19,20 @@ import (
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostcli"
-	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 	"github.com/garamsh/naru/tooling/qemu/internal/release"
 )
 
 // Criterion "host: the boot set added through naructl host boot-set add, and a Node microVM from it
-// that reports Ready and answers the Node API's version". The test host reaches the microVM's address
+// that answers the Node API's version". The test host reaches the microVM's address
 // through the harness's route (docs/architecture/harness.md): node-1's naru-mvmroute, which dials the
 // microVM from inside node-1's network.
 //
 // mvmd gives a microVM its address, so the seed's address is known only after a microVM exists. The
 // test creates the microVM with a plain seed, reads the address mvmd gave it, deletes it, and creates
 // it again with the seed written for that address, until the second creation is given the same one.
-func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVersionThroughTheHarnessRoute(t *testing.T) {
-	_, err := exec.LookPath("kubectl")
-	require.NoError(t, err, "kubectl is a precondition of make test-qemu")
-	c := start(t, node.ClusterSpec{N: 1, Gaon: true, NodeAPI: true, Host: true, MemoryMiB: 2*node.KubeNodeMemoryMiB + 1024})
+func TestNode_HostBootSetMicroVMAnswersTheNodeAPIVersionThroughTheHarnessRoute(t *testing.T) {
+	c := start(t, node.ClusterSpec{N: 1, Gaon: true, NodeAPI: true, Host: true, MemoryMiB: 3072 + 2048})
 	require.NotNil(t, c.Host)
 	eventually(t, "the host API answers a reader", func() bool { return hctl(c.Host.Reader, []string{"host"}).Err == nil })
 	nd := c.Nodes[0]
@@ -78,9 +73,9 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 	require.NoError(t, err)
 	ctx := context.Background()
 
-	const name = "kcp"
-	// A microVM admits no traffic it has no rule for, so the request allows the API server's port and
-	// the Node API's, which the harness's route reaches from node-1.
+	const name = "vm"
+	// A microVM admits no traffic it has no rule for, so the request allows the Node API's port,
+	// which the harness's route reaches from node-1.
 	create := func(seedFile string) {
 		t.Helper()
 		user, err := os.ReadFile(seedFile)
@@ -91,8 +86,8 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 			return hostapi.Rule{Prefix: "0.0.0.0/0", Protocol: "tcp", Ports: []hostapi.PortRange{{First: uint32(n), Last: uint32(n)}}}
 		}
 		request, err := json.Marshal(hostapi.CreateRequest{
-			Name: name, CPU: 2, Memory: 4 << 30, BootSet: set, Seed: user, DataDisk: 2 << 30, PodPrefix: node.KubePodPrefix(1),
-			NetworkPolicy: hostapi.Policy{Ingress: []hostapi.Rule{allow("6443"), allow(wire.NodeAPIPort)}},
+			Name: name, CPU: 2, Memory: 2 << 30, BootSet: set, Seed: user, DataDisk: 2 << 30,
+			NetworkPolicy: hostapi.Policy{Ingress: []hostapi.Rule{allow(wire.NodeAPIPort)}},
 		})
 		require.NoError(t, err)
 		file := filepath.Join(dir, "microvm.json")
@@ -124,13 +119,7 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 		require.NoError(t, client.DeleteMicroVM(ctx, name))
 		eventually(t, "the probe microVM is gone", func() bool { return machines(nd) == "none" })
 
-		require.NoError(t, tool.GenKubernetes(ca, guess.String(), ""))
-		user := filepath.Join(dir, "user-data")
-		require.NoError(t, tool.GenKubernetesNode(naructl.KubernetesNode{
-			CA: ca, Name: name, Role: "control-plane", Address: guess.String() + "/24", Endpoint: guess.String(),
-			PodNetwork: node.KubePodNetwork, PodPrefix: node.KubePodPrefix(1), Out: user,
-		}))
-		create(user)
+		create(osFormSeed(t, ca, name, guess.String(), dir))
 		if addr = addressOf(); addr == guess {
 			break
 		}
@@ -138,27 +127,6 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 		eventually(t, "the mismatched microVM is gone", func() bool { return machines(nd) == "none" })
 	}
 	t.Logf("the Node microVM has the address %s", addr)
-
-	// The API server lists the microVM's Node Ready, through the route.
-	kube, stopKube, err := c.Host.RouteTo(ctx, net.JoinHostPort(addr.String(), "6443"))
-	require.NoError(t, err)
-	defer stopKube()
-	var last string
-	defer func() { t.Logf("the last kubectl answer: %s", last) }()
-	require.Eventually(t, func() bool {
-		out, err := exec.Command("kubectl", "--kubeconfig", filepath.Join(ca, "admin.conf"), "--server", "https://"+kube,
-			"--tls-server-name", addr.String(), "--request-timeout=20s", "get", "nodes", "--no-headers").CombinedOutput()
-		last = string(out)
-		if err != nil {
-			return false
-		}
-		for _, line := range strings.Split(string(out), "\n") {
-			if f := strings.Fields(line); len(f) >= 2 && f[0] == name && f[1] == "Ready" {
-				return true
-			}
-		}
-		return false
-	}, 10*time.Minute, 5*time.Second, "the API server of the microVM lists %s Ready", name)
 
 	// The Node API of the microVM answers version.
 	api, stopAPI, err := c.Host.RouteTo(ctx, net.JoinHostPort(addr.String(), wire.NodeAPIPort))
@@ -170,13 +138,4 @@ func TestNode_HostBootSetMicroVMReportsReadyToItsAPIServerAndAnswersTheNodeAPIVe
 	assert.NotEmpty(t, version)
 	assert.NotEmpty(t, bootID)
 	t.Logf("the microVM's Node API answered version %s, boot ID %s", version, bootID)
-
-	// Nothing delivered the volumes extension to the blank data disk hostd made: init took it from
-	// the Node's initramfs at the first boot (ADR 0096).
-	rows := extensionRows(t, file)
-	var mounted bool
-	for _, row := range rows {
-		mounted = mounted || (len(row) > 0 && row[len(row)-1] == "/usr/lib/naru/extensions/naru-volumes")
-	}
-	assert.True(t, mounted, "naru-volumes is stored and mounted: %v", rows)
 }

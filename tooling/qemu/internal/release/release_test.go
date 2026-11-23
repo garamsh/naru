@@ -414,15 +414,11 @@ func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
 	binary.LittleEndian.PutUint64(img[1024+32:], 2048)
 	binary.LittleEndian.PutUint64(img[1024+40:], 2048+4*1024*1024-1)
 	require.NoError(t, os.WriteFile(filepath.Join(diskDir, "naru.img"), img, 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(diskDir, release.LayoutName), []byte(`{"extensionRoom":108003328}`), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(imageDir, "node-initrd.cpio.gz"), []byte("node initramfs"), 0o600))
 	require.NoError(t, os.MkdirAll(filepath.Join(imageDir, fixture.ExtensionDir), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(imageDir, fixture.ExtensionDir, fixture.ExtensionImageName), []byte("squashfs"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(imageDir, fixture.ExtensionDir, fixture.ExtensionInfoName),
 		[]byte(`{"name":"naru-orch","version":"v9","sha256":"`+hexOf([]byte("squashfs"))+`","services":["naru-orchd","naru-signer"]}`), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(imageDir, fixture.ExtensionDir, "naru-volumes.sqfs"), []byte("volumes squashfs"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(imageDir, fixture.ExtensionDir, "naru-volumes.json"),
-		[]byte(`{"name":"naru-volumes","version":"v9","sha256":"`+hexOf([]byte("volumes squashfs"))+`","services":[]}`), 0o600))
 	require.NoError(t, os.MkdirAll(filepath.Join(guestDir, "boot-sets", release.NodeBootSet), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "boot-sets", release.NodeBootSet, "vmlinux"), []byte("node kernel"), 0o600))
 	d := strings.Repeat("a", 64)
@@ -544,7 +540,7 @@ func TestBuild_NamesTheHostArtifactsNaruHostAndLeavesTheOldNamesOut(t *testing.T
 	assert.NoFileExists(t, filepath.Join(o.Out, "naru-v9.qcow2"))
 	entries, err := os.ReadDir(o.Out)
 	require.NoError(t, err)
-	assert.Len(t, entries, 19, "the assets and SHA256SUMS")
+	assert.Len(t, entries, 17, "the assets and SHA256SUMS")
 }
 
 func TestBuild_ShipsTheUpgradeBundleListedInSHA256SUMS(t *testing.T) {
@@ -580,10 +576,7 @@ func TestBuild_TheBundleManifestRecordsTheESPOfTheBootDisk(t *testing.T) {
 		}
 		var m release.BundleManifestJSON
 		require.NoError(t, json.NewDecoder(tr).Decode(&m))
-		room, err := release.ExtensionRoom(o.DiskDir)
-		require.NoError(t, err)
-		require.NotZero(t, room, "the image carries an extension the ESP holds, or this test proves nothing about it")
-		assert.EqualValues(t, 2<<30-room, m.ESP.Bytes, "the partition of the disk's GPT, less what the ESP spends on the extensions it carries (ADR 0096)")
+		assert.EqualValues(t, 2<<30, m.ESP.Bytes, "the partition of the disk's GPT")
 		return
 	}
 }
@@ -616,7 +609,7 @@ func TestBuild_ShipsTheNodeBootSetAsKernelInitramfsAndAManifestThatNamesTheirDig
 	for _, name := range []string{"naru-node-kernel-v9", "naru-node-initramfs-v9", "naru-node-v9.json"} {
 		assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists "+name)
 	}
-	assert.Len(t, assets, 18, "the nine assets of before, the three of the boot set, the two of each extension, the SBOM and the sources, which SHA256SUMS makes 19 files")
+	assert.Len(t, assets, 16, "the nine assets of before, the three of the boot set, the two of the extension, the SBOM and the sources, which SHA256SUMS makes 17 files")
 }
 
 func TestBuild_ShipsTheOrchExtensionAndItsDescriptionListedInSHA256SUMS(t *testing.T) {
@@ -636,47 +629,6 @@ func TestBuild_ShipsTheOrchExtensionAndItsDescriptionListedInSHA256SUMS(t *testi
 	for _, name := range []string{"naru-orch-ext-v9.sqfs", "naru-orch-ext-v9.json"} {
 		assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), name)
 	}
-}
-
-func TestBuild_ShipsTheVolumesExtensionAndCarriesItInTheUpgradeBundle(t *testing.T) {
-	o := fakeBuildInputs(t, strings.Repeat("7", 64))
-
-	_, err := release.Build(o)
-
-	require.NoError(t, err)
-	image, err := os.ReadFile(filepath.Join(o.Out, "naru-volumes-ext-v9.sqfs"))
-	require.NoError(t, err)
-	assert.Equal(t, "volumes squashfs", string(image))
-	info, err := fixture.ReadVolumesExtensionInfo(filepath.Join(o.Out, "naru-volumes-ext-v9.json"))
-	require.NoError(t, err)
-	assert.Equal(t, hexOf(image), info.SHA256)
-	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
-	require.NoError(t, err)
-	for _, name := range []string{"naru-volumes-ext-v9.sqfs", "naru-volumes-ext-v9.json"} {
-		assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), name)
-	}
-	f, err := os.Open(filepath.Join(o.Out, "naru-host-upgrade-v9.tar"))
-	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
-	var members []string
-	for tr := tar.NewReader(f); ; {
-		h, err := tr.Next()
-		if err != nil {
-			break
-		}
-		members = append(members, h.Name)
-	}
-	assert.Contains(t, members, "extensions/naru-volumes.sqfs", "a Node upgraded to this release finds its volume extension in the bundle")
-}
-
-func TestBuild_RefusesAReleaseWhoseVolumesExtensionWasBuiltForAnotherVersion(t *testing.T) {
-	o := fakeBuildInputs(t, strings.Repeat("7", 64))
-	info := filepath.Join(o.ImageDir, fixture.ExtensionDir, "naru-volumes.json")
-	require.NoError(t, os.WriteFile(info, []byte(`{"name":"naru-volumes","version":"v1","sha256":"`+hexOf([]byte("volumes squashfs"))+`","services":[]}`), 0o600))
-
-	_, err := release.Build(o)
-
-	assert.ErrorContains(t, err, "the volume extension was built for version v1")
 }
 
 func TestBuild_RefusesAReleaseWhoseImageHasNoExtension(t *testing.T) {
@@ -713,10 +665,7 @@ func TestBuild_WritesTheNotesFiguresOutsideTheAssetsWhenAsked(t *testing.T) {
 	require.NoError(t, err)
 	b, err := os.ReadFile(o.Figures)
 	require.NoError(t, err)
-	room, err := release.ExtensionRoom(o.DiskDir)
-	require.NoError(t, err)
-	require.NotZero(t, room)
-	esp := int64(2<<30) - room
+	esp := int64(2 << 30)
 	want := esp - esp/64 - 1<<20 - int64(len("kernel"))
 	assert.Equal(t, fmt.Sprintf("ESP_BYTES=%d\nLARGEST_UPGRADE_KERNEL_BYTES=%d\n", esp, want), string(b))
 	entries, err := os.ReadDir(o.Out)

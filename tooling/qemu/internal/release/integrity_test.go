@@ -138,9 +138,9 @@ func TestSBOM_IsSPDXWithEveryComponentAndTheModulesOfEveryGoBinaryAndNoTimeButTh
 	require.NoError(t, err)
 	require.Len(t, bins, 1, "naructl is a Go binary")
 
-	a, err := release.SBOM("v9", epoch, comps, bins, nil)
+	a, err := release.SBOM("v9", epoch, comps, bins)
 	require.NoError(t, err)
-	b, err := release.SBOM("v9", epoch, comps, bins, nil)
+	b, err := release.SBOM("v9", epoch, comps, bins)
 	require.NoError(t, err)
 
 	assert.Equal(t, a, b, "equal inputs, equal bytes")
@@ -179,7 +179,7 @@ func TestSBOM_IsSPDXWithEveryComponentAndTheModulesOfEveryGoBinaryAndNoTimeButTh
 }
 
 func TestSBOM_RefusesToRunWithoutAnEpoch(t *testing.T) {
-	_, err := release.SBOM("v9", 0, nil, nil, nil)
+	_, err := release.SBOM("v9", 0, nil, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SOURCE_DATE_EPOCH")

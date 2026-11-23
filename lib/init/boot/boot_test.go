@@ -106,7 +106,6 @@ type recorder struct {
 	registriesErr error
 	storage       []config.Storage
 	extensions    []config.Extension
-	provided      []config.Extension
 
 	// resetScope is the reset waiting, when resetWaiting. discarded, cleared and wiped record what
 	// was done of it.
@@ -162,11 +161,6 @@ func (r *recorder) LoadAnchor() ([]byte, error) {
 func (r *recorder) SaveAnchor(b []byte) error {
 	r.anchorSaved = b
 	return nil
-}
-
-func (r *recorder) ProvideExtensions(e []config.Extension) {
-	r.calls = append(r.calls, "provide")
-	r.provided = e
 }
 
 func (r *recorder) MountExtensions(e []config.Extension) error {
@@ -626,9 +620,8 @@ func TestRun_MountsTheExtensionsBeforeTheRootIsSealedAndAnyServiceStarts(t *test
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "provide", "extensions", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "extensions", "prepare", "seal", "start mvmd"}, r.calls)
 	assert.Equal(t, []config.Extension{{Name: "naru-orch", SHA256: strings.Repeat("ab", 32)}}, r.extensions)
-	assert.Equal(t, r.extensions, r.provided, "the stage that provides the images is given the entries the mount takes")
 }
 
 func TestRun_StartsNothingWhenAnExtensionCannotBeMounted(t *testing.T) {
@@ -638,7 +631,7 @@ func TestRun_StartsNothingWhenAnExtensionCannotBeMounted(t *testing.T) {
 	err := run(r)
 
 	require.ErrorContains(t, err, "mount the system extensions: no image is stored")
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "provide", "extensions"}, r.calls, "the API has started, so the image can still be delivered")
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "extensions"}, r.calls, "the API has started, so the image can still be delivered")
 }
 
 func TestRun_TakesTheNodesAddressesFromWhatTheNetworkGave(t *testing.T) {

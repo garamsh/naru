@@ -68,8 +68,6 @@ func TestTool_LegacySpeaksTheFlagSpellingsOfAReleaseBeforeCobra(t *testing.T) {
 		{"gen client", func(tl naructl.Tool) error { _, err := tl.GenClient("/ca", "cn", "/o"); return err }, "gen client --ca /ca --cn cn --out /o"},
 		{"gen etcd-client", func(tl naructl.Tool) error { return tl.GenEtcdClient("/ca", "/o") }, "gen etcd-client --ca /ca --out /o"},
 		{"gen node", func(tl naructl.Tool) error { return tl.GenNode(naructl.Node{CA: "/ca", Name: "n"}) }, "gen node --ca /ca --name n"},
-		{"gen kubernetes", func(tl naructl.Tool) error { return tl.GenKubernetes("/ca", "1.2.3.4:6443", "") }, "gen kubernetes --ca /ca --endpoint 1.2.3.4:6443"},
-		{"gen kubernetes-node", func(tl naructl.Tool) error { return tl.GenKubernetesNode(naructl.KubernetesNode{CA: "/ca", Name: "n"}) }, "gen kubernetes-node --ca /ca --name n"},
 		{"gen api-ca", func(tl naructl.Tool) error { return tl.GenAPICA("/ca") }, "gen api-ca --ca-dir /ca"},
 		{"gen api-client", func(tl naructl.Tool) error { return tl.GenAPIClient("/ca", "admin", "1.2.3.4:1", "/o") }, "gen api-client --ca-dir /ca --role admin"},
 	}

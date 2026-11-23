@@ -105,40 +105,33 @@ func (b *blobs) put(mediaType string, body []byte) (descriptor, error) {
 }
 
 // WriteRegistry writes into dir everything the registry service needs to
-// publish two images that share one layer holding the entry executable, whose
-// entrypoint is /bin/entry: the blobs, their index, and a certificate and key
-// for 127.0.0.1 signed by a new authority, whose certificate it writes as
-// ca.pem. It returns the image a microVM or a Pod runs, which runs the
-// entrypoint with no arguments, and the sandbox image, whose command is "idle":
-// the entrypoint with no arguments serves the microVM probe (cmd/naru-entry),
-// and a Pod's sandbox container that served it would hold the port the Pod's
-// own containers listen on.
-func WriteRegistry(dir string, entry []byte, arch string) (image, sandbox Image, err error) {
+// publish an image of one layer holding the entry executable, whose entrypoint
+// is /bin/entry: the blobs, their index, and a certificate and key for
+// 127.0.0.1 signed by a new authority, whose certificate it writes as ca.pem.
+// It returns the image a microVM runs, which runs the entrypoint with no
+// arguments: the microVM probe (cmd/naru-entry).
+func WriteRegistry(dir string, entry []byte, arch string) (image Image, err error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return Image{}, Image{}, err
+		return Image{}, err
 	}
 	b := &blobs{dir: dir, types: map[string]string{}}
 	layer, err := Layer(entry)
 	if err != nil {
-		return Image{}, Image{}, err
+		return Image{}, err
 	}
 	compressed, err := gzipped(layer)
 	if err != nil {
-		return Image{}, Image{}, err
+		return Image{}, err
 	}
 	layerDesc, err := b.put(gzipLayer, compressed)
 	if err != nil {
-		return Image{}, Image{}, err
+		return Image{}, err
 	}
-	publish := func(repository string, cmd []string) (Image, error) {
-		config := map[string]any{"Entrypoint": []string{"/bin/entry"}}
-		if cmd != nil {
-			config["Cmd"] = cmd
-		}
+	publish := func(repository string) (Image, error) {
 		cfg, err := json.Marshal(map[string]any{
 			"architecture": arch,
 			"os":           "linux",
-			"config":       config,
+			"config":       map[string]any{"Entrypoint": []string{"/bin/entry"}},
 			"rootfs":       map[string]any{"type": "layers", "diff_ids": []string{Digest(layer)}},
 		})
 		if err != nil {
@@ -163,23 +156,20 @@ func WriteRegistry(dir string, entry []byte, arch string) (image, sandbox Image,
 		}
 		return Image{Repository: RegistryAddr + "/" + repository, Digest: manifestDesc.Digest}, nil
 	}
-	if image, err = publish("test/entry", nil); err != nil {
-		return Image{}, Image{}, err
-	}
-	if sandbox, err = publish("test/sandbox", []string{"idle"}); err != nil {
-		return Image{}, Image{}, err
+	if image, err = publish("test/entry"); err != nil {
+		return Image{}, err
 	}
 	index, err := json.Marshal(b.types)
 	if err != nil {
-		return Image{}, Image{}, err
+		return Image{}, err
 	}
 	if err := os.WriteFile(filepath.Join(dir, registry.Index), index, 0o644); err != nil {
-		return Image{}, Image{}, err
+		return Image{}, err
 	}
 	if err := writeCerts(dir); err != nil {
-		return Image{}, Image{}, err
+		return Image{}, err
 	}
-	return image, sandbox, nil
+	return image, nil
 }
 
 // writeCerts writes ca.pem, cert.pem and key.pem: an authority and a leaf for 127.0.0.1.

@@ -3,8 +3,6 @@ package disk_test
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -211,88 +209,4 @@ func TestBuild_TheESPHasRoomForATrialKernelTwiceTheSizeOfTheBuiltOne(t *testing.
 
 	assert.NoError(t, err)
 	assert.NoError(t, v.Close())
-}
-
-// extension writes an extension build's <name>.sqfs and <name>.json of size bytes in dir.
-func extension(t *testing.T, dir, name, version string, size int) disk.Extension {
-	t.Helper()
-	image := bytes.Repeat([]byte("squash"), size/6)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, name+".sqfs"), image, 0o644))
-	sum := sha256.Sum256(image)
-	desc := filepath.Join(dir, name+".json")
-	require.NoError(t, os.WriteFile(desc, []byte(`{"name":"`+name+`","version":"`+version+`","sha256":"`+hex.EncodeToString(sum[:])+`","services":[]}`), 0o644))
-	return disk.Extension{Description: desc}
-}
-
-func TestExtensionRoom_CountsTheImagesTheirAllocationTablesAndAMiBRoundedUp(t *testing.T) {
-	assert.Zero(t, disk.ExtensionRoom(0), "a disk with no extension is the size it was")
-	// tooling/qemu's TestExtensionRoom_... asserts the same figure for the same size.
-	assert.EqualValues(t, 103*mib, disk.ExtensionRoom(100*mib))
-}
-
-func TestBuild_CarriesTheExtensionsOnTheESPBesideTheKernelAndGrowsTheESPByTheirRoom(t *testing.T) {
-	dir := scratch(t)
-	s := specIn(t, dir)
-	s.Extensions = []disk.Extension{extension(t, dir, "naru-volumes", "v9", 3*mib)}
-	plain := builtDefault(t)
-	plainInfo, err := os.Stat(plain.Out)
-	require.NoError(t, err)
-
-	require.NoError(t, disk.Build(s))
-
-	info, err := os.Stat(s.Out)
-	require.NoError(t, err)
-	assert.EqualValues(t, disk.ExtensionRoom(3*mib/6*6), info.Size()-plainInfo.Size(), "only the extension's room is added: the slots keep theirs")
-	v, err := fat.Open(esp(t, s), s.Stamp)
-	require.NoError(t, err)
-	defer func() { _ = v.Close() }()
-	raw, err := v.ReadFile(disk.ExtensionIndex)
-	require.NoError(t, err)
-	var idx struct {
-		Extensions []struct {
-			Name, Version, SHA256, File string
-			Bytes                       int64
-		}
-	}
-	require.NoError(t, json.Unmarshal(raw, &idx))
-	require.Len(t, idx.Extensions, 1)
-	want, err := os.ReadFile(filepath.Join(dir, "naru-volumes.sqfs"))
-	require.NoError(t, err)
-	got, err := v.ReadFile(disk.ExtensionDir + "/" + idx.Extensions[0].File)
-	require.NoError(t, err)
-	assert.Equal(t, want, got, "the image on the ESP is the file that went in")
-	assert.Equal(t, "naru-volumes", idx.Extensions[0].Name)
-	assert.Equal(t, "v9", idx.Extensions[0].Version)
-	assert.EqualValues(t, len(want), idx.Extensions[0].Bytes)
-}
-
-func TestBuild_RefusesAnExtensionWhoseImageIsNotTheDigestItsDescriptionNames(t *testing.T) {
-	dir := scratch(t)
-	s := specIn(t, dir)
-	e := extension(t, dir, "naru-volumes", "v9", mib)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "naru-volumes.sqfs"), []byte("changed"), 0o644))
-	s.Extensions = []disk.Extension{e}
-
-	err := disk.Build(s)
-
-	require.ErrorContains(t, err, "has the SHA-256")
-	_, statErr := os.Stat(s.Out)
-	assert.True(t, os.IsNotExist(statErr), "no disk is written")
-}
-
-func TestSpecLayout_NamesTheRoomTheExtensionsTakeAsTheReleaseReadsIt(t *testing.T) {
-	dir := scratch(t)
-	s := specIn(t, dir)
-	s.Extensions = []disk.Extension{extension(t, dir, "naru-volumes", "v9", 6*mib)}
-
-	l, err := s.Layout()
-
-	require.NoError(t, err)
-	raw, err := json.Marshal(l)
-	require.NoError(t, err)
-	// tooling/qemu's release reads this key; its test reads a file of the same form.
-	assert.JSONEq(t, `{"extensionRoom":8388608}`, string(raw))
-	empty, err := specIn(t, dir).Layout()
-	require.NoError(t, err)
-	assert.Zero(t, empty.ExtensionRoom, "the control: no extension, no room")
 }
