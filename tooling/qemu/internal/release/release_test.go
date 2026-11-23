@@ -420,6 +420,7 @@ func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
 	binary.LittleEndian.PutUint64(img[1024+32:], 2048)
 	binary.LittleEndian.PutUint64(img[1024+40:], 2048+4*1024*1024-1)
 	require.NoError(t, os.WriteFile(filepath.Join(diskDir, "naru.img"), img, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(diskDir, release.LayoutName), []byte(`{"extensionRoom":108003328}`), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(imageDir, "node-initrd.cpio.gz"), []byte("node initramfs"), 0o600))
 	require.NoError(t, os.MkdirAll(filepath.Join(imageDir, fixture.ExtensionDir), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(imageDir, fixture.ExtensionDir, fixture.ExtensionImageName), []byte("squashfs"), 0o600))
@@ -585,7 +586,10 @@ func TestBuild_TheBundleManifestRecordsTheESPOfTheBootDisk(t *testing.T) {
 		}
 		var m release.BundleManifestJSON
 		require.NoError(t, json.NewDecoder(tr).Decode(&m))
-		assert.EqualValues(t, 2<<30, m.ESP.Bytes, "the partition of the disk's GPT")
+		room, err := release.ExtensionRoom(o.DiskDir)
+		require.NoError(t, err)
+		require.NotZero(t, room, "the image carries an extension the ESP holds, or this test proves nothing about it")
+		assert.EqualValues(t, 2<<30-room, m.ESP.Bytes, "the partition of the disk's GPT, less what the ESP spends on the extensions it carries (ADR 0096)")
 		return
 	}
 }
@@ -715,7 +719,10 @@ func TestBuild_WritesTheNotesFiguresOutsideTheAssetsWhenAsked(t *testing.T) {
 	require.NoError(t, err)
 	b, err := os.ReadFile(o.Figures)
 	require.NoError(t, err)
-	esp := int64(2 << 30)
+	room, err := release.ExtensionRoom(o.DiskDir)
+	require.NoError(t, err)
+	require.NotZero(t, room)
+	esp := int64(2<<30) - room
 	want := esp - esp/64 - 1<<20 - int64(len("kernel"))
 	assert.Equal(t, fmt.Sprintf("ESP_BYTES=%d\nLARGEST_UPGRADE_KERNEL_BYTES=%d\n", esp, want), string(b))
 	entries, err := os.ReadDir(o.Out)

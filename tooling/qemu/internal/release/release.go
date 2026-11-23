@@ -262,6 +262,13 @@ func Build(o Options) ([]Asset, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the boot disk's ESP (make disk): %w", err)
 	}
+	// The manifest's esp.bytes is the ESP's room for kernels (ADR 0037): what the extensions on it
+	// take is not room for a trial kernel (ADR 0096).
+	extRoom, err := ExtensionRoom(o.DiskDir)
+	if err != nil {
+		return nil, err
+	}
+	esp -= extRoom
 	if err := checkPrevious(o, kernel); err != nil {
 		return nil, err
 	}
