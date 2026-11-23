@@ -1,5 +1,5 @@
-# util-linux (ADR 0075): the static mount and umount the kubelet runs, and libuuid, libblkid and
-# libmount as static libraries for the packages that link them (xfsprogs). Compiled by the toolchain.
+# util-linux (ADR 0075): libuuid, libblkid and libmount as static libraries for the packages that
+# link them (xfsprogs). Compiled by the toolchain.
 FROM builder AS build
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG SOURCE_DATE_EPOCH

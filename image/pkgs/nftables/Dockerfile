@@ -1,4 +1,4 @@
-# nftables (ADR 0075): the static nft, with JSON output for kube-proxy, over libmnl, libnftnl and
+# nftables (ADR 0075): the static nft, with JSON output (nft -j), over libmnl, libnftnl and
 # jansson. Compiled by the toolchain.
 FROM builder AS build
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]

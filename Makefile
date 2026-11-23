@@ -133,9 +133,9 @@ in_builder = $(BUILDER) make $(1) VERSION='$(VERSION)' TEST_ROOT='$(call contain
 # into $(IMAGE) (image/pkgs/layout.sh): bzImage (the kernel with the initramfs inside it, ADR 0020;
 # bzImage.bare is the kernel before that), initramfs.cpio.gz, node-initrd.cpio.gz, boot-sets.json,
 # inputs.env (the Firecracker pin the tests read), guest/ (guest.json and what it names, which the
-# initramfs carries of the guests), extensions/ (the naru-orch and naru-volumes system extensions, ADR 0055), and the
-# directories of programs the tests and the release take: gaon/, etcd/, k8s/ (Kubernetes, containerd,
-# runc and the CNI plugins) and regtools/ (the credential helpers, ADR 0026, and the root bundle).
+# initramfs carries of the guests), extensions/ (the naru-orch system extension, ADR 0055), and the
+# directories of programs the tests and the release take: gaon/, etcd/ and regtools/ (the credential
+# helpers, ADR 0026, and the root bundle).
 GUEST := $(IMAGE)/guest
 GAON := $(IMAGE)/gaon
 # TEST_ROOT, empty for the release, is the PEM file of a throwaway root appended to the bundle: the
@@ -272,7 +272,7 @@ in-builder-release: in-builder-disk
 	$(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/naru.tar
 	cd naructl && $(GOBUILD) -o $(abspath $(BUILD))/naructl/naructl ./cmd/naructl
 	cd tooling/qemu && $(GOBUILD) -o $(abspath $(BUILD))/naructl/naru-cluster ./cmd/naru-cluster
-	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -naru-cluster $(BUILD)/naructl/naru-cluster -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env -epoch $$(. $(CURDIR)/image/build.env && echo $$SOURCE_DATE_EPOCH) -binaries $(IMAGE)/gaon,$(IMAGE)/etcd,$(IMAGE)/k8s,$(IMAGE)/regtools,$(PKGROOT)/naru/usr/bin -archives $(IMAGE)/initramfs.cpio.gz,$(IMAGE)/node-initrd.cpio.gz -source-archive $(SOURCE_ARCHIVE) $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
+	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -naru-cluster $(BUILD)/naructl/naru-cluster -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env -epoch $$(. $(CURDIR)/image/build.env && echo $$SOURCE_DATE_EPOCH) -binaries $(IMAGE)/gaon,$(IMAGE)/etcd,$(IMAGE)/regtools,$(PKGROOT)/naru/usr/bin -archives $(IMAGE)/initramfs.cpio.gz,$(IMAGE)/node-initrd.cpio.gz -source-archive $(SOURCE_ARCHIVE) $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
 
 # test-qemu boots Nodes of the image under QEMU, as the user, and reads their consoles. It needs
 # /dev/kvm with nested virtualization and the host's mkfs.ext4 (for the data disk), and fails,
@@ -280,12 +280,9 @@ in-builder-release: in-builder-disk
 # root appended to the bundle (TEST_ROOT, ADR 0026), made here and read by the test that has a
 # Node trust a root through the bundle. `make image` and `make release` build the image with no
 # such root.
-# kubectl is a precondition, checked before anything is built: two of the tests drive a cluster with
-# it.
 TESTROOT := $(BUILD)/testroot
 test-qemu:
 	@set -e; \
-	command -v kubectl >/dev/null || { echo "$@: kubectl is not installed; two tests need it" >&2; exit 1; }; \
 	(cd tooling/qemu && go run ./cmd/naru-testroot -out $(TESTROOT)); \
 	$(MAKE) --no-print-directory disk image-upgrade TEST_ROOT=$(TESTROOT)/ca.pem; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
