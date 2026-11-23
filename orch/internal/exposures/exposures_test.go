@@ -3,12 +3,14 @@ package exposures_test
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/orch/internal/exposures"
 	"github.com/garamsh/naru/orch/internal/exposures/exposurestest"
 	"github.com/garamsh/naru/orch/internal/inventory"
@@ -217,6 +219,25 @@ func TestABackendMustBeALiveMemberOfTheCallersNetwork(t *testing.T) {
 	require.ErrorIs(t, err, exposures.ErrUnprocessable, "a member of another network")
 	_, err = s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "web", spec("a", "10.1.0.99"))
 	require.ErrorIs(t, err, exposures.ErrUnprocessable, "no member")
+}
+
+// Orch takes every protocol in the spelling the host API takes it in, and no other (ADR 0107).
+func TestAnExposureTakesEveryProtocolInTheSharedSpellingAndNoOther(t *testing.T) {
+	s, _ := fixture(t)
+	with := func(p wire.Protocol) orchapi.ExposureSpec {
+		sp := spec("a", "10.1.0.5")
+		sp.Ports[0].Protocol = p
+		return sp
+	}
+	for _, p := range wire.Protocols() {
+		e, err := s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "ok-"+strings.ToLower(string(p)), with(p))
+		require.NoError(t, err, "control: %s is taken", p)
+		require.Equal(t, p, e.Ports[0].Protocol)
+	}
+	for _, p := range []wire.Protocol{"tcp", "udp", "Tcp", "SCTP", ""} {
+		_, err := s.ApplyExposure(t.Context(), "ccm", orchapi.OwnerExposer, "a", "bad", with(p))
+		require.ErrorIs(t, err, inventory.ErrInvalid, "protocol %q", p)
+	}
 }
 
 func TestProxyProtocolIsTCPOnly(t *testing.T) {

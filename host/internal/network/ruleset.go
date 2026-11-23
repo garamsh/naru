@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // setName is the nftables set of a network. A network's name is a DNS label, which has no
@@ -151,7 +153,7 @@ func exposureForward(c Config, line func(string, ...any)) {
 	}
 	for _, e := range sortedExposures(c.Exposures) {
 		for _, p := range e.forwarded() {
-			line("\t\tiifname \"%s\" ip daddr { %s } %s dport %d ct status dnat ct original ip daddr @leased ct state new accept comment \"%s:%d\"", c.LAN, addrList(e.Backends), p.Protocol, p.BackendPort, e.Address, p.Port)
+			line("\t\tiifname \"%s\" ip daddr { %s } %s dport %d ct status dnat ct original ip daddr @leased ct state new accept comment \"%s:%d\"", c.LAN, addrList(e.Backends), nftProtocol(p.Protocol), p.BackendPort, e.Address, p.Port)
 		}
 	}
 }
@@ -177,7 +179,7 @@ func exposureRules(c Config, line func(string, ...any)) {
 	for _, e := range forwarded {
 		for _, p := range e.forwarded() {
 			line("\t\tiifname \"%s\" ip daddr %s ip daddr @leased %s dport %d dnat ip to numgen random mod %d map { %s } comment \"%s\"",
-				c.LAN, e.Address, p.Protocol, p.Port, len(e.Backends), backendMap(e.Backends, p.BackendPort), e.Network)
+				c.LAN, e.Address, nftProtocol(p.Protocol), p.Port, len(e.Backends), backendMap(e.Backends, p.BackendPort), e.Network)
 		}
 	}
 	line("\t}")
@@ -186,6 +188,17 @@ func exposureRules(c Config, line func(string, ...any)) {
 	// Only a flow to a leased address is source-NATed, not every flow the DNAT of this table made.
 	line("\t\tiifname \"%s\" ct status dnat ct original ip daddr @leased masquerade", c.LAN)
 	line("\t}")
+}
+
+// nftProtocol is the nft keyword of a protocol. Validate admits no other protocol into the table.
+func nftProtocol(p wire.Protocol) string {
+	switch p {
+	case wire.ProtocolTCP:
+		return "tcp"
+	case wire.ProtocolUDP:
+		return "udp"
+	}
+	panic(fmt.Sprintf("protocol %q reached the ruleset unvalidated", p))
 }
 
 func addrList(in []netip.Addr) string {

@@ -10,6 +10,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const (
@@ -42,12 +43,12 @@ func ExposureID(svc *v1.Service) string {
 func Spec(svc *v1.Service, nodes []*v1.Node, network, pool string) (orchapi.ExposureSpec, error) {
 	spec := orchapi.ExposureSpec{Network: network, Pool: pool, RequestedAddress: svc.Spec.LoadBalancerIP}
 	for _, p := range svc.Spec.Ports {
-		var proto string
+		var proto wire.Protocol
 		switch p.Protocol {
 		case v1.ProtocolTCP, "":
-			proto = "TCP"
+			proto = wire.ProtocolTCP
 		case v1.ProtocolUDP:
-			proto = "UDP"
+			proto = wire.ProtocolUDP
 		default:
 			return spec, fmt.Errorf("port %d is %s: only TCP and UDP are carried", p.Port, p.Protocol)
 		}

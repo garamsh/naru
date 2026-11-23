@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/network"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 var t0 = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -199,7 +200,7 @@ func startExposer(t *testing.T, state string, link *fakeLink, c *clock) *exposur
 func web(proxy bool) network.Exposure {
 	return network.Exposure{
 		Address: addr("192.168.0.80"), Network: "a", Proxy: proxy,
-		Ports:    []network.ExposurePort{{Protocol: "tcp", Port: 80, BackendPort: 30080}, {Protocol: "udp", Port: 53, BackendPort: 30053}},
+		Ports:    []network.ExposurePort{{Protocol: wire.ProtocolTCP, Port: 80, BackendPort: 30080}, {Protocol: wire.ProtocolUDP, Port: 53, BackendPort: 30053}},
 		Backends: []netip.Addr{addr("10.8.0.5"), addr("10.8.0.6")},
 	}
 }
@@ -215,7 +216,7 @@ func TestRuleset_ProxiedTCPPortIsNotForwarded(t *testing.T) {
 	c := twoNetworks()
 	c.LAN = "lan0"
 	e := web(true)
-	e.Ports = []network.ExposurePort{{Protocol: "tcp", Port: 443, BackendPort: 30443}}
+	e.Ports = []network.ExposurePort{{Protocol: wire.ProtocolTCP, Port: 443, BackendPort: 30443}}
 	c.Exposures = []network.Exposure{e}
 	rules := network.Ruleset(c)
 	assert.NotContains(t, rules, "dport 443", "the proxy answers the port, no DNAT does")
@@ -664,4 +665,48 @@ func TestExposer_ALeaseThatFailsValidationIsDroppedAtLoadWithAWarning(t *testing
 	assert.Zero(t, kept)
 	assert.Contains(t, logged, "level=INFO", "control: a lease that only ran out is not a warning")
 	assert.NotContains(t, logged, "level=WARN")
+}
+
+// A state file written while hostd spelled the protocols "tcp" and "udp" holds leases the shared
+// spelling refuses (ADR 0107): they are dropped at load with a warning, and orch's next renewal,
+// sent in the shared spelling, takes the address again.
+func TestExposer_ALeaseStoredInTheOldProtocolSpellingIsDroppedWithAWarningAndTakenAgain(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "networks.json")
+	c := &clock{t: t0}
+	e := startExposer(t, state, newLink(), c)
+	require.NoError(t, e.x.Put(context.Background(), web(false), 15*time.Second))
+	raw, err := os.ReadFile(state)
+	require.NoError(t, err)
+	written := string(raw)
+	old := strings.NewReplacer(`"protocol":"TCP"`, `"protocol":"tcp"`, `"protocol":"UDP"`, `"protocol":"udp"`).Replace(written)
+	require.NotEqual(t, written, old, "the state file names the protocols as the test expects")
+
+	load := func(content string) (kept int, logged string) {
+		path := filepath.Join(t.TempDir(), "networks.json")
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		var buf bytes.Buffer
+		m := newManager(&fakeRunner{}, &fakeTunnel{}, path)
+		m.Base.LAN = "lan0"
+		m.Now = c.now
+		m.Boot = c.bootInfo
+		m.Log = slog.New(slog.NewTextHandler(&buf, nil))
+		require.NoError(t, m.Load(context.Background()))
+		return len(m.Exposures()), buf.String()
+	}
+	kept, logged := load(old)
+	assert.Zero(t, kept, "a lease in the old spelling is dropped")
+	assert.Contains(t, logged, "level=WARN")
+	assert.Contains(t, logged, `protocol \"tcp\"`)
+	kept, logged = load(written)
+	assert.Equal(t, 1, kept, "control: the same lease in the shared spelling is restored")
+	assert.NotContains(t, logged, "dropped a lease")
+
+	path := filepath.Join(t.TempDir(), "networks.json")
+	require.NoError(t, os.WriteFile(path, []byte(old), 0o600))
+	link := newLink()
+	again := startExposer(t, path, link, c)
+	require.Empty(t, again.x.Exposures(), "the restarted host holds nothing")
+	require.NoError(t, again.x.Put(context.Background(), web(false), 15*time.Second), "orch's next renewal")
+	assert.Equal(t, []netip.Addr{addr("192.168.0.80")}, addresses(again.x.Exposures()), "takes the address again")
+	assert.True(t, link.has(addr("192.168.0.80")))
 }

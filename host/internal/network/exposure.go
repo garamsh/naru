@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sort"
 	"time"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Errors the exposures answer; the API maps them to statuses.
@@ -28,21 +30,12 @@ var (
 	ErrInvalid = errors.New("the exposure is invalid")
 )
 
-// Protocol is the transport of an exposed port.
-type Protocol string
-
-// The protocols of an exposed port.
-const (
-	TCP Protocol = "tcp"
-	UDP Protocol = "udp"
-)
-
 // ExposurePort is a port of an exposure: the port on the address and the BackendPort it goes to
 // on the backends. Which ports a caller may name is orch's policy (ADR 0102); the host forwards what its lease says.
 type ExposurePort struct {
-	Protocol    Protocol `json:"protocol"`
-	Port        int      `json:"port"`
-	BackendPort int      `json:"backendPort"`
+	Protocol    wire.Protocol `json:"protocol"`
+	Port        int           `json:"port"`
+	BackendPort int           `json:"backendPort"`
 }
 
 // Exposure is a lease on a LAN address: the host owns the address and forwards its ports to the
@@ -61,7 +54,7 @@ type Exposure struct {
 func (e Exposure) forwarded() []ExposurePort {
 	var out []ExposurePort
 	for _, p := range e.Ports {
-		if !e.Proxy || p.Protocol != TCP {
+		if !e.Proxy || p.Protocol != wire.ProtocolTCP {
 			out = append(out, p)
 		}
 	}
@@ -72,7 +65,7 @@ func (e Exposure) forwarded() []ExposurePort {
 func (e Exposure) proxied() []ExposurePort {
 	var out []ExposurePort
 	for _, p := range e.Ports {
-		if e.Proxy && p.Protocol == TCP {
+		if e.Proxy && p.Protocol == wire.ProtocolTCP {
 			out = append(out, p)
 		}
 	}
@@ -131,7 +124,7 @@ func (e Exposure) Validate() error {
 	for _, p := range e.Ports {
 		key := ExposurePort{Protocol: p.Protocol, Port: p.Port}
 		switch {
-		case p.Protocol != TCP && p.Protocol != UDP:
+		case !p.Protocol.Valid():
 			return fmt.Errorf("%w: protocol %q", ErrInvalid, p.Protocol)
 		case p.Port < 1 || p.Port > 65535:
 			return fmt.Errorf("%w: port %d", ErrInvalid, p.Port)
@@ -139,7 +132,7 @@ func (e Exposure) Validate() error {
 			return fmt.Errorf("%w: backendPort %d", ErrInvalid, p.BackendPort)
 		case seen[key]:
 			return fmt.Errorf("%w: %s port %d twice", ErrInvalid, p.Protocol, p.Port)
-		case e.Proxy && p.Protocol == UDP:
+		case e.Proxy && p.Protocol == wire.ProtocolUDP:
 			return fmt.Errorf("%w: a UDP port cannot carry the PROXY protocol", ErrInvalid)
 		}
 		seen[key] = true

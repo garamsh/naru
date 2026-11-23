@@ -22,6 +22,7 @@ import (
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/fixture"
 	"github.com/garamsh/naru/tooling/qemu/internal/hostcli"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
@@ -126,11 +127,11 @@ func TestFleet_AClientOnTheLANReachesAMicroVMThroughALeasedAddressAndNotOnceTheL
 	first, second := prov(h1), prov(h2)
 	forward := func(vm netVM) hostapi.ExposureRequest {
 		return hostapi.ExposureRequest{Network: netA, Backends: []string{vm.ip}, LeaseSeconds: 15,
-			Ports: []hostapi.ExposurePort{{Port: 80, Protocol: "tcp", BackendPort: plainBackend}}}
+			Ports: []hostapi.ExposurePort{{Port: 80, Protocol: wire.ProtocolTCP, BackendPort: plainBackend}}}
 	}
 	proxied := func(vm netVM) hostapi.ExposureRequest {
 		return hostapi.ExposureRequest{Network: netA, Backends: []string{vm.ip}, LeaseSeconds: 15, ProxyProtocol: "v2",
-			Ports: []hostapi.ExposurePort{{Port: 443, Protocol: "tcp", BackendPort: proxyBackend}}}
+			Ports: []hostapi.ExposurePort{{Port: 443, Protocol: wire.ProtocolTCP, BackendPort: proxyBackend}}}
 	}
 	client := f.node(lanClient)
 	answer := func(target string) func() string { return func() string { return answerOf(client, target) } }

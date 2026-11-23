@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/network"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 func TestProxyHeader_Bytes(t *testing.T) {
@@ -79,7 +80,7 @@ func startProxy(t *testing.T, dial func(ctx context.Context, addr string) (net.C
 		o(e.x)
 	}
 	x := web(true)
-	x.Ports = []network.ExposurePort{{Protocol: "tcp", Port: 443, BackendPort: 30443}}
+	x.Ports = []network.ExposurePort{{Protocol: wire.ProtocolTCP, Port: 443, BackendPort: 30443}}
 	require.NoError(t, e.x.Put(context.Background(), x, time.Minute))
 	return &proxyEnv{exposureEnv: e, listen: <-ready}
 }

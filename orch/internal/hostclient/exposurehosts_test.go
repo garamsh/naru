@@ -2,6 +2,10 @@ package hostclient_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -9,6 +13,7 @@ import (
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/orch/internal/exposures"
 	"github.com/garamsh/naru/orch/internal/hostclient"
 )
@@ -128,4 +133,25 @@ func TestMachinesAreTheNetworksMicroVMsOfTheHostsThatAnswerWithTheirState(t *tes
 		{Name: "up", Host: "h1", Address: "10.1.0.5", Running: true},
 		{Name: "dead", Host: "h1", Address: "10.1.0.7"},
 	}, got, "a stopped one is listed, not running; another network's and a silent host's are not")
+}
+
+// The lease orch puts reaches the host API in the protocol's one spelling, which hostd's
+// conformance test (lib/hostapi/hostapitest) shows it takes (ADR 0107).
+func TestALeaseReachesTheHostInTheSharedProtocolSpelling(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	h := hostclient.NewExposureHosts(&invFake{hosts: []orchapi.Host{{ID: "h1", Address: "h1:7443"}}},
+		func(string, string) hostclient.ExposureAPI { return hostapi.NewClient(srv.URL, srv.Client()) })
+	for _, p := range wire.Protocols() {
+		l := exposures.Lease{Network: "a", Ports: []orchapi.ExposurePort{{Protocol: p, Port: 443, BackendPort: 30443}}, Backends: []string{"10.1.0.5"}, Seconds: 15}
+		require.NoError(t, h.Put(t.Context(), "h1", "192.168.0.80", l))
+		var sent hostapi.ExposureRequest
+		require.NoError(t, json.Unmarshal(body, &sent))
+		require.Equal(t, []hostapi.ExposurePort{{Protocol: p, Port: 443, BackendPort: 30443}}, sent.Ports)
+		require.Contains(t, string(body), `"protocol":"`+string(p)+`"`)
+	}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // AddressPoolSpec is what an operator declares for an address pool: the IPv4 ranges the LAN's
@@ -24,9 +26,9 @@ type AddressPool struct {
 // it at. A Service's is its NodePort. Which backend ports a caller may name is orch's policy per
 // owner (ADR 0102).
 type ExposurePort struct {
-	Protocol    string `json:"protocol"`
-	Port        int    `json:"port"`
-	BackendPort int    `json:"backendPort"`
+	Protocol    wire.Protocol `json:"protocol"`
+	Port        int           `json:"port"`
+	BackendPort int           `json:"backendPort"`
 }
 
 // ProxyProtocolV2 is the one value of ExposureSpec.ProxyProtocol besides the empty one.
