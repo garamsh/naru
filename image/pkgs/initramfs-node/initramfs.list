@@ -77,3 +77,8 @@ file /usr/lib/naru/addons/images/coredns.tar @OUT@/addons/images/coredns.tar 064
 file /usr/lib/naru/addons/manifests/dns.yaml @OUT@/addons/manifests/dns.yaml 0644 0 0
 file /usr/lib/naru/addons/images/ccm.tar @OUT@/addons/images/ccm.tar 0644 0 0
 file /usr/lib/naru/addons/manifests/cloud-controller.yaml @OUT@/addons/manifests/cloud-controller.yaml 0644 0 0
+# The volumes extension, as the file the release carries and its description: init stages it into a blank
+# Node's extension store at the first boot and removes it from the tmpfs it copied the initramfs to (ADR 0096).
+dir /usr/lib/naru/boot-extensions 0755 0 0
+file /usr/lib/naru/boot-extensions/naru-volumes.sqfs @OUT@/extensions/naru-volumes.sqfs 0644 0 0
+file /usr/lib/naru/boot-extensions/naru-volumes.json @OUT@/extensions/naru-volumes.json 0644 0 0

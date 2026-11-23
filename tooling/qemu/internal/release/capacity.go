@@ -135,3 +135,21 @@ func CheckSuccessor(prev BundleManifestJSON, kernelBytes int64) error {
 	}
 	return nil
 }
+
+// MaxNodeInitramfsBytes is the largest Node initramfs a release ships: the 256 MiB of ADR 0083, which
+// the extension the initramfs carries for a blank Node's first boot counts against (ADR 0096).
+const MaxNodeInitramfsBytes = 256 << 20
+
+// checkNodeInitramfs refuses a Node initramfs larger than MaxNodeInitramfsBytes, and says the size
+// it found on standard output as the release's figure.
+func checkNodeInitramfs(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("release: the Node initramfs is %d bytes (the limit is %d)\n", info.Size(), MaxNodeInitramfsBytes)
+	if info.Size() > MaxNodeInitramfsBytes {
+		return fmt.Errorf("the Node initramfs of %d bytes is larger than the %d bytes ADR 0083 allows: the extension it carries for the first boot counts against it", info.Size(), MaxNodeInitramfsBytes)
+	}
+	return nil
+}

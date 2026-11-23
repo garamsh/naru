@@ -269,6 +269,9 @@ func Build(o Options) ([]Asset, error) {
 		return nil, err
 	}
 	esp -= extRoom
+	if err := checkNodeInitramfs(filepath.Join(o.ImageDir, "node-initrd.cpio.gz")); err != nil {
+		return nil, err
+	}
 	if err := checkPrevious(o, kernel); err != nil {
 		return nil, err
 	}

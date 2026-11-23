@@ -137,3 +137,16 @@ func TestExtensionRoom_ReadsWhatTheDiskBuilderWroteBesideTheDiskAndNothingWithou
 	_, err = ExtensionRoom(dir)
 	assert.ErrorContains(t, err, LayoutName)
 }
+
+func TestCheckNodeInitramfs_RefusesOneLargerThanTheLimitAndTakesOneAtIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-initrd.cpio.gz")
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	require.NoError(t, f.Truncate(MaxNodeInitramfsBytes))
+	require.NoError(t, f.Close())
+	require.NoError(t, checkNodeInitramfs(path), "the control: the limit itself is allowed")
+
+	require.NoError(t, os.Truncate(path, MaxNodeInitramfsBytes+1))
+
+	assert.ErrorContains(t, checkNodeInitramfs(path), "larger than")
+}

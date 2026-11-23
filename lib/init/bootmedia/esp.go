@@ -19,13 +19,13 @@ import (
 // The ESP's extensions: the directory, and the index that names each file, since the ESP's files
 // have 8.3 names that do not carry an extension's name.
 const (
-	// Dir is the directory of the ESP that holds the images and the index.
-	Dir = "EXT"
-	// IndexName is the index's file name in Dir.
+	// ESPDir is the directory of the ESP that holds the images and the index.
+	ESPDir = "EXT"
+	// IndexName is the index's file name in ESPDir.
 	IndexName = "INDEX.JSN"
 )
 
-// Index is the file Dir/IndexName: the images the boot disk was built with.
+// Index is the file ESPDir/IndexName: the images the boot disk was built with.
 type Index struct {
 	Extensions []IndexEntry `json:"extensions"`
 }
@@ -37,7 +37,7 @@ type IndexEntry struct {
 	Version string `json:"version"`
 	SHA256  string `json:"sha256"`
 	Bytes   int64  `json:"bytes"`
-	// File is the image's name in Dir.
+	// File is the image's name in ESPDir.
 	File string `json:"file"`
 }
 
@@ -78,7 +78,7 @@ func (e ESP) Offer(name string) (extension.Offer, error) {
 }
 
 func (e ESP) open(name string) (io.ReadCloser, extension.Offer, error) {
-	raw, err := os.ReadFile(filepath.Join(e.Mountpoint, Dir, IndexName))
+	raw, err := os.ReadFile(filepath.Join(e.Mountpoint, ESPDir, IndexName))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, extension.Offer{}, extension.ErrNoOffer
 	}
@@ -94,9 +94,9 @@ func (e ESP) open(name string) (io.ReadCloser, extension.Offer, error) {
 			continue
 		}
 		if filepath.Base(x.File) != x.File {
-			return nil, extension.Offer{}, fmt.Errorf("the ESP's extension index names %q, which is not a file of %s", x.File, Dir)
+			return nil, extension.Offer{}, fmt.Errorf("the ESP's extension index names %q, which is not a file of %s", x.File, ESPDir)
 		}
-		f, err := os.Open(filepath.Join(e.Mountpoint, Dir, x.File))
+		f, err := os.Open(filepath.Join(e.Mountpoint, ESPDir, x.File))
 		if err != nil {
 			return nil, extension.Offer{}, err
 		}

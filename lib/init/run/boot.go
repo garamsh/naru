@@ -39,6 +39,7 @@ func bootSources() []extension.Source {
 			Mountpoint: "/run/naru/esp-extensions",
 			Mount:      syscall.Mount, Unmount: syscall.Unmount,
 		},
+		bootmedia.Dir{Root: bootmedia.BootExtensionsDir},
 	}
 }
 
