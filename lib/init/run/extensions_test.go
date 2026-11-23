@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -58,16 +59,11 @@ func putImage(t *testing.T, s *extension.Store, content string) string {
 	return digest
 }
 
-// specsOf is the source run gives pruneExtensions and nextBootExtensions: the configuration an
-// engine holds, or none where the boot made no engine.
-func specsOf(e *apply.Engine) func() ([]config.Extension, bool) {
-	return func() ([]config.Extension, bool) {
-		if e == nil {
-			return nil, false
-		}
-		_, cfg := e.Config()
-		return cfg.Spec.Extensions, true
-	}
+// specsFor is run's source for the engine e, which is none where e is nil.
+func specsFor(e *apply.Engine) func() ([]config.Extension, bool) {
+	var applied atomic.Pointer[apply.Engine]
+	applied.Store(e)
+	return specsOf(&applied)
 }
 
 func engineWith(t *testing.T, revision int, entries ...config.Extension) *apply.Engine {
@@ -94,7 +90,7 @@ func TestPruneExtensions_RemovesWhatNoPinnedEntryOfTheNextBootsConfigurationName
 			putImage(t, images, manifestOf("naru-orch", "v1"))
 			e := engineWith(t, revision, config.Extension{Name: "tools", SHA256: pinned}, config.Extension{Name: "naru-orch"})
 
-			pruneExtensions(specsOf(e), manager, log)
+			pruneExtensions(specsFor(e), manager, log)
 
 			left, err := manager.List()
 			require.NoError(t, err)
@@ -105,7 +101,7 @@ func TestPruneExtensions_RemovesWhatNoPinnedEntryOfTheNextBootsConfigurationName
 
 	images, manager := extensionFixture(t, log)
 	putImage(t, images, manifestOf("naru-orch", "v1"))
-	pruneExtensions(specsOf(nil), manager, log)
+	pruneExtensions(specsFor(nil), manager, log)
 	left, err := manager.List()
 	require.NoError(t, err)
 	assert.Len(t, left, 1, "the control: where the boot made no configuration nothing is known to be pinned and nothing is removed")
@@ -116,16 +112,16 @@ func TestNextBootExtensions_NamesTheEntriesOfTheConfigurationTheNextBootRuns(t *
 	images, manager := extensionFixture(t, log)
 	pinned := putImage(t, images, manifestOf("naru-orch", "v1"))
 
-	entries, stored, err := nextBootExtensions(manager, specsOf(engineWith(t, 0, config.Extension{Name: "naru-orch", SHA256: pinned})))
+	entries, stored, err := nextBootExtensions(manager, specsFor(engineWith(t, 0, config.Extension{Name: "naru-orch", SHA256: pinned})))
 	require.NoError(t, err)
 	assert.Equal(t, []upgrade.Entry{{Name: "naru-orch", SHA256: pinned}}, entries, "a revision-0 digest-pinned entry is counted")
 	assert.Len(t, stored, 1)
 
-	entries, _, err = nextBootExtensions(manager, specsOf(engineWith(t, 4, config.Extension{Name: "tools"})))
+	entries, _, err = nextBootExtensions(manager, specsFor(engineWith(t, 4, config.Extension{Name: "tools"})))
 	require.NoError(t, err)
 	assert.Equal(t, []upgrade.Entry{{Name: "tools"}}, entries, "the control: after an apply the newest revision's entries are the ones counted")
 
-	entries, stored, err = nextBootExtensions(manager, specsOf(nil))
+	entries, stored, err = nextBootExtensions(manager, specsFor(nil))
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 	assert.Empty(t, stored)

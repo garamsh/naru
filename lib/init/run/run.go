@@ -96,14 +96,7 @@ func Main() {
 	// applied is the engine that holds the configuration the next boot runs, which an upgrade and the
 	// removal of images read spec.extensions from. It is nil until the boot has made one.
 	var applied atomic.Pointer[apply.Engine]
-	extensionSpecs := func() ([]config.Extension, bool) {
-		e := applied.Load()
-		if e == nil {
-			return nil, false
-		}
-		_, cfg := e.Config()
-		return cfg.Spec.Extensions, true
-	}
+	extensionSpecs := specsOf(&applied)
 	publish := func() {
 		if err := writeInitStatus(config.InitStatusFile, version(), upgrades); err != nil {
 			log.Warn("write the status naru-hostd reports", "file", config.InitStatusFile, "err", err)
@@ -216,6 +209,19 @@ func refuse(sigs <-chan os.Signal) {
 // and SIGABRT is to exit, and if PID 1 exits the kernel panics.
 func ignoreSignals() {
 	signal.Ignore(syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT)
+}
+
+// specsOf returns the source of spec.extensions of the configuration the engine in applied holds,
+// which is false while the boot has made none.
+func specsOf(applied *atomic.Pointer[apply.Engine]) func() ([]config.Extension, bool) {
+	return func() ([]config.Extension, bool) {
+		e := applied.Load()
+		if e == nil {
+			return nil, false
+		}
+		_, cfg := e.Config()
+		return cfg.Spec.Extensions, true
+	}
 }
 
 // nextBootExtensions returns spec.extensions of the configuration the next boot runs and the stored
