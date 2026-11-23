@@ -109,6 +109,7 @@ type Deps struct {
 type ExposureHosts interface {
 	exposures.Hosts
 	exposures.Members
+	exposures.Machines
 }
 
 // Orchd is a running member.
@@ -262,8 +263,10 @@ func (o *Orchd) assemble(m *member.Member) bool {
 		reconcilers = append(reconcilers, netrec.New(netrec.Config{Hosts: d.NewNetworkHosts(svc), Networks: networkStore, Interval: c.NetworkInterval, Log: d.Log}))
 	}
 	var exposureSvc api.Exposures
+	var machines exposures.Machines
 	if d.NewExposureHosts != nil {
 		eh := d.NewExposureHosts(svc)
+		machines = eh
 		exposureSvc = exposures.New(exposuresetcd.New(m.Client()), networkStore, eh, invStore, d.Clock)
 		reconcilers = append(reconcilers, exposures.NewReconciler(exposures.Config{
 			Hosts: eh, Exposures: exposuresetcd.New(leaderKV), Networks: networkStore, Clock: d.Clock, Log: d.Log,
@@ -275,7 +278,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 			Events: groupsetcd.NewEvents(leaderInv), Interval: c.GroupInterval, Log: d.Log,
 		}))
 	}
-	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
+	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Exposures: exposureSvc, Machines: machines, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
 
 	o.wg.Add(3)
 	go func() {

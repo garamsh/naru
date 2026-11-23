@@ -165,4 +165,7 @@ func TestOnlyTheExposerExposesAndNoRoleOfItsOwnReadsAnythingElse(t *testing.T) {
 	}
 	require.True(t, auth.Allowed(identity.Identity{Role: identity.RoleReader}, auth.ReadExposures))
 	require.False(t, auth.Allowed(identity.Identity{Role: identity.RoleHost}, auth.ReadExposures))
+	require.True(t, auth.Allowed(exposer, auth.ReadNetworkMembers))
+	require.True(t, auth.Allowed(identity.Identity{Role: identity.RoleReader}, auth.ReadNetworkMembers))
+	require.False(t, auth.Allowed(identity.Identity{Role: identity.RoleHost}, auth.ReadNetworkMembers))
 }

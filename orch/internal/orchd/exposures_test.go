@@ -195,3 +195,36 @@ func TestMembersWithoutHostsAnswer501(t *testing.T) {
 	_, err = o.op.ApplyNetwork(t.Context(), "a", orchapi.NetworkSpec{Prefix: "10.1.0.0/24"})
 	require.NoError(t, err, "control: the member serves its other endpoints")
 }
+
+func (e *exposureHosts) Machines(_ context.Context, network string) ([]exposures.Machine, error) {
+	return []exposures.Machine{{Name: "m-" + network, Host: "h1", Address: map[string]string{"a": "10.1.0.5", "b": "10.2.0.5"}[network], Running: true}}, nil
+}
+
+func TestAnExposerListsOnlyItsOwnNetworksMembers(t *testing.T) {
+	o := startOne(t, orchtest.Options{
+		NewHosts: func(inventory.Service) groups.Hosts { return orchtest.NewFakeHosts("h1") },
+		NewExposureHosts: func(inventory.Service) orchd.ExposureHosts {
+			return &exposureHosts{leaseds: map[string]exposures.Lease{}}
+		},
+	})
+	ctx := t.Context()
+	for name, prefix := range map[string]string{"a": "10.1.0.0/24", "b": "10.2.0.0/24"} {
+		_, err := o.op.ApplyNetwork(ctx, name, orchapi.NetworkSpec{Prefix: prefix})
+		require.NoError(t, err)
+	}
+	ex := o.c.CA.Issue(t, identity.ExposerPrefix+"a", identity.RoleExposer)
+	ca := o.c.Client(t, 0, &ex)
+
+	got, err := ca.NetworkMembers(ctx, "a")
+	require.NoError(t, err)
+	require.Empty(t, got, "no group has a member on the network")
+	_, err = ca.NetworkMembers(ctx, "b")
+	require.Equal(t, 404, status(err), "another network's members are not there")
+	got, err = o.reader.NetworkMembers(ctx, "b")
+	require.NoError(t, err, "control: a reader lists any network")
+	require.Empty(t, got)
+	_, err = o.reader.NetworkMembers(ctx, "nope")
+	require.Equal(t, 404, status(err), "control: an unknown network")
+	_, err = o.anon.NetworkMembers(ctx, "a")
+	require.Equal(t, 401, status(err))
+}

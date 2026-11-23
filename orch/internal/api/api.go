@@ -78,6 +78,9 @@ type Deps struct {
 	Networks  Networks
 	// Exposures is nil while the member has no way to reach the hosts; its endpoints answer 501.
 	Exposures Exposures
+	// Machines is nil while the member has no way to reach the hosts; the members endpoint then
+	// answers 501.
+	Machines  exposures.Machines
 	Signer    inventory.Signer
 	Auth      auth.Authenticator
 	Snapshots Snapshots
@@ -116,6 +119,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/networks/{name}", h.guard(auth.Read, h.networkGet))
 	mux.HandleFunc("PUT /v1/networks/{name}", h.guard(auth.Operate, h.networkApply))
 	mux.HandleFunc("DELETE /v1/networks/{name}", h.guard(auth.Operate, h.networkDelete))
+	mux.HandleFunc("GET /v1/networks/{name}/members", h.guard(auth.ReadNetworkMembers, h.networkMembersList))
 	mux.HandleFunc("GET /v1/address-pools", h.guard(auth.Read, h.poolList))
 	mux.HandleFunc("PUT /v1/address-pools/{name}", h.guard(auth.Operate, h.poolApply))
 	mux.HandleFunc("DELETE /v1/address-pools/{name}", h.guard(auth.Operate, h.poolDelete))

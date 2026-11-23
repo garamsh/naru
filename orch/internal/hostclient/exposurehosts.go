@@ -31,8 +31,9 @@ type ExposureHosts struct {
 }
 
 var (
-	_ exposures.Hosts   = (*ExposureHosts)(nil)
-	_ exposures.Members = (*ExposureHosts)(nil)
+	_ exposures.Hosts    = (*ExposureHosts)(nil)
+	_ exposures.Members  = (*ExposureHosts)(nil)
+	_ exposures.Machines = (*ExposureHosts)(nil)
 )
 
 // NewExposureHosts returns the exposures' view of the hosts of inv.
@@ -201,6 +202,36 @@ func (h *ExposureHosts) Addresses(ctx context.Context, network string) ([]string
 		return addrs, true
 	}) {
 		out = append(out, addrs...)
+	}
+	return out, nil
+}
+
+// Machines returns the microVMs of the network on every host that answers.
+func (h *ExposureHosts) Machines(ctx context.Context, network string) ([]exposures.Machine, error) {
+	admitted, err := h.inv.Hosts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []exposures.Machine
+	for _, ms := range probeAll(ctx, admitted, func(ctx context.Context, a orchapi.Host) ([]exposures.Machine, bool) {
+		vms, err := h.dial(a.ID, a.Address).MicroVMs(ctx)
+		if err != nil {
+			return nil, false
+		}
+		var ms []exposures.Machine
+		for _, m := range vms {
+			if m.Network != network {
+				continue
+			}
+			x := exposures.Machine{Name: m.Name, Host: a.ID, Running: live(m)}
+			if len(m.Addresses) > 0 {
+				x.Address = m.Addresses[0]
+			}
+			ms = append(ms, x)
+		}
+		return ms, true
+	}) {
+		out = append(out, ms...)
 	}
 	return out, nil
 }
