@@ -2,6 +2,7 @@ package ccm
 
 import (
 	"context"
+	"fmt"
 
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -16,10 +17,15 @@ type Endpoints interface {
 }
 
 // SelectNodes is the Nodes the Service's traffic is sent to, by its externalTrafficPolicy: every Node
-// for Cluster, and only those in ready for Local. ready is read only for Local.
-func SelectNodes(svc *v1.Service, nodes []*v1.Node, ready map[string]bool) []*v1.Node {
+// for Cluster, and only those that run a ready endpoint of the Service for Local. It reads ends only
+// for Local. It is the one place the policy is read.
+func SelectNodes(ctx context.Context, svc *v1.Service, nodes []*v1.Node, ends Endpoints) ([]*v1.Node, error) {
 	if !wantsLocal(svc) {
-		return nodes
+		return nodes, nil
+	}
+	ready, err := ends.ReadyNodes(ctx, svc)
+	if err != nil {
+		return nil, fmt.Errorf("endpoints of %s/%s: %w", svc.Namespace, svc.Name, err)
 	}
 	var out []*v1.Node
 	for _, n := range nodes {
@@ -27,7 +33,7 @@ func SelectNodes(svc *v1.Service, nodes []*v1.Node, ready map[string]bool) []*v1
 			out = append(out, n)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // ReadyNodeNames is the Nodes that run an endpoint of the slices whose ready condition is true or unset

@@ -23,6 +23,10 @@ const (
 // errNodePort is a Service whose NodePorts Kubernetes has not allocated yet; the controller asks again.
 var errNodePort = errors.New("a port of the Service has no NodePort yet")
 
+// errNoBackend is a Service with no Node to send to: no Node has an IPv4 InternalIP, or, for Local, none
+// of those runs a ready endpoint. The controller asks again.
+var errNoBackend = errors.New("no Node with an IPv4 InternalIP is a backend of the Service")
+
 // ExposureID is the exposure's id for the Service: its namespace and name and its UID's first eight
 // hex digits, so a Service deleted and made again is a new exposure.
 func ExposureID(svc *v1.Service) string {
@@ -54,7 +58,7 @@ func Spec(svc *v1.Service, nodes []*v1.Node, network, pool string) (orchapi.Expo
 	}
 	spec.Backends = Backends(nodes)
 	if len(spec.Backends) == 0 {
-		return spec, errors.New("no Node has an IPv4 InternalIP")
+		return spec, errNoBackend
 	}
 	if svc.Annotations[ProxyProtocolAnnotation] == orchapi.ProxyProtocolV2 {
 		spec.ProxyProtocol = orchapi.ProxyProtocolV2

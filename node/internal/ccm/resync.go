@@ -17,9 +17,6 @@ import (
 // resyncDelay gathers the slice changes of one Service into one pass.
 const resyncDelay = time.Second
 
-// nodeExcluded is the label that keeps a Node out of every load balancer.
-const nodeExcluded = "node.kubernetes.io/exclude-from-external-load-balancers"
-
 // Resyncer stores the backends of a Service that sets externalTrafficPolicy Local again when its
 // EndpointSlices change: the service controller calls the provider on a change of the Service or of the
 // Nodes, and a Pod that moves changes neither.
@@ -33,7 +30,7 @@ func NewResyncer(lb *LoadBalancer, kube kubernetes.Interface) *Resyncer {
 	return &Resyncer{lb: lb, kube: kube}
 }
 
-// Sync updates the exposure of the named Service with the Nodes as they are now. A Service that is gone,
+// Sync updates the exposure of the named Service with the Nodes the service controller last passed for it. A Service that is gone,
 // is not of type LoadBalancer or does not set Local is not its business.
 func (r *Resyncer) Sync(ctx context.Context, namespace, name string) error {
 	svc, err := r.kube.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -46,31 +43,7 @@ func (r *Resyncer) Sync(ctx context.Context, namespace, name string) error {
 	if svc.Spec.Type != v1.ServiceTypeLoadBalancer || !wantsLocal(svc) || svc.DeletionTimestamp != nil {
 		return nil
 	}
-	list, err := r.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	var nodes []*v1.Node
-	for i := range list.Items {
-		if n := &list.Items[i]; nodeReady(n) && !hasLabel(n, nodeExcluded) {
-			nodes = append(nodes, n)
-		}
-	}
-	return r.lb.UpdateLoadBalancer(ctx, "", svc, nodes)
-}
-
-func nodeReady(n *v1.Node) bool {
-	for _, c := range n.Status.Conditions {
-		if c.Type == v1.NodeReady {
-			return c.Status == v1.ConditionTrue
-		}
-	}
-	return false
-}
-
-func hasLabel(n *v1.Node, key string) bool {
-	_, ok := n.Labels[key]
-	return ok
+	return r.lb.Resync(ctx, svc)
 }
 
 // Run watches the EndpointSlices and syncs the Service each change names, until ctx ends.
