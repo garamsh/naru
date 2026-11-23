@@ -53,7 +53,7 @@ func newHost(t *testing.T) *fakeHost {
 		}
 		switch key {
 		case "GET /v1/host":
-			_, _ = w.Write([]byte(`{"free":{"cpu":6,"memory":8589934592},"mvmd":{"kernels":[{"name":"node-1"},{"name":"node-2"}]}}`))
+			_, _ = w.Write([]byte(`{"free":{"cpu":6,"memory":8589934592},"mvmd":{"kernels":[{"name":"naru"}],"bootSets":[{"name":"node-1","origin":"configured"},{"name":"node-2","origin":"added"}]}}`))
 		case "GET /v1/microvms":
 			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","state":"running","network":"lab","podPrefix":"10.9.0.64/26","addresses":["10.9.0.2"]},{"name":"b","state":"stopped"},{"name":"c","state":"created"}]}`))
 		case "GET /v1/microvms/db-1/fence":
@@ -98,7 +98,7 @@ func client(inv inventory) *hostclient.Client {
 	return c
 }
 
-func TestListReportsReadinessCapacityKernelsAndMachines(t *testing.T) {
+func TestListReportsReadinessCapacityBootSetsAndMachines(t *testing.T) {
 	up := newHost(t)
 	down := newHost(t)
 	down.status["GET /v1/microvms"] = 500

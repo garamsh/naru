@@ -115,6 +115,9 @@ type Info struct {
 	MemoryBytes                          uint64
 	StateTotalBytes, StateAvailableBytes uint64
 	Kernels                              []Kernel
+	// BootSets are the boot sets the node offers an OS-form Machine: the ones its configuration
+	// names and the ones AddBootSet added. They are not the Kernels, which an image-form Machine boots.
+	BootSets []BootSet
 	// MachinePrefixes are the prefixes mvmd gives the addresses of Machines from.
 	MachinePrefixes []string
 }
@@ -125,6 +128,8 @@ type BootSet struct {
 	Name         string
 	KernelDigest string
 	InitrdDigest string
+	// Origin is how the node came to offer the set: "configured" or "added". It is empty in a set to add.
+	Origin string
 }
 
 // Deadline is mvmd's fencing deadline.

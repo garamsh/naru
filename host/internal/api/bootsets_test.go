@@ -176,3 +176,29 @@ func TestBootSets_MvmdNotAnsweringIs503(t *testing.T) {
 	code, b := e.post(t, e.as(t, ProvisionerOrganization), "/v1/boot-sets", ct, body)
 	assert.Equal(t, 503, code, string(b))
 }
+
+func TestBootSets_TheHostListsAnAddedSetNextToTheConfiguredOnesAndNotAmongItsKernels(t *testing.T) {
+	e := start(t)
+	e.rt.info.Kernels = []mvmd.Kernel{{Name: "naru", Default: true}}
+	e.rt.info.BootSets = []mvmd.BootSet{{Name: "naru-node-base", KernelDigest: "k", InitrdDigest: "i", Origin: "configured"}}
+	list := func() hostapi.MvmdInfo {
+		code, b := e.do(t, e.as(t, "naru:host-reader"), "GET", "/v1/host", nil)
+		require.Equal(t, 200, code, string(b))
+		var h hostapi.Host
+		require.NoError(t, json.Unmarshal(b, &h))
+		return h.Mvmd
+	}
+	assert.Equal(t, []hostapi.BootSet{{Name: "naru-node-base", KernelSHA256: "k", InitramfsSHA256: "i", Origin: "configured"}}, list().BootSets)
+
+	ct, body := addable(t, "naru-node-v1", "kernel bytes", "initramfs bytes")
+	code, b := e.post(t, e.as(t, ProvisionerOrganization), "/v1/boot-sets", ct, body)
+	require.Equal(t, 200, code, string(b))
+
+	got := list()
+	assert.Equal(t, []hostapi.BootSet{
+		{Name: "naru-node-base", KernelSHA256: "k", InitramfsSHA256: "i", Origin: "configured"},
+		{Name: "naru-node-v1", KernelSHA256: sha256Of([]byte("kernel bytes")), InitramfsSHA256: sha256Of([]byte("initramfs bytes")), Origin: "added"},
+	}, got.BootSets, "the added set is offered")
+	require.Len(t, got.Kernels, 1)
+	assert.Equal(t, "naru", got.Kernels[0].Name, "an added boot set is not a kernel")
+}

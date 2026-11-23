@@ -96,8 +96,10 @@ func (c *Client) probe(ctx context.Context, h orchapi.Host, out *groups.Host) {
 	}
 	out.Ready = true
 	out.Capacity = groups.Capacity{CPUs: int(info.Free.CPU), MemoryMiB: int(info.Free.Memory >> 20)}
-	for _, k := range info.Mvmd.Kernels {
-		out.NodeVersions = append(out.NodeVersions, k.Name)
+	// A node version is a boot set: an OS-form microVM boots one, and mvmd refuses a name that is
+	// only a kernel's, which an image-form microVM boots.
+	for _, b := range info.Mvmd.BootSets {
+		out.NodeVersions = append(out.NodeVersions, b.Name)
 	}
 	for _, m := range vms {
 		out.Machines = append(out.Machines, groups.Machine{

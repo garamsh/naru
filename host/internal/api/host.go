@@ -82,6 +82,7 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 	if out.Mvmd.Kernels == nil {
 		out.Mvmd.Kernels = []mvmd.Kernel{}
 	}
+	out.Mvmd.BootSets = hostBootSets(rt.BootSets)
 	out.Free = hostapi.Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateAvailableBytes}
 	for _, m := range machines {
 		if m.State != mvmd.StateRunning && m.State != mvmd.StatePaused {
@@ -91,4 +92,13 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 		out.Free.Memory -= min(out.Free.Memory, m.MemoryBytes)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// hostBootSets is the boot sets mvmd offers as the host API says them; an empty list is [], not null.
+func hostBootSets(in []mvmd.BootSet) []hostapi.BootSet {
+	out := make([]hostapi.BootSet, 0, len(in))
+	for _, b := range in {
+		out = append(out, hostapi.BootSet{Name: b.Name, KernelSHA256: b.KernelDigest, InitramfsSHA256: b.InitrdDigest, Origin: b.Origin})
+	}
+	return out
 }
