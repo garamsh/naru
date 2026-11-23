@@ -509,3 +509,23 @@ func TestGenKubernetesJWKS_RefusesAnIssuersFileThatNamesAPathOutsideOutDir(t *te
 	_, err = run(t, "gen", "kubernetes-jwks", "--ca-dir", dep.ca, "--out-dir", filepath.Join(out, "site"))
 	assert.NoError(t, err, "control: a plain issuer")
 }
+
+func TestGenKubernetesNode_APodPrefixFromTheSeedIsAcceptedByInitAndNamesNoPrefixNoRoute(t *testing.T) {
+	dep := newDeployment(t)
+	dep.kubernetes(t)
+	out := filepath.Join(t.TempDir(), "w1-1.yaml")
+
+	mustRun(t, "gen", "kubernetes-node", "--ca-dir", dep.ca, "--name", "w1-1", "--role", "worker", "--address", "192.168.0.20/24",
+		"--endpoint", "192.168.0.10", "--pod-network", "10.64.0.0/12", "--pod-prefix-from-seed", "--out", out)
+
+	validate(t, out)
+	assert.Empty(t, routes(t, out))
+	b, err := os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "cniConf: /run/cni/net.d/10-naru.conflist")
+
+	// The control: a Pod prefix beside the flag is refused.
+	_, err = run(t, "gen", "kubernetes-node", "--ca-dir", dep.ca, "--name", "w1-1", "--role", "worker", "--address", "192.168.0.20/24",
+		"--endpoint", "192.168.0.10", "--pod-network", "10.64.0.0/12", "--pod-prefix-from-seed", "--pod-prefix", "10.64.2.0/24", "--out", out)
+	assert.Error(t, err)
+}

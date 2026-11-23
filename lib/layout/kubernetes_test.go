@@ -50,6 +50,9 @@ type kubeSpec struct {
 			Name   string `yaml:"name"`
 			Serial string `yaml:"serial"`
 		} `yaml:"storage"`
+		Node *struct {
+			CNIConf string `yaml:"cniConf"`
+		} `yaml:"node"`
 		Extensions []map[string]string `yaml:"extensions"`
 		PKI        struct {
 			Authorities []struct {
@@ -874,4 +877,40 @@ func TestKubernetesCheck_WithTheCloudControllerANodeIsNamedAfterItsGroupMember(t
 		require.ErrorContains(t, on(name).Check(), "not a group member's name", name)
 	}
 	require.NoError(t, kubeNode(t, false, func(n *layout.Node) { n.Name = "worker" }).Check(), "control: without the add-on any DNS label is a Node's name")
+}
+
+func TestKubernetesUserData_APodPrefixFromTheSeedLeavesItOutOfTheUserDataAndHasInitWriteTheCNIFile(t *testing.T) {
+	seeded := func(n *layout.Node) {
+		n.Kube.PodPrefix, n.Kube.Peers, n.Kube.PodPrefixFromSeed = netip.Prefix{}, nil, true
+	}
+	s := kubeUserData(t, kubeNode(t, false, seeded))
+
+	require.NotNil(t, s.Spec.Node)
+	assert.Equal(t, layout.CNIConfDir+"/10-naru.conflist", s.Spec.Node.CNIConf)
+	assert.Empty(t, s.Spec.Network.Routes, "the host routes the members' Pod prefixes")
+	for _, f := range s.Spec.Files {
+		assert.NotEqual(t, s.Spec.Node.CNIConf, f.Path, "init writes the file from the prefix")
+	}
+
+	// The control: the baked form writes the file and names no spec.node.
+	b := kubeUserData(t, kubeNode(t, false, nil))
+	assert.Nil(t, b.Spec.Node)
+	var baked bool
+	for _, f := range b.Spec.Files {
+		baked = baked || f.Path == layout.CNIConfDir+"/10-naru.conflist"
+	}
+	assert.True(t, baked)
+}
+
+func TestKubernetesUserData_ANodeWithAPodPrefixFromTheSeedRefusesOneOfItsOwnAndPeers(t *testing.T) {
+	for name, change := range map[string]func(*layout.Node){
+		"a prefix": func(n *layout.Node) { n.Kube.Peers = nil },
+		"peers":    func(n *layout.Node) { n.Kube.PodPrefix = netip.Prefix{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			n := kubeNode(t, false, func(n *layout.Node) { n.Kube.PodPrefixFromSeed = true; change(n) })
+			_, err := n.UserData()
+			assert.ErrorContains(t, err, "takes its Pod prefix from its seed")
+		})
+	}
 }

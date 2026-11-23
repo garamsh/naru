@@ -49,7 +49,7 @@ func TestOSForm_CreatesTheDataDiskThenTheMachineThenTheSeedAttachedBeforeTheStar
 	assert.Equal(t, "CD001", string(vol[16*2048+1:16*2048+6]))
 	assert.Equal(t, "cidata          ", string(vol[16*2048+40:16*2048+56]), "the volume label")
 	for _, want := range []string{
-		userData, "instance-id: web", "version: 1", "name: eth0", "address: '10.1.0.5'", "netmask: '255.255.255.0'", "gateway: '10.1.0.1'",
+		userData, "instance-id: web", "local-hostname: web", "naru-pod-prefix: 10.200.1.0/24", "version: 1", "name: eth0", "address: '10.1.0.5'", "netmask: '255.255.255.0'", "gateway: '10.1.0.1'",
 	} {
 		assert.True(t, bytes.Contains(vol, []byte(want)), "the seed has no %q", want)
 	}
@@ -220,4 +220,17 @@ func TestOSForm_DeleteRemovesTheMachineAndBothDisks(t *testing.T) {
 	assert.Equal(t, 204, code)
 	assert.Empty(t, e.rt.machines)
 	assert.Empty(t, e.rt.disks)
+}
+
+func TestOSForm_TheSeedsMetaDataCarriesAPodPrefixOnlyForAMicroVMThatHasOne(t *testing.T) {
+	e := start(t)
+	c := e.as(t, ProvisionerOrganization)
+	body := osBody()
+	delete(body, "podPrefix")
+	code, b := e.do(t, c, "POST", "/v1/microvms", body)
+	require.Equal(t, 201, code, string(b))
+
+	vol := e.rt.contents["web.seed"]
+	assert.True(t, bytes.Contains(vol, []byte("local-hostname: web")), "the control: the meta-data is there")
+	assert.False(t, bytes.Contains(vol, []byte("naru-pod-prefix")))
 }

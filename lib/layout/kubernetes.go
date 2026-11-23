@@ -180,6 +180,11 @@ type KubeNode struct {
 	ControlPlane bool
 	// PodNetwork is the prefix every Pod address is in, and PodPrefix the part of it this Node's Pods take.
 	PodNetwork, PodPrefix netip.Prefix
+	// PodPrefixFromSeed leaves PodPrefix unset and has the Node take it at boot from the naru-pod-prefix
+	// of its seed's meta-data (spec.node.podPrefix, ADR 0098), which the host writes for a microVM it
+	// routed a Pod prefix to. The user-data then names no Pod prefix and no Peers: the host routes every
+	// member's Pod prefix, so the Node's default route reaches them.
+	PodPrefixFromSeed bool
 	// Peers are the other Nodes: the Node routes each one's PodPrefix via its Address.
 	Peers []KubePeer
 	// FrontProxy is the aggregation layer's authority, and ServiceAccountKey and ServiceAccountPub
@@ -353,6 +358,10 @@ func (n Node) checkKube() error {
 		return errors.New("the cluster's authority is not set")
 	case !k.PodNetwork.IsValid() || !k.PodNetwork.Addr().Is4() || k.PodNetwork != k.PodNetwork.Masked():
 		return errors.New("the Pod network is not an IPv4 prefix in its canonical form")
+	case k.PodPrefixFromSeed && (k.PodPrefix.IsValid() || len(k.Peers) > 0):
+		return errors.New("a Node that takes its Pod prefix from its seed has no Pod prefix and no peers of its own: the host routes the members' Pod prefixes")
+	case k.PodPrefixFromSeed:
+		// The prefix is known at boot.
 	case !k.PodPrefix.IsValid() || !k.PodPrefix.Addr().Is4() || k.PodPrefix != k.PodPrefix.Masked():
 		return errors.New("the Pod prefix is not an IPv4 prefix in its canonical form")
 	case !k.PodNetwork.Contains(k.PodPrefix.Addr()) || k.PodPrefix.Bits() < k.PodNetwork.Bits():
@@ -553,6 +562,9 @@ func (n Node) kubeUserData() ([]byte, error) {
 	c.Spec.Network.Forwarding = []string{"ipv4"}
 	if !k.DisableNetworkPolicy {
 		c.Spec.Network.BridgeNetfilter = true
+	}
+	if k.PodPrefixFromSeed {
+		c.Spec.Node = &nodeSpec{CNIConf: CNIConfDir + "/10-naru.conflist"}
 	}
 	for _, p := range k.Peers {
 		c.Spec.Network.Routes = append(c.Spec.Network.Routes, route{To: p.PodPrefix, Via: p.Address})
@@ -898,10 +910,13 @@ func (n Node) kubeFiles() ([]file, error) {
 	}
 	files := []file{
 		{Path: kubePath("containerd.toml"), Mode: "0644", Content: n.containerdConfig()},
-		{Path: CNIConfDir + "/10-naru.conflist", Mode: "0644", Content: string(cni) + "\n"},
 		{Path: kubePath("kubelet.yaml"), Mode: "0644", Content: string(kubelet)},
 		{Path: kubePath("kube-proxy.yaml"), Mode: "0644", Content: string(proxy)},
 		{Path: kubePath("kube-proxy.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-proxy", "kube-proxy")},
+	}
+	if !k.PodPrefixFromSeed {
+		// With the prefix from the seed, init writes this file (spec.node.cniConf).
+		files = append(files, file{Path: CNIConfDir + "/10-naru.conflist", Mode: "0644", Content: string(cni) + "\n"})
 	}
 	if !k.DisableNetworkPolicy {
 		files = append(files, file{Path: kubePath("kube-network-policies.conf"), Mode: "0644", Content: n.kubeconfig(NetworkPolicyUser, "kube-network-policies")})

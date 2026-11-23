@@ -353,6 +353,7 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 		k                                                  layout.KubeNode
 		caDir, role, address, endpoint, podNetwork         string
 		podPrefix, gateway, out, networkConfig             string
+		podPrefixFromSeed                                  bool
 	)
 	fs.StringVar(&caDir, "ca-dir", "", "directory of ca.pem and ca.key, and what gen kubernetes wrote there")
 	fs.StringVar(&n.Name, "name", "", "the Node's name, such as node-1; it is the Kubernetes Node's name")
@@ -361,6 +362,7 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 	fs.StringVar(&endpoint, "endpoint", "", "the address of the API server, which the kubelet and kube-proxy dial: the control-plane Node's")
 	fs.StringVar(&podNetwork, "pod-network", "", "the prefix every Pod address is in, such as 10.64.0.0/12")
 	fs.StringVar(&podPrefix, "pod-prefix", "", "the part of the Pod network this Node's Pods take, such as 10.64.1.0/24")
+	fs.BoolVar(&podPrefixFromSeed, "pod-prefix-from-seed", false, "the Node takes its Pod prefix at boot from its seed's meta-data, which the host writes for a microVM it routed one to: give no --pod-prefix and no --peer")
 	fs.Var(&peers, "peer", "another Node, <address>=<pod-prefix>, repeatable: the Node routes to the prefix via the address")
 	fs.StringVar(&n.MAC, "mac", "", "the MAC address of the Node's card (with --network-config)")
 	fs.StringVar(&gateway, "gateway", "", "the default gateway (with --network-config)")
@@ -380,9 +382,14 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 	fs.StringVar(&out, "out", "", "the user-data file to write (0600: it carries keys; a file already there is replaced)")
 	fs.StringVar(&networkConfig, "network-config", "", "also write the NoCloud network-config to this file")
 	return func(args []string, stdout, stderr io.Writer) error {
-		if err := require(fs, "ca-dir", "name", "role", "address", "endpoint", "pod-network", "pod-prefix", "out"); err != nil {
+		required := []string{"ca-dir", "name", "role", "address", "endpoint", "pod-network", "out"}
+		if !podPrefixFromSeed {
+			required = append(required, "pod-prefix")
+		}
+		if err := require(fs, required...); err != nil {
 			return err
 		}
+		k.PodPrefixFromSeed = podPrefixFromSeed
 		if err := needs(fs, "network-config", "mac", "gateway", "nameserver", "search", "extra-nic"); err != nil {
 			return err
 		}
@@ -449,6 +456,9 @@ func genKubernetesNode(fs *pflag.FlagSet) runner {
 			to   *netip.Prefix
 			from string
 		}{{"address", &n.Address, address}, {"pod-network", &k.PodNetwork, podNetwork}, {"pod-prefix", &k.PodPrefix, podPrefix}} {
+			if p.from == "" && podPrefixFromSeed && p.flag == "pod-prefix" {
+				continue
+			}
 			if *p.to, err = netip.ParsePrefix(p.from); err != nil {
 				return fmt.Errorf("--%s: %w", p.flag, err)
 			}

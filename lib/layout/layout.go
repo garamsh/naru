@@ -315,6 +315,7 @@ type nodeConfig struct {
 			Routes          []route  `yaml:"routes,omitempty"`
 			BridgeNetfilter bool     `yaml:"bridgeNetfilter,omitempty"`
 		} `yaml:"network"`
+		Node     *nodeSpec `yaml:"node,omitempty"`
 		Services []service `yaml:"services"`
 		Files    []file    `yaml:"files"`
 		PKI      *pkiSpec  `yaml:"pki,omitempty"`
@@ -796,4 +797,10 @@ func (n Node) registryEntries() []registryEntry {
 		out = append(out, e)
 	}
 	return out
+}
+
+// nodeSpec is spec.node: the Node takes its Pod prefix from the seed's meta-data and init writes the
+// CNI configuration for it at CNIConf.
+type nodeSpec struct {
+	CNIConf string `yaml:"cniConf"`
 }

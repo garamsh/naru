@@ -49,6 +49,7 @@ func Parse(data []byte) (NodeConfig, error) {
 		return NodeConfig{}, err
 	}
 	cfg.Spec.Files = withHostFile(cfg.Spec.Files, cfg.Spec.Host)
+	cfg.Spec.Files = withCNIFile(cfg.Spec.Files, cfg.Spec.Node)
 	cfg = derive(cfg)
 	return cfg, nil
 }
@@ -132,6 +133,7 @@ func validate(cfg NodeConfig) error {
 	v.signer(cfg.Spec.Signer)
 	v.orch(cfg)
 	v.metrics(cfg.Spec.Metrics)
+	v.node(cfg.Spec.Node)
 	return errors.Join(v.errs...)
 }
 

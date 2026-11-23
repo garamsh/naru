@@ -114,30 +114,34 @@ func NewHost(diskWait time.Duration, reaper *Reaper) *Host {
 }
 
 // ReadSeed mounts the NoCloud drive read-only and returns its user-data, the
-// Node's naru.yaml, and its network-config. When no disk carries the label it returns an error
+// Node's naru.yaml, its network-config and its meta-data. When no disk carries the label it returns an error
 // wrapping boot.ErrNoSeed, after waiting up to diskWait for one.
-func (h *Host) ReadSeed() (userData, networkConfig []byte, err error) {
+func (h *Host) ReadSeed() (userData, networkConfig, metaData []byte, err error) {
 	dev, err := h.find(isoLabel, isSeedLabel)
 	if errors.Is(err, errNoDisk) {
-		return nil, nil, fmt.Errorf("NoCloud drive %q: %w: %w", seedLabel, err, boot.ErrNoSeed)
+		return nil, nil, nil, fmt.Errorf("NoCloud drive %q: %w: %w", seedLabel, err, boot.ErrNoSeed)
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("NoCloud drive %q: %w", seedLabel, err)
+		return nil, nil, nil, fmt.Errorf("NoCloud drive %q: %w", seedLabel, err)
 	}
 	if err := os.MkdirAll(h.seedMountPoint, 0o755); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := h.mount(dev, h.seedMountPoint, "iso9660", syscall.MS_RDONLY|hardened, ""); err != nil {
-		return nil, nil, fmt.Errorf("mount %s: %w", dev, err)
+		return nil, nil, nil, fmt.Errorf("mount %s: %w", dev, err)
 	}
 	if userData, err = os.ReadFile(filepath.Join(h.seedMountPoint, "user-data")); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	// A drive without a network-config leaves the network to DHCPv4 (netcfg.Parse of nothing).
 	if networkConfig, err = os.ReadFile(filepath.Join(h.seedMountPoint, netcfg.FileName)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return userData, networkConfig, nil
+	// meta-data is optional too: a drive without one carries no values of this member.
+	if metaData, err = os.ReadFile(filepath.Join(h.seedMountPoint, "meta-data")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, nil, err
+	}
+	return userData, networkConfig, metaData, nil
 }
 
 // MountDataDisk finds the data disk, checks that it is ext4 with the verity

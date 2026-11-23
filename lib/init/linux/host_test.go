@@ -111,12 +111,14 @@ func TestHost_ReadSeedMountsTheCidataVolumeAndReadsItsFiles(t *testing.T) {
 	require.NoError(t, os.MkdirAll(h.seedMountPoint, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(h.seedMountPoint, "user-data"), []byte("the naru.yaml"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(h.seedMountPoint, "network-config"), []byte("the network"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(h.seedMountPoint, "meta-data"), []byte("the meta-data"), 0o644))
 
-	userData, networkConfig, err := h.ReadSeed()
+	userData, networkConfig, metaData, err := h.ReadSeed()
 
 	require.NoError(t, err)
 	assert.Equal(t, "the naru.yaml", string(userData))
 	assert.Equal(t, "the network", string(networkConfig))
+	assert.Equal(t, "the meta-data", string(metaData))
 	assert.Equal(t, []mountCall{{filepath.Join(h.devDir, "sr0"), h.seedMountPoint, "iso9660"}}, *calls,
 		"the label matches in either case, and an ext4 disk labelled cidata is not the drive")
 }
@@ -126,7 +128,7 @@ func TestHost_ReadSeedMountsReadOnlyAndHardened(t *testing.T) {
 	var flags uintptr
 	h.mount = func(_, _, _ string, f uintptr, _ string) error { flags = f; return nil }
 
-	_, _, _ = h.ReadSeed()
+	_, _, _, _ = h.ReadSeed()
 
 	want := uintptr(syscall.MS_RDONLY | syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC)
 	assert.Equal(t, want, flags)
@@ -136,7 +138,7 @@ func TestHost_ReadSeedRefuses(t *testing.T) {
 	t.Run("a Node with no cidata volume", func(t *testing.T) {
 		h, calls := testHost(t, map[string]string{"vda": ext4test.Image(t, "NARUCFG", "", nil), "sr0": isoImage(t, "other")})
 
-		_, _, err := h.ReadSeed()
+		_, _, _, err := h.ReadSeed()
 
 		assert.ErrorIs(t, err, errNoDisk)
 		assert.ErrorIs(t, err, boot.ErrNoSeed, "the boot sequence runs the stored configuration")
@@ -148,7 +150,7 @@ func TestHost_ReadSeedRefuses(t *testing.T) {
 		require.NoError(t, os.MkdirAll(h.seedMountPoint, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(h.seedMountPoint, "user-data"), []byte("x"), 0o644))
 
-		_, network, err := h.ReadSeed()
+		_, network, _, err := h.ReadSeed()
 
 		require.NoError(t, err, "a drive without a network-config leaves the network to DHCPv4")
 		assert.Empty(t, network)
@@ -159,7 +161,7 @@ func TestHost_ReadSeedRefuses(t *testing.T) {
 		h, _ := testHost(t, map[string]string{"sr0": isoImage(t, "cidata")})
 		require.NoError(t, os.MkdirAll(h.seedMountPoint, 0o755))
 
-		_, _, err := h.ReadSeed()
+		_, _, _, err := h.ReadSeed()
 
 		assert.ErrorIs(t, err, os.ErrNotExist)
 	})

@@ -25,9 +25,10 @@ var ErrNoSeed = errors.New("no NoCloud drive is attached")
 // Host is the machine as the sequence needs it.
 type Host interface {
 	// ReadSeed returns the bytes of the NoCloud drive's user-data, which is
-	// naru.yaml, and of its network-config. When no drive is attached it returns an error wrapping
-	// ErrNoSeed.
-	ReadSeed() (userData, networkConfig []byte, err error)
+	// naru.yaml, of its network-config and of its meta-data, which carries the values of this
+	// member alone (config.ApplySeedMeta). A drive with no network-config or no meta-data gives
+	// none. When no drive is attached it returns an error wrapping ErrNoSeed.
+	ReadSeed() (userData, networkConfig, metaData []byte, err error)
 	// ApplyNetwork brings the network up and writes the resolvers, and returns what the Node was
 	// given: its addresses, its resolvers and the time servers a DHCPv4 lease named.
 	ApplyNetwork(netcfg.Config, *slog.Logger) (netcfg.Applied, error)
@@ -137,7 +138,7 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 		effective store.Stored
 		applied   netcfg.Applied
 	)
-	userData, networkConfig, err := host.ReadSeed()
+	userData, networkConfig, metaData, err := host.ReadSeed()
 	switch {
 	case errors.Is(err, ErrNoSeed):
 		log.Info("no NoCloud drive; running the stored configuration", "err", err)
@@ -145,7 +146,7 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	case err != nil:
 		return store.Stored{}, fmt.Errorf("read the NoCloud drive: %w", err)
 	default:
-		effective, applied, err = bootSeeded(host, configs, userData, networkConfig, log)
+		effective, applied, err = bootSeeded(host, configs, userData, networkConfig, metaData, log)
 	}
 	if err != nil {
 		return store.Stored{}, err
@@ -207,9 +208,12 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 // bootSeeded brings the network up from the seed, mounts the data disk the seed's configuration
 // names and chooses the effective configuration against the seed's digest. It stores the seed's
 // network-config for a boot with no seed; a store that cannot take it is logged and the boot goes on.
-func bootSeeded(host Host, configs Configs, userData, networkConfig []byte, log *slog.Logger) (store.Stored, netcfg.Applied, error) {
+func bootSeeded(host Host, configs Configs, userData, networkConfig, metaData []byte, log *slog.Logger) (store.Stored, netcfg.Applied, error) {
 	base, err := config.Parse(userData)
 	if err != nil {
+		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("invalid configuration: %w", err)
+	}
+	if base, err = config.ApplySeedMeta(base, metaData); err != nil {
 		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	network, err := netcfg.Parse(networkConfig)
