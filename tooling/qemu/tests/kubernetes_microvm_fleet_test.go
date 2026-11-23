@@ -118,7 +118,7 @@ template:
   disks:
     - {name: data, sizeBytes: 4294967296}
   userData: %s
-%s%srollout: {maxUnavailable: 0, maxSurge: 0}
+%s%srollout: {maxUnavailable: 1, maxSurge: 0}
 `, name, node.KubeNodeMemoryMiB, set, addr, userData(name, role, addr), policy, net))
 	}
 	f.must(f.orch("network", "apply", "-f", f.networkFile("kube", node.KubePodNetwork)), "declare the Pod network")

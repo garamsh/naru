@@ -66,7 +66,7 @@ template:
   addresses: [%s]
   disks:
     - {name: data, sizeBytes: 1073741824}
-rollout: {maxUnavailable: 0, maxSurge: 0}
+rollout: {maxUnavailable: 1, maxSurge: 0}
 `, name, len(addrs), set, strings.Join(addrs, ", ")))
 	}
 	addressOf := func(name string) string {

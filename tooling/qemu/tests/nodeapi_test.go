@@ -323,7 +323,7 @@ func extensionTableWith(bin naructl.Tool, file string) (map[string][]string, err
 	}
 	rows := map[string][]string{}
 	for i, line := range strings.Split(strings.TrimSpace(r.Stdout), "\n") {
-		if f := strings.Fields(line); i > 0 && len(f) >= 6 {
+		if f := strings.Fields(line); i > 0 && len(f) >= 5 {
 			rows[f[2]] = f
 		}
 	}

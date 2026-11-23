@@ -216,7 +216,8 @@ func TestFleet_RotatingAHostRevokesAnOfflinePairRegisteredBySerialAndTheHostServ
 // Recovering a lost host (docs/operate/recover-a-member-or-host.md part 2): the operator forgets the host
 // with `naructl host remove` and revokes its certificates by the host ID with `naructl signer revoke-host`,
 // which needs no serial. Every serial the signer holds for the host reads revoked afterwards, and orch
-// refuses the handshake of a client that presents the host's pair.
+// answers 403 to a client that presents the host's pair: it checks the revocation list per request,
+// after the handshake (docs/architecture/orch.md, §The API).
 func TestFleet_ARemovedLostHostIsRevokedByItsIDAndOrchRefusesItsPair(t *testing.T) {
 	f := newFleet(t, fleetOpts{controls: 1, hosts: 1})
 	f.startOrch()
@@ -246,8 +247,8 @@ func TestFleet_ARemovedLostHostIsRevokedByItsIDAndOrchRefusesItsPair(t *testing.
 	assert.Contains(t, listed, serial+" revoked", "the signer reads every serial of the host as revoked")
 	assert.NotContains(t, listed, " valid")
 
-	eventually(t, "orch refuses the handshake of the lost host's pair", func() bool {
-		_, err := heartbeatStatus(orchAddr, crt, key)
-		return err != nil
+	eventually(t, "orch answers 403 to the lost host's pair", func() bool {
+		code, err := heartbeatStatus(orchAddr, crt, key)
+		return err == nil && code == http.StatusForbidden
 	})
 }

@@ -105,7 +105,7 @@ func TestNode_ABlankMicroVMNodeWithTheDefaultVolumesAddOnRefusesItsFirstBootWhen
 				log = string(b)
 			}
 		}
-		return strings.Contains(log, `no image of "naru-volumes" is stored`)
+		return strings.Contains(log, "boot refused") && strings.Contains(log, `no image of \"naru-volumes\" is stored`) && strings.Contains(log, "an upgrade bundle")
 	}, 4*time.Minute, 15*time.Second, "the microVM's first boot is refused for want of the image")
 	assert.Contains(t, log, "built for another naru version", "the initramfs's image was offered and skipped for its version")
 	assert.NotContains(t, log, "extension staged from the boot medium")
