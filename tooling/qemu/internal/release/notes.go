@@ -17,6 +17,8 @@ type Notes struct {
 	ListedCount int
 	// ByDesign names the listed assets that match ByDesignPattern, each in code quotes.
 	ByDesign string
+	// CACertDate is the date of the root bundle the image carries (CACERT_DATE of image/pkgs/cacert/pin.env).
+	CACertDate string
 	// Sums is every line of SHA256SUMS, in file order.
 	Sums []Sum
 }
@@ -48,6 +50,18 @@ func (n *Notes) ReadSums(sums []byte) error {
 	}
 	n.ListedCount, n.ByDesign = len(m), strings.Join(by, ", ")
 	return nil
+}
+
+// ReadCACertDate fills CACertDate from the text of image/pkgs/cacert/pin.env. It fails when the pin
+// has no CACERT_DATE, since the notes would then state no date for the bundle.
+func (n *Notes) ReadCACertDate(pin string) error {
+	for _, line := range strings.Split(pin, "\n") {
+		if m := pinLine.FindStringSubmatch(strings.TrimSpace(line)); m != nil && m[1] == "CACERT_DATE" {
+			n.CACertDate = strings.Trim(m[2], `'"`)
+			return nil
+		}
+	}
+	return fmt.Errorf("the cacert pin has no CACERT_DATE, which the notes state")
 }
 
 // RenderNotes executes the template text with n. A name the template uses that Notes lacks is an error.
