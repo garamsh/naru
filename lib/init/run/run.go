@@ -75,6 +75,15 @@ func Main() {
 	reaper := linux.NewReaper()
 	go reaper.Run(context.Background())
 
+	// The ACPI power button, which a hypervisor's "shut down" presses, is one more request for the stop
+	// path SIGTERM takes.
+	go linux.WatchPowerButton(context.Background(), log, func() {
+		select {
+		case sigs <- syscall.SIGTERM:
+		default:
+		}
+	})
+
 	host := linux.NewHost(diskWait, reaper)
 	host.Log = log
 	extensions := extension.NewManager(extension.NewStore(extension.Dir, extensionProbeDir, extension.MaxBytes, linux.Loop{}), linux.Loop{}, config.ExtensionsRoot, version(), log)

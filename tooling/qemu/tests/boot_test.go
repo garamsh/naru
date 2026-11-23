@@ -254,7 +254,7 @@ func TestNode_GaonRegistersEachNodeKeepsItsLeaseAndSurvivesTheControlPlaneNodeRe
 // of node-1 shows init issuing the API server's, the scheduler's and the controllers' pairs before the
 // first service starts, and no key. After node-2 reboots the agent reuses the pair it keeps on
 // the data disk: the Node's Lease is renewed again and no further request is created. The reboot is
-// the graceful one (Ctrl-Alt-Del, which syncs and unmounts the data disk), not a power cut: the test
+// the graceful one (the ACPI power button, which syncs and unmounts the data disk), not a power cut: the test
 // reboots as soon as the Lease is renewed, which can be inside the file system's commit interval of
 // the agent's write, and a power cut there loses a pair the agent completed. What a power cut costs
 // the agent is gaon's to decide, not this test's.
