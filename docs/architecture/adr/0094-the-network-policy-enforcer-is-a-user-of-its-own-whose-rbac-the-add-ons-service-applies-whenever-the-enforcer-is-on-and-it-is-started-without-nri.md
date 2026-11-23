@@ -1,0 +1,46 @@
+# ADR 0094: the NetworkPolicy enforcer is a user of its own whose RBAC the add-ons service applies whenever the enforcer is on, and it is started without NRI
+
+> Status: accepted
+> Date: 2026-11-23
+
+Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
+
+Drafted for garamsh/naru#266, part of goal garamsh/naru#262, from the review of garamsh/naru#308. It amends [ADR 0086](./0086-kubernetes-networkpolicy-is-enforced-on-every-cluster-by-kube-network-policies-an-init-service-over-the-bridge-pod-network-that-a-cluster-setting-turns-off.md) items 2, 4, 6 and 10 by reference: no body is edited, and what that ADR says holds except where this one says otherwise. The facts about kube-network-policies are those of the commit `d3fc697c1acaa0c8872c262ff3e04d8299eac6b3` (v1.1.3), the files `install.yaml`, `cmd/kube-network-policies/standard/main.go` and `pkg/cmd/cmd.go`, read on 2026-11-23. The facts about naru are those of the base commit of this change.
+
+## Context
+
+- **ADR 0086 item 6 rests on "there are no objects", and there are.** The agent is an init service that reads the API server with a client certificate, and the API server runs `--authorization-mode=Node,RBAC`. The Node authorizer decides only for users named `system:node:<name>`. No binding of the default policy, and none naru writes (`layout.BootstrapRBAC` binds `system:nodes` only to the renewal of the kubelet's certificate), lets `system:kube-network-policies` or the group `system:nodes` list or watch Pods, Namespaces or NetworkPolicies. The agent as ADR 0086 specified it could not read one NetworkPolicy, and with no `--fail-open` (item 3) the cluster would drop new Pod connections or leave them unchecked, depending on when its rules were installed.
+- **What the agent reads is three lists and watches.** `cmd/kube-network-policies/standard/main.go` builds informers for Namespaces, NetworkPolicies and Pods and no others; the upstream `install.yaml` grants `list` and `watch` on `pods`, `namespaces` and `networking.k8s.io/networkpolicies`, and nothing else, to its ServiceAccount. With `--hostname-override` it reads no Node.
+- **The organization of the pair, `system:nodes`, has no use.** The group is bound to nothing the agent calls, and it would give the agent every permission a later binding of `system:nodes` grants a kubelet.
+- **NRI.** ADR 0086 item 4 leaves open whether v1.1.3 starts without the NRI socket. It does: `pkg/cmd/cmd.go` has the flag `--disable-nri`, and without it `NewNRIResolver` fails when it cannot make the plugin and the agent logs `failed to create NRI plugin, using apiserver information only` and goes on; with the flag the resolver is not built. The agent's NRI plugin retries ten times in a goroutine against a socket ADR 0031 item 10 makes absent.
+- **The binary is smaller than the estimate.** ADR 0086 item 10 gave at most 70 MiB unstripped. The stripped static binary built from the pinned commit with `CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w -buildid="` is 33,857,660 bytes (32.3 MiB), measured on 2026-11-23 on the Go 1.27.0 toolchain the source's `go.mod` names.
+- **Two statements of ADR 0086 are not true of the program naru builds.** Item 1 says the agent evaluates AdminNetworkPolicy and BaselineAdminNetworkPolicy beside NetworkPolicy; those are the separate programs `cmd/kube-network-policies/npa-v1alpha1` and `npa-v1alpha2`, which need the CRDs and are not built here. The program naru builds is `./cmd/kube-network-policies/standard`, which evaluates NetworkPolicy only. Item 2 says the credential is a pair "of the `system:nodes` kind".
+
+## Decision
+
+1. **The agent is the user `system:kube-network-policies` and has no group.** Its client pair is issued with that common name and no organization, on a control-plane Node by `spec.pki` and on a worker as files. This replaces ADR 0086 item 2's `system:nodes` kind.
+2. **A ClusterRole `naru:kube-network-policies` grants `list` and `watch` on `pods`, `namespaces` and `networking.k8s.io/networkpolicies`, and a ClusterRoleBinding of the same name binds it to that user.** It is the least the agent reads (the Context), and it is what `install.yaml` grants. The two objects are `layout.NetworkPolicyRBAC`, carried in the user-data of every control-plane Node as `/run/kubernetes/network-policy-rbac.yaml`, and they carry the label `app.kubernetes.io/managed-by: naru-addons` as every object the service applies does.
+3. **The control-plane Node's `addons` service applies them, whenever the enforcer is on.** The service of ADR 0083 item 2 runs when an add-on is enabled or the enforcer is on, applies the file first, and uses its pair, the `naru:addons` pair, which exists under the same condition. The RBAC is therefore applied when every add-on is disabled, and `--disable-addon` never turns it off: it is not an add-on, it has no name in `layout.Addons`, and ADR 0083 item 12's "neither applied nor pruned" does not reach it. With `--disable-network-policy` the file is not carried and not applied; a service that ran for the add-ons alone does not mention it, and the objects a former run applied stay in the cluster, harmless with no agent to use them. The agent starts before the API server has applied them; until its informers sync, new connections of Pods are dropped (ADR 0086 item 3), and the service retries until the API server answers.
+4. **The agent is started with `--disable-nri`.** Pod addresses come from the API server, as ADR 0086 item 4 says is the path used; the flag keeps the plugin from retrying against a socket that is not there. ADR 0086 item 4's choice "between enabling NRI and a build flag" is made: neither, the agent's own flag.
+5. **The measured size replaces the estimate.** The stripped binary is 33,857,660 bytes (32.3 MiB), which is what ADR 0086 item 10 left to the implementation; the Node's initramfs grows by that, and the agent alone is under the threshold of ADR 0083's last section.
+6. **The program is `./cmd/kube-network-policies/standard`.** The package builds that path, which is the one that has a `main`. AdminNetworkPolicy is not enforced; a customer who needs it sets `--disable-network-policy` and brings an engine of their own (ADR 0086 "Signs the decision was wrong").
+7. **The setting is the flag `gen kubernetes --disable-network-policy`**, which writes the marker `<ca-dir>/disable-network-policy` that `gen kubernetes-node` reads, as `--disable-addon` writes `disabled-addons`. It is ADR 0086 item 6's `networkPolicy: false`, spelled as the flags of the cluster's configuration are; a run of `gen kubernetes` without it removes the marker.
+
+## Options considered
+
+- **The group `system:nodes` bound to the ClusterRole.** One binding would serve every Node's agent and the kubelets, but it gives every kubelet `list` and `watch` on every Pod, Namespace and NetworkPolicy of the cluster, which the Node authorizer withholds from a kubelet; the agent's own user costs one more object.
+- **A ServiceAccount token for the agent.** A Pod's mechanism; the agent is an init service started before the API server has a ServiceAccount to give it one, and the pair it already has is the credential of the kubelet's and the proxy's kind.
+- **The role applied by an operator** (`naructl gen kubernetes-bootstrap-rbac`). It would make a cluster enforce nothing until an operator applies it, with no error; ADR 0086 item 6 asks for no step of the operator.
+- **A fifth add-on named `network-policy` in `layout.Addons`.** It would make `--disable-addon network-policy` a second spelling of the setting and leave a cluster that disabled it with an agent that cannot read; it is tied to the enforcer, not to an add-on.
+- **Leaving NRI to fail on its own.** It starts without it, but retries ten times against the missing socket and logs a failure at every boot of every Node.
+
+## Consequences
+
+- **A control-plane Node runs the `addons` service in a cluster with every add-on disabled, as long as the enforcer is on.** ADR 0083's "a control-plane Node with none enabled has no `addons` service" holds only with `--disable-network-policy` too.
+- **The agent's permissions are exactly three resources' `list` and `watch`.** A later release of the agent that reads more is a change of the pin and of `layout.NetworkPolicyRBAC` together, and the test that holds the manifest to those three fails until it is.
+- **A cluster built with ADR 0086's agent has none of these objects.** Its Nodes take the new user-data; the objects arrive when the first control-plane Node applies it, and the agents sync then.
+
+## Signs the decision was wrong
+
+- **A release of the agent reads a resource the role does not grant**, so its informers do not sync and it drops every new connection: the pin and the role move together, and the tests of the manifest and the QEMU tests of ADR 0086 item 8 show it.
+- **A customer applies its own role for the user** and finds naru's pruned or fought over: the label and the field manager are naru's; a customer's own object has another name and is additive.

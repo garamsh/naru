@@ -690,3 +690,35 @@ spec:
 	require.NoError(t, run(r))
 	assert.False(t, r.formatted.FirstBlank)
 }
+
+func withBridgeNetfilter(t *testing.T, doc string) string {
+	t.Helper()
+	return replace(t, doc, "    forwarding: [ipv4]\n", "    forwarding: [ipv4]\n    bridgeNetfilter: true\n")
+}
+
+func TestRun_SetsBridgeNetfilterAfterForwardingWhenTheConfigurationAsksForIt(t *testing.T) {
+	r := &recorder{raw: withBridgeNetfilter(t, validConfig)}
+
+	require.NoError(t, run(r))
+
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "bridge-netfilter", "files", "registries", "prepare", "seal", "start mvmd"}, r.calls)
+}
+
+func TestRun_LeavesBridgeNetfilterAloneWhenTheConfigurationDoesNotAskForIt(t *testing.T) {
+	// The control of the test above: the same configuration without the setting.
+	r := &recorder{raw: validConfig}
+
+	require.NoError(t, run(r))
+
+	assert.NotContains(t, r.calls, "bridge-netfilter")
+}
+
+func TestRun_RefusesTheBootWhenBridgeNetfilterCannotBeSetAndStartsNoService(t *testing.T) {
+	boom := errors.New("no br_netfilter")
+	r := &recorder{raw: withBridgeNetfilter(t, validConfig), bridgeNetfilterErr: boom}
+
+	err := run(r)
+
+	assert.ErrorIs(t, err, boom)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "bridge-netfilter"}, r.calls, "a Node whose policy cannot be enforced does not start its Pods")
+}

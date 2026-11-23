@@ -220,6 +220,47 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 `
 
+// NetworkPolicyUser is the user the NetworkPolicy enforcer's client certificate names.
+const NetworkPolicyUser = "system:kube-network-policies"
+
+// NetworkPolicyRBACFile is where a control-plane Node carries NetworkPolicyRBAC, for the add-ons'
+// service to apply.
+const NetworkPolicyRBACFile = KubeDir + "/network-policy-rbac.yaml"
+
+// NetworkPolicyRBAC is what the NetworkPolicy enforcer may do: list and watch the Pods, Namespaces
+// and NetworkPolicies, which are the three informers of its v1.1.3 main (cmd/kube-network-policies/
+// standard/main.go) and the rules of the upstream install.yaml. The cluster applies it itself with the
+// add-ons' service whenever the enforcer is on, whichever add-ons are disabled (ADR 0094).
+const NetworkPolicyRBAC = `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: naru:kube-network-policies
+  labels:
+    app.kubernetes.io/managed-by: ` + AddonManager + `
+rules:
+- apiGroups: [""]
+  resources: ["pods", "namespaces"]
+  verbs: ["list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naru:kube-network-policies
+  labels:
+    app.kubernetes.io/managed-by: ` + AddonManager + `
+subjects:
+- kind: User
+  name: ` + NetworkPolicyUser + `
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: naru:kube-network-policies
+  apiGroup: rbac.authorization.k8s.io
+`
+
 var (
 	apiserverKubelet = pairSpec{"apiserver-kubelet-client", "kube-apiserver-kubelet-client"}
 	frontProxy       = pairSpec{"front-proxy-client", "front-proxy-client"}
@@ -407,6 +448,12 @@ func (n Node) volumesConfig() (string, error) {
 	return string(b) + "\n", err
 }
 
+// appliesObjects reports whether the control-plane Node runs the service that applies objects to the
+// cluster: when an add-on is enabled, and when the NetworkPolicy enforcer is on, which needs its RBAC.
+func (n Node) appliesObjects() bool {
+	return len(n.enabledAddons()) > 0 || !n.kube().DisableNetworkPolicy
+}
+
 // enabledAddons are the add-ons the Node's cluster runs, in the order of Addons.
 func (n Node) enabledAddons() []string {
 	return slices.DeleteFunc(slices.Clone(Addons), func(name string) bool { return slices.Contains(n.kube().DisabledAddons, name) })
@@ -508,7 +555,8 @@ func (n Node) kubeServices() []service {
 		},
 		{
 			Name: "kube-network-policies", Binary: n.binary("kube-network-policies", "/bin/kube-network-policies"), Env: n.kubeEnv(),
-			Args: []string{"--kubeconfig=" + kubePath("kube-network-policies.conf"), "--hostname-override=" + n.Name},
+			// The Pod's IP comes from the API server: NRI is off in containerd (ADR 0031 item 10).
+			Args: []string{"--kubeconfig=" + kubePath("kube-network-policies.conf"), "--hostname-override=" + n.Name, "--disable-nri"},
 		},
 		{
 			Name: "kubelet", Binary: n.binary("kubelet", "/bin/kubelet"), Env: n.kubeEnv(),
@@ -531,12 +579,15 @@ func (n Node) kubeServices() []service {
 	if !slices.Contains(n.enabledAddons(), "volumes") {
 		list = slices.DeleteFunc(list, func(s service) bool { return s.Name == "addon-image-volumes" })
 	}
-	if enabled := n.enabledAddons(); k.ControlPlane && len(enabled) > 0 {
+	if k.ControlPlane && n.appliesObjects() {
 		args := []string{
 			"apply", "--kubeconfig=" + kubePath("addons.conf"), "--cache-dir=" + kubePath("addons-cache"),
 			"--server-side", "--force-conflicts", "--field-manager=" + AddonManager,
 		}
-		for _, name := range enabled {
+		if !k.DisableNetworkPolicy {
+			args = append(args, "-f", NetworkPolicyRBACFile)
+		}
+		for _, name := range n.enabledAddons() {
 			args = append(args, "-f", path.Join(addonDir(name), "manifests", name+".yaml"))
 		}
 		list = append(list, service{Name: "addons", Binary: n.binary("addons", "/bin/kubectl"), Args: args, RestartPolicy: restartOnFailure})
@@ -623,7 +674,7 @@ func (n Node) kubePKI() *pkiSpec {
 	)
 	// The add-ons' pair is the cluster's administrator, as the API server's kubelet client is: the
 	// add-ons create cluster roles and bindings. It is not renewed under a running apply.
-	if len(n.enabledAddons()) > 0 {
+	if n.appliesObjects() {
 		addons := cluster(pairSpec{"addons", "naru:addons"}, "client", "addons")
 		addons.Organization = "system:masters"
 		add(addons)
@@ -636,9 +687,7 @@ func (n Node) kubePKI() *pkiSpec {
 	add(node, serving)
 	add(cluster(pairSpec{"kube-proxy", "system:kube-proxy"}, "client", "kube-proxy"))
 	if !k.DisableNetworkPolicy {
-		knp := cluster(pairSpec{"kube-network-policies", "system:kube-network-policies"}, "client", "kube-network-policies")
-		knp.Organization = "system:nodes"
-		add(knp)
+		add(cluster(pairSpec{"kube-network-policies", NetworkPolicyUser}, "client", "kube-network-policies"))
 	}
 	return spec
 }
@@ -764,7 +813,7 @@ func (n Node) kubeFiles() ([]file, error) {
 		{Path: kubePath("kube-proxy.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-proxy", "kube-proxy")},
 	}
 	if !k.DisableNetworkPolicy {
-		files = append(files, file{Path: kubePath("kube-network-policies.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-network-policies", "kube-network-policies")})
+		files = append(files, file{Path: kubePath("kube-network-policies.conf"), Mode: "0644", Content: n.kubeconfig(NetworkPolicyUser, "kube-network-policies")})
 	}
 	files = append(files,
 		// The kubelet's user-namespace mappings read /etc/passwd and /etc/group, which the image links here.
@@ -806,8 +855,11 @@ func (n Node) kubeFiles() ([]file, error) {
 			file{Path: kubePath("controller-manager.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-controller-manager", "controller-manager")},
 			file{Path: kubePath("scheduler.conf"), Mode: "0644", Content: n.kubeconfig("system:kube-scheduler", "scheduler")},
 		)
-		if len(n.enabledAddons()) > 0 {
+		if n.appliesObjects() {
 			files = append(files, file{Path: kubePath("addons.conf"), Mode: "0644", Content: n.kubeconfig("naru:addons", "addons")})
+		}
+		if !k.DisableNetworkPolicy {
+			files = append(files, file{Path: NetworkPolicyRBACFile, Mode: "0644", Content: NetworkPolicyRBAC})
 		}
 		if k.BootstrapTokens {
 			files = append(files, file{Path: KubeBootstrapTokensFile, Mode: "0600", Content: KubeTokensContent(k.Tokens), Restart: []string{Kubernetes.APIServer}})
@@ -830,7 +882,7 @@ func (n Node) workerPairFiles() ([]file, error) {
 		{"kubelet", func() (pki.Pair, error) { return n.CA.Server(n.Name, ip, net.IPv4(127, 0, 0, 1)) }},
 		{"kube-proxy", func() (pki.Pair, error) { return n.CA.Client("system:kube-proxy") }},
 		{"kube-network-policies", func() (pki.Pair, error) {
-			return n.CA.Client("system:kube-network-policies", "system:nodes")
+			return n.CA.Client(NetworkPolicyUser)
 		}},
 	} {
 		if p.name == "kubelet-client" && n.kube().Token != "" {

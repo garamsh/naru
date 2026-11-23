@@ -13,7 +13,7 @@ RUN . /pin.env && gitfetch.sh "$KNP_REPO" "$KNP_COMMIT" src
 RUN . /pin.env && cd src \
  && export GOTOOLCHAIN=go$(awk '$1 == "go" { print $2 }' go.mod) && [ "$GOTOOLCHAIN" != go ] \
  && go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" \
-      -o /build/kube-network-policies ./cmd/kube-network-policies \
+      -o /build/kube-network-policies ./cmd/kube-network-policies/standard \
  && install-go.sh "$GOTOOLCHAIN" /build/kube-network-policies /out/usr/bin/kube-network-policies
 
 FROM scratch

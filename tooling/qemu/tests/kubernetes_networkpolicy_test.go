@@ -21,7 +21,7 @@ import (
 // The NetworkPolicy test (ADR 0086) boots the two-Node cluster with kube-network-policies as the
 // enforcer. It waits for kube-network-policies to start on every Node before applying policies:
 // an enforcer that has not started yet does not hold traffic. It then verifies that a default-deny
-// ingress policy blocks cross-Node Pod traffic, that an allow rule for port 8080 opens exactly
+// ingress policy blocks cross-Node Pod traffic and traffic between two Pods of one Node, that an allow rule for port 8080 opens exactly
 // that port, and that a default-deny egress policy holds outbound connections. A second cluster
 // started with --disable-network-policy carries no kube-network-policies service and leaves
 // NetworkPolicy objects unenforced, so a default-deny does not block traffic.
@@ -161,6 +161,44 @@ spec:
 	if !blocked {
 		last, _ := kubectl(t, c, "", "logs", "dial", "--tail=5")
 		t.Logf("dial Pod logs while egress blocked:\n%s", last)
+		t.FailNow()
+	}
+}
+
+// The same-Node case of ADR 0086 item 5: two Pods on one Node cross the bridge, not the routed path,
+// so the policy is enforced only when bridge-nf-call-iptables passes the bridged packets to the
+// netfilter hooks. It fails when init does not set the sysctl.
+func TestNode_KubernetesNetworkPolicyDefaultDenyBlocksTrafficBetweenPodsOfOneNode(t *testing.T) {
+	c := startNetworkPolicyCluster(t)
+
+	const defaultDenyIngress = `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+`
+	out, err := kubectl(t, c, defaultDenyIngress, "apply", "-f", "-")
+	require.NoError(t, err, out)
+
+	out, err = kubectl(t, c, fmt.Sprintf(pod("serve", "node-1", "serve", "serve", ":8080"), c.Image), "apply", "-f", "-")
+	require.NoError(t, err, out)
+	podIP := kubectlEventually(t, c, "the serve Pod has an address", "get", "pod", "serve", "-o", "jsonpath={.status.podIP}")
+	byPod := "http://" + podIP + ":8080"
+
+	// The dial Pod is on the serve Pod's Node.
+	out, err = kubectl(t, c, fmt.Sprintf(pod("dial", "node-1", "dial", "dial", byPod), c.Image), "apply", "-f", "-")
+	require.NoError(t, err, out)
+
+	blocked := assert.Never(t, func() bool {
+		logs, _ := kubectl(t, c, "", "logs", "dial")
+		return strings.Contains(logs, "naru91-entry: dialed "+byPod)
+	}, 20*time.Second, 2*time.Second, "default-deny ingress NetworkPolicy blocks traffic between two Pods of one Node")
+	if !blocked {
+		last, _ := kubectl(t, c, "", "logs", "dial", "--tail=5")
+		t.Logf("dial Pod logs while blocked:\n%s", last)
 		t.FailNow()
 	}
 }
