@@ -4,14 +4,16 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // ExposurePort is one port of an exposure: the port on the address and the BackendPort of the
 // backends it goes to.
 type ExposurePort struct {
-	Protocol    string `json:"protocol"`
-	Port        int    `json:"port"`
-	BackendPort int    `json:"backendPort"`
+	Protocol    wire.Protocol `json:"protocol"`
+	Port        int           `json:"port"`
+	BackendPort int           `json:"backendPort"`
 }
 
 // ExposureRequest is the body of PUT /v1/exposures/{address}: a lease on a LAN address. The host

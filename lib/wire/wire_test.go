@@ -34,6 +34,16 @@ func TestIsEnrollKey(t *testing.T) {
 	}
 }
 
+func TestProtocol_ValidIsTheTwoProtocolsInTheirOneSpelling(t *testing.T) {
+	for _, p := range wire.Protocols() {
+		assert.True(t, p.Valid(), "control: %s is valid", p)
+	}
+	assert.Equal(t, []wire.Protocol{"TCP", "UDP"}, wire.Protocols())
+	for _, p := range []wire.Protocol{"tcp", "udp", "Tcp", "SCTP", ""} {
+		assert.False(t, p.Valid(), "%q is not a protocol", p)
+	}
+}
+
 func TestESPGUID_IsTheOneDiskEnvBuildsTheImageWith(t *testing.T) {
 	env, err := os.ReadFile(filepath.Join("..", "..", "image", "host", "disk", "disk.env"))
 	require.NoError(t, err)

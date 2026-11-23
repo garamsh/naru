@@ -1,10 +1,11 @@
 // Package wire holds the values two parts of naru agree on without calling each other: where the
 // data disk is and what it is called, the EFI system partition's GUID, the ports, the form of
-// an enrollment key and the header of orch's fencing token. Each is defined here once and imported by every Go user.
+// an enrollment key, the header of orch's fencing token and the protocols of an exposed port. Each is defined here once and imported by every Go user.
 package wire
 
 import (
 	"encoding/hex"
+	"slices"
 	"strings"
 )
 
@@ -46,6 +47,22 @@ const (
 	EtcdClientPort = "2379"
 	EtcdPeerPort   = "2380"
 )
+
+// Protocol is the transport of an exposed port, spelled as Kubernetes spells a Service port's. Orch's
+// API, the host API and naru-hostd take it in this one spelling and no other (ADR 0107).
+type Protocol string
+
+// The protocols an exposure carries.
+const (
+	ProtocolTCP Protocol = "TCP"
+	ProtocolUDP Protocol = "UDP"
+)
+
+// Protocols returns every Protocol, in order.
+func Protocols() []Protocol { return []Protocol{ProtocolTCP, ProtocolUDP} }
+
+// Valid reports whether p is one of Protocols.
+func (p Protocol) Valid() bool { return slices.Contains(Protocols(), p) }
 
 // LeaderTokenHeader names the header in which orch's leader sends its fencing token with every
 // mutating call to a host (ADR 0071). The value is the decimal token; a call without it is an

@@ -11,6 +11,7 @@ import (
 
 	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // Exposures is what the host API asks of the host's exposed addresses: *network.Exposer.
@@ -52,7 +53,7 @@ func exposureView(e network.Exposure) hostapi.Exposure {
 	v.Network, v.Backends = e.Network, []string{}
 	v.Ports = []hostapi.ExposurePort{}
 	for _, p := range e.Ports {
-		v.Ports = append(v.Ports, hostapi.ExposurePort{Protocol: string(p.Protocol), Port: p.Port, BackendPort: p.BackendPort})
+		v.Ports = append(v.Ports, hostapi.ExposurePort{Protocol: p.Protocol, Port: p.Port, BackendPort: p.BackendPort})
 	}
 	for _, b := range e.Backends {
 		v.Backends = append(v.Backends, b.String())
@@ -130,18 +131,17 @@ func parseExposure(address string, req hostapi.ExposureRequest) (network.Exposur
 	}
 	seen := map[network.ExposurePort]bool{}
 	for i, p := range req.Ports {
-		proto := network.Protocol(p.Protocol)
-		key := network.ExposurePort{Protocol: proto, Port: p.Port}
-		bad := (proto != network.TCP && proto != network.UDP) || p.Port < 1 || p.Port > 65535 || p.BackendPort < 1 || p.BackendPort > 65535 || seen[key]
+		key := network.ExposurePort{Protocol: p.Protocol, Port: p.Port}
+		bad := !p.Protocol.Valid() || p.Port < 1 || p.Port > 65535 || p.BackendPort < 1 || p.BackendPort > 65535 || seen[key]
 		// A receiver that expects the PROXY header rejects a connection without it, and UDP has no
 		// connection to write it on: the whole Service is TCP (ADR 0085 item 8).
-		bad = bad || (e.Proxy && proto == network.UDP)
+		bad = bad || (e.Proxy && p.Protocol == wire.ProtocolUDP)
 		seen[key] = true
 		if bad {
 			fields = append(fields, fmt.Sprintf("ports[%d]", i))
 			continue
 		}
-		e.Ports = append(e.Ports, network.ExposurePort{Protocol: proto, Port: p.Port, BackendPort: p.BackendPort})
+		e.Ports = append(e.Ports, network.ExposurePort{Protocol: p.Protocol, Port: p.Port, BackendPort: p.BackendPort})
 	}
 	if len(req.Backends) == 0 || len(req.Backends) > maxBackends {
 		fields = append(fields, "backends")

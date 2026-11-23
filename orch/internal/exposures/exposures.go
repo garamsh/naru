@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/orch/internal/inventory"
 )
 
@@ -325,7 +326,7 @@ func validateSpec(owner string, spec orchapi.ExposureSpec) error {
 	}
 	seen := map[string]bool{}
 	for _, p := range spec.Ports {
-		if p.Protocol != "TCP" && p.Protocol != "UDP" {
+		if !p.Protocol.Valid() {
 			return bad("protocol %q is not TCP or UDP", p.Protocol)
 		}
 		if p.Port < 1 || p.Port > 65535 {
@@ -352,7 +353,7 @@ func validateSpec(owner string, spec orchapi.ExposureSpec) error {
 	case "":
 	case orchapi.ProxyProtocolV2:
 		for _, p := range spec.Ports {
-			if p.Protocol != "TCP" {
+			if p.Protocol != wire.ProtocolTCP {
 				return unprocessable("port %d is %s, and the PROXY protocol is TCP only", p.Port, p.Protocol)
 			}
 		}

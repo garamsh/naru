@@ -16,6 +16,8 @@ import (
 
 	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/hostapi/hostapitest"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 // lanLink is the LAN interface of the tests.
@@ -94,7 +96,7 @@ func startExposures(t *testing.T) exposureServer {
 func goodExposure() hostapi.ExposureRequest {
 	return hostapi.ExposureRequest{
 		Network:      "a",
-		Ports:        []hostapi.ExposurePort{{Protocol: "tcp", Port: 443, BackendPort: 30443}, {Protocol: "udp", Port: 53, BackendPort: 30053}},
+		Ports:        []hostapi.ExposurePort{{Protocol: wire.ProtocolTCP, Port: 443, BackendPort: 30443}, {Protocol: wire.ProtocolUDP, Port: 53, BackendPort: 30053}},
 		Backends:     []string{"10.8.0.5", "10.8.0.6"},
 		LeaseSeconds: 15,
 	}
@@ -136,6 +138,12 @@ func TestExposure_PutListDelete(t *testing.T) {
 	assert.Equal(t, 204, code, "an absent lease is 204")
 }
 
+func TestExposure_ConformsToTheHostAPIsProtocols(t *testing.T) {
+	e := startExposures(t)
+	c := hostapi.NewClient("https://"+e.addr, e.as(t, ProvisionerOrganization))
+	hostapitest.ExposureProtocols(t, c, "192.168.0.80", goodExposure())
+}
+
 func TestExposure_HostReportsItsLANInterface(t *testing.T) {
 	e := startExposures(t)
 	code, b := e.do(t, e.as(t, ReaderOrganization), "GET", "/v1/host", nil)
@@ -171,6 +179,8 @@ func TestExposure_Refusals(t *testing.T) {
 		{"backend port above 65535", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].BackendPort = 65536 })},
 		{"backend port 0", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].BackendPort = 0 })},
 		{"protocol sctp", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].Protocol = "sctp" })},
+		{"protocol tcp in lower case", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[0].Protocol = "tcp" })},
+		{"protocol udp in lower case", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[1].Protocol = "udp" })},
 		{"the same port twice", ok, change(func(r *hostapi.ExposureRequest) { r.Ports[1] = r.Ports[0] })},
 		{"no backends", ok, change(func(r *hostapi.ExposureRequest) { r.Backends = nil })},
 		{"backend on another host", ok, change(func(r *hostapi.ExposureRequest) { r.Backends = []string{"10.0.2.7"} })},
