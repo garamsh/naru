@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 
+	v1 "k8s.io/api/core/v1"
+
 	"github.com/garamsh/naru/lib/orchapi"
 )
 
@@ -75,4 +77,14 @@ func (f *fakeOrch) NetworkMembers(_ context.Context, name string) ([]orchapi.Net
 	defer f.mu.Unlock()
 	f.memberOf = name
 	return f.members, f.err
+}
+
+// fakeEndpoints answers which Nodes run a ready endpoint of any Service.
+type fakeEndpoints struct {
+	ready map[string]bool
+	err   error
+}
+
+func (f fakeEndpoints) ReadyNodes(context.Context, *v1.Service) (map[string]bool, error) {
+	return f.ready, f.err
 }

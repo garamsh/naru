@@ -106,13 +106,11 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	k8s.io/apiserver v0.36.6 // indirect
-	k8s.io/client-go v0.36.6 // indirect
 	k8s.io/component-helpers v0.36.6 // indirect
 	k8s.io/controller-manager v0.36.6 // indirect
 	k8s.io/kms v0.36.6 // indirect
 	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect
 	k8s.io/streaming v0.36.6 // indirect
-	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2 // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.34.0 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
@@ -139,9 +137,11 @@ require (
 	google.golang.org/grpc v1.85.0
 	k8s.io/api v0.36.6
 	k8s.io/apimachinery v0.36.6
+	k8s.io/client-go v0.36.6
 	k8s.io/cloud-provider v0.36.6
 	k8s.io/component-base v0.36.6
 	k8s.io/klog/v2 v2.140.0
+	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2
 )
 
 replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile
