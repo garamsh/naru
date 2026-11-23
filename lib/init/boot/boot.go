@@ -49,6 +49,10 @@ type Host interface {
 	// SetAsidePair sets the pair file of p aside when its certificate lacks the Organization p
 	// names, and reports whether it did.
 	SetAsidePair(config.KeptPair) (bool, error)
+	// ProvideExtensions stores, for each entry of spec.extensions with no digest whose image the
+	// Node's store lacks, the image that came with the Node on its boot medium (ADR 0096). It
+	// refuses nothing: MountExtensions, which follows, refuses the boot when no image is there.
+	ProvideExtensions([]config.Extension)
 	// MountExtensions mounts the system extensions of spec.extensions read-only under their
 	// directories, or refuses: one that is missing, built for another version or fails its digest.
 	MountExtensions([]config.Extension) error
@@ -172,6 +176,7 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 		return store.Stored{}, fmt.Errorf("write the registry files: %w", err)
 	}
 	if len(cfg.Spec.Extensions) > 0 {
+		host.ProvideExtensions(cfg.Spec.Extensions)
 		if err := host.MountExtensions(cfg.Spec.Extensions); err != nil {
 			return store.Stored{}, fmt.Errorf("mount the system extensions: %w", err)
 		}

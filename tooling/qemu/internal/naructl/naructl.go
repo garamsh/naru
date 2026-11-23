@@ -257,6 +257,8 @@ type Node struct {
 	TimeServers []string
 	// Peers are <address>=<machine-prefix> entries (gen node --peer).
 	Peers []string
+	// Extensions are gen node --extension values: <name> or <name>=<SHA-256>.
+	Extensions []string
 	// Registries are gen node --registry values: host=H,ca=FILE,username=U,password=P or helper=NAME.
 	Registries []string
 	// AWSRegion, AWSTrustAnchor, AWSProfile and AWSRole are gen node's --aws-* flags, all or none.
@@ -309,6 +311,7 @@ func (t Tool) GenNode(n Node) error {
 	flag("member", n.Members...)
 	flag("time-server", n.TimeServers...)
 	flag("peer", n.Peers...)
+	flag("extension", n.Extensions...)
 	flag("registry", n.Registries...)
 	flag("storage", n.Storage...)
 	if n.AWSRegion != "" {
