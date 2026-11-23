@@ -40,9 +40,6 @@ func notFound(err error) bool {
 
 // GetLoadBalancer returns the exposure's address while orch has announced it.
 func (l *LoadBalancer) GetLoadBalancer(ctx context.Context, _ string, svc *v1.Service) (*v1.LoadBalancerStatus, bool, error) {
-	if !Wants(svc) {
-		return nil, false, nil
-	}
 	e, err := l.orch.Exposure(ctx, ExposureID(svc))
 	if notFound(err) {
 		return nil, false, nil
@@ -60,9 +57,6 @@ func (l *LoadBalancer) GetLoadBalancerName(_ context.Context, _ string, svc *v1.
 
 // EnsureLoadBalancer asks orch for the exposure and returns its address once a host announces it.
 func (l *LoadBalancer) EnsureLoadBalancer(ctx context.Context, _ string, svc *v1.Service, nodes []*v1.Node) (*v1.LoadBalancerStatus, error) {
-	if !Wants(svc) {
-		return nil, cloudprovider.ImplementedElsewhere
-	}
 	spec, err := Spec(svc, nodes, l.network, l.pool)
 	if errors.Is(err, errNodePort) {
 		return nil, api.NewRetryError(err.Error(), retryAfter)
@@ -90,11 +84,7 @@ func (l *LoadBalancer) UpdateLoadBalancer(ctx context.Context, clusterName strin
 	return err
 }
 
-// EnsureLoadBalancerDeleted starts the release of the Service's address; it is idempotent. A Service
-// of another class has no exposure here and nothing is asked.
+// EnsureLoadBalancerDeleted starts the release of the Service's address; it is idempotent.
 func (l *LoadBalancer) EnsureLoadBalancerDeleted(ctx context.Context, _ string, svc *v1.Service) error {
-	if !Wants(svc) {
-		return nil
-	}
 	return l.orch.DeleteExposure(ctx, ExposureID(svc))
 }

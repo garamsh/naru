@@ -15,8 +15,6 @@ import (
 const (
 	// ProviderName is the name the controller registers under and the scheme of a Node's provider ID.
 	ProviderName = "naru"
-	// LoadBalancerClass is the class of a Service this controller fulfils besides one with none.
-	LoadBalancerClass = "naru.garam.sh/host"
 	// ProxyProtocolAnnotation asks for the client's address in a PROXY protocol header; "v2" is the
 	// one value, and any other is off.
 	ProxyProtocolAnnotation = "naru.garam.sh/proxy-protocol"
@@ -24,13 +22,6 @@ const (
 
 // errNodePort is a Service whose NodePorts Kubernetes has not allocated yet; the controller asks again.
 var errNodePort = errors.New("a port of the Service has no NodePort yet")
-
-// Wants reports whether the controller fulfils the Service: a Service of any other class belongs to
-// the implementation that owns it.
-func Wants(svc *v1.Service) bool {
-	c := svc.Spec.LoadBalancerClass
-	return c == nil || *c == "" || *c == LoadBalancerClass
-}
 
 // ExposureID is the exposure's id for the Service: its namespace and name and its UID's first eight
 // hex digits, so a Service deleted and made again is a new exposure.
@@ -94,13 +85,13 @@ func Status(e orchapi.Exposure) *v1.LoadBalancerStatus {
 	return &v1.LoadBalancerStatus{Ingress: []v1.LoadBalancerIngress{{IP: e.Address}}}
 }
 
-// Orphans returns the ids of the exposures no Service the controller fulfils still has. A Service
+// Orphans returns the ids of the exposures no Service of type LoadBalancer still has. A Service
 // that is being deleted still has its exposure: the finalizer's removal calls the delete.
 func Orphans(exposures []orchapi.Exposure, services []v1.Service) []string {
 	live := map[string]bool{}
 	for i := range services {
 		s := &services[i]
-		if s.Spec.Type == v1.ServiceTypeLoadBalancer && Wants(s) {
+		if s.Spec.Type == v1.ServiceTypeLoadBalancer {
 			live[ExposureID(s)] = true
 		}
 	}

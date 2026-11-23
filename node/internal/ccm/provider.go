@@ -57,10 +57,13 @@ func (p *Provider) Initialize(b cloudprovider.ControllerClientBuilder, stop <-ch
 		t := time.NewTicker(SweepInterval)
 		defer t.Stop()
 		for {
-			list, err := kube.CoreV1().Services(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-			if err == nil {
-				err = p.Sweep(ctx, list.Items)
-			}
+			err := p.Sweep(ctx, func(ctx context.Context) ([]v1.Service, error) {
+				list, err := kube.CoreV1().Services(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return nil, err
+				}
+				return list.Items, nil
+			})
 			if err != nil && ctx.Err() == nil {
 				p.log.Error("sweep failed", "err", err.Error())
 			}
@@ -73,9 +76,15 @@ func (p *Provider) Initialize(b cloudprovider.ControllerClientBuilder, stop <-ch
 	}()
 }
 
-// Sweep deletes the exposures of the network that no Service in services has.
-func (p *Provider) Sweep(ctx context.Context, services []v1.Service) error {
+// Sweep deletes the exposures of the network that no Service has. It lists the exposures first and
+// the Services after: an exposure exists only once its Service does, so a Service made between the two
+// calls is in the second list or its exposure is not in the first, and its address is not released.
+func (p *Provider) Sweep(ctx context.Context, listServices func(context.Context) ([]v1.Service, error)) error {
 	have, err := p.orch.Exposures(ctx)
+	if err != nil {
+		return err
+	}
+	services, err := listServices(ctx)
 	if err != nil {
 		return err
 	}

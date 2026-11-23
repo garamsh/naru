@@ -24,17 +24,6 @@ func node(name string, addrs ...v1.NodeAddress) *v1.Node {
 
 func internal(ip string) v1.NodeAddress { return v1.NodeAddress{Type: v1.NodeInternalIP, Address: ip} }
 
-func TestAServiceOfAnotherClassIsNotWanted(t *testing.T) {
-	s := service("d", "web", "")
-	require.True(t, ccm.Wants(s), "no class")
-	own := ccm.LoadBalancerClass
-	s.Spec.LoadBalancerClass = &own
-	require.True(t, ccm.Wants(s), "naru's class")
-	other := "metallb.io/l2"
-	s.Spec.LoadBalancerClass = &other
-	require.False(t, ccm.Wants(s), "another implementation's class")
-}
-
 func TestTheExposureIDHoldsTheNamespaceTheNameAndTheUIDsFirstEightDigits(t *testing.T) {
 	s := service("prod", "web", "")
 	s.UID = "0a1b2c3d-1111-2222-3333-444455556666"
@@ -87,19 +76,15 @@ func TestTheSpecRefusesWhatOrchCannotCarry(t *testing.T) {
 	require.NoError(t, err, "control: the same Service with a NodePort and a Node")
 }
 
-func TestOrphansAreTheExposuresNoWantedServiceHas(t *testing.T) {
+func TestOrphansAreTheExposuresNoLoadBalancerServiceHas(t *testing.T) {
 	keep := service("d", "keep", "")
 	keep.UID = "aaaaaaaa-0000-0000-0000-000000000000"
-	foreign := service("d", "foreign", "")
-	foreign.UID = "bbbbbbbb-0000-0000-0000-000000000000"
-	class := "metallb.io/l2"
-	foreign.Spec.LoadBalancerClass = &class
 	clusterIP := service("d", "cip", "")
 	clusterIP.UID = "cccccccc-0000-0000-0000-000000000000"
 	clusterIP.Spec.Type = v1.ServiceTypeClusterIP
-	exps := []orchapi.Exposure{{ID: "d.keep.aaaaaaaa"}, {ID: "d.gone.dddddddd"}, {ID: "d.foreign.bbbbbbbb"}, {ID: "d.cip.cccccccc"}, {ID: "d.keep.eeeeeeee"}}
+	exps := []orchapi.Exposure{{ID: "d.keep.aaaaaaaa"}, {ID: "d.gone.dddddddd"}, {ID: "d.cip.cccccccc"}, {ID: "d.keep.eeeeeeee"}}
 	require.Equal(t,
-		[]string{"d.gone.dddddddd", "d.foreign.bbbbbbbb", "d.cip.cccccccc", "d.keep.eeeeeeee"},
-		ccm.Orphans(exps, []v1.Service{*keep, *foreign, *clusterIP}),
-		"a Service that is gone, one of another class, one no longer a LoadBalancer, and one re-made under a new UID")
+		[]string{"d.gone.dddddddd", "d.cip.cccccccc", "d.keep.eeeeeeee"},
+		ccm.Orphans(exps, []v1.Service{*keep, *clusterIP}),
+		"a Service that is gone, one no longer a LoadBalancer, and one re-made under a new UID")
 }
