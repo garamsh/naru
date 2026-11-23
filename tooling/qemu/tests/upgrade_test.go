@@ -403,3 +403,39 @@ func TestNode_ARefusedUpgradeThatCarriedAnExtensionLeavesOrchAnsweringFromTheOld
 	})
 	awaitOrch(t, f)
 }
+
+func TestNode_UpgradeOfAHostWhoseRevisionZeroPinsAnExtensionIsRefusedUpFrontWithTheStepAndRollsBackNothing(t *testing.T) {
+	want := os.Getenv("NARU_VERSION")
+	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION")
+	next := want + "-next"
+	f := newFleet(t, fleetOpts{controls: 1, upgradable: true, pinned: true})
+	f.startOrch()
+	admin := f.c.API.Admin
+	before, err := statusOf(tool, admin)
+	require.NoError(t, err)
+	bundle, sums, newSHA := bundleWithExtensionFor(t, "next", next)
+
+	r := ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
+
+	require.Error(t, r.Err, "the pinned entry of the running configuration is counted though no revision is stored")
+	assert.Contains(t, r.refusal(), "422", "refused before the slot is written, not rolled back after a trial")
+	assert.Contains(t, r.refusal(), "naru-orch", "the refusal names the extension")
+	assert.Contains(t, r.refusal(), "naructl apply --mode staged", "and the step")
+	after, err := statusOf(tool, admin)
+	require.NoError(t, err)
+	assert.Equal(t, before.BootID, after.BootID, "the Node was not rebooted")
+	rows, err := extensionTable(admin)
+	require.NoError(t, err)
+	assert.NotContains(t, rows, newSHA, "the image the refused bundle carried is not kept")
+
+	// The control: the step the refusal names, and the same bundle upgrades the host.
+	step := ctl(admin, "apply", "-f", patchFile(t, "spec:\n  extensions:\n    - {name: naru-orch}\n"), "--mode", "staged")
+	require.NoError(t, step.Err, step.refusal())
+	r = ctl(admin, "upgrade", "--bundle", bundle, "--sums", sums)
+	require.NoError(t, r.Err, r.refusal())
+	awaitRestarting(t, f.node(1), "the Node runs the next version and has promoted it", func() bool {
+		s, err := statusOf(tool, admin)
+		return err == nil && s.Version == next && s.Slot == "default" && strings.Contains(s.Outcome, "promoted")
+	})
+	awaitOrch(t, f)
+}

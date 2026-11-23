@@ -17,6 +17,7 @@ import (
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/extension"
 	"github.com/garamsh/naru/lib/init/store"
+	"github.com/garamsh/naru/lib/init/upgrade"
 )
 
 // imageMounter stands for the kernel: an "image" here is the text of its manifest.json.
@@ -85,4 +86,30 @@ func TestPruneExtensions_RemovesWhatNoPinnedEntryNamesAndLogsWhenTheConfiguratio
 
 	assert.Contains(t, logs.String(), "level=ERROR", "an unreadable configuration is logged, not dropped")
 	assert.Contains(t, logs.String(), "read the configuration to remove the extension images")
+}
+
+func TestStoredExtensions_AHostWithNoStoredRevisionNamesTheExtensionsItsBaseRuns(t *testing.T) {
+	dir := t.TempDir()
+	images := extension.NewStore(filepath.Join(dir, "extensions"), filepath.Join(dir, "probe"), 1<<20, imageMounter{})
+	manager := extension.NewManager(images, imageMounter{}, filepath.Join(dir, "mnt"), "v1", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	pinned := putImage(t, images, manifestOf("naru-orch", "v1"))
+	configs := store.New(filepath.Join(dir, "config"))
+	base, err := config.Parse([]byte(prunableDoc))
+	require.NoError(t, err)
+	base.Spec.Extensions = []config.Extension{{Name: "naru-orch", SHA256: pinned}}
+	ran := func() *config.NodeConfig { return &base }
+
+	entries, stored, err := storedExtensions(configs, manager, ran)
+
+	require.NoError(t, err)
+	assert.Equal(t, []upgrade.Entry{{Name: "naru-orch", SHA256: pinned}}, entries, "a revision-0 digest-pinned entry is counted")
+	assert.Len(t, stored, 1)
+
+	stored0 := base
+	stored0.Spec.Extensions = []config.Extension{{Name: "tools"}}
+	require.NoError(t, configs.Save(store.Stored{Revision: 1, Config: stored0}))
+	entries, _, err = storedExtensions(configs, manager, ran)
+
+	require.NoError(t, err)
+	assert.Equal(t, []upgrade.Entry{{Name: "tools"}}, entries, "the control: a stored revision is what the next boot runs, and wins")
 }

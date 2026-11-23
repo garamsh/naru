@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -92,13 +93,15 @@ func Main() {
 		}
 	}
 	var upgrades *upgrade.Upgrader
+	// ran is the configuration this boot runs, for an upgrade of a Node that has stored no revision.
+	var ran atomic.Pointer[config.NodeConfig]
 	publish := func() {
 		if err := writeInitStatus(config.InitStatusFile, version(), upgrades); err != nil {
 			log.Warn("write the status naru-hostd reports", "file", config.InitStatusFile, "err", err)
 		}
 	}
 	upgrades = upgrade.NewWith(upgrade.Config{Version: version(), Started: started, Log: log, Changed: publish, Extensions: func() ([]upgrade.Entry, []upgrade.Image, error) {
-		return storedExtensions(configs, extensions)
+		return storedExtensions(configs, extensions, ran.Load)
 	}, Stage: stageExtension(extensions), Unstage: func(sha string) { _ = extensions.Delete(sha) }, Prune: func() { pruneExtensions(configs, extensions, log) }})
 	upgrades.Detect()
 	server := api.New(api.Deps{
@@ -122,6 +125,7 @@ func Main() {
 	// boot left its outcome; an upgrade that ends later writes it again through Changed.
 	publish()
 	if booted != nil {
+		ran.Store(&booted.Config)
 		engine = newEngine(*booted, configs, services, host, issuer, server)
 		server.Attach(engine)
 		log.Info("the apply engine is ready", "revision", booted.Revision)
@@ -205,18 +209,25 @@ func ignoreSignals() {
 	signal.Ignore(syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT)
 }
 
-// storedExtensions returns spec.extensions of the stored configuration and the stored images, which
-// an upgrade is checked against (ADR 0055).
-func storedExtensions(configs *store.Store, extensions *extension.Manager) ([]upgrade.Entry, []upgrade.Image, error) {
+// storedExtensions returns spec.extensions of the configuration the next boot runs and the stored
+// images, which an upgrade is checked against and stages a bundle for (ADR 0055). That is the
+// stored configuration, and where none is stored, the base this boot runs as revision 0, which
+// ran gives.
+func storedExtensions(configs *store.Store, extensions *extension.Manager, ran func() *config.NodeConfig) ([]upgrade.Entry, []upgrade.Image, error) {
 	st, err := configs.Load()
-	if errors.Is(err, store.ErrNotFound) {
-		return nil, nil, nil
-	}
-	if err != nil {
+	var specs []config.Extension
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		if cfg := ran(); cfg != nil {
+			specs = cfg.Spec.Extensions
+		}
+	case err != nil:
 		return nil, nil, err
+	default:
+		specs = st.Config.Spec.Extensions
 	}
 	var entries []upgrade.Entry
-	for _, e := range st.Config.Spec.Extensions {
+	for _, e := range specs {
 		entries = append(entries, upgrade.Entry{Name: e.Name, SHA256: e.SHA256})
 	}
 	if len(entries) == 0 {

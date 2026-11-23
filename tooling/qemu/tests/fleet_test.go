@@ -69,6 +69,9 @@ type fleetOpts struct {
 	// its trial slot, and the control Nodes name the naru-orch extension without its digest, so that
 	// init takes the image built for the version it runs (ADR 0084).
 	upgradable bool
+	// pinned keeps the digest of the naru-orch entry of an upgradable fleet's control Nodes, which no
+	// revision is stored for: the base the Node runs as revision 0 names the image it was built with.
+	pinned bool
 	// services are added to every Node.
 	services []node.ExtraService
 	// forward is guest ports of every Node's second NIC to forward from the test host besides orch's and the
@@ -273,7 +276,7 @@ func (f *fleet) genFlags(c node.Config) []string {
 	}
 	// The signer and orch run from the naru-orch extension, which the data disk stores (ADR 0055).
 	extension := "naru-orch=" + inputs.Extension.SHA256
-	if f.opts.upgradable {
+	if f.opts.upgradable && !f.opts.pinned {
 		extension = "naru-orch"
 	}
 	flags = append(flags, "--extension", extension, "--signer", "--signer-peer-listen", nodeIP(c.Index)+":"+signerPeerPort,
