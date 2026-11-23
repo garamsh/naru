@@ -30,15 +30,15 @@ func TestPlace_AMemberTakesAHostWhoseMachinePrefixHoldsItsAddress(t *testing.T) 
 	s := addressSpec("cp", 2, "10.77.1.10", "10.77.2.10")
 	one, two := prefixedHost("one", "10.77.1.0/24"), prefixedHost("two", "10.77.2.0/24")
 
-	got, err := groups.Place(s, "cp-1", []groups.Host{two, one}, nil)
+	got, err := groups.Place(s, groups.WantOf(s, "cp-1"), []groups.Host{two, one}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "one", got.ID)
-	got, err = groups.Place(s, "cp-2", []groups.Host{one, two}, nil)
+	got, err = groups.Place(s, groups.WantOf(s, "cp-2"), []groups.Host{one, two}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "two", got.ID)
 
 	// The control: the same host refuses the member whose address is outside its prefix, and says why.
-	_, err = groups.Place(s, "cp-2", []groups.Host{one}, nil)
+	_, err = groups.Place(s, groups.WantOf(s, "cp-2"), []groups.Host{one}, nil)
 	var pe *groups.PlacementError
 	require.ErrorAs(t, err, &pe)
 	assert.Contains(t, err.Error(), "address 10.77.2.10 is outside the host's Machine prefixes")
@@ -47,7 +47,7 @@ func TestPlace_AMemberTakesAHostWhoseMachinePrefixHoldsItsAddress(t *testing.T) 
 func TestPlace_AMemberPastTheListedAddressesIsRefusedEverywhere(t *testing.T) {
 	s := addressSpec("cp", 2, "10.77.1.10")
 
-	_, err := groups.Place(s, "cp-2", []groups.Host{prefixedHost("one", "10.77.1.0/24")}, nil)
+	_, err := groups.Place(s, groups.WantOf(s, "cp-2"), []groups.Host{prefixedHost("one", "10.77.1.0/24")}, nil)
 
 	var pe *groups.PlacementError
 	require.ErrorAs(t, err, &pe)
@@ -56,7 +56,7 @@ func TestPlace_AMemberPastTheListedAddressesIsRefusedEverywhere(t *testing.T) {
 
 func TestPlace_ATemplateWithNoAddressesPlacesOnAnyHost(t *testing.T) {
 	s := addressSpec("cp", 1)
-	_, err := groups.Place(s, "cp-1", []groups.Host{prefixedHost("one", "10.77.1.0/24")}, nil)
+	_, err := groups.Place(s, groups.WantOf(s, "cp-1"), []groups.Host{prefixedHost("one", "10.77.1.0/24")}, nil)
 	require.NoError(t, err)
 }
 
