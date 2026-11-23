@@ -154,6 +154,7 @@ func run(log *slog.Logger, f runFlags) error {
 	}, orchd.Deps{
 		Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
 		NewHosts:        func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP, revocations) },
+		NewPrefixHosts:  func(inv inventory.Service) inventory.PrefixHosts { return hostclient.New(inv, hostHTTP, revocations) },
 		BootSets:        bootSets,
 		NewBootSetHosts: func(inv inventory.Service) groups.BootSetHosts { return hostclient.New(inv, hostHTTP, revocations) },
 		NewNetworkHosts: func(inv inventory.Service) netrec.Hosts {

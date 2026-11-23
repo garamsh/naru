@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"testing"
 	"time"
@@ -244,3 +245,95 @@ func TestTheEventLogDropsEventsOlderThanTheirAgeByTheStoresClockOnEveryWriteThat
 	require.NoError(t, s.AppendEvent(t.Context(), at(now.Add(30*24*time.Hour))))
 	require.Len(t, times(), 3, "recent events stay when an event is dated ahead")
 }
+
+// admitPlain admits the host h with no allocation, as a host that enrolled with a configuration of its own is.
+func admitPlain(t *testing.T, s *invetcd.Store, h string, now time.Time) {
+	t.Helper()
+	p := inventory.Pending{HostID: h, PublicKey: []byte("k"), FirstSeen: now}
+	require.NoError(t, s.PutPending(t.Context(), p, nil, true))
+	require.NoError(t, s.Admit(t.Context(), p, inventory.Host{ID: h, PublicKey: p.PublicKey}, orchapi.Event{Time: now, Type: inventory.EventAdmitted, Subject: h}, nil))
+}
+
+func TestAClaimedPrefixIsNeverGivenByAReservationAndAClaimNeverTakesAnotherHostsPrefix(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	s := invetcd.New(c.Members[0].Etcd())
+	ctx := t.Context()
+	now := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
+	pick := func(claimed []netip.Prefix) (netip.Prefix, error) {
+		return prefixes.Allocate(netip.MustParsePrefix("10.200.0.0/22"), 24, claimed)
+	}
+	admitPlain(t, s, "control", now)
+	admitPlain(t, s, "other", now)
+
+	// The control: with nothing claimed the pool gives the first prefix, which is what the control host holds.
+	first, err := s.Reserve(ctx, "joined-0", pick, now.Add(time.Minute), now)
+	require.NoError(t, err)
+	require.Equal(t, "10.200.0.0/24", first.Prefix)
+	require.NoError(t, s.Release(ctx, first))
+
+	require.NoError(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.0.0/24", HostID: "control"}))
+	require.NoError(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.0.0/24", HostID: "control"}), "a host that reports again changes nothing")
+	got, err := s.Reserve(ctx, "joined-1", pick, now.Add(time.Minute), now)
+	require.NoError(t, err)
+	require.Equal(t, "10.200.1.0/24", got.Prefix, "the prefix the control host holds is not given again")
+
+	require.ErrorIs(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.0.0/24", HostID: "other"}), inventory.ErrAllocationTaken)
+	require.ErrorIs(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.2.0/24", HostID: "gone"}), inventory.ErrNotFound, "a host that is not admitted holds nothing")
+	all, err := s.ListAllocations(ctx)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []inventory.Allocation{{Prefix: "10.200.0.0/24", HostID: "control"}, got}, all)
+}
+
+func TestRemovingAHostFreesEveryPrefixItHeld(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	s := invetcd.New(c.Members[0].Etcd())
+	ctx := t.Context()
+	now := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
+	admitPlain(t, s, "control", now)
+	admitPlain(t, s, "kept", now)
+	for _, a := range []inventory.Allocation{{Prefix: "10.200.0.0/24", HostID: "control"}, {Prefix: "10.200.1.0/24", HostID: "control"}, {Prefix: "10.200.2.0/24", HostID: "kept"}} {
+		require.NoError(t, s.ClaimPrefix(ctx, a))
+	}
+
+	_, err := s.RemoveHost(ctx, "control", orchapi.Event{Time: now, Type: inventory.EventRemoved, Subject: "control"})
+	require.NoError(t, err)
+
+	all, err := s.ListAllocations(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []inventory.Allocation{{Prefix: "10.200.2.0/24", HostID: "kept"}}, all, "the other host keeps its prefix")
+}
+
+type noPrefixes struct{}
+
+func (noPrefixes) MachinePrefixes(context.Context) (map[string][]string, error) { return nil, nil }
+
+func TestARecorderPassReleasesTheConfirmedPrefixesOfHostsThatAreNotAdmittedAndNoOtherRecord(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	kv := c.Members[0].Etcd()
+	s := invetcd.New(kv)
+	ctx := t.Context()
+	now := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
+	admitPlain(t, s, "kept", now)
+	admitPlain(t, s, "removed", now)
+	require.NoError(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.1.0/24", HostID: "kept"}))
+	require.NoError(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.2.0/24", HostID: "removed"}))
+	// A reservation of a host that is only pending is not an orphan: its admission is in flight.
+	pick := func([]netip.Prefix) (netip.Prefix, error) { return netip.MustParsePrefix("10.200.3.0/24"), nil }
+	reservation, err := s.Reserve(ctx, "pending", pick, now.Add(time.Hour), now)
+	require.NoError(t, err)
+	// The removal that a claim raced: the host's record is gone and its allocation stayed.
+	_, err = kv.Delete(ctx, "/naru/orch/hosts/removed")
+	require.NoError(t, err)
+
+	r := inventory.NewRecorder(s, noPrefixes{}, fixedClock{now}, time.Minute, slog.New(slog.DiscardHandler))
+	require.NoError(t, r.Reconcile(ctx))
+
+	all, err := s.ListAllocations(ctx)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []inventory.Allocation{{Prefix: "10.200.1.0/24", HostID: "kept"}, reservation}, all,
+		"the removed host's prefix is released; an admitted host's and an in-flight reservation stay")
+}
+
+type fixedClock struct{ t time.Time }
+
+func (c fixedClock) Now() time.Time { return c.t }

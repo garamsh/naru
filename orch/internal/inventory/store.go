@@ -27,6 +27,12 @@ type Store interface {
 	// and are dropped. A reservation hostID still holds is returned again, extended. The choice and
 	// the write are one step that holds only while no claim changed in between.
 	Reserve(ctx context.Context, hostID string, pick func(claimed []netip.Prefix) (netip.Prefix, error), until, now time.Time) (Allocation, error)
+	// ClaimPrefix records a as confirmed: the Machine prefix the host a.HostID reports holding. It is
+	// the same record Reserve and Admit make for a joined host, so one set of records tells the pool
+	// what every host holds. It does nothing when the host already holds the prefix, takes over its own
+	// reservation or one that ran out, and is ErrAllocationTaken when another host holds it and
+	// ErrNotFound when the host is not admitted.
+	ClaimPrefix(ctx context.Context, a Allocation) error
 	// Release drops the reservation a, when it is still the one stored.
 	Release(ctx context.Context, a Allocation) error
 	// Admit replaces the pending record p by the host h and appends ev, in one step that fails

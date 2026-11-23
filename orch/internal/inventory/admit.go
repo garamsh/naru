@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/garamsh/naru/lib/identity"
@@ -58,6 +60,11 @@ func (s *service) Admit(ctx context.Context, by string, req orchapi.AdmitRequest
 		}
 		return h.api(), nil
 	}
+	// The pool hands out only a prefix no admitted host holds, so every admitted host's prefix must be
+	// on record before it is asked: a host enrolled with its own configuration chose its prefix itself.
+	if err := s.requireRecorded(ctx); err != nil {
+		return orchapi.Host{}, err
+	}
 	// A joined host takes its prefix first, so a full pool is refused before the signer issues
 	// anything. The reservation holds the prefix while the signer is asked; one transaction then
 	// writes the host and confirms the prefix, and any failure before that drops the reservation.
@@ -90,6 +97,40 @@ func (s *service) Admit(ctx context.Context, by string, req orchapi.AdmitRequest
 	}
 	released = true
 	return h.api(), nil
+}
+
+// requireRecorded is ErrPrefixUnrecorded naming each admitted host that holds no confirmed Machine
+// prefix in the allocation records, and nil when every one holds one. It asks for one prefix per
+// host: the recorder writes a host's prefixes one after another, so a host that reports several is
+// counted from its first, and an admission that falls between its first and its last can still be
+// given a prefix of the later ones. naructl gives mvmd one Machine prefix (network.ipv4_prefix), so a
+// host reports one today; the pool's choice also skips every prefix claimed by then.
+func (s *service) requireRecorded(ctx context.Context) error {
+	hosts, err := s.store.ListHosts(ctx)
+	if err != nil {
+		return err
+	}
+	allocations, err := s.store.ListAllocations(ctx)
+	if err != nil {
+		return err
+	}
+	recorded := map[string]bool{}
+	for _, a := range allocations {
+		if a.ReservedUntil.IsZero() {
+			recorded[a.HostID] = true
+		}
+	}
+	var missing []string
+	for _, h := range hosts {
+		if !recorded[h.ID] {
+			missing = append(missing, h.ID)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	slices.Sort(missing)
+	return fmt.Errorf("%w: %s; admission waits until each reports its prefix, or the host is removed", ErrPrefixUnrecorded, strings.Join(missing, ", "))
 }
 
 // reservationTTL is how long an admission may hold a prefix before it commits. An admission that
