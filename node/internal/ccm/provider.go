@@ -8,6 +8,9 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/tools/record"
 	cloudprovider "k8s.io/cloud-provider"
 )
 
@@ -21,6 +24,9 @@ type Provider struct {
 	cfg  Config
 	orch Orch
 	log  *slog.Logger
+
+	// events is set by Initialize, before the service controller asks for the LoadBalancer.
+	events record.EventRecorder
 }
 
 var _ cloudprovider.Interface = (*Provider)(nil)
@@ -52,7 +58,10 @@ func (p *Provider) Initialize(b cloudprovider.ControllerClientBuilder, stop <-ch
 	}
 	kube := b.ClientOrDie("naru-ccm-sweep")
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { <-stop; cancel() }()
+	broadcaster := record.NewBroadcaster()
+	broadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kube.CoreV1().Events(metav1.NamespaceAll)})
+	p.events = broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: ProviderName + "-ccm"})
+	go func() { <-stop; cancel(); broadcaster.Shutdown() }()
 	go func() {
 		t := time.NewTicker(SweepInterval)
 		defer t.Stop()
@@ -102,7 +111,7 @@ func (p *Provider) LoadBalancer() (cloudprovider.LoadBalancer, bool) {
 	if !p.cfg.LoadBalancerOn() {
 		return nil, false
 	}
-	return NewLoadBalancer(p.orch, p.cfg.Network, p.cfg.Pool), true
+	return NewLoadBalancer(p.orch, p.cfg.Network, p.cfg.Pool, p.events), true
 }
 
 // InstancesV2 is the node controller's side.

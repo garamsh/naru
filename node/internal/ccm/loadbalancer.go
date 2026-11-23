@@ -8,6 +8,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/cloud-provider/api"
 
@@ -23,13 +24,15 @@ type LoadBalancer struct {
 	orch    Orch
 	network string
 	pool    string
+	events  record.EventRecorder
 }
 
 var _ cloudprovider.LoadBalancer = (*LoadBalancer)(nil)
 
 // NewLoadBalancer returns the service controller's side of the provider for one network and pool.
-func NewLoadBalancer(o Orch, network, pool string) *LoadBalancer {
-	return &LoadBalancer{orch: o, network: network, pool: pool}
+// The recorder carries the events a Service is told; nil tells nobody.
+func NewLoadBalancer(o Orch, network, pool string, events record.EventRecorder) *LoadBalancer {
+	return &LoadBalancer{orch: o, network: network, pool: pool, events: events}
 }
 
 // notFound reports whether orch answered that there is no such exposure.
@@ -57,6 +60,7 @@ func (l *LoadBalancer) GetLoadBalancerName(_ context.Context, _ string, svc *v1.
 
 // EnsureLoadBalancer asks orch for the exposure and returns its address once a host announces it.
 func (l *LoadBalancer) EnsureLoadBalancer(ctx context.Context, _ string, svc *v1.Service, nodes []*v1.Node) (*v1.LoadBalancerStatus, error) {
+	l.notify(svc)
 	spec, err := Spec(svc, nodes, l.network, l.pool)
 	if errors.Is(err, errNodePort) {
 		return nil, api.NewRetryError(err.Error(), retryAfter)
@@ -72,6 +76,17 @@ func (l *LoadBalancer) EnsureLoadBalancer(ctx context.Context, _ string, svc *v1
 		return nil, api.NewRetryError(fmt.Sprintf("exposure %s has address %s and no host announces it yet", e.ID, e.Address), retryAfter)
 	}
 	return Status(e), nil
+}
+
+// notify tells the Service what its exposure is not: a Warning event for each notice its spec earns.
+// The recorder folds a repeated event into a count, so every pass of the controller may call it.
+func (l *LoadBalancer) notify(svc *v1.Service) {
+	if l.events == nil {
+		return
+	}
+	if reason, message, ok := LocalPolicyNotice(svc); ok {
+		l.events.Event(svc, v1.EventTypeWarning, reason, message)
+	}
 }
 
 // UpdateLoadBalancer changes the exposure's backends to the Nodes' as they are now.

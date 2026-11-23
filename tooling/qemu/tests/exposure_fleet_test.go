@@ -349,3 +349,50 @@ func TestFleet_ARevokedExposersCredentialIsRefusedAtOnce(t *testing.T) {
 	assert.Zero(t, orchStatus(last), "an alert, not an HTTP status")
 	assert.NotErrorIs(t, last, context.DeadlineExceeded, "not a timeout")
 }
+
+// A Service that sets externalTrafficPolicy Local is told so by an event (ADR 0085 item 8) and is given the
+// exposure of a cluster Service: orch is handed every Node as a backend, so the announcing host forwards to
+// each of them and not to the one a Local policy would keep.
+func TestFleet_AnExposureForAServiceThatAsksForLocalForwardsToEveryNodeAndAClientReachesIt(t *testing.T) {
+	target := lbAddress + ":80"
+	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1024, capture: true, userData: withLANInterface,
+		services: []node.ExtraService{
+			{Name: "naru94-nftprobe", Binary: nftProbe, Env: map[string]string{"PATH": "/bin"}},
+			{Name: "naru94-lanclient", Binary: lanClientBinary, Args: []string{target}, Env: map[string]string{"PATH": "/bin"}},
+		}})
+	f.startOrch()
+	hostIDs := f.enrollAndAdmit("eu-1", "disk=ssd")
+	h1, h2 := 2, 3
+	f.must(f.orch("network", "apply", "-f", f.networkFile(netA, prefixA)), "network apply "+netA)
+	vm1, vm2 := f.netVMOn(h1, "a1", netA), f.netVMOn(h2, "a2", netA)
+	f.must(f.orch("address-pool", "apply", "-f", f.file("pool.yaml", "name: lan\ncidrs: ["+lbPool+"]\nnetworks: ["+netA+"]\n")), "address-pool apply")
+
+	ctx := context.Background()
+	exposer := f.exposerClient(netA)
+	// The spec naru-ccm builds for a Service with externalTrafficPolicy Local is this one: the policy is not in it.
+	_, err := exposer.ApplyExposure(ctx, lbService, orchapi.ExposureSpec{
+		Network: netA, Pool: "lan", Backends: []string{vm1.ip, vm2.ip},
+		Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 80, NodePort: plainNode}},
+	})
+	require.NoError(t, err)
+	var holderNode int
+	eventually(t, "a host announces the address", func() bool {
+		e, err := exposer.Exposure(ctx, lbService)
+		if err != nil || e.Phase != orchapi.ExposureAnnounced {
+			return false
+		}
+		for i, id := range hostIDs {
+			if id == e.Host && (i == h1 || i == h2) {
+				holderNode = i
+			}
+		}
+		return holderNode != 0
+	})
+	eventually(t, "the client outside the network reaches a microVM through the address", func() bool {
+		return strings.HasPrefix(answerOf(f.node(lanClient), target), "src=10.")
+	})
+	eventually(t, "the announcing host forwards to both Nodes", func() bool {
+		dnat := lanLine(f.node(holderNode), "nft-dnat")
+		return strings.Contains(dnat, vm1.ip) && strings.Contains(dnat, vm2.ip)
+	})
+}
