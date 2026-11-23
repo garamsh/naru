@@ -239,7 +239,7 @@ func (s *Server) makeSeed(ctx context.Context, p plan, m mvmd.Machine, made *[]s
 	if !prefix.IsValid() {
 		return "", 0, errors.New("the Machine's address is in none of the prefixes mvmd reports")
 	}
-	vol, err := seedVolume(m.ID, p.userData, prefix, s.deps.MachineGateway)
+	vol, err := seedVolume(m.ID, p.userData, firstOf(p.create.RoutedPrefixes), prefix, s.deps.MachineGateway)
 	if err != nil {
 		return "", 0, err
 	}
@@ -497,4 +497,12 @@ func (s *Server) removeOrphans(ctx context.Context, name string) {
 			}
 		}
 	}
+}
+
+// firstOf is the first of the prefixes, or empty for none.
+func firstOf(prefixes []string) string {
+	if len(prefixes) == 0 {
+		return ""
+	}
+	return prefixes[0]
 }

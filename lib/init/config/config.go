@@ -81,6 +81,8 @@ type Spec struct {
 	// Join makes the configuration the join form: the only field of spec, from which init derives
 	// what a host that has not joined an orch runs. It is nil in every other configuration.
 	Join *Join `yaml:"join,omitempty"`
+	// Node is the Node's own place in a Pod network. It is nil when the Node has none.
+	Node *Node `yaml:"node,omitempty"`
 }
 
 // StorageRoot is the directory a storage disk is mounted under, as StorageRoot/<name>, unless it names a mount point.

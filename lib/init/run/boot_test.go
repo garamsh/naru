@@ -65,8 +65,8 @@ type node struct {
 	onStep   func(timesync.Result)
 }
 
-func (n *node) ReadSeed() ([]byte, []byte, error) {
-	return []byte(n.userData), []byte(nodeNetwork), nil
+func (n *node) ReadSeed() ([]byte, []byte, []byte, error) {
+	return []byte(n.userData), []byte(nodeNetwork), nil, nil
 }
 func (n *node) ApplyNetwork(netcfg.Config, *slog.Logger) (netcfg.Applied, error) {
 	return netcfg.Applied{}, nil

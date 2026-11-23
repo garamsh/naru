@@ -57,6 +57,7 @@ spec:
 type recorder struct {
 	raw                string
 	network            string
+	meta               string
 	readErr            error
 	networkErr         error
 	filesErr           error
@@ -170,9 +171,9 @@ func (r *recorder) MountExtensions(e []config.Extension) error {
 	return r.extErr
 }
 
-func (r *recorder) ReadSeed() ([]byte, []byte, error) {
+func (r *recorder) ReadSeed() ([]byte, []byte, []byte, error) {
 	r.calls = append(r.calls, "read")
-	return []byte(r.raw), []byte(r.network), r.readErr
+	return []byte(r.raw), []byte(r.network), []byte(r.meta), r.readErr
 }
 
 // ApplyNetwork gives the Node the addresses of the configuration, or r.leased when it is set, as a
@@ -721,4 +722,20 @@ func TestRun_RefusesTheBootWhenBridgeNetfilterCannotBeSetAndStartsNoService(t *t
 
 	assert.ErrorIs(t, err, boom)
 	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "bridge-netfilter"}, r.calls, "a Node whose policy cannot be enforced does not start its Pods")
+}
+
+func TestRun_TheSeedsPodPrefixReachesTheFilesTheNodeWrites(t *testing.T) {
+	doc := replace(t, validConfig, "spec:\n", "spec:\n  node:\n    podPrefix: 10.64.9.0/26\n    cniConf: /run/cni/net.d/10-naru.conflist\n")
+	r := &recorder{raw: doc, meta: "instance-id: w1-1\nnaru-pod-prefix: 10.64.1.0/26\n"}
+
+	require.NoError(t, run(r))
+	var cni []config.File
+	for _, f := range r.written {
+		if f.Path == "/run/cni/net.d/10-naru.conflist" {
+			cni = append(cni, f)
+		}
+	}
+	require.Len(t, cni, 1)
+	assert.Contains(t, cni[0].Content, "10.64.1.0/26", "the seed's prefix, not the user-data's")
+	assert.NotContains(t, cni[0].Content, "10.64.9.0/26")
 }
