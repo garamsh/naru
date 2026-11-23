@@ -118,22 +118,15 @@ func refusedForSpace(r result) bool {
 	return r.Err != nil && strings.Contains(r.Stdout+r.Stderr, spaceExceeded)
 }
 
-func TestFleet_TheHousekeeperKeepsEtcdUnderItsQuotaThroughMoreWritesThanTheQuotaHolds(t *testing.T) {
-	const quota = 8 << 20
-	f := newFleet(t, fleetOpts{controls: 3, orchExtra: func(int) map[string]any {
-		return map[string]any{"etcdQuotaBytes": quota, "etcdCompactionRetention": "30s", "housekeepingInterval": "5s"}
-	}})
-	f.startOrch()
-	eventually(t, "a member leads", func() bool { return f.leader(f.controls()) != 0 })
-
-	// About 400 KiB a set, one every 6 seconds, which keeps the live data well under the quota, until more than twice the
-	// quota has been written and a defragmentation has been seen. Without compaction and defragmentation the quota is
-	// spent and the sets fail with "database space exceeded". The 6-second interval keeps the write rate low enough
-	// that the housekeeping probes can complete between writes in QEMU.
+// churn sets a bloated profile of about 400 KiB every 6 seconds, which keeps the live data well under the quota,
+// until bytes have been written (and, with waitForDefrag, a defragmentation seen), and reports whether a member logged a defragmentation by then. A write that fails
+// fails the test: without compaction the quota is spent and the sets fail with "database space exceeded". The
+// 6-second interval keeps the write rate low enough that the housekeeping probes can complete between writes in QEMU.
+func (f *fleet) churn(bytes int, waitForDefrag bool) bool {
+	f.t.Helper()
 	deadline := time.Now().Add(15 * time.Minute)
 	tick := time.NewTicker(6 * time.Second)
 	defer tick.Stop()
-	var written int
 	defragSeen := func() bool {
 		for _, i := range f.controls() {
 			if f.node(i).Has(defragmented) {
@@ -142,17 +135,43 @@ func TestFleet_TheHousekeeperKeepsEtcdUnderItsQuotaThroughMoreWritesThanTheQuota
 		}
 		return false
 	}
-	for n := 0; written < 2*quota || !defragSeen(); n++ {
-		require.True(t, time.Now().Before(deadline), "after %d bytes written the housekeeper had not defragmented a member", written)
+	for n, written := 0, 0; written < bytes || waitForDefrag && !defragSeen(); n++ {
+		require.True(f.t, time.Now().Before(deadline), "after %d bytes written the churn did not end", written)
 		<-tick.C
-		res := f.bloatedProfile(1, n)
-		f.must(res, "a write while the quota is smaller than what has been written")
+		f.must(f.bloatedProfile(1, n), "a write while the quota is smaller than what has been written")
 		written += 400 << 10
 	}
-
 	for _, i := range f.controls() {
-		assert.False(t, f.node(i).Has(spaceExceeded), "no member ran out of space")
+		assert.False(f.t, f.node(i).Has(spaceExceeded), "no member ran out of space")
 	}
+	return defragSeen()
+}
+
+// The database of a member that takes these writes levels off at about 93% of an 8 MiB quota with about a third of
+// it free pages, since etcd reuses what compaction frees; that is over the high-water mark of ShouldDefrag, so the
+// housekeeper defragments it.
+func TestFleet_TheHousekeeperKeepsEtcdUnderItsQuotaThroughMoreWritesThanTheQuotaHoldsAndDefragmentsAtTheHighWaterMark(t *testing.T) {
+	const quota = 8 << 20
+	f := newFleet(t, fleetOpts{controls: 3, orchExtra: func(int) map[string]any {
+		return map[string]any{"etcdQuotaBytes": quota, "etcdCompactionRetention": "30s", "housekeepingInterval": "5s"}
+	}})
+	f.startOrch()
+	eventually(t, "a member leads", func() bool { return f.leader(f.controls()) != 0 })
+
+	assert.True(t, f.churn(2*quota, true), "the housekeeper defragmented a member that was over the high-water mark")
+}
+
+// The control: the same writes into a quota eight times as large leave the database under the high-water mark, with
+// the same share of free pages, and no member defragments it.
+func TestFleet_TheHousekeeperDoesNotDefragmentADatabaseBelowTheHighWaterMark(t *testing.T) {
+	const quota = 64 << 20
+	f := newFleet(t, fleetOpts{controls: 3, orchExtra: func(int) map[string]any {
+		return map[string]any{"etcdQuotaBytes": quota, "etcdCompactionRetention": "30s", "housekeepingInterval": "5s"}
+	}})
+	f.startOrch()
+	eventually(t, "a member leads", func() bool { return f.leader(f.controls()) != 0 })
+
+	assert.False(t, f.churn(16<<20, false), "no member defragmented a database under the high-water mark")
 }
 
 func TestFleet_TheHousekeeperDisarmsTheNoSpaceAlarmOnceCompactionAndDefragmentationFreeTheDatabase(t *testing.T) {

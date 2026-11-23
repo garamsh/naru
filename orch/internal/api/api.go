@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
@@ -253,6 +255,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// storeFull reports whether err is etcd's answer to a write while the database is over its quota or its
+// no-space alarm is armed.
+func storeFull(err error) bool {
+	return errors.Is(err, rpctypes.ErrNoSpace) || rpctypes.Error(err) == rpctypes.ErrNoSpace
+}
+
 // writeError is the one place an error becomes a status. What is not a known failure is logged
 // and answered as a 500 without its detail.
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
@@ -292,6 +300,9 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusRequestEntityTooLarge, "the request body is too large"
 	case errors.Is(err, inventory.ErrInvalid), errors.Is(err, orchapi.ErrBadProof):
 		status, msg = http.StatusBadRequest, err.Error()
+	case storeFull(err):
+		status, msg = http.StatusInsufficientStorage, "orch's database is full (etcdserver: mvcc: database space exceeded): it refuses writes until the housekeeper has compacted and defragmented it and cleared the no-space alarm"
+		logger(r).Error("the database is full", "err", err.Error())
 	case errors.Is(err, inventory.ErrSignerFailed):
 		status, msg = http.StatusBadGateway, "the signer failed"
 		logger(r).Error("signer failed", "err", err.Error())

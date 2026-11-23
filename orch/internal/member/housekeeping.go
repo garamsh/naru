@@ -31,9 +31,10 @@ const (
 	// most orch's inventory has any need of.
 	MinQuota = 128 << 20
 	MaxQuota = 2 << 30
-	// DefragShare is the share of the quota under which a database is not worth the pause of a
-	// defragmentation: one eighth.
-	DefragShare = 8
+	// DefragHighWater is the percent of the quota a database must reach before it is defragmented, and
+	// DefragReclaimable the percent of the file that must be free pages for the pause to be worth it (ADR 0104).
+	DefragHighWater   = 80
+	DefragReclaimable = 10
 	// DisarmShare is the share of the quota a database must be under for its no-space alarm to be
 	// cleared: half, so that the alarm does not return at the next write.
 	DisarmShare = 2
@@ -94,9 +95,10 @@ func DiskBytes(path string) (uint64, error) {
 }
 
 // ShouldDefrag reports whether a database of dbSize bytes of which inUse hold data is worth
-// defragmenting under quota: it is at least a DefragShare of it and at least half of it is free pages.
+// defragmenting under quota: it is at least DefragHighWater percent of it and at least
+// DefragReclaimable percent of the file is free pages.
 func ShouldDefrag(quota, dbSize, inUse int64) bool {
-	return dbSize >= quota/DefragShare && (dbSize-inUse)*2 >= dbSize
+	return dbSize*100 >= quota*DefragHighWater && (dbSize-inUse)*100 >= dbSize*DefragReclaimable
 }
 
 // Removable reports why a member may not be removed, or nil when it may: the cluster has at least
