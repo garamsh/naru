@@ -1,7 +1,13 @@
 package identity_test
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"math/big"
 	"testing"
 	"time"
 
@@ -49,6 +55,22 @@ func TestRequest(t *testing.T) {
 		assert.Error(t, err)
 		_, _, err = identity.VerifyRequest(data, identity.ActionRevoke, other.pool, nil, now)
 		assert.NoError(t, err, "control: the same request verifies against its own authority")
+	})
+	t.Run("a certificate not for client authentication is refused", func(t *testing.T) {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		require.NoError(t, err)
+		der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+			SerialNumber: big.NewInt(12), Subject: pkix.Name{CommonName: "root", OrganizationalUnit: []string{"root"}},
+			NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature,
+			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}, c.cert, &key.PublicKey, c.key)
+		require.NoError(t, err)
+		server, err := x509.ParseCertificate(der)
+		require.NoError(t, err)
+		data, err := identity.SignRequest(identity.ActionRevoke, body, now.Add(time.Minute), key, server)
+		require.NoError(t, err)
+		_, _, err = identity.VerifyRequest(data, identity.ActionRevoke, c.pool, nil, now)
+		assert.Error(t, err)
 	})
 	t.Run("a changed body is refused", func(t *testing.T) {
 		var s map[string]json.RawMessage
