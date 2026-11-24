@@ -13,6 +13,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000 // indirect
 	github.com/garamsh/naru/lib/identity v0.0.0-00010101000000-000000000000 // indirect
+	github.com/garamsh/naru/lib/machineapi v0.0.0-00010101000000-000000000000 // indirect
 	github.com/garamsh/naru/lib/metrics v0.0.0-00010101000000-000000000000 // indirect
 	github.com/garamsh/naru/lib/orchapi v0.0.0-00010101000000-000000000000 // indirect
 	github.com/garamsh/naru/lib/wire v0.0.0-00010101000000-000000000000 // indirect
@@ -41,3 +42,5 @@ require github.com/garamsh/naru/lib/init v0.0.0-00010101000000-000000000000
 replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile
 
 replace github.com/garamsh/naru/lib/wire => ../lib/wire
+
+replace github.com/garamsh/naru/lib/machineapi => ../lib/machineapi

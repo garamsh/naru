@@ -1,5 +1,6 @@
 // Package orchd composes one naru-orchd member: its etcd member, leader election, inventory, groups
-// and networks APIs, the groups engine and the network reconciler, and snapshots.
+// and networks APIs, the Machine API on its own listener, the groups engine and the network
+// reconciler, and snapshots.
 package orchd
 
 import (
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -33,6 +35,9 @@ import (
 	"github.com/garamsh/naru/orch/internal/inventory"
 	invetcd "github.com/garamsh/naru/orch/internal/inventory/etcd"
 	"github.com/garamsh/naru/orch/internal/leader"
+	"github.com/garamsh/naru/orch/internal/machines"
+	machinesetcd "github.com/garamsh/naru/orch/internal/machines/etcd"
+	"github.com/garamsh/naru/orch/internal/machineserver"
 	"github.com/garamsh/naru/orch/internal/member"
 	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/networks"
@@ -49,6 +54,10 @@ type Config struct {
 	member.Config
 	// Listen is the API's address.
 	Listen string
+	// MachineAPIListen is the Machine API's address, and MachineZone the zone its stable names are
+	// under. The Machine API is served only when both are set.
+	MachineAPIListen string
+	MachineZone      string
 	// ClientCA verifies the certificates of the API's callers.
 	ClientCA string
 	// SnapshotDir holds the sealed snapshots; SnapshotInterval and SnapshotKeep default to every
@@ -130,8 +139,12 @@ type Orchd struct {
 	deps   Deps
 	runCtx context.Context
 	// handler is the API's current handler: the one that waits for a restore, then the full one.
-	handler   atomic.Pointer[handlerBox]
-	restoring atomic.Bool
+	handler atomic.Pointer[handlerBox]
+	// machineHandler is the Machine API's, which answers 503 until the member has its data, and
+	// machineAddr its address, empty when the member serves no Machine API.
+	machineHandler atomic.Pointer[handlerBox]
+	machineAddr    string
+	restoring      atomic.Bool
 	// mu guards member and stopped, so a restore that finishes after Stop starts nothing.
 	mu      sync.Mutex
 	member  *member.Member
@@ -182,12 +195,25 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 		}
 		return nil, err
 	}
+	var machineL net.Listener
+	if c.MachineAPIListen != "" && c.MachineZone != "" {
+		if machineL, err = tls.Listen("tcp", c.MachineAPIListen, machineserver.TLSConfig(tlsConf.Certificates[0], tlsConf.ClientCAs)); err != nil {
+			_ = l.Close()
+			if m != nil {
+				m.Close()
+			}
+			return nil, err
+		}
+	} else {
+		d.Log.Warn("no machine zone or machine API address: the Machine API is not served")
+	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	var metrics *api.Metrics
 	if d.Metrics != nil {
 		metrics = api.NewMetrics(d.Metrics)
 	}
 	o := &Orchd{metrics: metrics, name: c.Name, addr: l.Addr().String(), cancel: cancel, log: d.Log, cfg: c, deps: d, runCtx: runCtx}
+	o.machineHandler.Store(&handlerBox{machineserver.Unavailable()})
 	if awaitRestore {
 		o.handler.Store(&handlerBox{api.NewRestoring(api.RestoreDeps{Restorer: o, Auth: d.Auth, Metrics: o.metrics, Log: d.Log})})
 	} else {
@@ -200,6 +226,16 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 			d.Log.Error("api stopped", "err", err.Error())
 		}
 	}()
+	if machineL != nil {
+		o.machineAddr = machineL.Addr().String()
+		o.wg.Add(1)
+		go func() {
+			defer o.wg.Done()
+			if err := api.Serve(runCtx, machineL, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { o.machineHandler.Load().ServeHTTP(w, r) })); err != nil {
+				d.Log.Error("machine api stopped", "err", err.Error())
+			}
+		}()
+	}
 	return o, nil
 }
 
@@ -282,7 +318,9 @@ func (o *Orchd) assemble(m *member.Member) bool {
 			Events: groupsetcd.NewEvents(leaderInv), Interval: c.GroupInterval, Log: d.Log,
 		}))
 	}
-	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
+	machineSvc := machines.NewService(machinesetcd.New(m.Client()), d.Clock, c.MachineZone)
+	o.machineHandler.Store(&handlerBox{machineserver.New(machineserver.Deps{Machines: machineSvc, Auth: d.Auth, Log: d.Log})})
+	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Machines: machineSvc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
 
 	o.wg.Add(3)
 	go func() {
@@ -389,6 +427,9 @@ func serverTLS(c Config) (*tls.Config, []byte, error) {
 
 // Addr is the address the API listens on.
 func (o *Orchd) Addr() string { return o.addr }
+
+// MachineAPIAddr is the address the Machine API listens on, empty when the member serves none.
+func (o *Orchd) MachineAPIAddr() string { return o.machineAddr }
 
 // Etcd is the member's etcd client, for a test that reads what orch stored. It is nil while the
 // member waits for a restore.

@@ -2,7 +2,7 @@
 
 What naru's Machine API is and how orch runs Machines across hosts: the API and its callers, the state orch keeps beside each host's, placement, moves, GPUs and the first use.
 
-The API's types, client, conformance test and in-memory implementation are built (`lib/machineapi`), and so is the caller credential (the signer's `POST /v1/caller`, `naructl caller credential`); orch does not serve the API or its listener yet. Every other decision below is accepted and waits for the goal-3 issue that builds it. The PR that builds a part states that part here as built.
+The API's types, client, conformance test and in-memory implementation are built (`lib/machineapi`), and so is the caller credential (the signer's `POST /v1/caller`, `naructl caller credential`); orch serves the API on its listener and keeps its records and each caller's event log ([orch.md](./orch.md) §The Machine API), with no Machine placed, so every Machine stays `pending`; exec, files and aliases answer 501. Every other decision below is accepted and waits for the goal-3 issue that builds it. The PR that builds a part states that part here as built.
 
 ## Current decisions
 
@@ -45,7 +45,7 @@ The API's types, client, conformance test and in-memory implementation are built
 
   Exec and files are answered by the member that took the call, which calls the Machine's host. Errors are `{"error", "code"}`.
 - **What `lib/machineapi` fixes beside the table.**
-  - **Codes.** Each refusal has a code: `invalid` (400 for a body that is not the operation's JSON, 413 for one above the operation's limit, 422 for a field), `forbidden` (403), `not-found` and `file-not-found` (404), `conflict`, `deleting` (the held name) and `not-running` (409), `cursor-expired` (410), `machine-not-found`, `snapshot-not-found` and `snapshot-mismatch` (422), `alias-taken` (409), `alias-domain-not-granted` (403) and `internal` (500). A client keeps a code it does not know.
+  - **Codes.** Each refusal has a code: `invalid` (400 for a body that is not the operation's JSON, 413 for one above the operation's limit, 422 for a field), `forbidden` (403), `not-found` and `file-not-found` (404), `conflict`, `deleting` (the held name) and `not-running` (409), `cursor-expired` (410), `machine-not-found`, `snapshot-not-found` and `snapshot-mismatch` (422), `alias-taken` (409), `alias-domain-not-granted` (403), `internal` (500), `unimplemented` (501) and `unavailable` (503). A client keeps a code it does not know.
   - **The rules every implementation applies** are functions of the library: the spec's checks (mvmd's for the run configuration, ADR 0111 item 6 for a GPU Machine), create's comparison, the zone's alias rules and an alias certificate's check.
   - **Secrets are never read back.** A read answers each env value as `<set>` and each file by path, mode and size, without its content, as mvmd's Inspect does; create compares the values it was given. So a spec read back and put again is 409: a use keeps its own spec.
   - **A request field the version does not name** is refused, 400 `invalid`, and not ignored.

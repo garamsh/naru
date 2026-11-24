@@ -299,6 +299,8 @@ func TestParse_DaemonSectionsRefuse(t *testing.T) {
 		{"orch cluster lacks this member", "      host-1: https://192.168.0.40:2380\n", "", "spec.orch.initialCluster"},
 		{"orch cluster state", "sans:", "initialClusterState: old\n    sans:", "spec.orch.initialClusterState"},
 		{"orch listen", "sans:", "listen: nope\n    sans:", "spec.orch.listen"},
+		{"orch machine API listen", "sans:", "machineApiListen: nope\n    sans:", "spec.orch.machineApiListen"},
+		{"orch machine zone", "sans:", "machineZone: M_Example\n    sans:", "spec.orch.machineZone"},
 		{"orch certificate not PEM", "    certificate: |\n        -----BEGIN CERTIFICATE-----", "    certificate: |\n        -----BEGIN NOTHING-----", "spec.orch.certificate"},
 		{"orch host authority not PEM", "    hostCA: |\n        -----BEGIN CERTIFICATE-----", "    hostCA: |\n        -----BEGIN NOTHING-----", "spec.orch.hostCA"},
 		{"orch name", "sans:", "name: Bad_Name\n    sans:", "spec.orch.name"},
@@ -454,6 +456,24 @@ func TestParse_OrchRestoreGivesOrchdItsRestoreFlagAndNothingElseDoes(t *testing.
 
 	_, err = config.Parse([]byte(strings.Replace(doc, "restore: true", "restore: maybe", 1)))
 	require.Error(t, err, "restore is a boolean")
+}
+
+func TestParse_OrchMachineZoneGivesOrchdTheMachineAPIOnPort7600(t *testing.T) {
+	plain, err := config.Parse([]byte(daemonsDoc(t)))
+	require.NoError(t, err)
+	assert.NotContains(t, strings.Join(service(t, plain, "naru-orchd").Args, " "), "--machine-", "no zone serves no Machine API")
+
+	doc := strings.Replace(daemonsDoc(t), "  orch:\n    peerURL", "  orch:\n    machineZone: m.example.test\n    peerURL", 1)
+	cfg, err := config.Parse([]byte(doc))
+	require.NoError(t, err)
+	args := service(t, cfg, "naru-orchd").Args
+	assert.Contains(t, args, "--machine-zone=m.example.test")
+	assert.Contains(t, args, "--machine-api-addr=0.0.0.0:7600", "the default address")
+
+	doc = strings.Replace(doc, "machineZone: m.example.test", "machineZone: m.example.test\n    machineApiListen: 192.168.0.40:7600", 1)
+	cfg, err = config.Parse([]byte(doc))
+	require.NoError(t, err)
+	assert.Contains(t, service(t, cfg, "naru-orchd").Args, "--machine-api-addr=192.168.0.40:7600")
 }
 
 func TestParse_OrchDepartAfterAndHousekeepingIntervalGiveOrchdItsFlagsAndAreDurations(t *testing.T) {

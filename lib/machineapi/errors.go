@@ -40,6 +40,11 @@ const (
 	CodeAliasDomainNotGranted Code = "alias-domain-not-granted"
 	// CodeInternal: 500, a failure of the server's own.
 	CodeInternal Code = "internal"
+	// CodeUnimplemented: 501, an operation this server does not serve yet.
+	CodeUnimplemented Code = "unimplemented"
+	// CodeUnavailable: 503, a server that cannot answer now, such as one without the revocation
+	// list it checks a certificate against: ask again.
+	CodeUnavailable Code = "unavailable"
 )
 
 // ErrorBody is the body of every refusal and failure.

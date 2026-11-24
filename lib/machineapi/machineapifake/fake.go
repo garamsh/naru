@@ -224,7 +224,7 @@ func (f *Fake) create(caller, name string, spec machineapi.Spec) (machineapi.Mac
 		if snap == nil {
 			return machineapi.Machine{}, false, refuse(http.StatusUnprocessableEntity, machineapi.CodeSnapshotNotFound, "no snapshot %s", src.Snapshot)
 		}
-		if err := sameVolumes(snap.s.Spec.Volumes, spec.Volumes); err != nil {
+		if err := machineapi.MatchVolumes(snap.s.Spec.Volumes, spec.Volumes); err != nil {
 			return machineapi.Machine{}, false, refuse(http.StatusUnprocessableEntity, machineapi.CodeSnapshotMismatch, "%v", err)
 		}
 	}
@@ -245,25 +245,6 @@ func (f *Fake) create(caller, name string, spec machineapi.Spec) (machineapi.Mac
 	f.emit(a, machineapi.EventStatus, mc.m)
 	f.settleAfter(caller, name, id)
 	return mc.m, true, nil
-}
-
-// sameVolumes refuses a restore whose volumes are not the snapshot's, by name and size.
-func sameVolumes(snap, req []machineapi.Volume) error {
-	size := map[string]uint64{}
-	for _, v := range snap {
-		size[v.Name] = v.SizeBytes
-	}
-	for _, v := range req {
-		s, ok := size[v.Name]
-		if !ok || s != v.SizeBytes {
-			return fmt.Errorf("the volume %s of %d bytes is not the snapshot's", v.Name, v.SizeBytes)
-		}
-		delete(size, v.Name)
-	}
-	for n := range size {
-		return fmt.Errorf("the snapshot's volume %s is not in the spec", n)
-	}
-	return nil
 }
 
 // owned returns the caller's Machine name; another caller's is not found.

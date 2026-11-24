@@ -81,6 +81,8 @@ func (f *nodeFlags) declare(fs *pflag.FlagSet) {
 	fs.Var(&f.orchCluster, "orch-member", "spec.orch: <name>=<peer URL>, a member of orch's cluster, this Node among them, repeatable")
 	fs.StringVar(&f.orchState, "orch-state", "", "spec.orch: new, or existing for a member that joins a cluster (default new)")
 	fs.StringVar(&f.orchListen, "orch-listen", "", "spec.orch: the address of orch's HTTPS API (default 0.0.0.0:7500)")
+	fs.StringVar(&f.orchMachineListen, "orch-machine-api-listen", "", "spec.orch: the address of the Machine API (default 0.0.0.0:7600), served only with --orch-machine-zone")
+	fs.StringVar(&f.orchMachineZone, "orch-machine-zone", "", "spec.orch: the zone of Machines' stable names; without it orch serves no Machine API")
 	fs.Var(&f.orchSANs, "orch-san", "spec.orch: a name or address of orch's certificate, repeatable")
 	fs.StringVar(&f.orchCert, "orch-certificate", "", "spec.orch: the file holding orch's certificate then the authority's, PEM")
 	fs.StringVar(&f.orchCA, "orch-ca", "", "spec.orch: the file holding the authority's certificate, PEM")
@@ -118,7 +120,7 @@ func (f *nodeFlags) check(fs *pflag.FlagSet) error {
 		{"host-orch-url", "host-orch-ca-sha256", "host-orch-enroll-key"},
 		{"signer-replica", "signer-join-peer", "signer-join-peer-ca", "signer-join-authorisation"},
 		{"signer", "signer-replica", "signer-peer-listen", "signer-peer-name", "signer-recovery-public", "signer-root-csr"},
-		{"orch-peer-url", "orch-client-url", "orch-member", "orch-state", "orch-listen", "orch-san", "orch-certificate", "orch-ca", "orch-revocation-public-key", "orch-recovery-public", "orch-key", "orch-restore", "orch-join", "orch-host-ca"},
+		{"orch-peer-url", "orch-client-url", "orch-member", "orch-state", "orch-listen", "orch-machine-api-listen", "orch-machine-zone", "orch-san", "orch-certificate", "orch-ca", "orch-revocation-public-key", "orch-recovery-public", "orch-key", "orch-restore", "orch-join", "orch-host-ca"},
 	} {
 		if err := needs(fs, g[0], g[1:]...); err != nil {
 			return err

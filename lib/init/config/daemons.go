@@ -86,6 +86,12 @@ type Orch struct {
 	Join string `yaml:"join,omitempty"`
 	// Listen is the address of orch's HTTPS API. It is "0.0.0.0:7500" when empty.
 	Listen string `yaml:"listen,omitempty"`
+	// MachineAPIListen is the address of the Machine API, served only with MachineZone. It is
+	// "0.0.0.0:7600" when empty.
+	MachineAPIListen string `yaml:"machineApiListen,omitempty"`
+	// MachineZone is the zone of Machines' stable names, such as "m.example.com". Without it orch
+	// serves no Machine API.
+	MachineZone string `yaml:"machineZone,omitempty"`
 	// SANs are the names and addresses of the member's certificate. They are ["127.0.0.1"] when empty.
 	SANs []string `yaml:"sans,omitempty"`
 	// Certificate is the PEM of orch's certificate followed by the authority's, CA the PEM of the
@@ -215,6 +221,13 @@ func (o Orch) listen() string {
 		return "0.0.0.0:7500"
 	}
 	return o.Listen
+}
+
+func (o Orch) machineAPIListen() string {
+	if o.MachineAPIListen == "" {
+		return "0.0.0.0:" + wire.MachineAPIPort
+	}
+	return o.MachineAPIListen
 }
 
 func (o Orch) state() string {
@@ -349,6 +362,12 @@ func (v *validation) orch(cfg NodeConfig) {
 	}
 	if _, err := netip.ParseAddrPort(o.listen()); err != nil {
 		v.fail("spec.orch.listen", "must be an IP address and a port, got %q", o.Listen)
+	}
+	if _, err := netip.ParseAddrPort(o.machineAPIListen()); err != nil {
+		v.fail("spec.orch.machineApiListen", "must be an IP address and a port, got %q", o.MachineAPIListen)
+	}
+	if o.MachineZone != "" && !dnsSubdomain.MatchString(o.MachineZone) {
+		v.fail("spec.orch.machineZone", "must be a lowercase DNS name, got %q", o.MachineZone)
 	}
 	for i, san := range o.SANs {
 		if san == "" || strings.ContainsAny(san, ", ") {
@@ -656,6 +675,9 @@ func orchService(o Orch, node string, m *Metrics) (Service, []File) {
 		"--signer-socket=" + SignerSocket, "--snapshot-dir=" + OrchDataDir + "/snapshots",
 		"--revocation-public-key=" + OrchRunDir + "/revocation.pub",
 		"--host-client-cert=" + OrchRunDir + "/orch.crt", "--host-client-key=" + OrchKeyFile,
+	}
+	if o.MachineZone != "" {
+		args = append(args, "--machine-api-addr="+o.machineAPIListen(), "--machine-zone="+o.MachineZone)
 	}
 	if o.Restore {
 		args = append(args, "--restore")

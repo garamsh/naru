@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
 	"github.com/garamsh/naru/orch/internal/groups"
@@ -44,6 +45,8 @@ func main() {
 		join        = flag.String("join", "", "client URL of a running member: with --initial-cluster-state existing, this member adds itself to that cluster and takes --initial-cluster from it")
 		restore     = flag.Bool("restore", false, "with no etcd member in --data-dir, serve only PUT /v1/restore and start etcd on the snapshot it receives")
 		listen      = flag.String("listen", "0.0.0.0:7500", "address of the HTTPS API")
+		machineAddr = flag.String("machine-api-addr", "0.0.0.0:"+wire.MachineAPIPort, "address of the Machine API, served only with --machine-zone")
+		machineZone = flag.String("machine-zone", "", "the zone Machines' stable names are under, such as m.example.com; empty serves no Machine API")
 		certFile    = flag.String("cert", "/var/lib/naru/orch/tls/orch.crt", "orch's certificate, followed by the authority's")
 		keyFile     = flag.String("key", "/var/lib/naru/orch/tls/orch.key", "orch's key")
 		caFile      = flag.String("ca", "/var/lib/naru/orch/tls/ca.crt", "the authority that issues every identity")
@@ -78,6 +81,7 @@ func main() {
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
 		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, departAfter: *departAfter, houseEvery: *houseEvery, quota: *etcdQuota, keep: *etcdKeep, metricsAddr: *metricsAddr,
+		machineAddr: *machineAddr, machineZone: *machineZone,
 		bootSets: release.Config{Location: *bsStore, TrustRoot: *bsRoot, Identity: *bsIdentity, Issuer: *bsIssuer},
 	}); err != nil {
 		log.Error("naru-orchd stopped", "err", err.Error())
@@ -95,6 +99,7 @@ type runFlags struct {
 	hostCert, hostKey, hostCA                                 string
 	snapKeep                                                  int
 	metricsAddr                                               string
+	machineAddr, machineZone                                  string
 	join                                                      string
 	restore                                                   bool
 	bootSets                                                  release.Config
@@ -149,7 +154,7 @@ func run(log *slog.Logger, f runFlags) error {
 	}
 	o, err := orchd.Start(ctx, orchd.Config{
 		Config: mcfg,
-		Listen: f.listen, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
+		Listen: f.listen, MachineAPIListen: f.machineAddr, MachineZone: f.machineZone, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
 		GroupInterval: f.groupEach, NetworkInterval: f.netEach, Restore: f.restore,
 	}, orchd.Deps{
 		Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,

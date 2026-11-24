@@ -38,7 +38,7 @@ const (
 	orchPort       = "7500"
 	orchPeerPort   = "7501"
 	orchClientPort = "7502"
-	signerPeerPort = "7600"
+	signerPeerPort = "7601"
 )
 
 // metricsPorts are the fixed ports of init, naru-hostd, naru-orchd and naru-signer.

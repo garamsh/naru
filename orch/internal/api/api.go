@@ -72,9 +72,15 @@ type Exposures interface {
 	DeleteExposure(ctx context.Context, by, network, id string) error
 }
 
+// Machines is what the operator API reads of the Machine API's records.
+type Machines interface {
+	All(ctx context.Context) ([]orchapi.Machine, error)
+}
+
 // Deps is what the handlers call.
 type Deps struct {
 	Inventory inventory.Service
+	Machines  Machines
 	Groups    groupsvc.Service
 	Networks  Networks
 	// Exposures is nil while the member has no way to reach the hosts; its endpoints answer 501.
@@ -109,6 +115,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/pending", h.guard(auth.Read, h.pending))
 	mux.HandleFunc("GET /v1/events", h.guard(auth.Read, h.events))
 	mux.HandleFunc("GET /v1/microvms", h.guard(auth.Read, h.microVMs))
+	mux.HandleFunc("GET /v1/machines", h.guard(auth.Read, h.machines))
 	mux.HandleFunc("GET /v1/groups", h.guard(auth.Read, h.groupList))
 	mux.HandleFunc("GET /v1/groups/{name}", h.guard(auth.Read, h.groupGet))
 	mux.HandleFunc("PUT /v1/groups/{name}", h.guard(auth.Operate, h.groupApply))
@@ -306,6 +313,12 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 
 func (h *handler) hosts(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
 	out, err := h.Inventory.Hosts(r.Context())
+	reply(w, r, out, err)
+}
+
+// machines lists every caller's Machines, with no secret of any.
+func (h *handler) machines(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Machines.All(r.Context())
 	reply(w, r, out, err)
 }
 

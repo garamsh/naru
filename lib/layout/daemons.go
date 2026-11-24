@@ -61,7 +61,10 @@ type Orch struct {
 	// State is "new" or "existing"; empty is "new".
 	State  string
 	Listen string
-	SANs   []string
+	// MachineAPIListen is the Machine API's address, orch's default when empty, and MachineZone the
+	// zone of Machines' stable names; without a zone orch serves no Machine API.
+	MachineAPIListen, MachineZone string
+	SANs                          []string
 	// Certificate is orch's certificate then the authority's, CA the authority's and
 	// RevocationPublicKey the PKIX PEM of the revocation key: all PEM.
 	Certificate, CA, RevocationPublicKey string
@@ -137,6 +140,8 @@ type orchSpec struct {
 	InitialClusterState string            `yaml:"initialClusterState,omitempty"`
 	Join                string            `yaml:"join,omitempty"`
 	Listen              string            `yaml:"listen,omitempty"`
+	MachineAPIListen    string            `yaml:"machineApiListen,omitempty"`
+	MachineZone         string            `yaml:"machineZone,omitempty"`
 	SANs                []string          `yaml:"sans,omitempty"`
 	Certificate         string            `yaml:"certificate"`
 	CA                  string            `yaml:"ca"`
@@ -277,7 +282,7 @@ func (n Node) daemonSpecs(c *nodeConfig) {
 	if o := n.Orch; o != nil {
 		c.Spec.Orch = &orchSpec{
 			PeerURL: o.PeerURL, ClientURL: o.ClientURL, InitialCluster: o.InitialCluster, InitialClusterState: o.State,
-			Listen: o.Listen, SANs: o.SANs, Certificate: o.Certificate, CA: o.CA,
+			Listen: o.Listen, MachineAPIListen: o.MachineAPIListen, MachineZone: o.MachineZone, SANs: o.SANs, Certificate: o.Certificate, CA: o.CA,
 			RevocationPublicKey: o.RevocationPublicKey, HostCA: o.HostCA, RecoveryPublicKey: o.RecoveryPublicKey, Restore: o.Restore, Join: o.Join,
 		}
 		c.Spec.Files = append(c.Spec.Files, file{Path: OrchKeyFile, Mode: "0600", Content: o.Key, Owner: &fileOwner{UID: OrchUID, GID: OrchUID}})
