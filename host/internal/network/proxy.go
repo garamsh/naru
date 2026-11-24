@@ -2,7 +2,6 @@ package network
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"io"
 	"log/slog"
@@ -11,35 +10,9 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/garamsh/naru/lib/wire"
 )
-
-// proxySignature opens every PROXY protocol v2 header.
-var proxySignature = [12]byte{'\r', '\n', '\r', '\n', 0, '\r', '\n', 'Q', 'U', 'I', 'T', '\n'}
-
-const (
-	proxyVersionCommand = 0x21 // version 2, command PROXY
-	proxyIPv4TCP        = 0x11 // address family AF_INET, transport STREAM
-	proxyIPv4Length     = 12   // two addresses and two ports
-)
-
-// ProxyHeader returns the PROXY protocol v2 header for a TCP connection over IPv4 from src to dst:
-// the signature, the version and command, the family and transport, the length, and the addresses
-// and ports.
-func ProxyHeader(src, dst netip.AddrPort) ([]byte, error) {
-	s, d := src.Addr().Unmap(), dst.Addr().Unmap()
-	if !s.Is4() || !d.Is4() {
-		return nil, errors.New("the PROXY header carries IPv4 addresses only")
-	}
-	b := make([]byte, 0, 16+proxyIPv4Length)
-	b = append(b, proxySignature[:]...)
-	b = append(b, proxyVersionCommand, proxyIPv4TCP)
-	b = binary.BigEndian.AppendUint16(b, proxyIPv4Length)
-	b = append(b, s.AsSlice()...)
-	b = append(b, d.AsSlice()...)
-	b = binary.BigEndian.AppendUint16(b, src.Port())
-	b = binary.BigEndian.AppendUint16(b, dst.Port())
-	return b, nil
-}
 
 const (
 	dialTimeout = 3 * time.Second
@@ -186,7 +159,7 @@ func (p *proxy) carry(ctx context.Context, client net.Conn) {
 	if err := errors.Join(err1, err2); err != nil {
 		return
 	}
-	header, err := ProxyHeader(src, dst)
+	header, err := wire.ProxyHeader(src, dst)
 	if err != nil {
 		return
 	}

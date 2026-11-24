@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/garamsh/naru/lib/init/config"
 )
 
@@ -21,6 +23,17 @@ func credential(user *config.User) *syscall.Credential {
 		return nil
 	}
 	return &syscall.Credential{Uid: user.UID, Gid: user.GID, Groups: append([]uint32{}, user.Groups...)}
+}
+
+// procAttr returns how svc's processes start: in their own session, created in the cgroup open as
+// cgroupFD, as svc's user, and with CAP_NET_BIND_SERVICE as the one ambient capability when it
+// binds a low port as a user other than root.
+func procAttr(svc config.Service, cgroupFD int) *syscall.SysProcAttr {
+	attr := &syscall.SysProcAttr{Setsid: true, UseCgroupFD: true, CgroupFD: cgroupFD, Credential: credential(svc.User)}
+	if svc.BindLowPorts && svc.User != nil {
+		attr.AmbientCaps = []uintptr{unix.CAP_NET_BIND_SERVICE}
+	}
+	return attr
 }
 
 // prepareDirs makes each directory with its parents when it is missing, then sets its owner and

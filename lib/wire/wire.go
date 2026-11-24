@@ -4,7 +4,10 @@
 package wire
 
 import (
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
+	"net/netip"
 	"slices"
 	"strings"
 )
@@ -43,6 +46,25 @@ const (
 	NodeAPIPort = "50000"
 	// MachineAPIPort is the port every orch member serves the Machine API on (ADR 0108 item 3).
 	MachineAPIPort = "7600"
+)
+
+// What naru-hostd and naru-proxy share on a proxy host (ADR 0112 items 4 and 5).
+const (
+	// ProxyUID is the user and group naru-proxy runs as. The routes file is in its group.
+	ProxyUID uint32 = 6003
+	// ProxyRoutesDir holds ProxyRoutesFile, the table hostd writes for the proxy (hostapi.RoutesFile),
+	// mode 0640 in ProxyUID's group. It is on the data disk, so a proxy that restarts forwards on
+	// the table it had while that table is young enough.
+	ProxyRoutesDir  = DataMount + "/proxy-routes"
+	ProxyRoutesFile = ProxyRoutesDir + "/routes.json"
+	// ProxyRunDir is the proxy's own directory, and ProxyRevisionFile in it the revision of the
+	// table the proxy has loaded, in decimal, which hostd answers orch's push with.
+	ProxyRunDir       = "/run/naru-proxy"
+	ProxyRevisionFile = ProxyRunDir + "/revision"
+	// ProxyHealthAddr is where the proxy answers GET /healthz, on the host's loopback.
+	ProxyHealthAddr = "127.0.0.1:7480"
+	// ProxyPort is the port the proxy terminates TLS on.
+	ProxyPort = "443"
 )
 
 // Protocol is the transport of an exposed port, in upper case (TCP, UDP). Orch's
@@ -86,4 +108,32 @@ func IsEnrollKey(k string) bool {
 	}
 	_, err := hex.DecodeString(rest)
 	return err == nil && rest == strings.ToLower(rest)
+}
+
+// proxySignature opens every PROXY protocol v2 header.
+var proxySignature = [12]byte{'\r', '\n', '\r', '\n', 0, '\r', '\n', 'Q', 'U', 'I', 'T', '\n'}
+
+const (
+	proxyVersionCommand = 0x21 // version 2, command PROXY
+	proxyIPv4TCP        = 0x11 // address family AF_INET, transport STREAM
+	proxyIPv4Length     = 12   // two addresses and two ports
+)
+
+// ProxyHeader returns the PROXY protocol v2 header for a TCP connection over IPv4 from src to dst:
+// the signature, the version and command, the family and transport, the length, and the addresses
+// and ports. naru-hostd's exposures and naru-proxy write it before a backend's first byte.
+func ProxyHeader(src, dst netip.AddrPort) ([]byte, error) {
+	s, d := src.Addr().Unmap(), dst.Addr().Unmap()
+	if !s.Is4() || !d.Is4() {
+		return nil, errors.New("the PROXY header carries IPv4 addresses only")
+	}
+	b := make([]byte, 0, 16+proxyIPv4Length)
+	b = append(b, proxySignature[:]...)
+	b = append(b, proxyVersionCommand, proxyIPv4TCP)
+	b = binary.BigEndian.AppendUint16(b, proxyIPv4Length)
+	b = append(b, s.AsSlice()...)
+	b = append(b, d.AsSlice()...)
+	b = binary.BigEndian.AppendUint16(b, src.Port())
+	b = binary.BigEndian.AppendUint16(b, dst.Port())
+	return b, nil
 }

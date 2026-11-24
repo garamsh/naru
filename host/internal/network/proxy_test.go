@@ -2,7 +2,6 @@ package network_test
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -18,24 +17,6 @@ import (
 	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/wire"
 )
-
-func TestProxyHeader_Bytes(t *testing.T) {
-	got, err := network.ProxyHeader(netip.MustParseAddrPort("203.0.113.7:51234"), netip.MustParseAddrPort("192.168.0.80:443"))
-	require.NoError(t, err)
-	want := "0d0a0d0a000d0a515549540a" + // signature
-		"21" + // version 2, command PROXY
-		"11" + // AF_INET, STREAM
-		"000c" + // 12 bytes of addresses follow
-		"cb007107" + "c0a80050" + // source and destination address
-		"c822" + "01bb" // source port 51234, destination port 443
-	assert.Equal(t, want, hex.EncodeToString(got))
-
-	_, err = network.ProxyHeader(netip.MustParseAddrPort("[2001:db8::1]:1"), netip.MustParseAddrPort("192.168.0.80:443"))
-	assert.Error(t, err, "IPv4 only")
-	mapped, err := network.ProxyHeader(netip.MustParseAddrPort("[::ffff:203.0.113.7]:51234"), netip.MustParseAddrPort("192.168.0.80:443"))
-	require.NoError(t, err)
-	assert.Equal(t, want, hex.EncodeToString(mapped), "control: an IPv4 address in its IPv6 form is the same header")
-}
 
 // recordedConn is the backend's end of a connection, which records each Write.
 type recordedConn struct {
@@ -100,7 +81,7 @@ func TestProxy_TheHeaderIsTheFirstWriteOnTheBackendConnection(t *testing.T) {
 	_, err = client.Write([]byte("CLIENT HELLO"))
 	require.NoError(t, err)
 
-	header, err := network.ProxyHeader(netip.MustParseAddrPort(client.LocalAddr().String()), netip.MustParseAddrPort(p.listen.String()))
+	header, err := wire.ProxyHeader(netip.MustParseAddrPort(client.LocalAddr().String()), netip.MustParseAddrPort(p.listen.String()))
 	require.NoError(t, err)
 	got := make([]byte, len(header)+len("CLIENT HELLO"))
 	require.NoError(t, backendSide.SetReadDeadline(time.Now().Add(5*time.Second)))

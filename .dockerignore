@@ -9,6 +9,7 @@
 !host
 !node
 !orch
+!proxy
 !naructl
 !tooling
 **/*_test.go

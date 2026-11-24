@@ -28,4 +28,5 @@ file /bin/aws_signing_helper @OUT@/aws_signing_helper 0755 0 0
 file /etc/ssl/certs/ca-certificates.crt @OUT@/ca-certificates.crt 0644 0 0
 file /bin/naru-standin @OUT@/naru-standin 0755 0 0
 file /bin/naru-hostd @OUT@/naru-hostd 0755 0 0
+file /bin/naru-proxy @OUT@/naru-proxy 0755 0 0
 file /bin/nft @OUT@/nft 0755 0 0

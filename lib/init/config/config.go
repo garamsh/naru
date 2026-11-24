@@ -84,6 +84,8 @@ type Spec struct {
 	Orch *Orch `yaml:"orch,omitempty"`
 	// Signer makes init run naru-signer. It is nil when the Node runs no signer.
 	Signer *SignerSection `yaml:"signer,omitempty"`
+	// Proxy makes init run naru-proxy (docs/architecture/proxy.md). It is nil when the Node runs no proxy.
+	Proxy *Proxy `yaml:"proxy,omitempty"`
 	// Extensions are the system extension images init mounts read-only before any service starts
 	// (docs/architecture/adr/0055-orch-and-the-signer-are-delivered-as-a-system-extension-a-squashfs-image-init-mounts-read-only.md).
 	Extensions []Extension `yaml:"extensions,omitempty"`
@@ -219,6 +221,9 @@ type Service struct {
 	Setup []Setup `yaml:"setup,omitempty"`
 	// RestartPolicy is RestartAlways, which is also what it is when empty, or RestartOnFailure.
 	RestartPolicy string `yaml:"restartPolicy,omitempty"`
+	// BindLowPorts lets a service that runs as User listen on a port below 1024: init gives it
+	// CAP_NET_BIND_SERVICE as an ambient capability, and no other.
+	BindLowPorts bool `yaml:"bindLowPorts,omitempty"`
 }
 
 // User is the identity a service runs with: a user, a group and the supplementary groups.
@@ -257,7 +262,7 @@ type Setup struct {
 
 // Equal reports whether o is the same service. A nil list or map equals an empty one.
 func (s Service) Equal(o Service) bool {
-	return s.Name == o.Name && s.Binary == o.Binary && s.RestartPolicy == o.RestartPolicy &&
+	return s.Name == o.Name && s.Binary == o.Binary && s.RestartPolicy == o.RestartPolicy && s.BindLowPorts == o.BindLowPorts &&
 		slices.Equal(s.Args, o.Args) && maps.Equal(s.Env, o.Env) &&
 		slices.Equal(s.RestartOnChange, o.RestartOnChange) && slices.Equal(s.LogFiles, o.LogFiles) &&
 		(s.User == nil) == (o.User == nil) && (s.User == nil || s.User.equal(*o.User)) &&

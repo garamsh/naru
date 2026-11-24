@@ -26,10 +26,13 @@ const (
 	HostdService  = "naru-hostd"
 	OrchService   = "naru-orchd"
 	SignerService = "naru-signer"
+	// ProxyService is derived from spec.proxy, so no spec.services entry may keep it either.
+	ProxyService = "naru-proxy"
 
 	hostdBinary   = "/bin/naru-hostd"
 	orchBinary    = ExtensionsRoot + "/" + OrchExtension + "/bin/naru-orchd"
 	signerBinary  = ExtensionsRoot + "/" + OrchExtension + "/bin/naru-signer"
+	proxyBinary   = "/bin/naru-proxy"
 	defaultTunnel = 51820
 
 	// SignerUID is the user and group naru-signer runs as, and the group orch joins to reach its
@@ -55,6 +58,12 @@ const (
 
 	// HostdEnrollKeyFile is where init writes spec.host.orch.enrollKey, 0600 and root's, which is hostd's.
 	HostdEnrollKeyFile = "/run/naru-hostd/enroll.key"
+
+	// ProxyCertFile is the zone's certificate from spec.proxy.certificate, and ProxyKeyFile its
+	// private key: the one file of the proxy's directory that spec.files carries, so GET /v1/config
+	// redacts it.
+	ProxyCertFile = wire.ProxyRunDir + "/zone.crt"
+	ProxyKeyFile  = wire.ProxyRunDir + "/zone.key"
 
 	// OrchBootSetTrustRootFile is where init writes spec.orch.bootSetTrustRoot when given; orchd
 	// reads it with --boot-set-trust-root.
@@ -183,6 +192,25 @@ type HostOrch struct {
 	CASHA256 string `yaml:"caSHA256"`
 	// EnrollKey is the enrollment key. init writes it 0600 to HostdEnrollKeyFile, and GET /v1/config redacts it.
 	EnrollKey string `yaml:"enrollKey"`
+}
+
+// Proxy is spec.proxy: the naru-proxy this Node runs, as user wire.ProxyUID. Its private key is
+// the spec.files entry at ProxyKeyFile.
+type Proxy struct {
+	// Listen are the addresses the proxy terminates TLS on. It is ["0.0.0.0:443"] when empty.
+	Listen []string `yaml:"listen,omitempty"`
+	// Certificate is the PEM of the zone's wildcard certificate, then its chain.
+	Certificate string `yaml:"certificate"`
+	// RouteMaxAge is how long after hostd took a table the proxy forwards on it (a Go duration);
+	// the proxy's own 1h when empty.
+	RouteMaxAge string `yaml:"routeMaxAge,omitempty"`
+}
+
+func (p Proxy) listen() []string {
+	if len(p.Listen) == 0 {
+		return []string{"0.0.0.0:" + wire.ProxyPort}
+	}
+	return p.Listen
 }
 
 // Metrics is where init and the daemons it starts serve /metrics.
@@ -400,6 +428,38 @@ func (v *validation) orch(cfg NodeConfig) {
 	}
 }
 
+func (v *validation) proxy(spec Spec) {
+	p := spec.Proxy
+	if p == nil {
+		return
+	}
+	for i, l := range p.listen() {
+		if _, err := netip.ParseAddrPort(l); err != nil {
+			v.fail(fmt.Sprintf("spec.proxy.listen[%d]", i), "must be an IP address and a port, got %q", l)
+		}
+	}
+	if !pemOf(p.Certificate, "CERTIFICATE") {
+		v.fail("spec.proxy.certificate", "must be the PEM of the zone's certificate, then its chain")
+	}
+	if p.RouteMaxAge != "" {
+		if d, err := time.ParseDuration(p.RouteMaxAge); err != nil || d <= 0 {
+			v.fail("spec.proxy.routeMaxAge", "must be a positive duration such as 1h, got %q", p.RouteMaxAge)
+		}
+	}
+	if !slices.ContainsFunc(spec.Services, func(s Service) bool { return s.Name == HostdService }) {
+		v.fail("spec.proxy", "needs the %s service in spec.services: hostd writes the routes the proxy reads", HostdService)
+	}
+	i := slices.IndexFunc(spec.Files, func(f File) bool { return f.Path == ProxyKeyFile })
+	switch {
+	case i < 0:
+		v.fail("spec.proxy", "needs a spec.files entry for %s, the zone's private key, owned by uid %d, gid %d, mode 0600", ProxyKeyFile, wire.ProxyUID, wire.ProxyUID)
+	case spec.Files[i].Perm()&0o077 != 0 || spec.Files[i].Perm()&0o400 == 0:
+		v.fail(fmt.Sprintf("spec.files[%d].mode", i), "must give the owner read and nobody else any access: it is the zone's private key")
+	case spec.Files[i].Owner == nil || spec.Files[i].Owner.UID != wire.ProxyUID:
+		v.fail(fmt.Sprintf("spec.files[%d].owner", i), "must be uid %d: the proxy runs as it and reads this file", wire.ProxyUID)
+	}
+}
+
 func (v *validation) signer(s *SignerSection) {
 	if s == nil {
 		return
@@ -532,14 +592,14 @@ func (v *validation) hostdArgs(services []Service) {
 // the same configuration.
 func derive(cfg NodeConfig) NodeConfig {
 	spec := cfg.Spec
-	dirs := []string{OrchRunDir + "/", SignerRunDir + "/"}
+	dirs := []string{OrchRunDir + "/", SignerRunDir + "/", wire.ProxyRunDir + "/"}
 	spec.Files = slices.DeleteFunc(slices.Clone(spec.Files), func(f File) bool {
-		return f.Path == HostdEnrollKeyFile || f.Path == HostdRevocationKeyFile || f.Path == HostdRevocationSeedFile || f.Path != OrchKeyFile && slices.ContainsFunc(dirs, func(d string) bool { return strings.HasPrefix(f.Path, d) })
+		return f.Path == HostdEnrollKeyFile || f.Path == HostdRevocationKeyFile || f.Path == HostdRevocationSeedFile || f.Path != OrchKeyFile && f.Path != ProxyKeyFile && slices.ContainsFunc(dirs, func(d string) bool { return strings.HasPrefix(f.Path, d) })
 	})
 	var services []Service
 	for _, s := range spec.Services {
 		switch s.Name {
-		case SignerService, OrchService:
+		case SignerService, OrchService, ProxyService:
 			continue
 		case HostdService:
 			s.Args = slices.DeleteFunc(slices.Clone(s.Args), func(a string) bool {
@@ -577,9 +637,36 @@ func derive(cfg NodeConfig) NodeConfig {
 		services = append(services, svc)
 		spec.Files = append(spec.Files, files...)
 	}
+	if p := spec.Proxy; p != nil {
+		svc, file := proxyService(*p)
+		services = append(services, svc)
+		spec.Files = append(spec.Files, file)
+	}
 	spec.Services = services
 	cfg.Spec = spec
 	return cfg
+}
+
+// proxyService runs naru-proxy as wire.ProxyUID, able to bind port 443, with its own directory
+// for the revision file and the directory hostd writes the routes to in its group.
+func proxyService(p Proxy) (Service, File) {
+	args := []string{
+		"--listen=" + strings.Join(p.listen(), ","), "--cert=" + ProxyCertFile, "--key=" + ProxyKeyFile,
+		"--routes-file=" + wire.ProxyRoutesFile, "--revision-file=" + wire.ProxyRevisionFile, "--health-addr=" + wire.ProxyHealthAddr,
+	}
+	if p.RouteMaxAge != "" {
+		args = append(args, "--route-max-age="+p.RouteMaxAge)
+	}
+	return Service{
+		Name: ProxyService, Binary: proxyBinary, Args: args,
+		User:         &User{UID: wire.ProxyUID, GID: wire.ProxyUID},
+		BindLowPorts: true,
+		Dirs: []Dir{
+			{Path: wire.ProxyRunDir, Mode: "0755", UID: wire.ProxyUID, GID: wire.ProxyUID},
+			{Path: wire.ProxyRoutesDir, Mode: "0750", UID: 0, GID: wire.ProxyUID},
+		},
+		RestartOnChange: []string{ProxyKeyFile},
+	}, File{Path: ProxyCertFile, Mode: "0644", Content: p.Certificate, Restart: []string{ProxyService}}
 }
 
 // hostdRevocation returns the flags and files that give naru-hostd the revocation list's key, max

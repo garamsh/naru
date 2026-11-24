@@ -135,6 +135,7 @@ func validate(cfg NodeConfig) error {
 	v.extensions(cfg.Spec)
 	v.signer(cfg.Spec.Signer)
 	v.orch(cfg)
+	v.proxy(cfg.Spec)
 	v.metrics(cfg.Spec.Metrics)
 	return errors.Join(v.errs...)
 }

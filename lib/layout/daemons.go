@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+
+	"github.com/garamsh/naru/lib/wire"
 )
 
-// spec.host.network, spec.signer, spec.orch and spec.metrics, which make init run the virtual
-// networks' part of naru-hostd, naru-signer and naru-orchd
+// spec.host.network, spec.signer, spec.orch, spec.proxy and spec.metrics, which make init run the
+// virtual networks' part of naru-hostd, naru-signer, naru-orchd and naru-proxy
 // (docs/architecture/adr/0050-the-image-carries-orch-and-the-signer-and-init-runs-them-as-separate-users-from-spec-orch-spec-signer-and-spec-metrics.md).
 // naructl does not import init's config package, so these mirror its fields.
 const (
@@ -17,6 +19,9 @@ const (
 	// and OrchUID the user and group orch runs as and so owns it.
 	OrchKeyFile        = "/run/naru-orchd/orch.key"
 	OrchUID     uint32 = 6002
+	// ProxyKeyFile is the zone certificate's private key, the one file of the proxy's directory
+	// that spec.files carries, for the proxy's user alone.
+	ProxyKeyFile = wire.ProxyRunDir + "/zone.key"
 )
 
 // HostNetwork is spec.host.network: what naru-hostd's virtual networks are kept from.
@@ -80,6 +85,15 @@ type Orch struct {
 	// Join is the client URL of a running member this one joins (spec.orch.join). The member then
 	// has no initial cluster and its state is "existing"; it excludes Restore.
 	Join string
+}
+
+// Proxy is spec.proxy: naru-proxy on this Node, terminating TLS with the zone's certificate (ADR
+// 0112 item 4). Listen is init's ["0.0.0.0:443"] when empty and RouteMaxAge the proxy's 1h; Key is
+// written to its file and never printed.
+type Proxy struct {
+	Listen           []string
+	Certificate, Key string
+	RouteMaxAge      string
 }
 
 // OrchExtension is the extension that carries naru-orchd and naru-signer.
@@ -149,6 +163,12 @@ type orchSpec struct {
 	HostCA              string            `yaml:"hostCA,omitempty"`
 	RecoveryPublicKey   string            `yaml:"recoveryPublicKey,omitempty"`
 	Restore             bool              `yaml:"restore,omitempty"`
+}
+
+type proxySpec struct {
+	Listen      []string `yaml:"listen,omitempty"`
+	Certificate string   `yaml:"certificate"`
+	RouteMaxAge string   `yaml:"routeMaxAge,omitempty"`
 }
 
 type metricsSpec struct {
@@ -248,6 +268,14 @@ func (n Node) checkDaemons() error {
 			return errors.New("hostd's enrollment needs orch's URL, the SHA-256 of its authority and the enrollment key")
 		}
 	}
+	if p := n.Proxy; p != nil {
+		if n.Host == nil {
+			return errors.New("the proxy reads the routes naru-hostd writes: give the host authority and a region")
+		}
+		if p.Certificate == "" || p.Key == "" {
+			return errors.New("the proxy needs the zone's certificate and its key")
+		}
+	}
 	if n.MetricsListen != "" {
 		if a, err := netip.ParseAddr(n.MetricsListen); err != nil || a.Zone() != "" {
 			return fmt.Errorf("the metrics address %q is not an IP address", n.MetricsListen)
@@ -286,6 +314,10 @@ func (n Node) daemonSpecs(c *nodeConfig) {
 			RevocationPublicKey: o.RevocationPublicKey, HostCA: o.HostCA, RecoveryPublicKey: o.RecoveryPublicKey, Restore: o.Restore, Join: o.Join,
 		}
 		c.Spec.Files = append(c.Spec.Files, file{Path: OrchKeyFile, Mode: "0600", Content: o.Key, Owner: &fileOwner{UID: OrchUID, GID: OrchUID}})
+	}
+	if p := n.Proxy; p != nil {
+		c.Spec.Proxy = &proxySpec{Listen: p.Listen, Certificate: p.Certificate, RouteMaxAge: p.RouteMaxAge}
+		c.Spec.Files = append(c.Spec.Files, file{Path: ProxyKeyFile, Mode: "0600", Content: p.Key, Owner: &fileOwner{UID: wire.ProxyUID, GID: wire.ProxyUID}})
 	}
 	if n.MetricsListen != "" {
 		c.Spec.Metrics = &metricsSpec{Listen: n.MetricsListen}
