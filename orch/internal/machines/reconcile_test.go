@@ -560,6 +560,30 @@ func TestReconcile_GivesAHostThatHangsNoMoreWorkAndTheOthersTheirs(t *testing.T)
 	assert.Len(t, r.hosts.Creates("h-a"), 1, "and no pass gave it the same work while it hung")
 }
 
+func TestReconcile_GivesNoWorkToAHostWhoseWorkEndedWhileThePassRead(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Interval: 300 * time.Millisecond, Fleet: r.fleet,
+		Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib},
+	})
+	release := r.hosts.Hang("h-a")
+	defer release()
+	r.create("web", spec())
+	require.NoError(t, r.rec.Reconcile(t.Context()))
+	// The hung work makes the microVM after the next pass took the host's answer, which lacks it,
+	// and ends before that pass gives out work.
+	r.hosts.AfterList = func() {
+		r.hosts.AfterList = nil
+		release()
+		require.Eventually(t, func() bool { return r.record("web").Status.Phase == machineapi.PhaseRunning }, 5*time.Second, 10*time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
+	}
+	require.NoError(t, r.rec.Reconcile(t.Context()))
+	assert.Len(t, r.hosts.Creates("h-a"), 1, "a pass gives no work from an answer older than the host's last work")
+	require.NoError(t, r.rec.Reconcile(t.Context()))
+	assert.Len(t, r.hosts.Creates("h-a"), 1, "and the next pass finds the microVM")
+}
+
 func TestReconcile_MakesNoCreateFromAStaleAnswer(t *testing.T) {
 	r := newRig(t, host("h-a", 64*gib))
 	r.hosts.Stale("h-a", true)

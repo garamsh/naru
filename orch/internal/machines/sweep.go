@@ -19,25 +19,25 @@ func (r *Reconciler) sweep(ctx context.Context, p *pass, host string) []error {
 		if !ok {
 			continue
 		}
-		e := p.byID[id]
+		m, known := p.machines[id]
 		_, removed := p.tombstones[id]
 		switch {
-		case e == nil && removed:
+		case !known && removed:
 			if err := r.cfg.Hosts.Delete(ctx, host, vm.Name); err != nil {
 				errs = append(errs, fmt.Errorf("delete %s on %s: %w", vm.Name, host, err))
 			}
-		case e == nil:
+		case !known:
 			if r.note(host, vm.Name) {
 				r.cfg.Log.Warn("a microVM is named as a Machine's that orch neither has nor removed; it is left as it is", "host", host, "microvm", vm.Name)
 				r.fleetEvent(ctx, EventUnknownMicroVM, host+"/"+vm.Name, map[string]string{"host": host, "microvm": vm.Name, "id": id, "state": vm.State})
 			}
-		case e.Binding != nil && e.Binding.Host == host && e.Binding.Epoch == epoch:
+		case m.binding != nil && m.binding.Host == host && m.binding.Epoch == epoch:
 		case vm.State == vmRunning || vm.State == vmPaused:
 			if _, err := r.cfg.Hosts.Stop(ctx, host, vm.Name, 0); err != nil {
 				errs = append(errs, fmt.Errorf("stop %s on %s: %w", vm.Name, host, err))
 				continue
 			}
-			r.fleet(ctx, EventOlderEpoch, e.Record, map[string]string{"host": host, "microvm": vm.Name})
+			r.fleetEvent(ctx, EventOlderEpoch, m.caller+"/"+m.name, map[string]string{"host": host, "microvm": vm.Name, "id": id})
 		}
 	}
 	return errs

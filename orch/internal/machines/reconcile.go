@@ -142,6 +142,13 @@ type pass struct {
 	tombstones map[string]Tombstone
 	// epochs is the highest epoch of each id among the microVMs the hosts report.
 	epochs map[string]uint64
+	// busy are the hosts whose earlier work still ran when the pass began to read: what it read of
+	// them may be older than that work's writes, so it gives them none.
+	busy map[string]bool
+	// shares are each host's Machines and pending snapshots, and machines every Machine as it was
+	// when the host work began, which each host's work reads while the others write their own.
+	shares   map[string]*share
+	machines map[string]frozen
 
 	mu     sync.Mutex
 	allocs map[string]Allocation
@@ -156,10 +163,14 @@ type pass struct {
 // deadline, and the pass waits for it at most an interval: a host whose work outlasts that keeps it,
 // and gets none from the passes that follow until it ends.
 func (r *Reconciler) Reconcile(ctx context.Context) error {
+	r.mu.Lock()
+	busy := maps.Clone(r.busy)
+	r.mu.Unlock()
 	p, err := r.observe(ctx)
 	if err != nil {
 		return err
 	}
+	p.busy = busy
 	r.audit(ctx, p)
 	errs := []error{r.place(ctx, p)}
 	errs = append(errs, r.unattended(ctx, p)...)
@@ -412,17 +423,60 @@ func (r *Reconciler) age(ctx context.Context, p *pass) []error {
 	return errs
 }
 
+// share is one host's part of a pass: the Machines bound there and the pending snapshots of
+// those that are not being deleted.
+type share struct {
+	entries []*Entry
+	snaps   []*SnapshotEntry
+}
+
+// frozen is a Machine as the host work began.
+type frozen struct {
+	caller, name string
+	binding      *Binding
+}
+
+// divide gives each host its share of the pass, and freezes every Machine.
+func (p *pass) divide() {
+	p.shares, p.machines = map[string]*share{}, map[string]frozen{}
+	of := func(host string) *share {
+		if p.shares[host] == nil {
+			p.shares[host] = &share{}
+		}
+		return p.shares[host]
+	}
+	for _, e := range p.entries {
+		f := frozen{caller: e.Caller, name: e.Name}
+		if e.Binding != nil {
+			b := *e.Binding
+			f.binding = &b
+			of(b.Host).entries = append(of(b.Host).entries, e)
+		}
+		p.machines[e.ID] = f
+	}
+	for i := range p.snaps {
+		s := &p.snaps[i]
+		e := p.byID[s.Snapshot.Snapshot.MachineID]
+		if s.Snapshot.Snapshot.Phase == machineapi.SnapshotPending && e != nil && e.Binding != nil && e.Status.Phase != machineapi.PhaseDeleting {
+			of(e.Binding.Host).snaps = append(of(e.Binding.Host).snaps, s)
+		}
+	}
+}
+
 // dispatch starts each answering host's work that no earlier pass left running, and waits for it
 // at most an interval.
 func (r *Reconciler) dispatch(ctx context.Context, p *pass) {
+	p.divide()
 	var wg sync.WaitGroup
 	for _, id := range slices.Sorted(maps.Keys(p.hosts)) {
 		if !p.hosts[id].Answering {
 			continue
 		}
 		r.mu.Lock()
-		busy := r.busy[id]
-		r.busy[id] = true
+		busy := r.busy[id] || p.busy[id]
+		if !busy {
+			r.busy[id] = true
+		}
 		r.mu.Unlock()
 		if busy {
 			r.cfg.Log.Warn("a host's work from an earlier pass still runs; this pass gives it none", "host", id)
@@ -471,10 +525,11 @@ func (r *Reconciler) work(ctx context.Context, p *pass, host string) []error {
 		wg   sync.WaitGroup
 	)
 	sem := make(chan struct{}, parallel)
-	for _, e := range p.entries {
-		if e.Binding == nil || e.Binding.Host != host {
-			continue
-		}
+	sh := p.shares[host]
+	if sh == nil {
+		sh = &share{}
+	}
+	for _, e := range sh.entries {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
@@ -487,7 +542,7 @@ func (r *Reconciler) work(ctx context.Context, p *pass, host string) []error {
 		}()
 	}
 	wg.Wait()
-	errs = append(errs, r.snapshot(ctx, p, host)...)
+	errs = append(errs, r.snapshot(ctx, p, host, sh.snaps)...)
 	errs = append(errs, r.sweep(ctx, p, host)...)
 	errs = append(errs, r.disks(ctx, p, host)...)
 	return errs

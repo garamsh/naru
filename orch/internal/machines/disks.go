@@ -12,18 +12,11 @@ import (
 // snapshot takes each pending snapshot of a Machine on the host: it records the host first, so a
 // deletion that follows finds the disk snapshots, then takes one per volume, then marks it ready.
 // A snapshot the host refuses MaxSnapshotRefusals times fails, and what it took is deleted.
-func (r *Reconciler) snapshot(ctx context.Context, p *pass, host string) []error {
+func (r *Reconciler) snapshot(ctx context.Context, p *pass, host string, snaps []*SnapshotEntry) []error {
 	var errs []error
 	h := p.hosts[host]
-	for i := range p.snaps {
-		s := &p.snaps[i]
-		if s.Snapshot.Snapshot.Phase != machineapi.SnapshotPending {
-			continue
-		}
+	for _, s := range snaps {
 		e := p.byID[s.Snapshot.Snapshot.MachineID]
-		if e == nil || e.Binding == nil || e.Binding.Host != host || e.Status.Phase == machineapi.PhaseDeleting {
-			continue
-		}
 		name := e.Binding.MicroVM(e.ID)
 		if _, ok := h.microVM(name); !ok {
 			continue

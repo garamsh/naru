@@ -23,6 +23,8 @@ type FakeMachineHosts struct {
 	// DeleteDelay holds each delete of a microVM that long, so a delete outlasts a round trip of
 	// the Machine API as a real host's does.
 	DeleteDelay time.Duration
+	// AfterList, when not nil, runs once each List has taken its answer, before it returns it.
+	AfterList func()
 }
 
 type fakeMachineHost struct {
@@ -137,6 +139,14 @@ func (f *FakeMachineHosts) Creates(id string) []hostapi.CreateRequest {
 }
 
 func (f *FakeMachineHosts) List(context.Context) ([]machines.Host, error) {
+	out := f.list()
+	if f.AfterList != nil {
+		f.AfterList()
+	}
+	return out, nil
+}
+
+func (f *FakeMachineHosts) list() []machines.Host {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []machines.Host
@@ -155,7 +165,7 @@ func (f *FakeMachineHosts) List(context.Context) ([]machines.Host, error) {
 			o.DiskSnapshots = append(o.DiskSnapshots, h.disks[n])
 		}
 	}
-	return out, nil
+	return out
 }
 
 // answering returns the host when it answers, after any hang; the caller holds f.mu, which this
