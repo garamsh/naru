@@ -16,6 +16,9 @@ func named(spec Spec) []Service {
 	if spec.Orch != nil {
 		out = append(out, Service{Name: OrchService})
 	}
+	if spec.Proxy != nil {
+		out = append(out, Service{Name: ProxyService})
+	}
 	return out
 }
 
@@ -23,6 +26,12 @@ func named(spec Spec) []Service {
 func (v *validation) serviceRuntime(field string, s Service) {
 	if u := s.User; u != nil && (u.UID == 0 || u.GID == 0 || slices.Contains(u.Groups, 0)) {
 		v.fail(field+".user", "must name a user and a group other than root's 0; a service with no user runs as root")
+	}
+	if s.BindLowPorts && s.User == nil {
+		v.fail(field+".bindLowPorts", "needs a user: a service with no user runs as root, which binds any port")
+	}
+	if s.OpenFiles > MaxOpenFiles {
+		v.fail(field+".openFiles", "must be at most %d, got %d", MaxOpenFiles, s.OpenFiles)
 	}
 	for i, d := range s.Dirs {
 		f := fmt.Sprintf("%s.dirs[%d]", field, i)

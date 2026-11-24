@@ -1,6 +1,8 @@
 package wire_test
 
 import (
+	"encoding/hex"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,4 +57,22 @@ func TestESPGUID_IsTheOneDiskEnvBuildsTheImageWith(t *testing.T) {
 	}
 	require.NotEmpty(t, got, "disk.env has no ESP_GUID line")
 	assert.Equal(t, wire.ESPGUID, got)
+}
+
+func TestProxyHeader_Bytes(t *testing.T) {
+	got, err := wire.ProxyHeader(netip.MustParseAddrPort("203.0.113.7:51234"), netip.MustParseAddrPort("192.168.0.80:443"))
+	require.NoError(t, err)
+	want := "0d0a0d0a000d0a515549540a" + // signature
+		"21" + // version 2, command PROXY
+		"11" + // AF_INET, STREAM
+		"000c" + // 12 bytes of addresses follow
+		"cb007107" + "c0a80050" + // source and destination address
+		"c822" + "01bb" // source port 51234, destination port 443
+	assert.Equal(t, want, hex.EncodeToString(got))
+
+	_, err = wire.ProxyHeader(netip.MustParseAddrPort("[2001:db8::1]:1"), netip.MustParseAddrPort("192.168.0.80:443"))
+	assert.Error(t, err, "IPv4 only")
+	mapped, err := wire.ProxyHeader(netip.MustParseAddrPort("[::ffff:203.0.113.7]:51234"), netip.MustParseAddrPort("192.168.0.80:443"))
+	require.NoError(t, err)
+	assert.Equal(t, want, hex.EncodeToString(mapped), "control: an IPv4 address in its IPv6 form is the same header")
 }

@@ -23,7 +23,7 @@ RUN : "${NARU_VERSION:?initramfs: NARU_VERSION is the version the image is built
       -ldflags="-s -w -X github.com/garamsh/naru/lib/init/run.buildVersion=$NARU_VERSION $EXTRA_LDFLAGS" \
       -o /tmp/naru-init ./cmd/naru-init \
  && install-go.sh "$NARU_GO_VERSION" /tmp/naru-init /stage/naru-init
-COPY --from=naru /usr/bin/naru-standin /usr/bin/naru-hostd /stage/
+COPY --from=naru /usr/bin/naru-standin /usr/bin/naru-hostd /usr/bin/naru-proxy /stage/
 COPY --from=mvmd /usr/bin/mvmd /usr/bin/mvmd-supervisor /usr/bin/firecracker /stage/
 COPY --from=e2fsprogs /usr/sbin/mke2fs /stage/mkfs.ext4
 COPY --from=xfsprogs /usr/sbin/mkfs.xfs /stage/
@@ -39,7 +39,7 @@ COPY --from=guest-initrds /guest-initrd.cpio /converter-initrd.cpio /guest/
 COPY --from=initramfs-node /node-initrd.cpio.gz /node-initrd.cpio.gz
 COPY kernels.env boot-set.env initramfs.list /
 RUN { cat /cacert.crt; if [ -f /testroot/ca.pem ]; then cat /testroot/ca.pem; fi; } >/stage/ca-certificates.crt \
- && for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 mkfs.xfs naru-standin naru-hostd \
+ && for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 mkfs.xfs naru-standin naru-hostd naru-proxy \
       docker-credential-ecr-login aws_signing_helper; do \
       file "/stage/$f" | grep -Eq 'statically linked|static-pie linked' || { echo "initramfs: $f is not a static executable" >&2; exit 1; }; \
     done

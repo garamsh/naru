@@ -109,12 +109,14 @@ type Node struct {
 	// Host, when set, makes the Node serve the host API: naru-hostd runs, with a serving pair
 	// issued from Host's authority, and spec.host carries its region and labels.
 	Host *Host
-	// HostNetwork, Signer, Orch and MetricsListen are spec.host.network, spec.signer, spec.orch and
-	// spec.metrics (daemons.go). Each is left out of the configuration when nil or empty.
+	// HostNetwork, Signer, Orch, Proxy and MetricsListen are spec.host.network, spec.signer,
+	// spec.orch, spec.proxy and spec.metrics (daemons.go). Each is left out of the configuration
+	// when nil or empty.
 	HostNetwork   *HostNetwork
 	HostOrch      *HostOrch
 	Signer        *Signer
 	Orch          *Orch
+	Proxy         *Proxy
 	MetricsListen string
 	// Extensions are spec.extensions: the system extensions init mounts before any service starts,
 	// each by name and the SHA-256 of its image. Orch and the signer need "naru-orch".
@@ -255,6 +257,7 @@ type nodeConfig struct {
 		Host       *hostSpec       `yaml:"host,omitempty"`
 		Signer     *signerSpec     `yaml:"signer,omitempty"`
 		Orch       *orchSpec       `yaml:"orch,omitempty"`
+		Proxy      *proxySpec      `yaml:"proxy,omitempty"`
 		Extensions []extensionSpec `yaml:"extensions,omitempty"`
 		Metrics    *metricsSpec    `yaml:"metrics,omitempty"`
 	} `yaml:"spec"`

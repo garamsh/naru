@@ -83,3 +83,14 @@ Drafted for garamsh/naru#373 (goal 3). It decides the routing of #373 §2 and it
 - Clean-ups wait on proxy acknowledgements long enough to hold addresses a Machine prefix needs.
 - The zone's key on a few hosts is the weak point in an incident review, which would argue for ACME with short-lived certificates.
 - Uses need to reach a Machine privately, from another Machine, more than through the proxy.
+
+## Note, 2026-11-25
+
+What the decision leaves open, settled where `naru-proxy` was built (garamsh/naru#386, PR garamsh/naru#416):
+
+- **The routes file.** hostd writes it to `/var/lib/naru/proxy-routes/routes.json` (0640, group 6003), in a directory of init's, root's with group 6003, on the data disk. Item 5 says "its state directory", but the proxy can traverse neither hostd's 0700 state directory nor one it cannot read, and must not be able to write the table it forwards on. hostd replaces the file whole, by rename.
+- **`receivedAt` and `meshAddress` in the file** (`lib/hostapi.RoutesFile`). `receivedAt` is when hostd took the table, by the host's clock, and the proxy counts item 6's age from it, which holds across a restart of the proxy. A `receivedAt` after the proxy's clock is taken as the load's time, so a clock that steps back does not stretch the bound. `meshAddress` is the address the proxy connects to Machines from.
+- **Health** is `GET /healthz` on `127.0.0.1:7480` (item 8's candidacy).
+- **The revision file** is `/run/naru-proxy/revision`, the revision the proxy has loaded, which hostd reads and answers orch with (item 5's acknowledgement). The directory is the proxy's, so hostd (garamsh/naru#387) reads it with `O_NOFOLLOW` and a bound on its size.
+- **A route that does not check is dropped alone,** by `lib/hostapi`'s `Route.Check`, which orch's alias and hostd's `PUT /v1/routes` apply first. A drop removes a name and never adds an address, so it keeps item 6, and one tenant's bad alias does not stop every other name.
+- **Connections are bounded** at 4096 at once and 128 from one address, as hostd's exposure proxy is, with an open-file limit to match, and a client's connection is closed when it has carried nothing in either direction for 5 minutes.

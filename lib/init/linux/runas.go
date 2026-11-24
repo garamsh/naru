@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/garamsh/naru/lib/init/config"
 )
 
@@ -21,6 +23,30 @@ func credential(user *config.User) *syscall.Credential {
 		return nil
 	}
 	return &syscall.Credential{Uid: user.UID, Gid: user.GID, Groups: append([]uint32{}, user.Groups...)}
+}
+
+// procAttr returns how svc's processes start: in their own session, created in the cgroup open as
+// cgroupFD, as svc's user, and with CAP_NET_BIND_SERVICE as the one ambient capability when it
+// binds a low port as a user other than root.
+func procAttr(svc config.Service, cgroupFD int) *syscall.SysProcAttr {
+	attr := &syscall.SysProcAttr{Setsid: true, UseCgroupFD: true, CgroupFD: cgroupFD, Credential: credential(svc.User)}
+	if svc.BindLowPorts && svc.User != nil {
+		attr.AmbientCaps = []uintptr{unix.CAP_NET_BIND_SERVICE}
+	}
+	return attr
+}
+
+// limitOpenFiles sets the open-file limit of the process pid, soft and hard, to n; 0 leaves the
+// limit it inherited from init. It is set once the process has started, since a process cannot be
+// started with a limit of its own, so a descriptor the process opens first counts under the old.
+func limitOpenFiles(pid int, n uint64) error {
+	if n == 0 {
+		return nil
+	}
+	if err := unix.Prlimit(pid, unix.RLIMIT_NOFILE, &unix.Rlimit{Cur: n, Max: n}, nil); err != nil {
+		return fmt.Errorf("limit the open files of %d to %d: %w", pid, n, err)
+	}
+	return nil
 }
 
 // prepareDirs makes each directory with its parents when it is missing, then sets its owner and

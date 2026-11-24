@@ -59,7 +59,7 @@ func (l *Launcher) Launch(ctx context.Context, svc config.Service, cgroup string
 	newCmd := func(args []string) *exec.Cmd {
 		cmd := exec.Command(svc.Binary, args...)
 		cmd.Env = environ(svc.Env)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, UseCgroupFD: true, CgroupFD: int(dir.Fd()), Credential: credential(svc.User)}
+		cmd.SysProcAttr = procAttr(svc, int(dir.Fd()))
 		return cmd
 	}
 	if err := prepareDirs(svc.Dirs); err != nil {
@@ -81,6 +81,10 @@ func (l *Launcher) Launch(ctx context.Context, svc config.Service, cgroup string
 
 	exited, err := l.reaper.Spawn(func() (int, error) {
 		if err := cmd.Start(); err != nil {
+			return 0, err
+		}
+		if err := limitOpenFiles(cmd.Process.Pid, svc.OpenFiles); err != nil {
+			_ = cmd.Process.Kill()
 			return 0, err
 		}
 		return cmd.Process.Pid, nil
