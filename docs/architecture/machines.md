@@ -2,7 +2,7 @@
 
 What naru's Machine API is and how orch runs Machines across hosts: the API and its callers, the state orch keeps beside each host's, placement, moves, GPUs and the first use.
 
-The API's types, client, conformance test and in-memory implementation are built (`lib/machineapi`), and so is the caller credential (the signer's `POST /v1/caller`, `naructl caller credential`); orch does not serve the API or its listener yet. Every other decision below is accepted and waits for the goal-3 issue that builds it. The PR that builds a part states that part here as built.
+The API's types, client, conformance test and in-memory implementation are built (`lib/machineapi`), and so is the caller credential (the signer's `POST /v1/caller`, `naructl caller credential`); orch serves the API on its listener and keeps its records and each caller's event log ([orch.md](./orch.md) §The Machine API), with no Machine placed, so every Machine stays `pending`; exec, files and aliases answer 501. Every other decision below is accepted and waits for the goal-3 issue that builds it. The PR that builds a part states that part here as built.
 
 ## Current decisions
 
@@ -19,7 +19,8 @@ The API's types, client, conformance test and in-memory implementation are built
   - **Compatibility.** Additions (an operation, an optional field, a capability, a phase) keep the version. A removal, a rename or a change of meaning, idempotency or failure state is a new version. Alpha versions are served one at a time. A client takes an unknown phase as `unknown` and an unknown capability as absent.
   - **`v1`** needs a second production implementation ([ADR 0108](./adr/0108-orch-serves-a-versioned-machine-api-that-names-machines-and-never-hosts-to-callers-holding-a-signer-issued-caller-certificate.md) item 2).
 - **Served by every orch member** over HTTPS with mutual TLS 1.3, on `--machine-api-addr` (port 7600, `lib/wire`), under `/machines/v1alpha1/`. That listener serves nothing else, and the operator API (port 7500) does not serve the Machine API.
-- **Callers.** A caller holds a certificate of the role `caller`: OrganizationalUnit `caller`, CommonName the caller's name, a DNS label. Root issues it at the signer's `POST /v1/caller`, through `naructl caller credential` with `--name`, for 90 days at most. It is revocable like any pair. The credential is built ([signer.md](./signer.md)); the listener that admits it is not. A caller reaches only its own Machines, snapshots and aliases; another caller's are 404. It reads no host, inventory or fleet event. Any other role is 403 on this listener.
+- **Every member of a cluster is started with the same `--machine-zone`,** the zone of the stable names (`spec.orch.machineZone`). The first member to serve records it at `/naru/orch/machine-zone`. A member started with another zone answers every request 503 `unavailable`, so no Machine is named under a second zone. A member started with none serves no Machine API. Both log why.
+- **Callers.** A caller holds a certificate of the role `caller`: OrganizationalUnit `caller`, CommonName the caller's name, a DNS label. Root issues it at the signer's `POST /v1/caller`, through `naructl caller credential` with `--name`, for 90 days at most. It is revocable like any pair. The credential ([signer.md](./signer.md)) and the listener that admits it ([orch.md](./orch.md) §The Machine API) are built. A caller reaches only its own Machines, snapshots and aliases; another caller's are 404. It reads no host, inventory or fleet event. Any other role is 403 on this listener.
 - **Resources.**
 
   | Resource | Named by | Holds |
@@ -45,7 +46,7 @@ The API's types, client, conformance test and in-memory implementation are built
 
   Exec and files are answered by the member that took the call, which calls the Machine's host. Errors are `{"error", "code"}`.
 - **What `lib/machineapi` fixes beside the table.**
-  - **Codes.** Each refusal has a code: `invalid` (400 for a body that is not the operation's JSON, 413 for one above the operation's limit, 422 for a field), `forbidden` (403), `not-found` and `file-not-found` (404), `conflict`, `deleting` (the held name) and `not-running` (409), `cursor-expired` (410), `machine-not-found`, `snapshot-not-found` and `snapshot-mismatch` (422), `alias-taken` (409), `alias-domain-not-granted` (403) and `internal` (500). A client keeps a code it does not know.
+  - **Codes.** Each refusal has a code: `invalid` (400 for a body that is not the operation's JSON, 413 for one above the operation's limit, 422 for a field), `forbidden` (403), `not-found` and `file-not-found` (404), `conflict`, `deleting` (the held name) and `not-running` (409), `cursor-expired` (410), `machine-not-found`, `snapshot-not-found` and `snapshot-mismatch` (422), `alias-taken` (409), `alias-domain-not-granted` (403), `internal` (500), `unimplemented` (501) and `unavailable` (503). A client keeps a code it does not know.
   - **The rules every implementation applies** are functions of the library: the spec's checks (mvmd's for the run configuration, ADR 0111 item 6 for a GPU Machine), create's comparison, the zone's alias rules and an alias certificate's check.
   - **Secrets are never read back.** A read answers each env value as `<set>` and each file by path, mode and size, without its content, as mvmd's Inspect does; create compares the values it was given. So a spec read back and put again is 409: a use keeps its own spec.
   - **A request field the version does not name** is refused, 400 `invalid`, and not ignored.

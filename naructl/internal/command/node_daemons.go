@@ -22,6 +22,7 @@ type daemonFlags struct {
 	signerPeer, signerRecovery, signerRootCSR                              string
 	signerPeerNames                                                        list
 	orchPeerURL, orchClientURL, orchState, orchListen                      string
+	orchMachineListen, orchMachineZone                                     string
 	orchCert, orchCA, orchRevocation, orchRecovery, orchKey, metricsListen string
 	orchHostCA, orchJoin                                                   string
 	orchRestore                                                            bool
@@ -83,7 +84,7 @@ func genNodeDaemons(n *layout.Node, f daemonFlags) error {
 		n.Signer = s
 	}
 	if f.orchPeerURL != "" {
-		o := &layout.Orch{PeerURL: f.orchPeerURL, ClientURL: f.orchClientURL, State: f.orchState, Join: f.orchJoin, Listen: f.orchListen, SANs: f.orchSANs, InitialCluster: map[string]string{}}
+		o := &layout.Orch{PeerURL: f.orchPeerURL, ClientURL: f.orchClientURL, State: f.orchState, Join: f.orchJoin, Listen: f.orchListen, MachineAPIListen: f.orchMachineListen, MachineZone: f.orchMachineZone, SANs: f.orchSANs, InitialCluster: map[string]string{}}
 		for _, m := range f.orchCluster {
 			name, url, ok := strings.Cut(m, "=")
 			if !ok || name == "" || url == "" {

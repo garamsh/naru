@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/machineapi"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/crlsync"
@@ -77,6 +79,9 @@ type Options struct {
 	// Metrics is the registry every member registers its request counter on, so it is for a
 	// one-member cluster: a second member would register the same counter again.
 	Metrics prometheus.Registerer
+	// MachineZone, when set, makes every member serve the Machine API on a port of its own, with
+	// stable names under the zone.
+	MachineZone string
 }
 
 // pickPorts is how a cluster chooses its ports; a test replaces it to make a port taken.
@@ -213,6 +218,7 @@ func (c *Cluster) member(t testing.TB, i, peerPort, clientPort int) (orchd.Confi
 			Cert:      files.Cert, Key: files.Key, CA: files.CA,
 		},
 		Listen: "127.0.0.1:0", ClientCA: files.CA, SnapshotDir: filepath.Join(dir, "snapshots"),
+		MachineAPIListen: "127.0.0.1:0", MachineZone: o.MachineZone,
 		LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval, GroupInterval: o.GroupInterval, NetworkInterval: o.NetworkInterval,
 	}
 	deps := orchd.Deps{Signer: c.Signer, Auth: auth.Revocations{List: &identity.RevocationList{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, NewPrefixHosts: o.NewPrefixHosts, NewExposureHosts: o.NewExposureHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name), RevocationKey: c.CA.RevocationKey()}
@@ -277,6 +283,14 @@ func (c *Cluster) Restart(t testing.TB, i int) *orchd.Orchd {
 	return m
 }
 
+// RestartInZone starts member i again, which must be stopped, as Restart does but with
+// --machine-zone zone, and returns it.
+func (c *Cluster) RestartInZone(t testing.TB, i int, zone string) *orchd.Orchd {
+	t.Helper()
+	c.cfgs[i].MachineZone = zone
+	return c.Restart(t, i)
+}
+
 // MemberConfig is the etcd configuration member i first started with.
 func (c *Cluster) MemberConfig(i int) member.Config { return c.cfgs[i].Config }
 
@@ -288,6 +302,21 @@ func (c *Cluster) Client(t testing.TB, i int, id *Identity) *orchapi.Client {
 		conf.Certificates = []tls.Certificate{id.TLS}
 	}
 	cl, err := orchapi.New("https://"+c.Members[i].Addr(), orchapi.HTTPClient(conf, 30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cl
+}
+
+// MachineClient returns a Machine API client of member i that presents id.
+func (c *Cluster) MachineClient(t testing.TB, i int, id Identity) *machineapi.Client {
+	t.Helper()
+	addr := c.Members[i].MachineAPIAddr()
+	if addr == "" {
+		t.Fatal("the member serves no Machine API: set Options.MachineZone")
+	}
+	conf := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: c.CA.Pool(), Certificates: []tls.Certificate{id.TLS}}
+	cl, err := machineapi.New("https://"+addr, &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: conf}})
 	if err != nil {
 		t.Fatal(err)
 	}

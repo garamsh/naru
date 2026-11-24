@@ -226,3 +226,25 @@ func (s Spec) Redact() Spec {
 	}
 	return s
 }
+
+// ErrVolumesMismatch is the refusal of a restore whose volumes are not the snapshot's.
+var ErrVolumesMismatch = errors.New("the volumes are not the snapshot's")
+
+// MatchVolumes refuses, with ErrVolumesMismatch, a restore whose volumes are not the snapshot's by
+// name and size: none more, none fewer and none of another size.
+func MatchVolumes(snapshot, spec []Volume) error {
+	size := map[string]uint64{}
+	for _, v := range snapshot {
+		size[v.Name] = v.SizeBytes
+	}
+	for _, v := range spec {
+		if got, ok := size[v.Name]; !ok || got != v.SizeBytes {
+			return fmt.Errorf("%w: the volume %s of %d bytes is not the snapshot's", ErrVolumesMismatch, v.Name, v.SizeBytes)
+		}
+		delete(size, v.Name)
+	}
+	for _, n := range slices.Sorted(maps.Keys(size)) {
+		return fmt.Errorf("%w: the snapshot's volume %s is not in the spec", ErrVolumesMismatch, n)
+	}
+	return nil
+}

@@ -41,6 +41,8 @@ const (
 	HostAPIPort = "7443"
 	// NodeAPIPort is the port init serves the Node API on by default (ADR 0017).
 	NodeAPIPort = "50000"
+	// MachineAPIPort is the port every orch member serves the Machine API on (ADR 0108 item 3).
+	MachineAPIPort = "7600"
 )
 
 // Protocol is the transport of an exposed port, in upper case (TCP, UDP). Orch's

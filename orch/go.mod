@@ -19,7 +19,10 @@ require (
 	go.etcd.io/etcd/server/v3 v3.6.16
 )
 
-require go.yaml.in/yaml/v3 v3.0.5
+require (
+	github.com/garamsh/naru/lib/machineapi v0.0.0-00010101000000-000000000000
+	go.yaml.in/yaml/v3 v3.0.5
+)
 
 require (
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
@@ -160,3 +163,5 @@ replace github.com/garamsh/naru/lib/atomicfile => ../lib/atomicfile
 replace github.com/garamsh/naru/lib/wire => ../lib/wire
 
 replace github.com/garamsh/naru/lib/init => ../lib/init
+
+replace github.com/garamsh/naru/lib/machineapi => ../lib/machineapi

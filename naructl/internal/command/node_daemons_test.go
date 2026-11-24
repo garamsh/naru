@@ -104,6 +104,8 @@ type daemonsData struct {
 			InitialCluster      map[string]string `yaml:"initialCluster"`
 			InitialClusterState string            `yaml:"initialClusterState"`
 			Listen              string            `yaml:"listen"`
+			MachineAPIListen    string            `yaml:"machineApiListen"`
+			MachineZone         string            `yaml:"machineZone"`
 			SANs                []string          `yaml:"sans"`
 			Certificate         string            `yaml:"certificate"`
 			CA                  string            `yaml:"ca"`
@@ -155,11 +157,12 @@ func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 	flags := append(hostFlags,
 		"--host-management-prefix", "192.168.0.0/24", "--host-egress-interface", "eth0", "--host-tunnel-port", "51821",
 		"--host-orch-url", "https://192.168.0.10:7500", "--host-orch-ca-sha256", d("a"), "--host-orch-enroll-key", in.enroll,
-		"--signer", "--extension", orchExtension, "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10",
+		"--signer", "--extension", orchExtension, "--signer-peer-listen", "192.168.0.10:7601", "--signer-peer-name", "192.168.0.10",
 		"--signer-recovery-public", in.recovery, "--signer-root-csr", in.csr,
 		"--orch-peer-url", "https://192.168.0.10:2380", "--orch-client-url", "https://192.168.0.10:2379",
 		"--orch-member", "naru-node-1=https://192.168.0.10:2380", "--orch-member", "node-2=https://192.168.0.20:2380",
 		"--orch-san", "192.168.0.10", "--orch-san", "127.0.0.1", "--orch-state", "new", "--orch-listen", "0.0.0.0:7500",
+		"--orch-machine-api-listen", "192.168.0.10:7600", "--orch-machine-zone", "m.example.test",
 		"--orch-certificate", in.cert, "--orch-ca", in.cert, "--orch-revocation-public-key", in.pub, "--orch-recovery-public", in.recovery, "--orch-key", in.key, "--orch-restore",
 		"--orch-host-ca", bothAuthorities, "--host-client-ca", in.cert,
 		"--metrics-listen", "192.168.0.10",
@@ -181,7 +184,7 @@ func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 	assert.Equal(t, d("a"), got.Spec.Host.Orch.CASHA256)
 	assert.Equal(t, in.enrollKey, got.Spec.Host.Orch.EnrollKey)
 	require.NotNil(t, got.Spec.Signer)
-	assert.Equal(t, "192.168.0.10:7600", got.Spec.Signer.PeerListen)
+	assert.Equal(t, "192.168.0.10:7601", got.Spec.Signer.PeerListen)
 	assert.Equal(t, []string{"192.168.0.10"}, got.Spec.Signer.PeerNames)
 	require.NotNil(t, got.Spec.Signer.Bootstrap)
 	assert.Equal(t, in.recoveryText, got.Spec.Signer.Bootstrap.RecoveryPublicKey)
@@ -191,6 +194,8 @@ func TestGenNode_WritesTheDaemonSectionsAndInitAcceptsThem(t *testing.T) {
 	assert.Equal(t, map[string]string{"naru-node-1": "https://192.168.0.10:2380", "node-2": "https://192.168.0.20:2380"}, got.Spec.Orch.InitialCluster)
 	assert.Equal(t, "https://192.168.0.10:2379", got.Spec.Orch.ClientURL)
 	assert.Equal(t, []string{"192.168.0.10", "127.0.0.1"}, got.Spec.Orch.SANs)
+	assert.Equal(t, "192.168.0.10:7600", got.Spec.Orch.MachineAPIListen)
+	assert.Equal(t, "m.example.test", got.Spec.Orch.MachineZone)
 	assert.Equal(t, in.certPEM, got.Spec.Orch.Certificate)
 	assert.Equal(t, in.recoveryText, got.Spec.Orch.RecoveryPublicKey)
 	assert.True(t, got.Spec.Orch.Restore)
@@ -226,19 +231,19 @@ func TestGenNode_ASignerReplicaMakesItsJoinKeyFirstAndJoinsOnceAuthorised(t *tes
 	dep := newDeployment(t)
 	in := newDaemonInputs(t)
 
-	first := parseDaemons(t, dep.node(t, "node-1", "--signer", "--extension", orchExtension, "--signer-replica", "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10"))
+	first := parseDaemons(t, dep.node(t, "node-1", "--signer", "--extension", orchExtension, "--signer-replica", "--signer-peer-listen", "192.168.0.10:7601", "--signer-peer-name", "192.168.0.10"))
 	require.NotNil(t, first.Spec.Signer)
 	require.NotNil(t, first.Spec.Signer.Replica, "a replica: {} makes the join key at the first start")
 	assert.Nil(t, first.Spec.Signer.Replica.Join)
 	assert.Nil(t, first.Spec.Signer.Bootstrap)
 
-	path := dep.node(t, "node-1", "--signer", "--extension", orchExtension, "--signer-replica", "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10",
-		"--signer-join-peer", "192.168.0.20:7600", "--signer-join-peer-ca", in.cert, "--signer-join-authorisation", in.authorisation)
+	path := dep.node(t, "node-1", "--signer", "--extension", orchExtension, "--signer-replica", "--signer-peer-listen", "192.168.0.10:7601", "--signer-peer-name", "192.168.0.10",
+		"--signer-join-peer", "192.168.0.20:7601", "--signer-join-peer-ca", in.cert, "--signer-join-authorisation", in.authorisation)
 	validate(t, path)
 	second := parseDaemons(t, path)
 	require.NotNil(t, second.Spec.Signer.Replica)
 	require.NotNil(t, second.Spec.Signer.Replica.Join)
-	assert.Equal(t, "192.168.0.20:7600", second.Spec.Signer.Replica.Join.Peer)
+	assert.Equal(t, "192.168.0.20:7601", second.Spec.Signer.Replica.Join.Peer)
 	assert.Equal(t, in.certPEM, second.Spec.Signer.Replica.Join.PeerCA)
 	assert.Equal(t, in.authorisationText, second.Spec.Signer.Replica.Join.Authorisation)
 }
@@ -246,7 +251,7 @@ func TestGenNode_ASignerReplicaMakesItsJoinKeyFirstAndJoinsOnceAuthorised(t *tes
 func TestGenNode_AnExtensionWithNoDigestIsWrittenWithoutAShaAndInitAcceptsIt(t *testing.T) {
 	dep := newDeployment(t)
 
-	path := dep.node(t, "node-1", "--signer", "--extension", "naru-orch", "--extension", "tools="+d("1"), "--signer-peer-listen", "192.168.0.10:7600", "--signer-peer-name", "192.168.0.10")
+	path := dep.node(t, "node-1", "--signer", "--extension", "naru-orch", "--extension", "tools="+d("1"), "--signer-peer-listen", "192.168.0.10:7601", "--signer-peer-name", "192.168.0.10")
 
 	validate(t, path)
 	b, err := os.ReadFile(path)
@@ -346,8 +351,8 @@ func TestGenNode_DaemonFlagsRefuseWhatInitWouldRefuseOrWhatDoesNothing(t *testin
 		{"orch flag without --orch-peer-url", []string{"--orch-ca", in.cert}, "--orch-ca has no effect without --orch-peer-url"},
 		{"bootstrap beside replica", []string{"--signer", "--extension", orchExtension, "--signer-replica", "--signer-recovery-public", in.recovery, "--signer-root-csr", in.csr}, "not both"},
 		{"bootstrap with one half", []string{"--signer", "--extension", orchExtension, "--signer-root-csr", in.csr}, "both the recovery public key and the root request"},
-		{"join without replica", []string{"--signer", "--extension", orchExtension, "--signer-join-peer", "192.168.0.20:7600"}, "--signer-join-peer has no effect without --signer-replica"},
-		{"signer flag without --signer", []string{"--signer-peer-listen", "192.168.0.10:7600"}, "--signer-peer-listen has no effect without --signer"},
+		{"join without replica", []string{"--signer", "--extension", orchExtension, "--signer-join-peer", "192.168.0.20:7601"}, "--signer-join-peer has no effect without --signer-replica"},
+		{"signer flag without --signer", []string{"--signer-peer-listen", "192.168.0.10:7601"}, "--signer-peer-listen has no effect without --signer"},
 		{"metrics listen not an address", []string{"--metrics-listen", "example.com"}, "not an IP address"},
 	}
 	for _, tt := range tests {

@@ -12,6 +12,7 @@ require (
 
 require (
 	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000 // indirect
+	github.com/garamsh/naru/lib/machineapi v0.0.0-00010101000000-000000000000 // indirect
 	go.yaml.in/yaml/v4 v4.0.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 )
@@ -44,3 +45,5 @@ replace github.com/garamsh/naru/lib/atomicfile => ../../lib/atomicfile
 replace github.com/garamsh/naru/lib/orchapi => ../../lib/orchapi
 
 replace github.com/garamsh/naru/lib/wire => ../../lib/wire
+
+replace github.com/garamsh/naru/lib/machineapi => ../../lib/machineapi
