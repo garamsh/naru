@@ -22,16 +22,12 @@ const (
 	Administer
 	// Report is a host's heartbeat.
 	Report
-	// Any is open to every authenticated identity.
-	Any
 )
 
 // Allowed reports whether who's role may do the action.
 func Allowed(who identity.Identity, a Action) bool {
 	r := who.Role
 	switch a {
-	case Any:
-		return r.Valid()
 	case Read:
 		return r == identity.RoleReader || r == identity.RoleOperator || r == identity.RoleAutomation || r == identity.RoleRoot
 	case Operate:

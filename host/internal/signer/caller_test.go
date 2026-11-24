@@ -42,7 +42,7 @@ func TestCaller_RootGetsAClientCertificateNamedByTheBodyAndNotByTheRequest(t *te
 	e := newEnv(t)
 	key := newKey(t)
 	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
-		Subject:  pkix.Name{CommonName: "root", OrganizationalUnit: []string{"root"}},
+		Subject:  pkix.Name{CommonName: "root", OrganizationalUnit: []string{"root"}, Organization: []string{"naru:host-provisioner"}},
 		DNSNames: []string{"orch.example"},
 	}, key)
 	require.NoError(t, err)
@@ -51,6 +51,7 @@ func TestCaller_RootGetsAClientCertificateNamedByTheBodyAndNotByTheRequest(t *te
 	assert.Equal(t, "garam", p.cert.Subject.CommonName, "the CN is the body's name, not the request's (\"root\")")
 	assert.Equal(t, identity.RoleCaller, roleOf(t, p.cert), "the role is caller, not the request's OU")
 	assert.Empty(t, p.cert.DNSNames, "no name the request asks for is carried")
+	assert.Empty(t, p.cert.Subject.Organization, "no Organization is carried, which the host API would read as a role")
 	assert.Equal(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, p.cert.ExtKeyUsage, "client authentication only")
 	_, err = p.cert.Verify(x509.VerifyOptions{Roots: poolOf(t, e.authorities().Operator), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
 	assert.NoError(t, err, "it chains to the operator authority, which orch trusts")
