@@ -81,6 +81,10 @@ func TestValidate(t *testing.T) {
 		{"a rollout that can never remove a member", func(g *groups.GroupSpec) { g.MinAvailable, g.Rollout = 3, groups.Rollout{} }, false},
 		{"the same, with a surge", func(g *groups.GroupSpec) { g.MinAvailable, g.Rollout = 3, groups.Rollout{MaxSurge: 1} }, true},
 		{"a name that is not a DNS label", func(g *groups.GroupSpec) { g.Name = "Web_1" }, false},
+		{"a name with the Machines' prefix", func(g *groups.GroupSpec) { g.Name = "m-0123456789abcdef" }, false},
+		{"a name of m- alone", func(g *groups.GroupSpec) { g.Name = "m-web" }, false},
+		{"a name beginning with m but not m-", func(g *groups.GroupSpec) { g.Name = "mweb" }, true},
+		{"a name with m- inside it", func(g *groups.GroupSpec) { g.Name = "web-m-1" }, true},
 		{"no cpus", func(g *groups.GroupSpec) { g.Template.CPUs = 0 }, false},
 		{"an unknown form", func(g *groups.GroupSpec) { g.Template.Form = "vm" }, false},
 	}
@@ -111,6 +115,30 @@ func TestEngine_RefusesAnInvalidGroupAndRecordsWhy(t *testing.T) {
 	held := w.kinds(groups.EventHold)
 	require.Len(t, held, 1)
 	assert.Contains(t, held[0].Message, "region is empty")
+}
+
+// A group stored before the Machines' prefix was reserved is held, and its members are left as
+// they are: nothing renames, replaces or deletes them.
+func TestEngine_HoldsAGroupNamedWithTheMachinesPrefixAndLeavesItsMembers(t *testing.T) {
+	w := newWorld(t)
+	hostsABC(w)
+	const name, id = "m-0123456789abcdef", "m-0123456789abcdef-1"
+	old := spec(name, 2)
+	w.hosts["a"].machines[id] = &fakeMachine{spec: groups.MachineSpec{ID: id, Template: old.Template}, state: groups.MachineRunning, createdAt: w.now}
+	w.members[id] = groups.Member{ID: id, Group: name, Host: "a", MachineID: id, TemplateHash: old.Template.Hash(), Phase: groups.PhaseRunning, Revision: 1}
+	w.setGroup(old)
+
+	w.reconcile(w.engine())
+
+	held := w.kinds(groups.EventHold)
+	require.Len(t, held, 1)
+	assert.Contains(t, held[0].Message, "reserved for the microVMs of Machines")
+	m, host := w.machine(id)
+	require.NotNil(t, m, "the member's microVM is not deleted")
+	assert.Equal(t, "a", host)
+	assert.Equal(t, groups.MachineRunning, m.state, "nor stopped")
+	assert.Len(t, w.live(name), 1, "and no member is added or forgotten")
+	assert.Empty(t, w.kinds(groups.EventCreate), "control: the group is short of its count, and still nothing is created")
 }
 
 func TestEngine_PlacementRefusalIsADecisionNotAFailure(t *testing.T) {

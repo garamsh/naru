@@ -116,6 +116,22 @@ func TestApplyRefusesAnInvalidSpecAndStoresAndLogsAValidOne(t *testing.T) {
 	require.Equal(t, "alice", l.events[0].Detail["by"])
 }
 
+func TestApplyRefusesAGroupNamedWithTheMachinesPrefix(t *testing.T) {
+	svc, st, l := newSvc(nil)
+	reserved := spec()
+	reserved.Name = "m-0123456789abcdef"
+	_, err := svc.Apply(t.Context(), "alice", reserved)
+	require.ErrorIs(t, err, inventory.ErrInvalid)
+	require.ErrorContains(t, err, "reserved for the microVMs of Machines")
+	require.Empty(t, st.groups)
+	require.Empty(t, l.events)
+
+	near := spec()
+	near.Name = "mweb"
+	_, err = svc.Apply(t.Context(), "alice", near)
+	require.NoError(t, err, "control: a name that begins with m and not m-")
+}
+
 func TestApplyChecksTheNetworkTheTemplateJoins(t *testing.T) {
 	svc, st, _ := newSvc(nil)
 	joined := spec()
