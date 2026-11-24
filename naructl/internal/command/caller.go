@@ -136,3 +136,49 @@ func callerToken(fs *pflag.FlagSet) runner {
 		return nil
 	}
 }
+
+// callerRevoke revokes a caller by its name, as root or an operator: every certificate of the
+// caller issued until now, by any signer once the revocation list reaches it (ADR 0116).
+func callerRevoke(fs *pflag.FlagSet) runner {
+	name := fs.String("name", "", "the caller to revoke, a lowercase DNS label")
+	admin := fs.String("admin", "", "root's or an operator's encrypted person file")
+	pass := fs.String("passphrase-file", "", "file holding the person file's passphrase")
+	sg := addSignerFlags(fs)
+	return func(_ []string, stdout, _ io.Writer) error {
+		if err := sg.check(fs); err != nil {
+			return err
+		}
+		if err := require(fs, "name", "admin", "passphrase-file"); err != nil {
+			return err
+		}
+		if !identity.IsCallerName(*name) {
+			return fmt.Errorf("--name %q is not a caller name: a lowercase DNS label", *name)
+		}
+		signed, err := signAs(*admin, *pass, identity.ActionRevokeCaller, identity.CallerRevokeRequest{Name: *name})
+		if err != nil {
+			return err
+		}
+		body, err := signerCall(sg, http.MethodPost, "/v1/revoke-caller", signed)
+		if err != nil {
+			return err
+		}
+		var got identity.CallerRevocation
+		if err := json.Unmarshal(body, &got); err != nil {
+			return fmt.Errorf("the signer's answer: %w", err)
+		}
+		_, _ = fmt.Fprintf(stdout, "naructl: revoked every certificate of the caller %s issued until %s, whichever signer issued it, once the revocation list reaches it; it registers again with a new token\n",
+			got.Name, got.RevokedAt.Format(time.RFC3339))
+		for _, c := range got.Serials {
+			state := "valid"
+			if c.Revoked {
+				state = "revoked"
+			}
+			parent := c.Parent
+			if parent == "" {
+				parent = "-"
+			}
+			_, _ = fmt.Fprintf(stdout, "%s %s renewed-from %s\n", c.Serial, state, parent)
+		}
+		return nil
+	}
+}

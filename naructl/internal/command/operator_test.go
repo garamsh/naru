@@ -49,7 +49,7 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 	require.NoError(t, err)
 	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/caller-issue": identity.ActionIssueCaller, "/v1/caller-token": identity.ActionIssueCallerToken, "/v1/revoke": identity.ActionRevoke,
 		"/v1/reissue-host": identity.ActionReissueHost, "/v1/register-host": identity.ActionRegisterHost, "/v1/retire-host": identity.ActionRetireHost,
-		"/v1/lookup-host": identity.ActionLookupHost, "/v1/revoke-host": identity.ActionRevokeHost}
+		"/v1/lookup-host": identity.ActionLookupHost, "/v1/revoke-host": identity.ActionRevokeHost, "/v1/revoke-caller": identity.ActionRevokeCaller}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/ca" {
 			_ = json.NewEncoder(w).Encode(f.authorities)
@@ -83,6 +83,13 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 			csr, _ := x509.ParseCertificateRequest(rot.CSR)
 			cert := issueFrom(t, caOf(t), rot.HostID, identity.RoleHost, csr.PublicKey)
 			_ = json.NewEncoder(w).Encode(identity.Issued{Certificate: cert.Raw, Serial: cert.SerialNumber.Text(16), NotAfter: cert.NotAfter})
+			return
+		}
+		if r.URL.Path == "/v1/revoke-caller" {
+			var c identity.CallerRevokeRequest
+			_ = json.Unmarshal(body, &c)
+			_ = json.NewEncoder(w).Encode(identity.CallerRevocation{Name: c.Name, RevokedAt: time.Date(2026, 11, 25, 3, 0, 0, 0, time.UTC),
+				Serials: []identity.CallerSerial{{Serial: "a1", Revoked: true}, {Serial: "b2", Parent: "a1", Revoked: true}}})
 			return
 		}
 		if r.URL.Path == "/v1/caller-token" {

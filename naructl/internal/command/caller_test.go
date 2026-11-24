@@ -160,3 +160,25 @@ func TestCallerToken_AsksTheSignerAsRootAndWritesTheTokenOnlyToTheFile(t *testin
 	require.NoError(t, err)
 	assert.Equal(t, "naru-ct-for-garam-bot\n", string(b), "the file is not written over")
 }
+
+func TestCallerRevoke_AsksTheSignerAsAnOperatorToRevokeTheNameAndPrintsTheLineage(t *testing.T) {
+	pool := x509.NewCertPool()
+	pool.AddCert(caOf(t).cert)
+	f := startFakeSigner(t, pool)
+	admin, pass := adminFile(t, identity.RoleOperator, "pw")
+
+	text, err := run(t, "caller", "revoke", "--name", "ws-provider", "--admin", admin, "--passphrase-file", pass, "--socket", f.socket)
+	require.NoError(t, err, text)
+	assert.Equal(t, identity.RoleOperator, f.who["/v1/revoke-caller"].Role)
+	var req identity.CallerRevokeRequest
+	require.NoError(t, json.Unmarshal(f.got["/v1/revoke-caller"], &req))
+	assert.Equal(t, identity.CallerRevokeRequest{Name: "ws-provider"}, req)
+	assert.Contains(t, text, "issued until 2026-11-25T03:00:00Z")
+	assert.Contains(t, text, "a1 revoked renewed-from -\n")
+	assert.Contains(t, text, "b2 revoked renewed-from a1\n")
+
+	delete(f.got, "/v1/revoke-caller")
+	_, err = run(t, "caller", "revoke", "--name", "WS", "--admin", admin, "--passphrase-file", pass, "--socket", f.socket)
+	assert.Error(t, err, "a name that is not a DNS label")
+	assert.NotContains(t, f.got, "/v1/revoke-caller", "nothing is sent")
+}
