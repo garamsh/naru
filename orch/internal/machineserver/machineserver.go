@@ -31,11 +31,13 @@ const maxBody = 4 << 20
 type Deps struct {
 	Machines machines.Service
 	Auth     auth.Authenticator
-	// Credentials is the signer a caller registers and renews through, and Sources bounds the
-	// registrations of each source address.
-	Credentials Credentials
-	Sources     Limiter
-	Log         *slog.Logger
+	// Credentials is the signer a caller registers and renews through. Sources bounds the
+	// registrations of each source, ratelimit.Source's name for its address, and Registrations
+	// those of every source together, so that many sources cannot spend the signer's work.
+	Credentials   Credentials
+	Sources       Limiter
+	Registrations Limiter
+	Log           *slog.Logger
 }
 
 type handler struct{ Deps }

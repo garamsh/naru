@@ -325,7 +325,8 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	machineSvc := machines.NewService(machineStore, d.Clock, c.MachineZone)
 	limits := c.Limits.WithDefaults()
 	serveMachines := machineserver.New(machineserver.Deps{Machines: machineSvc, Auth: d.Auth, Credentials: d.Credentials,
-		Sources: ratelimit.New(d.Clock, limits.SourceRate, limits.SourceBurst), Log: d.Log})
+		Sources:       ratelimit.New(d.Clock, limits.SourceRate, limits.SourceBurst),
+		Registrations: ratelimit.New(d.Clock, registrationRate, registrationBurst), Log: d.Log})
 	if !o.claimZone(machineStore, serveMachines) {
 		o.wg.Add(1)
 		go func() {
@@ -364,6 +365,14 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	}()
 	return true
 }
+
+// registrationRate and registrationBurst bound the caller registrations a member passes to its
+// signer from every source together, per second and at once: a registration is an operator's
+// rare act, and each costs the signer a signature and a revocation list.
+const (
+	registrationRate  = 1
+	registrationBurst = 30
+)
 
 // zoneWait bounds one attempt to read or claim the cluster's machine zone.
 const zoneWait = 5 * time.Second

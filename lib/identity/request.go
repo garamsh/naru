@@ -3,8 +3,10 @@ package identity
 import (
 	"crypto"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/garamsh/naru/lib/machineapi/signedrequest"
@@ -85,7 +87,33 @@ type CallerToken struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-// CallerRegistration is the body of the signer's POST /v1/caller: a registration token, which is
+// CallerTokenPrefix begins every caller registration token: the signer's base64url claims and
+// signature follow it, separated by a dot.
+const CallerTokenPrefix = "naru-ct-"
+
+// CallerTokenNonce is the nonce a registration token claims, read without verifying the token, for
+// a log line that ties a refused or limited registration to the token the signer issued: "" when
+// the token does not read as one, or names a nonce longer than any the signer issues.
+func CallerTokenNonce(token string) string {
+	body, ok := strings.CutPrefix(token, CallerTokenPrefix)
+	if !ok {
+		return ""
+	}
+	p, _, _ := strings.Cut(body, ".")
+	payload, err := base64.RawURLEncoding.DecodeString(p)
+	if err != nil {
+		return ""
+	}
+	var c struct {
+		Nonce string `json:"nonce"`
+	}
+	if json.Unmarshal(payload, &c) != nil || len(c.Nonce) > 128 {
+		return ""
+	}
+	return c.Nonce
+}
+
+// CallerRegistration is the body of the signer's POST /v1/caller-register: a registration token, which is
 // the only authentication, and the certificate request of a key the caller made, DER.
 type CallerRegistration struct {
 	Token string `json:"token"`

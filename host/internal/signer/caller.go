@@ -22,7 +22,7 @@ import (
 // certificate (ADR 0116).
 const (
 	// callerTokenPrefix marks a caller registration token, so that a scanner finds one that leaked.
-	callerTokenPrefix = "naru-ct-"
+	callerTokenPrefix = identity.CallerTokenPrefix
 	// callerTokenDomain is signed before a token's claims, so that no other thing the operator
 	// authority signs reads as a token.
 	callerTokenDomain = "naru caller registration token v1\n"
@@ -89,10 +89,11 @@ func (s *Signer) RegisterCaller(req identity.CallerRegistration) (identity.Issue
 		return identity.Issued{}, err
 	}
 	claims, err := verifyCallerToken(&a.operator.key.PublicKey, req.Token, now)
-	if err != nil {
-		return identity.Issued{}, err
+	if err == nil {
+		err = s.spend(claims.Nonce, claims.ExpiresAt, now)
 	}
-	if err := s.spend(claims.Nonce, claims.ExpiresAt, now); err != nil {
+	if err != nil {
+		s.log.Warn("refused a caller registration", "token_nonce", identity.CallerTokenNonce(req.Token), "err", err.Error())
 		return identity.Issued{}, err
 	}
 	csr, err := parseCSR(req.CSR)

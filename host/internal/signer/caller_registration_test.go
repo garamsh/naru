@@ -1,6 +1,7 @@
 package signer_test
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -31,7 +33,7 @@ func (e *env) callerToken(by person, name string, ttl int) (int, identity.Caller
 	return status, tok
 }
 
-// registerCaller posts token and the request of key to /v1/caller.
+// registerCaller posts token and the request of key to /v1/caller-register.
 func (e *env) registerCaller(token string, csr []byte) (int, []byte) {
 	e.t.Helper()
 	b, err := json.Marshal(identity.CallerRegistration{Token: token, CSR: csr})
@@ -363,4 +365,31 @@ func TestCallerRenewal_ARevokedOrExpiredCertificateOrAnotherRoleIsRefused(t *tes
 	_, err = s.RenewCaller(renewal(t, p, newKey(t), &c))
 	require.Error(t, err, "an expired certificate renews nothing")
 	assert.Equal(t, http.StatusForbidden, signer.StatusOf(err))
+}
+
+func TestCallerRegistration_LogsTheTokenNonceOfARegistrationAndOfARefusedSpend(t *testing.T) {
+	e := newEnv(t)
+	status, tok := e.callerToken(e.rootID, "ci-runner", 0)
+	require.Equal(t, http.StatusOK, status)
+	nonce := identity.CallerTokenNonce(tok.Token)
+	require.NotEmpty(t, nonce, "the token names its nonce")
+	var logs bytes.Buffer
+	audited, err := signer.Open(signer.Options{Dir: e.dir, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	require.NoError(t, err)
+
+	_, err = audited.RegisterCaller(identity.CallerRegistration{Token: tok.Token, CSR: csrFor(t, newKey(t))})
+	require.NoError(t, err)
+	_, err = audited.RegisterCaller(identity.CallerRegistration{Token: tok.Token, CSR: csrFor(t, newKey(t))})
+	require.ErrorIs(t, err, signer.ErrBadToken)
+
+	lines := strings.Split(logs.String(), "\n")
+	var registered, refused bool
+	for _, l := range lines {
+		registered = registered || strings.Contains(l, "registered a caller") && strings.Contains(l, "token_nonce="+nonce)
+		refused = refused || strings.Contains(l, "refused a caller registration") && strings.Contains(l, "token_nonce="+nonce)
+	}
+	assert.True(t, registered, "the registration names the nonce: %s", logs.String())
+	assert.True(t, refused, "the refused second spend names the nonce: %s", logs.String())
+	assert.Empty(t, identity.CallerTokenNonce("naru-ct-%%%.x"), "a token that does not read names no nonce")
+	assert.Empty(t, identity.CallerTokenNonce("other"), "a string without the prefix names no nonce")
 }

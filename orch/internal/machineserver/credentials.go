@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/machineapi"
 	"github.com/garamsh/naru/orch/internal/inventory"
+	"github.com/garamsh/naru/orch/internal/ratelimit"
 	"github.com/garamsh/naru/orch/internal/signer"
 )
 
@@ -20,7 +20,7 @@ type Credentials interface {
 	RenewCaller(ctx context.Context, signed []byte) (identity.Issued, error)
 }
 
-// Limiter bounds the registrations of one source address.
+// Limiter bounds the registrations of one name: a source, or "" for all of a member's.
 type Limiter interface {
 	Allow(source string) bool
 }
@@ -38,11 +38,15 @@ var (
 // no client certificate, the route anonymous that certified lets through: the token is the
 // authentication.
 func (h *handler) register(w http.ResponseWriter, r *http.Request) {
-	src, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		src = r.RemoteAddr
-	}
+	src := ratelimit.Source(r.RemoteAddr)
+	log := logger(r).With("source", src)
 	if !h.Sources.Allow(src) {
+		log.Warn("refused a registration: the source is over its registrations")
+		writeError(w, r, errRateLimited)
+		return
+	}
+	if !h.Registrations.Allow("") {
+		log.Warn("refused a registration: the member is over its registrations")
 		writeError(w, r, errRateLimited)
 		return
 	}
@@ -51,14 +55,17 @@ func (h *handler) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	log = log.With("token_nonce", identity.CallerTokenNonce(req.Token))
 	issued, err := h.Credentials.RegisterCaller(r.Context(), req.Token, req.CSR)
 	if errors.Is(err, inventory.ErrSignerRefused) {
+		log.Warn("refused a registration: the signer refused the token")
 		err = errTokenRefused
 	}
 	if err != nil {
 		writeError(w, r, signerError(err))
 		return
 	}
+	log.Info("registered a caller", "serial", issued.Serial)
 	writeJSON(w, http.StatusOK, machineapi.Credential{Certificate: issued.Certificate, NotAfter: issued.NotAfter})
 }
 
