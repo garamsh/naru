@@ -2,7 +2,7 @@
 
 What naru's Machine API is and how orch runs Machines across hosts: the API and its callers, the state orch keeps beside each host's, placement, moves, GPUs and the first use.
 
-None of it is built yet. Each decision below is accepted and waits for the goal-3 issue that builds it. The PR that builds a part states that part here as built.
+The API's types, client, conformance test and in-memory implementation are built (`lib/machineapi`); orch does not serve the API yet. Every other decision below is accepted and waits for the goal-3 issue that builds it. The PR that builds a part states that part here as built.
 
 ## Current decisions
 
@@ -44,6 +44,13 @@ None of it is built yet. Each decision below is accepted and waits for the goal-
   | `PUT`, `GET`, `DELETE .../aliases/{hostname}` | ADR 0112. |
 
   Exec and files are answered by the member that took the call, which calls the Machine's host. Errors are `{"error", "code"}`.
+- **What `lib/machineapi` fixes beside the table.**
+  - **Codes.** Each refusal has a code: `invalid` (400 for a body that is not the operation's JSON, 422 for a field), `forbidden` (403), `not-found` (404), `conflict`, `deleting` (the held name) and `not-running` (409), `cursor-expired` (410), `machine-not-found`, `snapshot-not-found` and `snapshot-mismatch` (422), `alias-taken` (409), `alias-domain-not-granted` (403) and `internal` (500). A client keeps a code it does not know.
+  - **The rules every implementation applies** are functions of the library: the spec's checks (mvmd's for the run configuration, ADR 0111 item 6 for a GPU Machine), create's comparison, the zone's alias rules and an alias certificate's check.
+  - **Secrets are never read back.** A read answers each env value as `<set>` and each file by path, mode and size, without its content, as mvmd's Inspect does; create compares the values it was given.
+  - **Events** are `status` (the Machine's status, which the event carries) or `deleted` (the Machine gone and its name free). A cursor the log never gave is 400.
+  - **A snapshot** has a phase, `pending`, `ready` or `failed`, and a client reads an unknown one as `unknown`.
+  - **A create's phase** is `pending`: the call records the Machine, and placement follows.
 - **Status.**
   - `phase`: `pending`, `starting`, `running`, `stopping`, `stopped`, `moving`, `failed`, `deleting` or `unknown`.
   - `reason`: the part of the spec or shape that cannot be met, with no figure of the fleet's capacity; operators read the figures on the operator API.
