@@ -510,19 +510,19 @@ func (s *Store) GetProfile(ctx context.Context) ([]byte, error) {
 
 func (s *Store) PutProfile(ctx context.Context, yaml []byte, ev orchapi.Event, check func(current []byte) error) error {
 	ops := append([]clientv3.Op{clientv3.OpPut(profileKey, string(yaml))}, s.eventOps(ev)...)
+	// Every profile write moves the guard, so the guard, read first, stands for the profile read
+	// after it: a profile written in between fails the compare.
+	guard, err := netetcd.Guard(ctx, s.kv)
+	if err != nil {
+		return err
+	}
 	cur, err := s.kv.Get(ctx, profileKey)
 	if err != nil {
 		return err
 	}
 	var current []byte
-	same := clientv3.Compare(clientv3.CreateRevision(profileKey), "=", 0)
 	if len(cur.Kvs) > 0 {
 		current = cur.Kvs[0].Value
-		same = clientv3.Compare(clientv3.ModRevision(profileKey), "=", cur.Kvs[0].ModRevision)
-	}
-	guard, err := netetcd.Guard(ctx, s.kv)
-	if err != nil {
-		return err
 	}
 	mesh, err := s.kv.Get(ctx, meshPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
 	if err != nil {
@@ -532,7 +532,7 @@ func (s *Store) PutProfile(ctx context.Context, yaml []byte, ev orchapi.Event, c
 		return err
 	}
 	unwritten := clientv3.Compare(clientv3.ModRevision(meshPrefix), "<", mesh.Header.Revision+1).WithPrefix()
-	t, err := s.kv.Txn(ctx).If(same, guard, unwritten).Then(append(ops, netetcd.MoveGuard())...).Commit()
+	t, err := s.kv.Txn(ctx).If(guard, unwritten).Then(append(ops, netetcd.MoveGuard())...).Commit()
 	if err != nil {
 		return err
 	}
