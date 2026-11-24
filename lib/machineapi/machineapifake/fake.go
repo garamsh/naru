@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,7 +56,7 @@ type Fake struct {
 
 type account struct {
 	machines  map[string]*machine
-	snapshots map[string]*machineapi.Snapshot
+	snapshots map[string]*snapshot
 	log       []logged
 	// seq is the sequence number of the newest event; a cursor is a sequence number.
 	seq uint64
@@ -69,6 +70,12 @@ type logged struct {
 type machine struct {
 	m     machineapi.Machine
 	spec  machineapi.Spec // unredacted, as created
+	files map[string][]byte
+}
+
+// snapshot is a snapshot and the guest files it took: those under its Machine's volumes.
+type snapshot struct {
+	s     machineapi.Snapshot
 	files map[string][]byte
 }
 
@@ -120,7 +127,7 @@ func refuse(status int, code machineapi.Code, format string, a ...any) error {
 func (f *Fake) account(caller string) *account {
 	a := f.callers[caller]
 	if a == nil {
-		a = &account{machines: map[string]*machine{}, snapshots: map[string]*machineapi.Snapshot{}}
+		a = &account{machines: map[string]*machine{}, snapshots: map[string]*snapshot{}}
 		f.callers[caller] = a
 	}
 	return a
@@ -217,12 +224,17 @@ func (f *Fake) create(caller, name string, spec machineapi.Spec) (machineapi.Mac
 		if snap == nil {
 			return machineapi.Machine{}, false, refuse(http.StatusUnprocessableEntity, machineapi.CodeSnapshotNotFound, "no snapshot %s", src.Snapshot)
 		}
-		if err := sameVolumes(snap.Spec.Volumes, spec.Volumes); err != nil {
+		if err := sameVolumes(snap.s.Spec.Volumes, spec.Volumes); err != nil {
 			return machineapi.Machine{}, false, refuse(http.StatusUnprocessableEntity, machineapi.CodeSnapshotMismatch, "%v", err)
 		}
 	}
 	id := newID()
 	mc := &machine{spec: spec, files: map[string][]byte{}}
+	if src := spec.FromSnapshot; src != nil {
+		for p, b := range a.snapshots[src.Snapshot].files {
+			mc.files[p] = b
+		}
+	}
 	for _, fl := range spec.Files {
 		mc.files[fl.Path] = fl.Content
 	}
@@ -369,7 +381,7 @@ func (f *Fake) readFile(caller, name, p string) ([]byte, error) {
 	}
 	b, ok := mc.files[p]
 	if !ok {
-		return nil, refuse(http.StatusNotFound, machineapi.CodeNotFound, "no file %s in the Machine %s", p, name)
+		return nil, refuse(http.StatusNotFound, machineapi.CodeFileNotFound, "no file %s in the Machine %s", p, name)
 	}
 	return slices.Clone(b), nil
 }
@@ -386,6 +398,15 @@ func (f *Fake) writeFile(caller, name, p string, b []byte) error {
 	}
 	mc.files[p] = b
 	return nil
+}
+
+// ExpireLog drops every event of the caller's log, as age would: a cursor the log gave before is
+// then older than it keeps. It is a test's stand-in for time passing.
+func (f *Fake) ExpireLog(caller string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a := f.account(caller)
+	a.log = nil
 }
 
 func (f *Fake) events(caller, since string) (machineapi.EventPage, error) {
@@ -427,25 +448,30 @@ func (f *Fake) putSnapshot(caller, name string, r machineapi.SnapshotRequest) (m
 		return machineapi.Snapshot{}, false, refuse(http.StatusUnprocessableEntity, machineapi.CodeMachineNotFound, "no Machine %s", r.Machine)
 	}
 	if s := a.snapshots[name]; s != nil {
-		if s.MachineID != mc.m.ID {
+		if s.s.MachineID != mc.m.ID {
 			return machineapi.Snapshot{}, false, refuse(http.StatusConflict, machineapi.CodeConflict, "the snapshot %s is of another Machine", name)
 		}
-		return *s, false, nil
+		return s.s, false, nil
 	}
 	if mc.m.Status.Phase == machineapi.PhaseDeleting {
 		return machineapi.Snapshot{}, false, refuse(http.StatusConflict, machineapi.CodeDeleting, "the Machine %s is being deleted", r.Machine)
 	}
-	s := &machineapi.Snapshot{Name: name, Machine: r.Machine, MachineID: mc.m.ID, Spec: mc.m.Spec,
-		Phase: machineapi.SnapshotPending, CreatedAt: time.Now().UTC()}
+	s := &snapshot{s: machineapi.Snapshot{Name: name, Machine: r.Machine, MachineID: mc.m.ID, Spec: mc.m.Spec,
+		Phase: machineapi.SnapshotPending, CreatedAt: time.Now().UTC()}, files: map[string][]byte{}}
+	for p, b := range mc.files {
+		if slices.ContainsFunc(mc.spec.Volumes, func(v machineapi.Volume) bool { return strings.HasPrefix(p, v.MountPath+"/") }) {
+			s.files[p] = slices.Clone(b)
+		}
+	}
 	a.snapshots[name] = s
 	time.AfterFunc(f.o.Latency, func() {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if a.snapshots[name] == s {
-			s.Phase = machineapi.SnapshotReady
+			s.s.Phase = machineapi.SnapshotReady
 		}
 	})
-	return *s, true, nil
+	return s.s, true, nil
 }
 
 func (f *Fake) snapshot(caller, name string) (machineapi.Snapshot, error) {
@@ -455,7 +481,7 @@ func (f *Fake) snapshot(caller, name string) (machineapi.Snapshot, error) {
 	if s == nil {
 		return machineapi.Snapshot{}, refuse(http.StatusNotFound, machineapi.CodeNotFound, "no snapshot %s", name)
 	}
-	return *s, nil
+	return s.s, nil
 }
 
 func (f *Fake) snapshots(caller string) machineapi.SnapshotList {
@@ -464,7 +490,7 @@ func (f *Fake) snapshots(caller string) machineapi.SnapshotList {
 	a := f.account(caller)
 	l := machineapi.SnapshotList{Snapshots: []machineapi.Snapshot{}}
 	for _, n := range slices.Sorted(maps.Keys(a.snapshots)) {
-		l.Snapshots = append(l.Snapshots, *a.snapshots[n])
+		l.Snapshots = append(l.Snapshots, a.snapshots[n].s)
 	}
 	return l
 }
@@ -490,7 +516,7 @@ func (f *Fake) putAlias(caller, hostname string, r machineapi.AliasRequest) (mac
 	case inZone && (r.Certificate != "" || r.Key != ""):
 		return machineapi.Alias{}, false, refuse(http.StatusUnprocessableEntity, machineapi.CodeInvalid, "an alias in the zone %s takes no certificate or key", f.o.Zone)
 	case !inZone && !slices.ContainsFunc(f.o.AliasDomains[caller], func(d string) bool { return machineapi.InDomain(hostname, d) }):
-		return machineapi.Alias{}, false, refuse(http.StatusForbidden, machineapi.CodeAliasDomain, "%s is outside the zone and in no domain granted to the caller", hostname)
+		return machineapi.Alias{}, false, refuse(http.StatusForbidden, machineapi.CodeAliasDomainNotGranted, "%s is outside the zone and in no domain granted to the caller", hostname)
 	case !inZone:
 		cert, err := machineapi.CheckAliasCertificate(hostname, r.Certificate, r.Key, time.Now())
 		if err != nil {

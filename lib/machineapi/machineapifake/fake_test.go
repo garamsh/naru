@@ -37,6 +37,8 @@ func TestFake_PassesTheConformanceTest(t *testing.T) {
 	machineapitest.Run(t, machineapitest.Config{
 		Caller:      s.Client("garam"),
 		Other:       s.Client("functions"),
+		OtherRole:   s.ClientOfRole("garam", "operator"),
+		ExpireLog:   func(*testing.T) { s.ExpireLog("garam") },
 		Zone:        zone,
 		AliasDomain: "workspaces.example.test",
 		Spec:        spec(),
@@ -44,16 +46,13 @@ func TestFake_PassesTheConformanceTest(t *testing.T) {
 	})
 }
 
-func TestFake_RefusesACertificateOfAnotherRole(t *testing.T) {
+func TestFake_AnswersAPathItDoesNotServeWithTheErrorBody(t *testing.T) {
 	s := machineapifake.Start(t, machineapifake.Options{Zone: zone})
-	_, err := s.ClientOfRole("garam", "operator").Machines(t.Context())
+	_, err := s.Client("garam").Machine(t.Context(), "")
 	var e *machineapi.Error
 	require.True(t, errors.As(err, &e), "refused: %v", err)
-	assert.Equal(t, http.StatusForbidden, e.Status)
-	assert.Equal(t, machineapi.CodeForbidden, e.Code)
-
-	_, err = s.Client("garam").Machines(t.Context())
-	require.NoError(t, err, "the same name of the caller role is served")
+	assert.Equal(t, http.StatusNotFound, e.Status)
+	assert.Equal(t, machineapi.CodeNotFound, e.Code, "with a code")
 }
 
 func TestFake_RefusesACursorOlderThanTheLogKeeps(t *testing.T) {

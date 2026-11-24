@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -117,6 +118,24 @@ func TestClient_ReadsAFileAsItsBytes(t *testing.T) {
 	b, err := c.ReadFile(t.Context(), "web", "/data/a")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("\x00not json"), b)
+}
+
+func TestClient_RefusesAnAnswerAboveItsLimit(t *testing.T) {
+	big := strings.Repeat("x", 64<<20)
+	c, _, _ := serve(t, http.StatusOK, big+"y")
+	_, err := c.ReadFile(t.Context(), "web", "/data/a")
+	assert.ErrorIs(t, err, machineapi.ErrResponseTooLarge, "a file one byte above 64 MiB")
+	c, _, _ = serve(t, http.StatusOK, big)
+	b, err := c.ReadFile(t.Context(), "web", "/data/a")
+	require.NoError(t, err, "a file of 64 MiB is read")
+	assert.Len(t, b, 64<<20)
+}
+
+func TestNew_RefusesANilHTTPClient(t *testing.T) {
+	_, err := machineapi.New("https://10.0.0.1:7600", nil)
+	require.Error(t, err)
+	_, err = machineapi.New("https://10.0.0.1:7600", http.DefaultClient)
+	require.NoError(t, err, "the same URL with a client is taken")
 }
 
 func TestNew_RefusesAURLThatIsNotHTTPS(t *testing.T) {

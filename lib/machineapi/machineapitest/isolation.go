@@ -14,7 +14,8 @@ import (
 
 // Isolation checks that another caller's Machine, snapshot and alias are not found (404, not 403),
 // appear in no list or event of the caller's, and that a name is the caller's own: the other caller
-// creating the same name makes a Machine of its own.
+// creating the same name makes a Machine of its own. A body that names another caller's snapshot or
+// Machine is answered as one naming nothing.
 func Isolation(t *testing.T, c Config) {
 	c = c.check(t)
 	ctx := t.Context()
@@ -53,6 +54,13 @@ func Isolation(t *testing.T, c Config) {
 	refused(t, c.Other.DeleteAlias(ctx, host), http.StatusNotFound, machineapi.CodeNotFound, "another caller's alias delete")
 	_, _, err = c.Other.PutSnapshot(ctx, unique("isolation-theirs"), machineapi.SnapshotRequest{Machine: name})
 	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeMachineNotFound, "a snapshot of another caller's Machine")
+	from := c.Spec
+	from.FromSnapshot = &machineapi.SnapshotSource{Snapshot: snap}
+	create(t, c.Caller, unique("isolation-restored"), from)
+	_, _, err = c.Other.CreateMachine(ctx, unique("isolation-theirs"), from)
+	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeSnapshotNotFound, "a restore from another caller's snapshot")
+	_, _, err = c.Other.PutAlias(ctx, unique("isolation-theirs")+"."+c.Zone, machineapi.AliasRequest{Machine: name})
+	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeMachineNotFound, "an alias of another caller's Machine")
 
 	list, err := c.Other.Machines(ctx)
 	require.NoError(t, err)
@@ -74,4 +82,35 @@ func Isolation(t *testing.T, c Config) {
 	mine, err := c.Caller.Machine(ctx, name)
 	require.NoError(t, err)
 	assert.Equal(t, m.ID, mine.ID, "and leaves the caller's as it was")
+
+	waitPhase(t, c, c.Other, name, machineapi.PhaseRunning)
+	s, created, err := c.Other.PutSnapshot(ctx, snap, machineapi.SnapshotRequest{Machine: name})
+	require.NoError(t, err, "the caller's snapshot name under another caller")
+	t.Cleanup(func() { _ = c.Other.DeleteSnapshot(context.Background(), snap) })
+	assert.True(t, created, "is another snapshot")
+	assert.Equal(t, theirs.ID, s.MachineID, "of the other caller's Machine")
+	ours, err := c.Caller.Snapshot(ctx, snap)
+	require.NoError(t, err)
+	assert.Equal(t, m.ID, ours.MachineID, "and leaves the caller's as it was")
+}
+
+// OtherRole checks that a certificate of a role other than caller is refused with 403 on every
+// operation, while a caller's is served.
+func OtherRole(t *testing.T, c Config) {
+	c = c.check(t)
+	require.NotNil(t, c.OtherRole, "Config.OtherRole")
+	ctx := t.Context()
+	name := unique("role")
+	create(t, c.Caller, name, c.Spec)
+	for what, call := range map[string]func(cl *machineapi.Client) error{
+		"list":      func(cl *machineapi.Client) error { _, err := cl.Machines(ctx); return err },
+		"read":      func(cl *machineapi.Client) error { _, err := cl.Machine(ctx, name); return err },
+		"events":    func(cl *machineapi.Client) error { _, err := cl.Events(ctx, ""); return err },
+		"snapshots": func(cl *machineapi.Client) error { _, err := cl.Snapshots(ctx); return err },
+	} {
+		require.NoError(t, call(c.Caller), "a caller's %s", what)
+		refused(t, call(c.OtherRole), http.StatusForbidden, machineapi.CodeForbidden, "another role's "+what)
+	}
+	_, _, err := c.OtherRole.CreateMachine(ctx, unique("role"), c.Spec)
+	refused(t, err, http.StatusForbidden, machineapi.CodeForbidden, "another role's create")
 }

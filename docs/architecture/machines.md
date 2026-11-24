@@ -45,9 +45,10 @@ The API's types, client, conformance test and in-memory implementation are built
 
   Exec and files are answered by the member that took the call, which calls the Machine's host. Errors are `{"error", "code"}`.
 - **What `lib/machineapi` fixes beside the table.**
-  - **Codes.** Each refusal has a code: `invalid` (400 for a body that is not the operation's JSON, 422 for a field), `forbidden` (403), `not-found` (404), `conflict`, `deleting` (the held name) and `not-running` (409), `cursor-expired` (410), `machine-not-found`, `snapshot-not-found` and `snapshot-mismatch` (422), `alias-taken` (409), `alias-domain-not-granted` (403) and `internal` (500). A client keeps a code it does not know.
+  - **Codes.** Each refusal has a code: `invalid` (400 for a body that is not the operation's JSON, 413 for one above the operation's limit, 422 for a field), `forbidden` (403), `not-found` and `file-not-found` (404), `conflict`, `deleting` (the held name) and `not-running` (409), `cursor-expired` (410), `machine-not-found`, `snapshot-not-found` and `snapshot-mismatch` (422), `alias-taken` (409), `alias-domain-not-granted` (403) and `internal` (500). A client keeps a code it does not know.
   - **The rules every implementation applies** are functions of the library: the spec's checks (mvmd's for the run configuration, ADR 0111 item 6 for a GPU Machine), create's comparison, the zone's alias rules and an alias certificate's check.
-  - **Secrets are never read back.** A read answers each env value as `<set>` and each file by path, mode and size, without its content, as mvmd's Inspect does; create compares the values it was given.
+  - **Secrets are never read back.** A read answers each env value as `<set>` and each file by path, mode and size, without its content, as mvmd's Inspect does; create compares the values it was given. So a spec read back and put again is 409: a use keeps its own spec.
+  - **A request field the version does not name** is refused, 400 `invalid`, and not ignored.
   - **Events** are `status` (the Machine's status, which the event carries) or `deleted` (the Machine gone and its name free). A cursor the log never gave is 400.
   - **A snapshot** has a phase, `pending`, `ready` or `failed`, and a client reads an unknown one as `unknown`.
   - **A create's phase** is `pending`: the call records the Machine, and placement follows.

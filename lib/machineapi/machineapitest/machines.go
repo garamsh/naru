@@ -83,7 +83,8 @@ func StartStop(t *testing.T, c Config) {
 }
 
 // Delete checks that a delete is accepted, the name is held while the Machine is deleted, the
-// Machine's snapshots stay, and the name is free once it is gone.
+// Machine's snapshots stay, and the name is free once it is gone. It takes the delete to outlast
+// one round trip, as a delete through a reconciler and a host does.
 func Delete(t *testing.T, c Config) {
 	c = c.check(t)
 	ctx := t.Context()
@@ -130,7 +131,9 @@ func Events(t *testing.T, c Config) {
 		assert.Equal(t, machineapi.EventStatus, e.Type)
 		assert.Contains(t, []machineapi.Phase{machineapi.PhasePending, machineapi.PhaseStarting, machineapi.PhaseRunning}, e.Status.Phase, "a change of a create")
 	}
-	assert.Empty(t, of(t, c.Caller, first.Cursor, m.ID).Events, "nothing changed after the page's cursor")
+	for _, e := range of(t, c.Caller, first.Cursor, m.ID).Events {
+		assert.NotContains(t, first.Events, e, "no event before the page's cursor is read again after it")
+	}
 
 	_, err = c.Caller.StopMachine(ctx, name, machineapi.StopRequest{})
 	require.NoError(t, err)
@@ -225,4 +228,27 @@ func RunningOnly(t *testing.T, c Config) {
 	content, err := c.Caller.ReadFile(ctx, name, file)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(content))
+	_, err = c.Caller.ReadFile(ctx, name, file+"-absent")
+	refused(t, err, http.StatusNotFound, machineapi.CodeFileNotFound, "a file the guest has not")
+}
+
+// CursorExpired checks that a cursor older than the log keeps is 410, so the caller lists again,
+// while the cursor of a list taken after is served.
+func CursorExpired(t *testing.T, c Config) {
+	c = c.check(t)
+	require.NotNil(t, c.ExpireLog, "Config.ExpireLog")
+	ctx := t.Context()
+	before, err := c.Caller.Machines(ctx)
+	require.NoError(t, err)
+	name := unique("expired")
+	create(t, c.Caller, name, c.Spec)
+	waitPhase(t, c, c.Caller, name, machineapi.PhaseRunning)
+	c.ExpireLog(t)
+
+	_, err = c.Caller.Events(ctx, before.Cursor)
+	refused(t, err, http.StatusGone, machineapi.CodeCursorExpired, "a cursor older than the log keeps")
+	after, err := c.Caller.Machines(ctx)
+	require.NoError(t, err)
+	_, err = c.Caller.Events(ctx, after.Cursor)
+	require.NoError(t, err, "the cursor of a list taken after is served")
 }

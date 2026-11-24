@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,10 @@ import (
 // maxResponse bounds a response body the client reads: a guest file or an exec's output included.
 const maxResponse = 64 << 20
 
+// ErrResponseTooLarge is the failure of a call whose answer is above 64 MiB, which the client does
+// not read.
+var ErrResponseTooLarge = errors.New("the answer is larger than the client reads")
+
 // Client calls the Machine API of one orch. The caller supplies the http.Client, which carries its
 // identity: a TLS configuration with the caller certificate and the CA that issued orch's.
 type Client struct {
@@ -21,8 +26,12 @@ type Client struct {
 	http *http.Client
 }
 
-// New returns a client of the Machine API at base, an https URL such as "https://10.0.0.1:7600".
+// New returns a client of the Machine API at base, an https URL such as "https://10.0.0.1:7600",
+// that sends requests through hc.
 func New(base string, hc *http.Client) (*Client, error) {
+	if hc == nil {
+		return nil, errors.New("the machine API client needs an http.Client")
+	}
 	u, err := url.Parse(base)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return nil, fmt.Errorf("machine API URL %q is not an https URL", base)
@@ -47,9 +56,12 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 		return 0, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil {
 		return resp.StatusCode, nil, err
+	}
+	if len(data) > maxResponse {
+		return resp.StatusCode, nil, fmt.Errorf("%w: %s %s answered more than %d bytes", ErrResponseTooLarge, method, path, maxResponse)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
 		var eb ErrorBody
@@ -154,7 +166,8 @@ func (c *Client) DeleteSnapshot(ctx context.Context, name string) error {
 	return err
 }
 
-// Exec runs r.Command in the running Machine and returns its exit code and output, whole.
+// Exec runs r.Command in the running Machine and returns its exit code and output, whole. The
+// call is bounded by the http.Client's timeout as well as by r.TimeoutSeconds.
 func (c *Client) Exec(ctx context.Context, name string, r ExecRequest) (ExecResult, error) {
 	var out ExecResult
 	_, err := c.call(ctx, http.MethodPost, machinePath(name)+"/exec", nil, r, &out)

@@ -109,6 +109,9 @@ func (f *Fake) routes() {
 	m.HandleFunc("DELETE "+p+"aliases/{hostname}", f.handle(func(c string, r *http.Request) (int, any, error) {
 		return http.StatusNoContent, nil, f.deleteAlias(c, r.PathValue("hostname"))
 	}))
+	m.HandleFunc("/", f.handle(func(_ string, r *http.Request) (int, any, error) {
+		return 0, nil, refuse(http.StatusNotFound, machineapi.CodeNotFound, "no operation %s %s", r.Method, r.URL.Path)
+	}))
 	f.mux = m
 }
 

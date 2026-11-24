@@ -32,6 +32,8 @@ func Snapshots(t *testing.T, c Config) {
 	a, b, name := unique("snaps-a"), unique("snaps-b"), unique("snaps")
 	ma := create(t, c.Caller, a, c.Spec)
 	create(t, c.Caller, b, c.Spec)
+	waitPhase(t, c, c.Caller, a, machineapi.PhaseRunning)
+	waitPhase(t, c, c.Caller, b, machineapi.PhaseRunning)
 
 	s := snapshot(t, c, c.Caller, name, a)
 	assert.Equal(t, a, s.Machine)
@@ -55,23 +57,32 @@ func Snapshots(t *testing.T, c Config) {
 }
 
 // Restore checks that a create from a snapshot is taken when its volumes match the snapshot's by
-// name and size, and refused with 422 otherwise.
+// name and size, and refused with 422 otherwise, and that the restored volumes hold what the
+// snapshot's Machine wrote to them.
 func Restore(t *testing.T, c Config) {
 	c = c.check(t)
 	ctx := t.Context()
 	src, snap := unique("restore-src"), unique("restore")
 	create(t, c.Caller, src, c.Spec)
+	waitPhase(t, c, c.Caller, src, machineapi.PhaseRunning)
+	file := c.Spec.Volumes[0].MountPath + "/restore"
+	require.NoError(t, c.Caller.WriteFile(ctx, src, file, []byte("before the snapshot")))
 	snapshot(t, c, c.Caller, snap, src)
 
 	from := c.Spec
 	from.FromSnapshot = &machineapi.SnapshotSource{Snapshot: snap}
-	m := create(t, c.Caller, unique("restored"), from)
+	restored := unique("restored")
+	m := create(t, c.Caller, restored, from)
 	assert.Equal(t, from.FromSnapshot, m.Spec.FromSnapshot, "the matching volumes are taken")
+	waitPhase(t, c, c.Caller, restored, machineapi.PhaseRunning)
+	content, err := c.Caller.ReadFile(ctx, restored, file)
+	require.NoError(t, err, "the restored volume holds the snapshot's file")
+	assert.Equal(t, "before the snapshot", string(content))
 
 	larger := from
 	larger.Volumes = append([]machineapi.Volume(nil), from.Volumes...)
 	larger.Volumes[0].SizeBytes *= 2
-	_, _, err := c.Caller.CreateMachine(ctx, unique("restore-larger"), larger)
+	_, _, err = c.Caller.CreateMachine(ctx, unique("restore-larger"), larger)
 	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeSnapshotMismatch, "a volume of another size")
 
 	more := from

@@ -127,6 +127,8 @@ func (s Spec) checkRun() error {
 			return invalid(field+".path", "is not a clean absolute path unique among the files, outside /proc, /sys, /dev and /run/mvmd")
 		case f.Mode > 0o7777:
 			return invalid(field+".mode", "is above 07777")
+		case f.SizeBytes != 0:
+			return invalid(field+".sizeBytes", "is answered by a read and not taken by a create")
 		}
 		seen[f.Path] = true
 		total += len(f.Content)

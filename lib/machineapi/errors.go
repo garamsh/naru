@@ -8,7 +8,8 @@ type Code string
 // The codes, each with the status it comes with. A client keeps a code it does not know as the
 // string it is.
 const (
-	// CodeInvalid: 400 for a body that is not the operation's JSON, 422 for a field it refuses.
+	// CodeInvalid: 400 for a body that is not the operation's JSON or names a field the version
+	// does not, 413 for a body above the operation's limit, 422 for a field it refuses.
 	CodeInvalid Code = "invalid"
 	// CodeForbidden: 403, a certificate of a role other than caller.
 	CodeForbidden Code = "forbidden"
@@ -20,6 +21,8 @@ const (
 	CodeConflict Code = "conflict"
 	// CodeDeleting: 409, the name is held by a Machine being deleted until its volumes are gone.
 	CodeDeleting Code = "deleting"
+	// CodeFileNotFound: 404, a file call to a running Machine whose guest has no file at the path.
+	CodeFileNotFound Code = "file-not-found"
 	// CodeNotRunning: 409, an exec or a file call to a Machine that is not running.
 	CodeNotRunning Code = "not-running"
 	// CodeCursorExpired: 410, a cursor older than the event log keeps: list again.
@@ -32,9 +35,9 @@ const (
 	CodeSnapshotMismatch Code = "snapshot-mismatch"
 	// CodeAliasTaken: 409, another caller holds the hostname.
 	CodeAliasTaken Code = "alias-taken"
-	// CodeAliasDomain: 403, a hostname outside the zone in no domain the operator granted the
-	// caller.
-	CodeAliasDomain Code = "alias-domain-not-granted"
+	// CodeAliasDomainNotGranted: 403, a hostname outside the zone in no domain the operator
+	// granted the caller.
+	CodeAliasDomainNotGranted Code = "alias-domain-not-granted"
 	// CodeInternal: 500, a failure of the server's own.
 	CodeInternal Code = "internal"
 )

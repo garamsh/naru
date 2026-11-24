@@ -76,6 +76,7 @@ func TestSpecCheck_NamesTheFieldAtFault(t *testing.T) {
 		{"spec.env", func(s *machineapi.Spec) { s.Env = map[string]string{"A=B": "1"} }},
 		{"spec.workingDir", func(s *machineapi.Spec) { s.WorkingDir = "relative" }},
 		{"spec.files[0].mode", func(s *machineapi.Spec) { s.Files[0].Mode = 0o17777 }},
+		{"spec.files[0].sizeBytes", func(s *machineapi.Spec) { s.Files[0].SizeBytes = 1 }},
 		{"spec.services[0].name", func(s *machineapi.Spec) { s.Services[0].Name = "web--1" }},
 		{"spec.services[0].protocol", func(s *machineapi.Spec) { s.Services[0].Protocol = "udp" }},
 		{"spec.services[0].port", func(s *machineapi.Spec) { s.Services[0].Port = 0 }},

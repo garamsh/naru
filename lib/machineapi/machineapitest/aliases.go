@@ -67,9 +67,9 @@ func Aliases(t *testing.T, c Config) {
 	outside := unique("alias") + "." + c.AliasDomain
 	cert, key := certificate(t, outside)
 	_, _, err = put(c.Caller, unique("alias")+".conformance.invalid", machineapi.AliasRequest{Machine: name, Certificate: cert, Key: key})
-	refused(t, err, http.StatusForbidden, machineapi.CodeAliasDomain, "a domain granted to no caller")
+	refused(t, err, http.StatusForbidden, machineapi.CodeAliasDomainNotGranted, "a domain granted to no caller")
 	_, _, err = put(c.Other, outside, machineapi.AliasRequest{Machine: theirs, Certificate: cert, Key: key})
-	refused(t, err, http.StatusForbidden, machineapi.CodeAliasDomain, "a domain granted to another caller")
+	refused(t, err, http.StatusForbidden, machineapi.CodeAliasDomainNotGranted, "a domain granted to another caller")
 	_, _, err = put(c.Caller, outside, machineapi.AliasRequest{Machine: name})
 	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeInvalid, "an alias outside the zone without a certificate")
 	wrong, wrongKey := certificate(t, "other."+c.AliasDomain)

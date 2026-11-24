@@ -8,4 +8,4 @@ The request and response types of naru's Machine API, `machines/v1alpha1`, and a
 - `machineapitest` is the conformance test: it drives an implementation through the client alone.
 - `machineapifake` is the in-memory implementation, which passes it, and `machineapifake.Start` serves one over mutual TLS for a caller's tests.
 
-Linked by `orch`, which serves the API, and required by garam, whose Workspace calls it.
+To be linked by `orch`, which serves the API (#381), and required by garam, whose Workspace calls it.

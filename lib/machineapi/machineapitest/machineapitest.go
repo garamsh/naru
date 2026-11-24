@@ -26,6 +26,8 @@ type Config struct {
 	// Caller and Other are clients of the implementation holding the certificates of two callers.
 	Caller *machineapi.Client
 	Other  *machineapi.Client
+	// OtherRole is a client holding a certificate of a role other than caller, such as operator.
+	OtherRole *machineapi.Client
 	// Zone is the zone the implementation gives stable names under, such as "m.garam.sh".
 	Zone string
 	// AliasDomain is a domain outside the zone the operator granted Caller, and not Other.
@@ -33,6 +35,9 @@ type Config struct {
 	// Spec is a spec the implementation runs: at least one volume and one service, and an image
 	// whose guest runs "cat", reading stdin to stdout.
 	Spec machineapi.Spec
+	// ExpireLog makes the implementation drop every event Caller's log holds, as the log's age
+	// would, so a cursor given before it is older than the log keeps.
+	ExpireLog func(t *testing.T)
 	// Timeout bounds each wait for a phase or for a Machine to be gone. Zero is 2 minutes.
 	Timeout time.Duration
 }
@@ -50,6 +55,8 @@ func Run(t *testing.T, c Config) {
 		{"Restore", Restore},
 		{"Isolation", Isolation},
 		{"Events", Events},
+		{"CursorExpired", CursorExpired},
+		{"OtherRole", OtherRole},
 		{"Secrets", Secrets},
 		{"RunningOnly", RunningOnly},
 		{"Aliases", Aliases},
