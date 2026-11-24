@@ -428,6 +428,7 @@ func TestCallerRevocation_TheRecordsAndTheEntryTravelWithTheBundleTheSyncAndLate
 	serials := listOf(t, e, b).Serials
 	assert.Len(t, serials, len(slices.Compact(slices.Clone(serials))), "a second revocation adds no serial twice")
 
+	pushList(t, a, b)
 	_, err = b.RevokeCaller(signedAt(t, e.rootID, &c, identity.ActionRevokeCaller, identity.CallerRevokeRequest{Name: "elsewhere"}))
 	require.NoError(t, err)
 	pushList(t, a, b)
