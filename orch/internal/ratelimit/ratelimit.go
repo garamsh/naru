@@ -78,7 +78,7 @@ func Source(remoteAddr string) string {
 	if err != nil {
 		return host
 	}
-	a = a.Unmap().WithZone("")
+	a = a.Unmap()
 	if a.Is4() {
 		return a.String()
 	}

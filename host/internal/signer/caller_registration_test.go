@@ -392,4 +392,6 @@ func TestCallerRegistration_LogsTheTokenNonceOfARegistrationAndOfARefusedSpend(t
 	assert.True(t, refused, "the refused second spend names the nonce: %s", logs.String())
 	assert.Empty(t, identity.CallerTokenNonce("naru-ct-%%%.x"), "a token that does not read names no nonce")
 	assert.Empty(t, identity.CallerTokenNonce("other"), "a string without the prefix names no nonce")
+	long := identity.CallerTokenPrefix + base64.RawURLEncoding.EncodeToString([]byte(`{"nonce":"`+strings.Repeat("a", 129)+`"}`)) + ".x"
+	assert.Empty(t, identity.CallerTokenNonce(long), "a nonce longer than any the signer issues is not logged")
 }
