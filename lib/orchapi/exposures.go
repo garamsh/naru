@@ -9,7 +9,8 @@ import (
 )
 
 // AddressPoolSpec is what an operator declares for an address pool: the IPv4 ranges the LAN's
-// owner gave naru, and the networks whose exposures may draw from them.
+// owner gave naru and the networks whose exposures may draw from them. A proxy exposure may draw
+// from any pool (ADR 0112 item 8).
 type AddressPoolSpec struct {
 	CIDRs    []string `json:"cidrs"`
 	Networks []string `json:"networks"`
@@ -70,6 +71,52 @@ type Exposure struct {
 	// Host is the ID of the host that holds the address; empty while no host does.
 	Host  string `json:"host,omitempty"`
 	Phase string `json:"phase"`
+}
+
+// ProxyExposureSpec is what the operator declares for a proxy exposure (ADR 0112 item 8): an
+// address from Pool, any pool, that the holding host redirects to its own naru-proxy.
+// Ports are 443, and optionally 80, which the proxy answers with a redirect to https.
+type ProxyExposureSpec struct {
+	Pool             string `json:"pool"`
+	RequestedAddress string `json:"requestedAddress,omitempty"`
+	Ports            []int  `json:"ports"`
+}
+
+// ProxyExposure is a proxy exposure orch keeps: the spec, the address orch assigned and the host
+// that holds it, one whose proxy answers its health check.
+type ProxyExposure struct {
+	ID      string `json:"id"`
+	Pool    string `json:"pool"`
+	Address string `json:"address"`
+	Ports   []int  `json:"ports"`
+	// Host is the ID of the host that holds the address; empty while no host does.
+	Host  string `json:"host,omitempty"`
+	Phase string `json:"phase"`
+}
+
+// ApplyProxyExposure creates the proxy exposure or replaces its ports, and returns it with its
+// address.
+func (c *Client) ApplyProxyExposure(ctx context.Context, id string, spec ProxyExposureSpec) (ProxyExposure, error) {
+	var out ProxyExposure
+	return out, c.do(ctx, http.MethodPut, "/v1/proxy-exposures/"+url.PathEscape(id), nil, spec, &out)
+}
+
+// ProxyExposure returns one proxy exposure.
+func (c *Client) ProxyExposure(ctx context.Context, id string) (ProxyExposure, error) {
+	var out ProxyExposure
+	return out, c.do(ctx, http.MethodGet, "/v1/proxy-exposures/"+url.PathEscape(id), nil, nil, &out)
+}
+
+// ProxyExposures lists the proxy exposures, those being released included.
+func (c *Client) ProxyExposures(ctx context.Context) ([]ProxyExposure, error) {
+	var out []ProxyExposure
+	return out, c.do(ctx, http.MethodGet, "/v1/proxy-exposures", nil, nil, &out)
+}
+
+// DeleteProxyExposure starts the release of a proxy exposure, as DeleteNetworkExposure does of a
+// network's. An absent one is not an error.
+func (c *Client) DeleteProxyExposure(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/proxy-exposures/"+url.PathEscape(id), nil, nil, nil)
 }
 
 // ApplyAddressPool creates the pool or replaces its spec.

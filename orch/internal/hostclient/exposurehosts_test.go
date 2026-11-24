@@ -22,6 +22,7 @@ import (
 type exposureAPI struct {
 	vms   []hostapi.MicroVM
 	hangs bool
+	proxy *hostapi.ProxyStatus
 }
 
 func (a *exposureAPI) Host(ctx context.Context) (hostapi.Host, error) {
@@ -29,7 +30,7 @@ func (a *exposureAPI) Host(ctx context.Context) (hostapi.Host, error) {
 		<-ctx.Done()
 		return hostapi.Host{}, ctx.Err()
 	}
-	return hostapi.Host{LANInterface: "eth0"}, ctx.Err()
+	return hostapi.Host{LANInterface: "eth0", Proxy: a.proxy}, ctx.Err()
 }
 
 func (a *exposureAPI) MicroVMs(ctx context.Context) ([]hostapi.MicroVM, error) {
@@ -137,4 +138,37 @@ func TestALeaseReachesTheHostInTheSharedProtocolSpelling(t *testing.T) {
 		require.Equal(t, []hostapi.ExposurePort{{Protocol: p, Port: 443, BackendPort: 30443}}, sent.Ports)
 		require.Contains(t, string(body), `"protocol":"`+string(p)+`"`)
 	}
+}
+
+func TestAHostIsAProxyCandidateOnlyWhileItsProxyIsHealthy(t *testing.T) {
+	apis := map[string]*exposureAPI{
+		"h1": {proxy: &hostapi.ProxyStatus{Healthy: true}},
+		"h2": {proxy: &hostapi.ProxyStatus{Healthy: false}},
+		"h3": {},
+	}
+	hosts, err := exposureHosts(apis).List(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []exposures.Host{
+		{ID: "h1", LAN: "eth0", Proxy: true},
+		{ID: "h2", LAN: "eth0"},
+		{ID: "h3", LAN: "eth0"},
+	}, hosts, "a proxy that fails its check, and a host that runs none, are no candidates")
+}
+
+func TestAProxyExposuresLeaseReachesTheHostAsOne(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	h := hostclient.NewExposureHosts(&invFake{hosts: []orchapi.Host{{ID: "h1", Address: "h1:7443"}}},
+		func(string, string) hostclient.ExposureAPI { return hostapi.NewClient(srv.URL, srv.Client()) })
+	l := exposures.Lease{ToProxy: true, Ports: []orchapi.ExposurePort{{Protocol: wire.ProtocolTCP, Port: 443, BackendPort: 443}}, Seconds: 15}
+	require.NoError(t, h.Put(t.Context(), "h1", "192.168.0.90", l))
+	var sent hostapi.ExposureRequest
+	require.NoError(t, json.Unmarshal(body, &sent))
+	require.True(t, sent.ToProxy)
+	require.Empty(t, sent.Network)
+	require.Empty(t, sent.Backends)
 }

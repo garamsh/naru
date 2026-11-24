@@ -126,3 +126,49 @@ func TestExposureApply_RefusesAFileThatIsNotAnExposure(t *testing.T) {
 	_, err := run(t, op.args(f, "exposure", "apply", "-f", writeGroup(t, exposureYAML))...)
 	require.NoError(t, err, "control: the file the cases vary is applied")
 }
+
+const proxyExposureYAML = `id: web
+pool: edge
+requestedAddress: 192.168.1.81
+ports: [443, 80]
+`
+
+func TestProxyExposureApplyGetListAndDelete(t *testing.T) {
+	f := newFakeOrch(t)
+	op := newOperator(t, f, "operator")
+
+	out, err := run(t, op.args(f, "proxy-exposure", "apply", "-f", writeGroup(t, proxyExposureYAML))...)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "proxy exposure web applied: address 192.168.1.81, ports 443,80, pending")
+	out, err = run(t, op.args(f, "proxy-exposure", "get", "web")...)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, `"host": "h1"`)
+	out, err = run(t, op.args(f, "proxy-exposure", "list")...)
+	require.NoError(t, err, out)
+	assert.Regexp(t, `web\s+edge\s+192\.168\.1\.80\s+443,80\s+h1\s+announced`, out)
+	out, err = run(t, op.args(f, "proxy-exposure", "delete", "web")...)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "proxy exposure web is being released")
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	assert.Equal(t, orchapi.ProxyExposureSpec{Pool: "edge", RequestedAddress: "192.168.1.81", Ports: []int{443, 80}}, f.proxies["web"])
+	assert.Equal(t, []string{"web"}, f.releasedProxies)
+}
+
+func TestProxyExposureApply_RefusesAFileThatIsNotAProxyExposure(t *testing.T) {
+	for name, body := range map[string]string{
+		"a field proxy exposures do not have": proxyExposureYAML + "backends: [10.9.0.5]\n",
+		"no id":                               strings.Replace(proxyExposureYAML, "id: web\n", "", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeOrch(t)
+			op := newOperator(t, f, "operator")
+			_, err := run(t, op.args(f, "proxy-exposure", "apply", "-f", writeGroup(t, body))...)
+			require.Error(t, err)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			assert.Empty(t, f.proxies)
+		})
+	}
+}

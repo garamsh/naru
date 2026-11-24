@@ -17,14 +17,16 @@ import (
 	"github.com/garamsh/naru/orch/internal/orchtest"
 )
 
-// exposureHosts is one host with a LAN interface and a microVM on each of the networks a and b.
+// exposureHosts is one host with a LAN interface and a microVM on each of the networks a and b,
+// and with proxy a healthy naru-proxy.
 type exposureHosts struct {
 	mu      sync.Mutex
 	leaseds map[string]exposures.Lease
+	proxy   bool
 }
 
 func (e *exposureHosts) List(context.Context) ([]exposures.Host, error) {
-	return []exposures.Host{{ID: "h1", LAN: "eth0", Networks: []string{"a", "b"}, Members: map[string][]string{"a": {"10.1.0.5"}, "b": {"10.2.0.5"}}}}, nil
+	return []exposures.Host{{ID: "h1", LAN: "eth0", Networks: []string{"a", "b"}, Members: map[string][]string{"a": {"10.1.0.5"}, "b": {"10.2.0.5"}}, Proxy: e.proxy}}, nil
 }
 
 func (e *exposureHosts) Put(_ context.Context, _, address string, l exposures.Lease) error {
@@ -135,6 +137,65 @@ func TestTheOperatorsExposureIsScopedToItsNetworkAndPoolAndTheLeaderLeasesItsAdd
 		list, err := o.reader.Exposures(ctx)
 		return err == nil && len(list) == 2
 	}, 30*time.Second, 50*time.Millisecond, "the reconciler then deletes the record")
+}
+
+func TestAProxyExposureDrawsFromAPoolAndTheLeaderLeasesItToAProxyHost(t *testing.T) {
+	eh := &exposureHosts{leaseds: map[string]exposures.Lease{}, proxy: true}
+	o := startOne(t, orchtest.Options{
+		NewHosts:         func(inventory.Service) groups.Hosts { return orchtest.NewFakeHosts("h1") },
+		NewExposureHosts: func(inventory.Service) orchd.ExposureHosts { return eh },
+	})
+	ctx := t.Context()
+	_, err := o.op.ApplyNetwork(ctx, "a", orchapi.NetworkSpec{Prefix: "10.1.0.0/24"})
+	require.NoError(t, err)
+	_, err = o.op.ApplyAddressPool(ctx, "lan", orchapi.AddressPoolSpec{CIDRs: []string{"192.168.0.80/29"}, Networks: []string{"a"}})
+	require.NoError(t, err)
+	_, err = o.op.ApplyAddressPool(ctx, "edge", orchapi.AddressPoolSpec{CIDRs: []string{"192.168.1.80/29"}, Networks: []string{"a"}})
+	require.NoError(t, err)
+
+	_, err = o.op.ApplyProxyExposure(ctx, "web", orchapi.ProxyExposureSpec{Pool: "none", Ports: []int{443}})
+	require.Equal(t, 403, status(err), "no such pool")
+	_, err = o.reader.ApplyProxyExposure(ctx, "web", orchapi.ProxyExposureSpec{Pool: "edge", Ports: []int{443}})
+	require.Equal(t, 403, status(err), "a reader makes no proxy exposure")
+	_, err = o.op.ApplyProxyExposure(ctx, "web", orchapi.ProxyExposureSpec{Pool: "edge", Ports: []int{80}})
+	require.Equal(t, 400, status(err), "a proxy exposure carries 443")
+
+	e, err := o.op.ApplyProxyExposure(ctx, "web", orchapi.ProxyExposureSpec{Pool: "edge", Ports: []int{443, 80}})
+	require.NoError(t, err)
+	require.Equal(t, "192.168.1.80", e.Address)
+	require.Equal(t, []int{443, 80}, e.Ports)
+	require.Eventually(t, func() bool {
+		l, ok := eh.lease(e.Address)
+		return ok && l.ToProxy && l.Network == "" && len(l.Backends) == 0 && len(l.Ports) == 2
+	}, 30*time.Second, 50*time.Millisecond, "the leader leases the address to the proxy's host")
+	require.Eventually(t, func() bool {
+		got, err := o.reader.ProxyExposure(ctx, "web")
+		return err == nil && got.Host == "h1" && got.Phase == orchapi.ExposureAnnounced
+	}, 30*time.Second, 50*time.Millisecond)
+
+	// A network's exposure of the same id is its network's, and the two listings are apart.
+	_, err = o.op.ApplyNetworkExposure(ctx, "a", "web", orchapi.ExposureSpec{Network: "a", Pool: "lan", Backends: []string{"10.1.0.5"}, Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 443, BackendPort: 6443}}})
+	require.NoError(t, err)
+	list, err := o.reader.ProxyExposures(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	all, err := o.reader.Exposures(ctx)
+	require.NoError(t, err)
+	require.Len(t, all, 1, "the networks' listing holds no proxy exposure")
+
+	e, err = o.op.ApplyProxyExposure(ctx, "web", orchapi.ProxyExposureSpec{Pool: "edge", Ports: []int{443}})
+	require.NoError(t, err, "its ports change in place")
+	require.Equal(t, "192.168.1.80", e.Address)
+	_, err = o.op.ApplyAddressPool(ctx, "edge", orchapi.AddressPoolSpec{CIDRs: []string{"192.168.1.88/29"}, Networks: []string{"a"}})
+	require.Equal(t, 409, status(err), "a pool keeps the address a proxy exposure holds")
+
+	require.Equal(t, 403, status(o.reader.DeleteProxyExposure(ctx, "web")), "a reader is no operator")
+	require.NoError(t, o.op.DeleteProxyExposure(ctx, "web"))
+	require.Eventually(t, func() bool { _, ok := eh.lease("192.168.1.80"); return !ok }, 30*time.Second, 50*time.Millisecond, "the host is told to remove the lease")
+	require.Eventually(t, func() bool { _, err := o.reader.ProxyExposure(ctx, "web"); return status(err) == 404 }, 30*time.Second, 50*time.Millisecond)
+	webA, err := o.reader.NetworkExposure(ctx, "a", "web")
+	require.NoError(t, err, "control: network a's web is untouched")
+	require.Equal(t, "192.168.0.80", webA.Address)
 }
 
 func TestExposuresWithoutHostsAnswer501(t *testing.T) {

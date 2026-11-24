@@ -70,6 +70,10 @@ type Exposures interface {
 	Exposure(ctx context.Context, network, id string) (orchapi.Exposure, error)
 	AllExposures(ctx context.Context) ([]orchapi.Exposure, error)
 	DeleteExposure(ctx context.Context, by, network, id string) error
+	ApplyProxyExposure(ctx context.Context, by, id string, spec orchapi.ProxyExposureSpec) (orchapi.ProxyExposure, error)
+	ProxyExposure(ctx context.Context, id string) (orchapi.ProxyExposure, error)
+	ProxyExposures(ctx context.Context) ([]orchapi.ProxyExposure, error)
+	DeleteProxyExposure(ctx context.Context, by, id string) error
 }
 
 // Machines is what the operator API reads of the Machine API's records.
@@ -131,6 +135,10 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("PUT /v1/networks/{name}/exposures/{id}", h.guard(auth.Operate, h.operatorExposureApply))
 	mux.HandleFunc("GET /v1/networks/{name}/exposures/{id}", h.guard(auth.Read, h.operatorExposureGet))
 	mux.HandleFunc("DELETE /v1/networks/{name}/exposures/{id}", h.guard(auth.Operate, h.operatorExposureDelete))
+	mux.HandleFunc("GET /v1/proxy-exposures", h.guard(auth.Read, h.proxyExposureList))
+	mux.HandleFunc("PUT /v1/proxy-exposures/{id}", h.guard(auth.Operate, h.proxyExposureApply))
+	mux.HandleFunc("GET /v1/proxy-exposures/{id}", h.guard(auth.Read, h.proxyExposureGet))
+	mux.HandleFunc("DELETE /v1/proxy-exposures/{id}", h.guard(auth.Operate, h.proxyExposureDelete))
 	mux.HandleFunc("GET /v1/crl", h.crl)
 	mux.HandleFunc("POST /v1/admit", h.guard(auth.Operate, h.admit))
 	mux.HandleFunc("POST /v1/enrollment-keys", h.guard(auth.Operate, h.createKey))
@@ -586,6 +594,56 @@ func (h *handler) operatorExposureDelete(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if err := svc.DeleteExposure(r.Context(), who.Subject, r.PathValue("name"), r.PathValue("id")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// proxyExposureList shows a reader the proxy exposures (ADR 0112 item 8).
+func (h *handler) proxyExposureList(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	svc, err := h.exposures()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	out, err := svc.ProxyExposures(r.Context())
+	reply(w, r, out, err)
+}
+
+// proxyExposureApply makes a proxy exposure or changes its ports.
+func (h *handler) proxyExposureApply(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	svc, err := h.exposures()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var spec orchapi.ProxyExposureSpec
+	if decode(w, r, &spec) {
+		out, err := svc.ApplyProxyExposure(r.Context(), who.Subject, r.PathValue("id"), spec)
+		reply(w, r, out, err)
+	}
+}
+
+// proxyExposureGet shows one proxy exposure.
+func (h *handler) proxyExposureGet(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	svc, err := h.exposures()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	out, err := svc.ProxyExposure(r.Context(), r.PathValue("id"))
+	reply(w, r, out, err)
+}
+
+// proxyExposureDelete releases a proxy exposure.
+func (h *handler) proxyExposureDelete(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	svc, err := h.exposures()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := svc.DeleteProxyExposure(r.Context(), who.Subject, r.PathValue("id")); err != nil {
 		writeError(w, r, err)
 		return
 	}

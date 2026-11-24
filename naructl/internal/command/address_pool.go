@@ -57,7 +57,7 @@ func readAddressPool(path string) (string, orchapi.AddressPoolSpec, error) {
 
 func addressPoolApply(fs *pflag.FlagSet) runner {
 	o := newOrchFlags(fs)
-	file := o.fs.StringP("file", "f", "", "the pool's file, YAML or JSON: name, cidrs (IPv4 ranges the LAN's owner gave) and networks (those whose controller may draw from it)")
+	file := o.fs.StringP("file", "f", "", "the pool's file, YAML or JSON: name, cidrs (IPv4 ranges the LAN's owner gave), networks (those whose exposures may draw from it; a proxy exposure may draw from any pool)")
 	return func(args []string, stdout, stderr io.Writer) error {
 		if err := o.check(args, 0); err != nil {
 			return err
