@@ -32,6 +32,8 @@ type Signer struct {
 	fail error
 	// tokens are the callers' registration tokens not yet spent, by token, each the caller's name.
 	tokens map[string]string
+	// renewed are the serials of the caller certificates that have renewed, each once.
+	renewed map[string]bool
 }
 
 // Fail makes IssueHost answer err from now on; nil makes it sign again.
@@ -242,7 +244,7 @@ func (s *Signer) CallerToken(name string) string {
 }
 
 // RegisterCaller spends a token CallerToken gave for a caller certificate of 90 days, as
-// naru-signer's POST /v1/caller does.
+// naru-signer's POST /v1/caller-register does.
 func (s *Signer) RegisterCaller(_ context.Context, token string, csr []byte) (identity.Issued, error) {
 	s.mu.Lock()
 	name, ok := s.tokens[token]
@@ -255,7 +257,8 @@ func (s *Signer) RegisterCaller(_ context.Context, token string, csr []byte) (id
 }
 
 // RenewCaller issues a further caller certificate for a renewal signed in the last 30 days of the
-// signing certificate, as naru-signer's POST /v1/caller-renew does.
+// signing certificate, for a new key, once per certificate, as naru-signer's POST /v1/caller-renew
+// does.
 func (s *Signer) RenewCaller(_ context.Context, signed []byte) (identity.Issued, error) {
 	data, err := s.CA.CRL()
 	if err != nil {
@@ -275,6 +278,21 @@ func (s *Signer) RenewCaller(_ context.Context, signed []byte) (identity.Issued,
 	var req identity.CallerRenewal
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return identity.Issued{}, err
+	}
+	if csr, err := x509.ParseCertificateRequest(req.CSR); err == nil {
+		if k, ok := csr.PublicKey.(interface{ Equal(crypto.PublicKey) bool }); ok && k.Equal(who.PublicKey) {
+			return identity.Issued{}, fmt.Errorf("%w: a renewal is for a new key", signer.ErrInvalid)
+		}
+	}
+	s.mu.Lock()
+	if s.renewed == nil {
+		s.renewed = map[string]bool{}
+	}
+	renewed := s.renewed[who.Serial]
+	s.renewed[who.Serial] = true
+	s.mu.Unlock()
+	if renewed {
+		return identity.Issued{}, fmt.Errorf("%w: the certificate has renewed already", inventory.ErrSignerRefused)
 	}
 	return s.issueCaller(who.Subject, req.CSR)
 }

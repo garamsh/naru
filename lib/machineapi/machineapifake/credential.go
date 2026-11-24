@@ -56,7 +56,8 @@ func (f *Fake) register(r *http.Request) (machineapi.Credential, error) {
 	return f.issueCaller(name, req.CSR)
 }
 
-// renew issues a further certificate for a renewal signed in the last 30 days of its certificate.
+// renew issues a further certificate for a renewal signed in the last 30 days of its certificate,
+// for a new key, once per certificate.
 func (f *Fake) renew(r *http.Request) (machineapi.Credential, error) {
 	var req machineapi.RenewRequest
 	if err := decode(r, &req); err != nil {
@@ -79,6 +80,14 @@ func (f *Fake) renew(r *http.Request) (machineapi.Credential, error) {
 	}
 	if csr, err := x509.ParseCertificateRequest(body.CSR); err == nil && sameKey(csr.PublicKey, current.PublicKey) {
 		return machineapi.Credential{}, refuse(http.StatusBadRequest, machineapi.CodeInvalid, "a renewal is for a new key")
+	}
+	serial := current.SerialNumber.Text(16)
+	f.mu.Lock()
+	renewed := f.renewed[serial]
+	f.renewed[serial] = true
+	f.mu.Unlock()
+	if renewed {
+		return machineapi.Credential{}, refuse(http.StatusForbidden, machineapi.CodeForbidden, "the certificate has renewed already")
 	}
 	return f.issueCaller(current.Subject.CommonName, body.CSR)
 }

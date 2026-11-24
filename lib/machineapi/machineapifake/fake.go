@@ -54,7 +54,9 @@ type Fake struct {
 	aliases map[string]*alias
 	// tokens are the registration tokens not yet spent, each the name of its caller.
 	tokens map[string]string
-	issuer *issuer
+	// renewed are the serials of the certificates that have renewed, each once.
+	renewed map[string]bool
+	issuer  *issuer
 }
 
 type account struct {
@@ -102,7 +104,7 @@ func New(o Options) *Fake {
 	if o.Exec == nil {
 		o.Exec = cat
 	}
-	f := &Fake{o: o, callers: map[string]*account{}, aliases: map[string]*alias{}, tokens: map[string]string{}}
+	f := &Fake{o: o, callers: map[string]*account{}, aliases: map[string]*alias{}, tokens: map[string]string{}, renewed: map[string]bool{}}
 	f.routes()
 	return f
 }

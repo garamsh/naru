@@ -27,8 +27,9 @@ func newKey(t *testing.T) (*ecdsa.PrivateKey, []byte) {
 
 // Credentials checks a caller's registration and renewal (ADR 0116): a client with no certificate
 // reaches register and nothing else; a token registers the caller it names for the caller's own key
-// once, and a token spent or never given is refused with one code; Caller renews its pair, in its
-// last 30 days, for a new key; a pair not yet due, and a role other than caller, renew nothing.
+// once, and a token spent or never given is refused with one code; Caller renews its pair once, in
+// its last 30 days, for a new key and not its current one; a pair not yet due, a pair that renewed
+// already, and a role other than caller, renew nothing.
 func Credentials(t *testing.T, c Config) {
 	c = c.check(t)
 	require.NotNil(t, c.Anonymous, "Config.Anonymous")
@@ -59,6 +60,11 @@ func Credentials(t *testing.T, c Config) {
 	_, err = c.Anonymous.Register(ctx, "naru-ct-"+unique("made-up"), again)
 	refused(t, err, http.StatusForbidden, machineapi.CodeTokenRefused, "a token never given")
 
+	sameCSR, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "ignored"}}, c.CallerKey)
+	require.NoError(t, err)
+	_, err = c.Caller.Renew(ctx, c.CallerKey, c.CallerCert, sameCSR)
+	refused(t, err, http.StatusBadRequest, machineapi.CodeInvalid, "a renewal for the current key")
+
 	nextKey, nextCSR := newKey(t)
 	renewed, err := c.Caller.Renew(ctx, c.CallerKey, c.CallerCert, nextCSR)
 	require.NoError(t, err, "Caller's pair is in its last 30 days")
@@ -66,6 +72,8 @@ func Credentials(t *testing.T, c Config) {
 	require.NoError(t, err)
 	assert.Equal(t, c.CallerCert.Subject.CommonName, next.Subject.CommonName, "the name is the current certificate's")
 	assert.True(t, next.PublicKey.(*ecdsa.PublicKey).Equal(&nextKey.PublicKey), "the certificate is for the new key")
+	_, err = c.Caller.Renew(ctx, c.CallerKey, c.CallerCert, again)
+	refused(t, err, http.StatusForbidden, machineapi.CodeForbidden, "a pair that renewed already")
 
 	_, err = c.Caller.Renew(ctx, key, cert, again)
 	refused(t, err, http.StatusConflict, machineapi.CodeNotDue, "a pair of 90 days just registered")
