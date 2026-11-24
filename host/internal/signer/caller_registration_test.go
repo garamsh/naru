@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -394,4 +395,47 @@ func TestCallerRegistration_LogsTheTokenNonceOfARegistrationAndOfARefusedSpend(t
 	assert.Empty(t, identity.CallerTokenNonce("other"), "a string without the prefix names no nonce")
 	long := identity.CallerTokenPrefix + base64.RawURLEncoding.EncodeToString([]byte(`{"nonce":"`+strings.Repeat("a", 129)+`"}`)) + ".x"
 	assert.Empty(t, identity.CallerTokenNonce(long), "a nonce longer than any the signer issues is not logged")
+}
+
+// listOf is the revocation list s holds.
+func listOf(t *testing.T, e *env, s *signer.Signer) *identity.CRL {
+	t.Helper()
+	data, err := s.CRL()
+	require.NoError(t, err)
+	crl, err := identity.VerifyCRL(ed25519.PublicKey(e.authorities().RevocationKey), data)
+	require.NoError(t, err)
+	return crl
+}
+
+func TestCallerRevocation_TheRecordsAndTheEntryTravelWithTheBundleTheSyncAndLaterLists(t *testing.T) {
+	e := newEnv(t)
+	var c clock
+	p := e.registered("ws-provider")
+	b := clockedReplica(t, e, &c)
+	a := openClocked(t, e.dir, &c)
+	c.advance(61 * 24 * time.Hour)
+	issued, err := b.RenewCaller(renewal(t, p, newKey(t), &c))
+	require.NoError(t, err)
+
+	revoke := signedAt(t, e.rootID, &c, identity.ActionRevokeCaller, identity.CallerRevokeRequest{Name: "ws-provider"})
+	got, err := b.RevokeCaller(revoke)
+	require.NoError(t, err)
+	want := []identity.CallerSerial{{Serial: identity.SerialOf(p.cert), Revoked: true}, {Serial: issued.Serial, Parent: identity.SerialOf(p.cert), Revoked: true}}
+	assert.Equal(t, want, got.Serials, "the replica holds the record the bundle carried and its own renewal, with its parent")
+	again, err := b.RevokeCaller(revoke)
+	require.NoError(t, err)
+	assert.Equal(t, want, again.Serials)
+	serials := listOf(t, e, b).Serials
+	assert.Len(t, serials, len(slices.Compact(slices.Clone(serials))), "a second revocation adds no serial twice")
+
+	_, err = b.RevokeCaller(signedAt(t, e.rootID, &c, identity.ActionRevokeCaller, identity.CallerRevokeRequest{Name: "elsewhere"}))
+	require.NoError(t, err)
+	pushList(t, a, b)
+	assert.Contains(t, listOf(t, e, a).Callers, "elsewhere", "the sync carries an entry that changes nothing else on the list")
+
+	tok, err := b.IssueCallerToken(signedAt(t, e.rootID, &c, identity.ActionIssueCallerToken, identity.CallerTokenRequest{Name: "later"}))
+	require.NoError(t, err)
+	_, err = b.RegisterCaller(identity.CallerRegistration{Token: tok.Token, CSR: csrFor(t, newKey(t))})
+	require.NoError(t, err)
+	assert.Contains(t, listOf(t, e, b).Callers, "ws-provider", "a later list, which spent the token, keeps the entry")
 }
