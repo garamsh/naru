@@ -36,6 +36,19 @@ func procAttr(svc config.Service, cgroupFD int) *syscall.SysProcAttr {
 	return attr
 }
 
+// limitOpenFiles sets the open-file limit of the process pid, soft and hard, to n; 0 leaves the
+// limit it inherited from init. It is set once the process has started, since a process cannot be
+// started with a limit of its own, so a descriptor the process opens first counts under the old.
+func limitOpenFiles(pid int, n uint64) error {
+	if n == 0 {
+		return nil
+	}
+	if err := unix.Prlimit(pid, unix.RLIMIT_NOFILE, &unix.Rlimit{Cur: n, Max: n}, nil); err != nil {
+		return fmt.Errorf("limit the open files of %d to %d: %w", pid, n, err)
+	}
+	return nil
+}
+
 // prepareDirs makes each directory with its parents when it is missing, then sets its owner and
 // mode, so a directory a service keeps its keys in is the service's and nobody else's whatever
 // it was before. A path that is not a directory, a symbolic link among them, is refused.

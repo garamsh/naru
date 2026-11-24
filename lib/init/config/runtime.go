@@ -30,6 +30,9 @@ func (v *validation) serviceRuntime(field string, s Service) {
 	if s.BindLowPorts && s.User == nil {
 		v.fail(field+".bindLowPorts", "needs a user: a service with no user runs as root, which binds any port")
 	}
+	if s.OpenFiles > MaxOpenFiles {
+		v.fail(field+".openFiles", "must be at most %d, got %d", MaxOpenFiles, s.OpenFiles)
+	}
 	for i, d := range s.Dirs {
 		f := fmt.Sprintf("%s.dirs[%d]", field, i)
 		if !isCleanAbs(d.Path) || d.Path == "/" {

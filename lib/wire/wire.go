@@ -67,6 +67,14 @@ const (
 	ProxyPort = "443"
 )
 
+// ProxyMaxConns bounds the client connections naru-proxy holds at once, and ProxyMaxPerSource
+// those of one client address, so one client cannot take every slot. They are hostd's exposure
+// proxy's figures.
+const (
+	ProxyMaxConns     = 4096
+	ProxyMaxPerSource = 128
+)
+
 // Protocol is the transport of an exposed port, in upper case (TCP, UDP). Orch's
 // API, the host API and naru-hostd take it in this one spelling and no other (ADR 0107).
 type Protocol string

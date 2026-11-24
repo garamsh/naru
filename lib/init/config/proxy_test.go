@@ -51,6 +51,7 @@ func TestParse_ProxyRunsNaruProxyAsItsUserAbleToBindPort443(t *testing.T) {
 	}, p.Args)
 	assert.Equal(t, &config.User{UID: 6003, GID: 6003}, p.User)
 	assert.True(t, p.BindLowPorts)
+	assert.Equal(t, uint64(2*4096+1024), p.OpenFiles, "two descriptors for each connection the proxy holds, and room for the rest")
 	assert.Equal(t, []config.Dir{
 		{Path: "/run/naru-proxy", Mode: "0755", UID: 6003, GID: 6003},
 		{Path: "/var/lib/naru/proxy-routes", Mode: "0750", UID: 0, GID: 6003},
@@ -122,6 +123,21 @@ func TestService_EqualSeesBindLowPorts(t *testing.T) {
 	assert.True(t, a.Equal(b), "control")
 	b.BindLowPorts = true
 	assert.False(t, a.Equal(b))
+	c := a
+	c.OpenFiles = 100
+	assert.False(t, a.Equal(c), "the open-file limit")
+}
+
+func TestParse_OpenFilesIsBounded(t *testing.T) {
+	doc := proxyDoc(t)
+	set := func(n string) string {
+		return strings.Replace(doc, "      args: [\"--listen=0.0.0.0:7443\"]", "      args: [\"--listen=0.0.0.0:7443\"]\n      openFiles: "+n, 1)
+	}
+	_, err := config.Parse([]byte(set("1048576")))
+	require.NoError(t, err, "control: the kernel's default nr_open")
+	_, err = config.Parse([]byte(set("1048577")))
+	require.Error(t, err)
+	assert.Contains(t, fields(t, err), "spec.services[0].openFiles")
 }
 
 func TestParse_TheProxyServiceAndCertificateGoWithTheSection(t *testing.T) {

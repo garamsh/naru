@@ -83,6 +83,10 @@ func (l *Launcher) Launch(ctx context.Context, svc config.Service, cgroup string
 		if err := cmd.Start(); err != nil {
 			return 0, err
 		}
+		if err := limitOpenFiles(cmd.Process.Pid, svc.OpenFiles); err != nil {
+			_ = cmd.Process.Kill()
+			return 0, err
+		}
 		return cmd.Process.Pid, nil
 	})
 	if err != nil {

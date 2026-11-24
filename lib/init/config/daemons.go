@@ -647,7 +647,12 @@ func derive(cfg NodeConfig) NodeConfig {
 	return cfg
 }
 
-// proxyService runs naru-proxy as wire.ProxyUID, able to bind port 443, with its own directory
+// proxyOpenFiles is naru-proxy's limit of open files: two for each of the connections it carries
+// at once, at most wire.ProxyMaxConns, and room for its listeners and files.
+const proxyOpenFiles = 2*wire.ProxyMaxConns + 1024
+
+// proxyService runs naru-proxy as wire.ProxyUID, able to bind port 443 and to hold a descriptor for
+// each side of every connection it carries, with its own directory
 // for the revision file and the directory hostd writes the routes to in its group.
 func proxyService(p Proxy) (Service, File) {
 	args := []string{
@@ -661,6 +666,7 @@ func proxyService(p Proxy) (Service, File) {
 		Name: ProxyService, Binary: proxyBinary, Args: args,
 		User:         &User{UID: wire.ProxyUID, GID: wire.ProxyUID},
 		BindLowPorts: true,
+		OpenFiles:    proxyOpenFiles,
 		Dirs: []Dir{
 			{Path: wire.ProxyRunDir, Mode: "0755", UID: wire.ProxyUID, GID: wire.ProxyUID},
 			{Path: wire.ProxyRoutesDir, Mode: "0750", UID: 0, GID: wire.ProxyUID},

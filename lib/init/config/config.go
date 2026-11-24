@@ -224,7 +224,14 @@ type Service struct {
 	// BindLowPorts lets a service that runs as User listen on a port below 1024: init gives it
 	// CAP_NET_BIND_SERVICE as an ambient capability, and no other.
 	BindLowPorts bool `yaml:"bindLowPorts,omitempty"`
+	// OpenFiles, when not 0, is the limit of open files (RLIMIT_NOFILE, soft and hard) init gives
+	// each of the service's processes once it has started, for a service that holds a descriptor
+	// per client. At most MaxOpenFiles.
+	OpenFiles uint64 `yaml:"openFiles,omitempty"`
 }
+
+// MaxOpenFiles bounds a service's OpenFiles: the kernel's default nr_open.
+const MaxOpenFiles = 1 << 20
 
 // User is the identity a service runs with: a user, a group and the supplementary groups.
 type User struct {
@@ -262,7 +269,7 @@ type Setup struct {
 
 // Equal reports whether o is the same service. A nil list or map equals an empty one.
 func (s Service) Equal(o Service) bool {
-	return s.Name == o.Name && s.Binary == o.Binary && s.RestartPolicy == o.RestartPolicy && s.BindLowPorts == o.BindLowPorts &&
+	return s.Name == o.Name && s.Binary == o.Binary && s.RestartPolicy == o.RestartPolicy && s.BindLowPorts == o.BindLowPorts && s.OpenFiles == o.OpenFiles &&
 		slices.Equal(s.Args, o.Args) && maps.Equal(s.Env, o.Env) &&
 		slices.Equal(s.RestartOnChange, o.RestartOnChange) && slices.Equal(s.LogFiles, o.LogFiles) &&
 		(s.User == nil) == (o.User == nil) && (s.User == nil || s.User.equal(*o.User)) &&
