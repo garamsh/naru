@@ -55,6 +55,15 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 	if info.Labels == nil {
 		info.Labels = map[string]string{}
 	}
+	// A reported label is the host's alone: one the host file names, as a configuration from before
+	// the label was reported may, is not the operator's to set.
+	reported := map[string]string{}
+	if s.deps.Virtualization != "" {
+		reported[hostapi.LabelVirtualization] = s.deps.Virtualization
+	}
+	for _, key := range hostapi.ReportedLabels {
+		delete(info.Labels, key)
+	}
 	naru, err := s.readInit()
 	if err != nil {
 		s.deps.Log.Error("cannot read the init file", "file", s.deps.InitFile, "err", err.Error())
@@ -74,7 +83,7 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := hostapi.Host{
-		HostID: s.deps.HostID, LANInterface: s.deps.LANInterface, Region: info.Region, Labels: info.Labels,
+		HostID: s.deps.HostID, LANInterface: s.deps.LANInterface, Region: info.Region, Labels: info.Labels, ReportedLabels: reported,
 		Capacity: hostapi.Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateTotalBytes},
 		Mvmd:     hostapi.MvmdInfo{Version: rt.APIVersion, Driver: rt.Driver, Kernels: rt.Kernels},
 		Naru:     naru,

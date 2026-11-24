@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -181,10 +183,56 @@ func (g *GRPC) CreateRawDisk(ctx context.Context, id string, sizeBytes uint64, c
 	return err
 }
 
+func (g *GRPC) CreateDiskFrom(ctx context.Context, id string, sizeBytes uint64, snapshotID string) error {
+	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.CreateDiskResponse, error) {
+		return c.CreateDisk(ctx, &v1alpha2.CreateDiskRequest{DiskId: id, RequestId: diskRequestID, SizeBytes: sizeBytes, FromSnapshotId: snapshotID})
+	})
+	return err
+}
+
+func (g *GRPC) SnapshotDisk(ctx context.Context, snapshotID, diskID string) (DiskSnapshot, error) {
+	r, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.SnapshotDiskResponse, error) {
+		return c.SnapshotDisk(ctx, &v1alpha2.SnapshotDiskRequest{DiskId: diskID, SnapshotId: snapshotID, RequestId: diskRequestID})
+	})
+	if err != nil {
+		return DiskSnapshot{}, err
+	}
+	return diskSnapshotFromProto(r.GetDiskSnapshot()), nil
+}
+
+func (g *GRPC) ListDiskSnapshots(ctx context.Context) ([]DiskSnapshot, error) {
+	r, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.ListDiskSnapshotsResponse, error) {
+		return c.ListDiskSnapshots(ctx, &v1alpha2.ListDiskSnapshotsRequest{})
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DiskSnapshot, 0, len(r.GetDiskSnapshots()))
+	for _, d := range r.GetDiskSnapshots() {
+		out = append(out, diskSnapshotFromProto(d))
+	}
+	return out, nil
+}
+
+func (g *GRPC) DeleteDiskSnapshot(ctx context.Context, id string) error {
+	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.DeleteDiskSnapshotResponse, error) {
+		return c.DeleteDiskSnapshot(ctx, &v1alpha2.DeleteDiskSnapshotRequest{SnapshotId: id})
+	})
+	return err
+}
+
+func diskSnapshotFromProto(d *v1alpha2.DiskSnapshot) DiskSnapshot {
+	out := DiskSnapshot{ID: d.GetId(), DiskID: d.GetDiskId(), SizeBytes: d.GetSizeBytes(), AllocatedBytes: d.GetAllocatedBytes()}
+	if d.GetCreatedAt() != nil {
+		out.CreatedAt = d.GetCreatedAt().AsTime()
+	}
+	return out
+}
+
 func (g *GRPC) AttachDisk(ctx context.Context, machineID string, a Attachment) (Machine, error) {
 	r, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.AttachDiskResponse, error) {
 		return c.AttachDisk(ctx, &v1alpha2.AttachDiskRequest{
-			MachineId: machineID, Disk: &v1alpha2.DiskAttachment{DiskId: a.ID, ReadOnly: a.ReadOnly},
+			MachineId: machineID, Disk: &v1alpha2.DiskAttachment{DiskId: a.ID, ReadOnly: a.ReadOnly, MountPath: a.MountPath},
 		})
 	})
 	if err != nil {
@@ -214,19 +262,32 @@ func (g *GRPC) ListDisks(ctx context.Context) ([]Disk, error) {
 	return out, nil
 }
 
-func (g *GRPC) CreateMachine(ctx context.Context, cr Create) (Machine, error) {
+// createMachineRequest is mvmd's request for cr, under hostd's one request ID.
+func createMachineRequest(cr Create) *v1alpha2.CreateMachineRequest {
 	req := &v1alpha2.CreateMachineRequest{
 		MachineId: cr.ID, RequestId: createRequestID, ImageDigest: cr.ImageDigest,
 		Resources:     &v1alpha2.Resources{CpuCount: cr.CPU, MemoryBytes: cr.MemoryBytes},
 		RootDiskBytes: cr.RootDiskBytes, NetworkPolicy: policyToProto(cr.Policy), RoutedPrefixes: cr.RoutedPrefixes,
 		RestartOnBoot: cr.RestartOnBoot, Fenced: cr.Fenced, RequestedIpv4: cr.RequestedIPv4,
+		Command: cr.Command, Args: cr.Args, User: cr.User, WorkingDir: cr.WorkingDir,
+	}
+	for _, name := range slices.Sorted(maps.Keys(cr.Env)) {
+		req.Env = append(req.Env, &v1alpha2.EnvVar{Name: name, Value: cr.Env[name]})
+	}
+	for _, f := range cr.Files {
+		req.Files = append(req.Files, &v1alpha2.File{Path: f.Path, Content: f.Content, Mode: f.Mode})
 	}
 	if cr.BootSet != "" {
 		req.OsBoot = &v1alpha2.OsBoot{BootSet: cr.BootSet, KernelCmdline: cr.Cmdline}
 	}
 	for _, d := range cr.Disks {
-		req.Disks = append(req.Disks, &v1alpha2.DiskAttachment{DiskId: d.ID, ReadOnly: d.ReadOnly})
+		req.Disks = append(req.Disks, &v1alpha2.DiskAttachment{DiskId: d.ID, ReadOnly: d.ReadOnly, MountPath: d.MountPath})
 	}
+	return req
+}
+
+func (g *GRPC) CreateMachine(ctx context.Context, cr Create) (Machine, error) {
+	req := createMachineRequest(cr)
 	r, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.CreateMachineResponse, error) {
 		return c.CreateMachine(ctx, req)
 	})
@@ -246,9 +307,9 @@ func (g *GRPC) StartMachine(ctx context.Context, id string) (Machine, error) {
 	return machineFromProto(r.GetMachine()), nil
 }
 
-func (g *GRPC) StopMachine(ctx context.Context, id string) error {
+func (g *GRPC) StopMachine(ctx context.Context, id string, grace time.Duration) error {
 	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.StopMachineResponse, error) {
-		return c.StopMachine(ctx, &v1alpha2.StopMachineRequest{MachineId: id, GracePeriod: durationpb.New(10 * time.Second)})
+		return c.StopMachine(ctx, &v1alpha2.StopMachineRequest{MachineId: id, GracePeriod: durationpb.New(grace)})
 	})
 	return err
 }
@@ -401,7 +462,10 @@ func machineFromProto(m *v1alpha2.Machine) Machine {
 		ImageDigest: m.GetImageDigest(), CPU: m.GetResources().GetCpuCount(), MemoryBytes: m.GetResources().GetMemoryBytes(),
 		RootDiskBytes: m.GetRootDiskBytes(), Policy: policyFromProto(m.GetNetworkPolicy()),
 		BootSet: m.GetOsBoot().GetBootSet(), Cmdline: m.GetOsBoot().GetKernelCmdline(), RoutedPrefixes: m.GetRoutedPrefixes(),
-		RestartOnBoot: m.GetRestartOnBoot(), Fenced: m.GetFenced(),
+		RestartOnBoot: m.GetRestartOnBoot(), Fenced: m.GetFenced(), EnvNames: m.GetEnvNames(), WorkingDir: m.GetWorkingDir(),
+	}
+	for _, f := range m.GetFiles() {
+		out.Files = append(out.Files, FileInfo{Path: f.GetPath(), Mode: f.GetMode(), SizeBytes: f.GetSizeBytes()})
 	}
 	if m.GetFenceLapsedAt() != nil {
 		out.FenceLapsedAt = m.GetFenceLapsedAt().AsTime()
@@ -410,7 +474,7 @@ func machineFromProto(m *v1alpha2.Machine) Machine {
 		out.State = strings.ToLower(strings.TrimPrefix(m.GetState().String(), "MACHINE_STATE_"))
 	}
 	for _, d := range m.GetDisks() {
-		out.Disks = append(out.Disks, Attachment{ID: d.GetDiskId(), ReadOnly: d.GetReadOnly()})
+		out.Disks = append(out.Disks, Attachment{ID: d.GetDiskId(), ReadOnly: d.GetReadOnly(), MountPath: d.GetMountPath()})
 	}
 	return out
 }

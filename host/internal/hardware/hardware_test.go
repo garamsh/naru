@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/hardware"
+	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/orchapi"
 )
 
@@ -74,4 +75,24 @@ func TestCollect_FailsWithoutMemTotal(t *testing.T) {
 	write(t, s.Meminfo, "MemFree: 1 kB\n")
 	_, err := s.Collect()
 	assert.ErrorContains(t, err, "no MemTotal")
+}
+
+func TestVirtualization_IsNestedUnderTheHypervisorFlagAndMetalWithout(t *testing.T) {
+	root := t.TempDir()
+	cpuinfo := func(flags string) hardware.Source {
+		path := filepath.Join(root, flags+".cpuinfo")
+		write(t, path, "processor\t: 0\nmodel name\t: Example CPU\nflags\t\t: "+flags+"\n\nprocessor\t: 1\nflags\t\t: "+flags+"\n")
+		return hardware.Source{Cpuinfo: path}
+	}
+	for flags, want := range map[string]string{
+		"fpu vme sse2 hypervisor lahf_lm": hostapi.VirtualizationNested,
+		"fpu vme sse2 vmx lahf_lm":        hostapi.VirtualizationMetal,
+		"fpu vme sse2 hypervisorx":        hostapi.VirtualizationMetal,
+	} {
+		got, err := cpuinfo(flags).Virtualization()
+		require.NoError(t, err)
+		assert.Equal(t, want, got, flags)
+	}
+	_, err := hardware.Source{Cpuinfo: filepath.Join(root, "absent")}.Virtualization()
+	assert.Error(t, err, "an unreadable cpuinfo is a failure, not metal")
 }

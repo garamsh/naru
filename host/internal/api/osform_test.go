@@ -148,14 +148,18 @@ func TestOSForm_Validation(t *testing.T) {
 	e := start(t)
 	c := e.as(t, ProvisionerOrganization)
 	cases := map[string]func(map[string]any){
-		"bootSet":  func(b map[string]any) { delete(b, "bootSet") },
-		"seed":     func(b map[string]any) { delete(b, "seed") },
-		"dataDisk": func(b map[string]any) { delete(b, "dataDisk") },
-		"cpu":      func(b map[string]any) { b["cpu"] = 0 },
-		"name":     func(b map[string]any) { b["name"] = "Bad.Name" },
-		"cmdline":  func(b map[string]any) { b["cmdline"] = "a\nb" },
-		"image":    func(b map[string]any) { b["image"] = "registry.example/app@" + digest },
-		"disks":    func(b map[string]any) { b["disks"] = []map[string]any{{"name": "a", "sizeBytes": 1}} },
+		"bootSet":    func(b map[string]any) { delete(b, "bootSet") },
+		"seed":       func(b map[string]any) { delete(b, "seed") },
+		"dataDisk":   func(b map[string]any) { delete(b, "dataDisk") },
+		"cpu":        func(b map[string]any) { b["cpu"] = 0 },
+		"name":       func(b map[string]any) { b["name"] = "Bad.Name" },
+		"cmdline":    func(b map[string]any) { b["cmdline"] = "a\nb" },
+		"image":      func(b map[string]any) { b["image"] = "registry.example/app@" + digest },
+		"disks":      func(b map[string]any) { b["disks"] = []map[string]any{{"name": "a", "sizeBytes": 1}} },
+		"args":       func(b map[string]any) { b["args"] = []string{"x"} },
+		"user":       func(b map[string]any) { b["user"] = "1000" },
+		"workingDir": func(b map[string]any) { b["workingDir"] = "/srv" },
+		"files":      func(b map[string]any) { b["files"] = []map[string]any{{"path": "/a", "mode": 0o600}} },
 	}
 	for field, mutate := range cases {
 		t.Run(field, func(t *testing.T) {

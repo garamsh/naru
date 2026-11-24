@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/netip"
 	"reflect"
@@ -20,6 +21,13 @@ import (
 // callTimeout bounds a create, which pulls an image and boots the Machine (mvmd's own bounds are
 // shorter than this), and a delete.
 const callTimeout = 5 * time.Minute
+
+// defaultGrace is how long a stop gives the guest when the caller names no grace, and maxGrace the
+// most it may name, which leaves the stop room within callTimeout.
+const (
+	defaultGrace = 10 * time.Second
+	maxGrace     = 240
+)
 
 // maxBody bounds a request body. An OS-form body carries the seed's user-data in base64, and the
 // seed volume may be as large as mvmd takes (1 MiB), which is more than a quarter larger here.
@@ -41,7 +49,7 @@ func (s *Server) view(m mvmd.Machine, sizes map[string]uint64) hostapi.MicroVM {
 		v.Network = x.Network
 	}
 	for _, d := range m.Disks {
-		v.Disks = append(v.Disks, hostapi.DiskSpec{Name: diskName(m.ID, d.ID), SizeBytes: sizes[d.ID], ReadOnly: d.ReadOnly})
+		v.Disks = append(v.Disks, hostapi.DiskSpec{Name: diskName(m.ID, d.ID), SizeBytes: sizes[d.ID], ReadOnly: d.ReadOnly, MountPath: d.MountPath})
 	}
 	return v
 }
@@ -173,8 +181,13 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 		// The OS form's data disk has no file system: the Node's init formats a blank one as its
 		// data disk, and refuses the boot of one mvmd has made ext4 with no label and no verity.
 		create := rt.CreateDisk
-		if osForm {
+		switch {
+		case osForm:
 			create = func(ctx context.Context, id string, size uint64) error { return rt.CreateRawDisk(ctx, id, size, nil) }
+		case d.FromSnapshot != "":
+			create = func(ctx context.Context, id string, size uint64) error {
+				return rt.CreateDiskFrom(ctx, id, size, d.FromSnapshot)
+			}
 		}
 		if err := create(ctx, id, d.SizeBytes); err != nil {
 			s.dropMade("", made, false)
@@ -274,7 +287,7 @@ func (s *Server) dropMade(machine string, disks []string, stop bool) {
 	ctx, cancel := cleanupContext(context.Background())
 	defer cancel()
 	if machine != "" && stop {
-		_ = s.deps.Runtime.StopMachine(ctx, machine)
+		_ = s.deps.Runtime.StopMachine(ctx, machine, defaultGrace)
 	}
 	if machine != "" {
 		if err := s.deps.Runtime.DeleteMachine(ctx, machine); err != nil {
@@ -289,13 +302,18 @@ func (s *Server) dropMade(machine string, disks []string, stop bool) {
 }
 
 // matches reports whether the Machine mvmd holds is the one the plan would create: the same
-// image or boot set, resources, root disk, network policy, routed prefixes, restart on boot, fence and disks, each disk of
-// the same size. An OS-form Machine also has its seed attached read-only; the seed's contents are
-// not compared, since they hold the address mvmd chose.
+// image or boot set, resources, root disk, network policy, routed prefixes, restart on boot, fence,
+// working directory, environment names, files and disks, each disk of the same size and mount path.
+// What mvmd does not report is not compared: the command, args, user, environment values, files'
+// contents, the snapshot a disk was made from, and an OS-form Machine's seed contents, which hold
+// the address mvmd chose.
 func matches(m mvmd.Machine, sizes map[string]uint64, p plan) bool {
 	c := p.create
 	if m.ImageDigest != c.ImageDigest || m.CPU != c.CPU || m.MemoryBytes != c.MemoryBytes || m.RootDiskBytes != c.RootDiskBytes ||
-		m.RestartOnBoot != c.RestartOnBoot || m.Fenced != c.Fenced {
+		m.RestartOnBoot != c.RestartOnBoot || m.Fenced != c.Fenced || m.WorkingDir != c.WorkingDir {
+		return false
+	}
+	if !slices.Equal(slices.Sorted(slices.Values(m.EnvNames)), slices.Sorted(maps.Keys(c.Env))) || !sameFiles(m.Files, c.Files) {
 		return false
 	}
 	if !samePolicy(m.Policy, c.Policy) || m.BootSet != c.BootSet || m.Cmdline != c.Cmdline ||
@@ -313,6 +331,25 @@ func matches(m mvmd.Machine, sizes map[string]uint64, p plan) bool {
 	}
 	for _, d := range p.disks {
 		if sizes[diskID(c.ID, d.Name)] != d.SizeBytes {
+			return false
+		}
+	}
+	return true
+}
+
+// sameFiles reports whether mvmd's report of a Machine's files is of the files given: the same
+// paths, modes and sizes, in any order.
+func sameFiles(have []mvmd.FileInfo, want []hostapi.File) bool {
+	if len(have) != len(want) {
+		return false
+	}
+	byPath := make(map[string]mvmd.FileInfo, len(have))
+	for _, f := range have {
+		byPath[f.Path] = f
+	}
+	for _, f := range want {
+		h, ok := byPath[f.Path]
+		if !ok || h.Mode != f.Mode || h.SizeBytes != uint64(len(f.Content)) {
 			return false
 		}
 	}
@@ -371,10 +408,26 @@ func (s *Server) listMicroVMs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"microvms": out})
 }
 
-// stopMicroVM stops the Machine if it runs. A Machine that is not running is answered as it is, so
-// a repeat is 200; mvmd restarts none that was stopped, after a host's boot or otherwise.
+// stopMicroVM stops the Machine if it runs, giving its guest the grace the optional body names. A
+// Machine that is not running is answered as it is, so a repeat is 200; mvmd restarts none that was
+// stopped, after a host's boot or otherwise.
 func (s *Server) stopMicroVM(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	var req hostapi.StopRequest
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxBody))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) || dec.More() {
+		writeJSON(w, http.StatusBadRequest, hostapi.ErrorBody{Error: "the body is not one JSON object of the fields the API names"})
+		return
+	}
+	if req.GraceSeconds > maxGrace {
+		writeJSON(w, http.StatusUnprocessableEntity, hostapi.ErrorBody{Error: fmt.Sprintf("graceSeconds is at most %d", maxGrace), Fields: []string{"graceSeconds"}})
+		return
+	}
+	grace := defaultGrace
+	if req.GraceSeconds > 0 {
+		grace = time.Duration(req.GraceSeconds) * time.Second
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), callTimeout)
 	defer cancel()
 	rt := s.deps.Runtime
@@ -384,7 +437,7 @@ func (s *Server) stopMicroVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m.State == mvmd.StateRunning || m.State == mvmd.StatePaused {
-		if err := rt.StopMachine(ctx, name); err != nil && !errors.Is(err, mvmd.ErrPrecondition) {
+		if err := rt.StopMachine(ctx, name, grace); err != nil && !errors.Is(err, mvmd.ErrPrecondition) {
 			s.fail(w, err)
 			return
 		}
@@ -454,7 +507,7 @@ func (s *Server) deleteMicroVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m.State == mvmd.StateRunning || m.State == mvmd.StatePaused {
-		if err := rt.StopMachine(ctx, name); err != nil && !errors.Is(err, mvmd.ErrPrecondition) {
+		if err := rt.StopMachine(ctx, name, defaultGrace); err != nil && !errors.Is(err, mvmd.ErrPrecondition) {
 			s.fail(w, err)
 			return
 		}

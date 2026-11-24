@@ -196,7 +196,7 @@ func (s *Server) resumeSnapshot(w http.ResponseWriter, r *http.Request) {
 		// The microVM runs; delete it and keep its disks, which are the snapshot's.
 		undo, cancelUndo := cleanupContext(ctx)
 		defer cancelUndo()
-		_ = s.deps.Runtime.StopMachine(undo, m.ID)
+		_ = s.deps.Runtime.StopMachine(undo, m.ID, defaultGrace)
 		_ = s.deps.Runtime.DeleteMachine(undo, m.ID)
 		s.networkFail(w, err)
 		return

@@ -3,6 +3,7 @@ package mvmd
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,4 +60,50 @@ func TestDeadlineFromProto(t *testing.T) {
 	assert.Equal(t, Deadline{Armed: true, Phase: "armed", Length: time.Minute, Remaining: 20 * time.Second, LastNumber: 7}, d)
 	assert.Equal(t, "notArmed", deadlineFromProto(&v1alpha2.DeadlineStatus{Phase: v1alpha2.DeadlinePhase_DEADLINE_PHASE_NOT_ARMED}).Phase)
 	assert.Equal(t, "expired", deadlineFromProto(&v1alpha2.DeadlineStatus{Phase: v1alpha2.DeadlinePhase_DEADLINE_PHASE_EXPIRED}).Phase)
+}
+
+func TestCreateMachineRequest_CarriesTheImageFormsRunConfiguration(t *testing.T) {
+	req := createMachineRequest(Create{
+		ID: "web", ImageDigest: "sha256:" + strings.Repeat("a", 64),
+		Command: []string{"/bin/app"}, Args: []string{"--port", "8080"}, User: "1000:1000", WorkingDir: "/srv",
+		Env:   map[string]string{"TOKEN": "s3cret", "A": "1"},
+		Files: []File{{Path: "/etc/app.conf", Mode: 0o600, Content: []byte("x")}},
+		Disks: []Attachment{{ID: "web.data", MountPath: "/data"}},
+	})
+	assert.Equal(t, []string{"/bin/app"}, req.GetCommand())
+	assert.Equal(t, []string{"--port", "8080"}, req.GetArgs())
+	assert.Equal(t, "1000:1000", req.GetUser())
+	assert.Equal(t, "/srv", req.GetWorkingDir())
+	var env []string
+	for _, e := range req.GetEnv() {
+		env = append(env, e.GetName()+"="+e.GetValue())
+	}
+	assert.Equal(t, []string{"A=1", "TOKEN=s3cret"}, env, "every variable, ordered by name")
+	if assert.Len(t, req.GetFiles(), 1) {
+		f := req.GetFiles()[0]
+		assert.Equal(t, "/etc/app.conf", f.GetPath())
+		assert.Equal(t, uint32(0o600), f.GetMode())
+		assert.Equal(t, []byte("x"), f.GetContent())
+	}
+	if assert.Len(t, req.GetDisks(), 1) {
+		assert.Equal(t, "/data", req.GetDisks()[0].GetMountPath())
+	}
+}
+
+func TestMachineFromProto_CarriesWhatMvmdReportsOfTheRunConfiguration(t *testing.T) {
+	m := machineFromProto(&v1alpha2.Machine{
+		Id: "web", EnvNames: []string{"TOKEN"}, WorkingDir: "/srv",
+		Files: []*v1alpha2.FileInfo{{Path: "/etc/app.conf", Mode: 0o600, SizeBytes: 1}},
+		Disks: []*v1alpha2.DiskAttachment{{DiskId: "web.data", MountPath: "/data"}},
+	})
+	assert.Equal(t, []string{"TOKEN"}, m.EnvNames)
+	assert.Equal(t, "/srv", m.WorkingDir)
+	assert.Equal(t, []FileInfo{{Path: "/etc/app.conf", Mode: 0o600, SizeBytes: 1}}, m.Files)
+	assert.Equal(t, []Attachment{{ID: "web.data", MountPath: "/data"}}, m.Disks)
+}
+
+func TestDiskSnapshotFromProto(t *testing.T) {
+	at := time.Date(2026, 11, 25, 3, 0, 0, 0, time.UTC)
+	d := diskSnapshotFromProto(&v1alpha2.DiskSnapshot{Id: "before", DiskId: "web.data", SizeBytes: 1 << 30, AllocatedBytes: 4096, CreatedAt: timestamppb.New(at)})
+	assert.Equal(t, DiskSnapshot{ID: "before", DiskID: "web.data", SizeBytes: 1 << 30, AllocatedBytes: 4096, CreatedAt: at}, d)
 }

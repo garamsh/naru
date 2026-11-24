@@ -43,6 +43,12 @@ type fakeRuntime struct {
 	// bootSets are the boot sets added, and bootFiles the kernel and initrd each was given.
 	bootSets  map[string]mvmd.BootSet
 	bootFiles map[string][2][]byte
+	// created is the request each Machine was created with; graces the grace of each stop;
+	// diskSnapshots the disk snapshots held, and diskFrom the snapshot each disk was made from.
+	created       map[string]mvmd.Create
+	graces        []time.Duration
+	diskSnapshots map[string]mvmd.DiskSnapshot
+	diskFrom      map[string]string
 }
 
 // step records a call that changes mvmd and returns the error a test set for it.
@@ -56,6 +62,7 @@ func newFake() *fakeRuntime {
 		machines: map[string]mvmd.Machine{}, disks: map[string]mvmd.Disk{}, failAt: map[string]error{}, contents: map[string][]byte{},
 		fences: map[string]mvmd.Deadline{}, snapshots: map[string]mvmd.Snapshot{},
 		bootSets: map[string]mvmd.BootSet{}, bootFiles: map[string][2][]byte{},
+		created: map[string]mvmd.Create{}, diskSnapshots: map[string]mvmd.DiskSnapshot{}, diskFrom: map[string]string{},
 		info: mvmd.Info{
 			APIVersion: "v1alpha2", Driver: "fake", CPUs: 8, MemoryBytes: 1 << 33, StateTotalBytes: 100, StateAvailableBytes: 60,
 			MachinePrefixes: []string{"10.1.0.0/24"},
@@ -100,6 +107,72 @@ func (f *fakeRuntime) CreateDisk(_ context.Context, id string, size uint64) erro
 	}
 	f.disks[id] = mvmd.Disk{ID: id, SizeBytes: size}
 	return f.err
+}
+
+// CreateDiskFrom is mvmd's: an unknown snapshot is not found, a size below the snapshot's invalid.
+func (f *fakeRuntime) CreateDiskFrom(_ context.Context, id string, size uint64, snapshot string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("createDiskFrom " + id + " " + snapshot); err != nil {
+		return err
+	}
+	src, ok := f.diskSnapshots[snapshot]
+	if !ok {
+		return fmt.Errorf("disk snapshot %s: %w", snapshot, mvmd.ErrNotFound)
+	}
+	if size < src.SizeBytes {
+		return fmt.Errorf("%w: %d is below the snapshot's %d", mvmd.ErrInvalid, size, src.SizeBytes)
+	}
+	if _, ok := f.disks[id]; ok {
+		return mvmd.ErrConflict
+	}
+	f.disks[id] = mvmd.Disk{ID: id, SizeBytes: size}
+	f.diskFrom[id] = snapshot
+	return f.err
+}
+
+// SnapshotDisk is mvmd's: the same ID of the same disk is the snapshot taken, of another disk a
+// conflict.
+func (f *fakeRuntime) SnapshotDisk(_ context.Context, snapshot, disk string) (mvmd.DiskSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("snapshotDisk " + snapshot + " " + disk); err != nil {
+		return mvmd.DiskSnapshot{}, err
+	}
+	if have, ok := f.diskSnapshots[snapshot]; ok {
+		if have.DiskID != disk {
+			return mvmd.DiskSnapshot{}, fmt.Errorf("%w: the disk snapshot %s is of %s", mvmd.ErrConflict, snapshot, have.DiskID)
+		}
+		return have, nil
+	}
+	d, ok := f.disks[disk]
+	if !ok {
+		return mvmd.DiskSnapshot{}, mvmd.ErrNotFound
+	}
+	sn := mvmd.DiskSnapshot{ID: snapshot, DiskID: disk, SizeBytes: d.SizeBytes, AllocatedBytes: d.SizeBytes / 2, CreatedAt: time.Unix(1764000000, 0).UTC()}
+	f.diskSnapshots[snapshot] = sn
+	return sn, nil
+}
+
+func (f *fakeRuntime) ListDiskSnapshots(context.Context) ([]mvmd.DiskSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []mvmd.DiskSnapshot
+	for _, d := range f.diskSnapshots {
+		out = append(out, d)
+	}
+	return out, f.err
+}
+
+func (f *fakeRuntime) DeleteDiskSnapshot(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_ = f.step("deleteDiskSnapshot " + id)
+	if _, ok := f.diskSnapshots[id]; !ok {
+		return mvmd.ErrNotFound
+	}
+	delete(f.diskSnapshots, id)
+	return nil
 }
 
 func (f *fakeRuntime) CreateRawDisk(_ context.Context, id string, size uint64, contents []byte) error {
@@ -171,6 +244,15 @@ func (f *fakeRuntime) CreateMachine(_ context.Context, c mvmd.Create) (mvmd.Mach
 		BootSet: c.BootSet, Cmdline: c.Cmdline, RoutedPrefixes: c.RoutedPrefixes, RestartOnBoot: c.RestartOnBoot, Fenced: c.Fenced,
 		ID: c.ID, State: mvmd.StateCreated, ImageDigest: c.ImageDigest, CPU: c.CPU, MemoryBytes: c.MemoryBytes,
 		RootDiskBytes: c.RootDiskBytes, Disks: c.Disks, Policy: c.Policy, Addresses: []string{"10.1.0.5"},
+		WorkingDir: c.WorkingDir,
+	}
+	// Like mvmd, the environment by name and the files without their content.
+	for name := range c.Env {
+		m.EnvNames = append(m.EnvNames, name)
+	}
+	sort.Strings(m.EnvNames)
+	for _, file := range c.Files {
+		m.Files = append(m.Files, mvmd.FileInfo{Path: file.Path, Mode: file.Mode, SizeBytes: uint64(len(file.Content))})
 	}
 	if c.RequestedIPv4 != "" {
 		// Like mvmd: an address outside the node's Machine prefix is invalid, one another Machine holds a conflict.
@@ -188,6 +270,7 @@ func (f *fakeRuntime) CreateMachine(_ context.Context, c mvmd.Create) (mvmd.Mach
 		}
 	}
 	f.machines[c.ID] = m
+	f.created[c.ID] = c
 	return m, nil
 }
 
@@ -209,10 +292,11 @@ func (f *fakeRuntime) StartMachine(_ context.Context, id string) (mvmd.Machine, 
 	return m, nil
 }
 
-func (f *fakeRuntime) StopMachine(ctx context.Context, id string) error {
+func (f *fakeRuntime) StopMachine(ctx context.Context, id string, grace time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops++
+	f.graces = append(f.graces, grace)
 	f.undoErrs = append(f.undoErrs, ctx.Err())
 	m, ok := f.machines[id]
 	if !ok {

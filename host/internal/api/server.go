@@ -48,7 +48,10 @@ type Deps struct {
 	Exposures Exposures
 	// LANInterface is the interface the host announces exposed addresses on, as /v1/host reports it.
 	LANInterface string
-	Log          *slog.Logger
+	// Virtualization is the value of hostapi.LabelVirtualization /v1/host reports, read once at
+	// start; empty reports no such label.
+	Virtualization string
+	Log            *slog.Logger
 	// Metrics is the registry the host API's metrics are registered on, made once by the composition site.
 	Metrics prometheus.Registerer
 	// Revocations is the list the listener checks clients against; its age and last fetch error are
@@ -106,6 +109,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/snapshots/{name}", s.getSnapshot)
 	mux.HandleFunc("DELETE /v1/snapshots/{name}", s.deleteSnapshot)
 	mux.HandleFunc("POST /v1/snapshots/{name}/resume", s.resumeSnapshot)
+	mux.HandleFunc("POST /v1/microvms/{name}/disks/{disk}/snapshot", s.snapshotDisk)
+	mux.HandleFunc("GET /v1/disk-snapshots", s.listDiskSnapshots)
+	mux.HandleFunc("DELETE /v1/disk-snapshots/{name}", s.deleteDiskSnapshot)
 	mux.HandleFunc("PUT /v1/networks/{name}", s.putNetwork)
 	mux.HandleFunc("GET /v1/networks", s.listNetworks)
 	mux.HandleFunc("GET /v1/networks/{name}", s.getNetwork)
