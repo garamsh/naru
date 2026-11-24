@@ -5,10 +5,12 @@
 package identity
 
 import (
+	"crypto"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 )
 
 // Role is what a certificate lets its holder do. It is carried in the
@@ -44,6 +46,10 @@ type Identity struct {
 	Role    Role
 	// Serial is the certificate's serial number in lowercase hexadecimal.
 	Serial string
+	// NotAfter is when the certificate expires.
+	NotAfter time.Time
+	// PublicKey is the certificate's key, which a caller's renewal must not ask for again.
+	PublicKey crypto.PublicKey
 }
 
 // Valid reports whether r is one of the roles.
@@ -89,7 +95,12 @@ func Authenticate(chains [][]*x509.Certificate, crl *CRL) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf)}, nil
+	if role == RoleCaller {
+		if err := crl.CheckCaller(leaf); err != nil {
+			return Identity{}, err
+		}
+	}
+	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf), NotAfter: leaf.NotAfter, PublicKey: leaf.PublicKey}, nil
 }
 
 // callerName is what a caller is called: a DNS label.

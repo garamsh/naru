@@ -42,6 +42,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/networks"
 	netetcd "github.com/garamsh/naru/orch/internal/networks/etcd"
+	"github.com/garamsh/naru/orch/internal/ratelimit"
 	"github.com/garamsh/naru/orch/internal/restore"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
@@ -84,8 +85,10 @@ type Config struct {
 // Deps are the parts the binary's main chooses.
 type Deps struct {
 	Signer inventory.Signer
-	Auth   auth.Authenticator
-	Sealer snapshot.Sealer
+	// Credentials is the signer a caller registers and renews through on the Machine API.
+	Credentials machineserver.Credentials
+	Auth        auth.Authenticator
+	Sealer      snapshot.Sealer
 	// NewHosts returns the engine's view of the hosts, given the inventory it reads them from. With
 	// it the leader runs the groups engine; without it, and without a Reconciler, no group is
 	// reconciled.
@@ -320,7 +323,10 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	}
 	machineStore := machinesetcd.New(m.Client())
 	machineSvc := machines.NewService(machineStore, d.Clock, c.MachineZone)
-	serveMachines := machineserver.New(machineserver.Deps{Machines: machineSvc, Auth: d.Auth, Log: d.Log})
+	limits := c.Limits.WithDefaults()
+	serveMachines := machineserver.New(machineserver.Deps{Machines: machineSvc, Auth: d.Auth, Credentials: d.Credentials,
+		Sources:       ratelimit.New(d.Clock, limits.SourceRate, limits.SourceBurst),
+		Registrations: ratelimit.New(d.Clock, registrationRate, registrationBurst), Log: d.Log})
 	if !o.claimZone(machineStore, serveMachines) {
 		o.wg.Add(1)
 		go func() {
@@ -359,6 +365,14 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	}()
 	return true
 }
+
+// registrationRate and registrationBurst bound the caller registrations a member passes to its
+// signer from every source together, per second and at once: a registration is an operator's
+// rare act, and each costs the signer a signature and a revocation list.
+const (
+	registrationRate  = 1
+	registrationBurst = 30
+)
 
 // zoneWait bounds one attempt to read or claim the cluster's machine zone.
 const zoneWait = 5 * time.Second

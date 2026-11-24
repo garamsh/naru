@@ -2,22 +2,25 @@ package identity
 
 import (
 	"crypto"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"strings"
 	"time"
+
+	"github.com/garamsh/naru/lib/machineapi/signedrequest"
 )
 
+// The form of a signed request is lib/machineapi/signedrequest's, which a Machine API caller
+// signs its renewal with and which needs no module of naru.
 var (
 	// ErrRequestAction is returned when a request was signed for another action.
-	ErrRequestAction = errors.New("request was signed for another action")
+	ErrRequestAction = signedrequest.ErrAction
 	// ErrRequestExpired is returned when a request is past its expiry.
-	ErrRequestExpired = errors.New("request has expired")
+	ErrRequestExpired = signedrequest.ErrExpired
 	// ErrRequestSignature is returned when a request's signature does not verify.
-	ErrRequestSignature = errors.New("request signature does not verify")
+	ErrRequestSignature = signedrequest.ErrSignature
 )
 
 // The actions a signer's requests are signed for.
@@ -25,15 +28,21 @@ const (
 	ActionIssueOrch     = "issue-orch"
 	ActionIssueOperator = "issue-operator"
 	ActionIssueCaller   = "issue-caller"
-	ActionRevoke        = "revoke"
-	ActionReissueHost   = "reissue-host"
-	ActionRegisterHost  = "register-host"
-	ActionRetireHost    = "retire-host"
-	ActionLookupHost    = "lookup-host"
-	ActionRevokeHost    = "revoke-host"
-	ActionBundle        = "bundle"
-	ActionRestore       = "restore"
-	ActionReplicate     = "replicate"
+	// ActionIssueCallerToken asks for a caller registration token.
+	ActionIssueCallerToken = "issue-caller-token"
+	// ActionRenewCaller is signed by a caller's current certificate to renew it.
+	ActionRenewCaller = signedrequest.ActionRenewCaller
+	// ActionRevokeCaller revokes every certificate of a caller by its name.
+	ActionRevokeCaller = "revoke-caller"
+	ActionRevoke       = "revoke"
+	ActionReissueHost  = "reissue-host"
+	ActionRegisterHost = "register-host"
+	ActionRetireHost   = "retire-host"
+	ActionLookupHost   = "lookup-host"
+	ActionRevokeHost   = "revoke-host"
+	ActionBundle       = "bundle"
+	ActionRestore      = "restore"
+	ActionReplicate    = "replicate"
 )
 
 // HostRequest is the body of the signer's POST /v1/host: an admission statement and the
@@ -64,6 +73,70 @@ type CallerRequest struct {
 // MaxCallerDays is the longest a caller certificate is valid, and its default.
 const MaxCallerDays = 90
 
+// CallerTokenRequest is the body of ActionIssueCallerToken: the caller the token registers and the
+// seconds it lives (DefaultCallerTokenTTL when 0, at most MaxCallerTokenTTL).
+type CallerTokenRequest struct {
+	Name       string `json:"name"`
+	TTLSeconds int    `json:"ttlSeconds,omitempty"`
+}
+
+// CallerToken is the signer's answer to ActionIssueCallerToken: the token, which the signer keeps
+// no copy of, and when it expires.
+type CallerToken struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// CallerTokenPrefix begins every caller registration token: the signer's base64url claims and
+// signature follow it, separated by a dot.
+const CallerTokenPrefix = "naru-ct-"
+
+// CallerTokenNonce is the nonce a registration token claims, read without verifying the token, for
+// a log line that ties a refused or limited registration to the token the signer issued: "" when
+// the token does not read as one, or names a nonce longer than any the signer issues.
+func CallerTokenNonce(token string) string {
+	body, ok := strings.CutPrefix(token, CallerTokenPrefix)
+	if !ok {
+		return ""
+	}
+	p, _, _ := strings.Cut(body, ".")
+	payload, err := base64.RawURLEncoding.DecodeString(p)
+	if err != nil {
+		return ""
+	}
+	var c struct {
+		Nonce string `json:"nonce"`
+	}
+	if json.Unmarshal(payload, &c) != nil || len(c.Nonce) > 128 {
+		return ""
+	}
+	return c.Nonce
+}
+
+// CallerRegistration is the body of the signer's POST /v1/caller-register: a registration token, which is
+// the only authentication, and the certificate request of a key the caller made, DER.
+type CallerRegistration struct {
+	Token string `json:"token"`
+	CSR   []byte `json:"csr"`
+}
+
+// CallerRenewal is the body of ActionRenewCaller: the certificate request of the caller's new
+// key, DER.
+type CallerRenewal = signedrequest.CallerRenewal
+
+const (
+	// DefaultCallerTokenTTL is how long a caller registration token lives when none is asked.
+	DefaultCallerTokenTTL = time.Hour
+	// MaxCallerTokenTTL is the longest a caller registration token lives.
+	MaxCallerTokenTTL = 24 * time.Hour
+	// CallerRenewWindow is the end of a caller certificate's life in which it may renew itself.
+	CallerRenewWindow = 30 * 24 * time.Hour
+)
+
+// ErrCallerNotDue is the refusal of a caller's renewal before the last CallerRenewWindow of its
+// certificate's life. The signer answers it 409 with this text, which orch reads back.
+var ErrCallerNotDue = errors.New("the certificate is not yet due for renewal")
+
 // RevokeRequest is the body of ActionRevoke.
 type RevokeRequest struct {
 	Serial string `json:"serial"`
@@ -88,6 +161,29 @@ type RetireHostRequest struct {
 type RegisterHostRequest struct {
 	HostID string `json:"hostID"`
 	Serial string `json:"serial"`
+}
+
+// CallerRevokeRequest is the body of ActionRevokeCaller: the caller to revoke.
+type CallerRevokeRequest struct {
+	Name string `json:"name"`
+}
+
+// CallerSerial is a serial the signer issued to a caller, in lowercase hexadecimal: the serial of
+// the certificate whose renewal it was (Parent, empty for a registration or root's issuance), and
+// whether the revocation list carries it.
+type CallerSerial struct {
+	Serial  string `json:"serial"`
+	Parent  string `json:"parent,omitempty"`
+	Revoked bool   `json:"revoked"`
+}
+
+// CallerRevocation is the answer to ActionRevokeCaller: the revocation list's entry for the caller,
+// RevokedAt, before which (as a certificate's NotBefore, inclusive) every caller certificate of the
+// name is revoked whichever signer issued it, and the serials this signer issued to it.
+type CallerRevocation struct {
+	Name      string         `json:"name"`
+	RevokedAt time.Time      `json:"revokedAt"`
+	Serials   []CallerSerial `json:"serials"`
 }
 
 // HostSerialsRequest is the body of ActionLookupHost and ActionRevokeHost: the host whose serials the
@@ -155,68 +251,24 @@ type request struct {
 	Body      json.RawMessage `json:"body"`
 }
 
-type signedRequest struct {
-	Request     json.RawMessage `json:"request"`
-	Signature   []byte          `json:"signature"`
-	Certificate []byte          `json:"certificate"`
-}
-
 // SignRequest signs body for action with the caller's ECDSA key and attaches the caller's
 // certificate. The signature is over the request JSON, which binds the action, the expiry and
 // the body.
 func SignRequest(action string, body any, expiresAt time.Time, key crypto.Signer, cert *x509.Certificate) ([]byte, error) {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request body: %w", err)
-	}
-	req, err := json.Marshal(request{Action: action, ExpiresAt: expiresAt, Body: raw})
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-	sum := sha256.Sum256(req)
-	sig, err := key.Sign(rand.Reader, sum[:], crypto.SHA256)
-	if err != nil {
-		return nil, fmt.Errorf("sign request: %w", err)
-	}
-	return json.Marshal(signedRequest{Request: req, Signature: sig, Certificate: cert.Raw})
+	return signedrequest.Sign(action, body, expiresAt, key, cert)
 }
 
 // VerifyRequest checks that the attached certificate chains to roots for client authentication,
 // is not on crl, and signed a request for action that has not expired at now. It returns the
 // signer's Identity and the body, which the caller decodes and whose role it checks.
 func VerifyRequest(data []byte, action string, roots *x509.CertPool, crl *CRL, now time.Time) (Identity, json.RawMessage, error) {
-	var s signedRequest
-	if err := json.Unmarshal(data, &s); err != nil {
-		return Identity{}, nil, fmt.Errorf("parse signed request: %w", err)
-	}
-	cert, err := x509.ParseCertificate(s.Certificate)
+	chains, body, err := signedrequest.Open(data, action, roots, now)
 	if err != nil {
-		return Identity{}, nil, fmt.Errorf("parse request certificate: %w", err)
-	}
-	chains, err := cert.Verify(x509.VerifyOptions{
-		Roots:       roots,
-		CurrentTime: now,
-		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	})
-	if err != nil {
-		return Identity{}, nil, fmt.Errorf("verify request certificate: %w", err)
+		return Identity{}, nil, err
 	}
 	id, err := Authenticate(chains, crl)
 	if err != nil {
 		return Identity{}, nil, err
 	}
-	if cert.CheckSignature(x509.ECDSAWithSHA256, s.Request, s.Signature) != nil {
-		return Identity{}, nil, ErrRequestSignature
-	}
-	var req request
-	if err := json.Unmarshal(s.Request, &req); err != nil {
-		return Identity{}, nil, fmt.Errorf("parse request: %w", err)
-	}
-	if req.Action != action {
-		return Identity{}, nil, fmt.Errorf("%w: %q, not %q", ErrRequestAction, req.Action, action)
-	}
-	if !now.Before(req.ExpiresAt) {
-		return Identity{}, nil, ErrRequestExpired
-	}
-	return id, req.Body, nil
+	return id, body, nil
 }

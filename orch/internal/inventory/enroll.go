@@ -17,14 +17,14 @@ import (
 )
 
 func (s *service) Enroll(ctx context.Context, source string, req orchapi.EnrollRequest) (orchapi.EnrollStatus, error) {
-	if !s.sources.allow(source) {
+	if !s.sources.Allow(source) {
 		return orchapi.EnrollStatus{}, ErrRateLimited
 	}
 	key, err := s.usableKey(ctx, req.Key)
 	if err != nil {
 		return orchapi.EnrollStatus{}, err
 	}
-	if !s.keys.allow(key.ID) {
+	if !s.keys.Allow(key.ID) {
 		return orchapi.EnrollStatus{}, ErrRateLimited
 	}
 	if err := validHostID(req.HostID); err != nil {
@@ -156,7 +156,7 @@ func checkHostKey(publicKeyDER, csrDER []byte) error {
 // Poll answers an enrolling host. An unknown host and a known one with a proof that does not hold
 // get the same ErrNotFound, so the answer does not tell which host IDs exist.
 func (s *service) Poll(ctx context.Context, source, hostID, timeValue, signature string) (orchapi.EnrollStatus, error) {
-	if !s.polls.allow(source) {
+	if !s.polls.Allow(source) {
 		return orchapi.EnrollStatus{}, ErrRateLimited
 	}
 	if h, err := s.store.GetHost(ctx, hostID); err == nil {

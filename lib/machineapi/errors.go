@@ -38,6 +38,13 @@ const (
 	// CodeAliasDomainNotGranted: 403, a hostname outside the zone in no domain the operator
 	// granted the caller.
 	CodeAliasDomainNotGranted Code = "alias-domain-not-granted"
+	// CodeTokenRefused: 403, a registration token that is not valid, was spent or has expired: one
+	// code for every cause.
+	CodeTokenRefused Code = "token-refused"
+	// CodeNotDue: 409, a renewal before the last 30 days of the certificate it is signed with.
+	CodeNotDue Code = "not-due"
+	// CodeRateLimited: 429, more registrations from one source address than the server takes.
+	CodeRateLimited Code = "rate-limited"
 	// CodeInternal: 500, a failure of the server's own.
 	CodeInternal Code = "internal"
 	// CodeUnimplemented: 501, an operation this server does not serve yet.

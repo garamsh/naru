@@ -34,7 +34,22 @@ func (s *Signer) Handler() http.Handler {
 	}))
 	mux.HandleFunc("POST /v1/orch", handleSigned(s, s.IssueOrch))
 	mux.HandleFunc("POST /v1/operator", handleSigned(s, s.IssueOperator))
-	mux.HandleFunc("POST /v1/caller", handleSigned(s, s.IssueCaller))
+	mux.HandleFunc("POST /v1/caller-token", handleSigned(s, s.IssueCallerToken))
+	// POST /v1/caller was root's direct issuance before ADR 0116. A naructl that still calls it is
+	// older than this signer, and is told so rather than read as a registration with a bad token.
+	mux.HandleFunc("POST /v1/caller", s.handle(func(*http.Request) (any, error) {
+		return nil, fmt.Errorf("%w: root's issuance of a caller certificate is POST /v1/caller-issue, and registration POST /v1/caller-register: use a naructl of this signer's release", ErrMovedRoute)
+	}))
+	mux.HandleFunc("POST /v1/caller-register", s.handle(func(r *http.Request) (any, error) {
+		var req identity.CallerRegistration
+		if err := readJSON(r, &req); err != nil {
+			return nil, err
+		}
+		return s.RegisterCaller(req)
+	}))
+	mux.HandleFunc("POST /v1/caller-renew", handleSigned(s, s.RenewCaller))
+	mux.HandleFunc("POST /v1/caller-issue", handleSigned(s, s.IssueCaller))
+	mux.HandleFunc("POST /v1/revoke-caller", handleSigned(s, s.RevokeCaller))
 	mux.HandleFunc("POST /v1/revoke", handleSigned(s, s.Revoke))
 	mux.HandleFunc("POST /v1/reissue-host", handleSigned(s, s.ReissueHost))
 	mux.HandleFunc("POST /v1/retire-host", handleSigned(s, func(signed []byte) (struct{}, error) { return struct{}{}, s.RetireHost(signed) }))
@@ -120,7 +135,9 @@ func (s *Signer) wrap(next http.Handler) http.Handler {
 // never reaches it: the mux answers 404.
 func statusOf(err error) int {
 	switch {
-	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost):
+	case errors.Is(err, ErrMovedRoute):
+		return http.StatusGone
+	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost), errors.Is(err, identity.ErrCallerNotDue):
 		return http.StatusConflict
 	case errors.Is(err, ErrBadRequest), errors.Is(err, identity.ErrFormat):
 		return http.StatusBadRequest
@@ -136,6 +153,8 @@ func statusOf(err error) int {
 		errors.Is(err, identity.ErrRequestSignature),
 		errors.Is(err, identity.ErrRecoverySignature),
 		errors.Is(err, ErrReplay),
+		errors.Is(err, ErrBadToken),
+		errors.Is(err, ErrRenewed),
 		errors.Is(err, identity.ErrCRLSignature),
 		errors.Is(err, identity.ErrOpen),
 		errors.Is(err, identity.ErrPassphrase):

@@ -18,9 +18,9 @@ import (
 	"github.com/garamsh/naru/lib/identity"
 )
 
-// caller asks /v1/caller, as by, for name and days, with a fresh key.
+// caller asks /v1/caller-issue, as by, for name and days, with a fresh key.
 func (e *env) caller(by person, name string, days int) (int, []byte) {
-	return e.do(http.MethodPost, "/v1/caller", e.signed(by, identity.ActionIssueCaller,
+	return e.do(http.MethodPost, "/v1/caller-issue", e.signed(by, identity.ActionIssueCaller,
 		identity.CallerRequest{Name: name, Days: days, CSR: csrFor(e.t, newKey(e.t))}))
 }
 
@@ -30,7 +30,7 @@ func (e *env) issuedCaller(by person, name string, days int, csr []byte) person 
 	if csr == nil {
 		csr = csrFor(e.t, key)
 	}
-	status, body := e.do(http.MethodPost, "/v1/caller", e.signed(by, identity.ActionIssueCaller,
+	status, body := e.do(http.MethodPost, "/v1/caller-issue", e.signed(by, identity.ActionIssueCaller,
 		identity.CallerRequest{Name: name, Days: days, CSR: csr}))
 	require.Equal(e.t, http.StatusOK, status, string(body))
 	var issued identity.Issued
@@ -75,7 +75,7 @@ func TestCaller_OnlyRootMayAskAndTheSignatureIsForThisAction(t *testing.T) {
 		status, body := e.caller(by, "garam", 0)
 		assert.Equal(t, http.StatusForbidden, status, "%s: %s", name, body)
 	}
-	status, _ := e.do(http.MethodPost, "/v1/caller", e.signed(e.rootID, identity.ActionIssueOperator,
+	status, _ := e.do(http.MethodPost, "/v1/caller-issue", e.signed(e.rootID, identity.ActionIssueOperator,
 		identity.CallerRequest{Name: "garam", CSR: csrFor(t, newKey(t))}))
 	assert.Equal(t, http.StatusForbidden, status, "a request root signed for another action is refused")
 	status, body := e.caller(e.rootID, "garam", 0)

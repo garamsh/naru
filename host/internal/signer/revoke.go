@@ -107,14 +107,15 @@ func (s *Signer) PushCRL(data []byte) ([]byte, error) {
 	nonces, inNonces := liveNonces(cur.crl.Nonces, now), liveNonces(in.Nonces, now)
 	ownNonces := len(nonces)
 	maps.Copy(nonces, inNonces)
-	if len(serials) == ownSerials && len(nonces) == ownNonces {
+	callers := mergeCallers(cur.crl.Callers, in.Callers)
+	if len(serials) == ownSerials && len(nonces) == ownNonces && maps.EqualFunc(callers, cur.crl.Callers, time.Time.Equal) {
 		return cur.crlSigned, nil
 	}
 	next := *cur
-	if len(serials) == len(inSerials) && len(nonces) == len(inNonces) && in.Seq > cur.crl.Seq {
+	if len(serials) == len(inSerials) && len(nonces) == len(inNonces) && maps.EqualFunc(callers, in.Callers, time.Time.Equal) && in.Seq > cur.crl.Seq {
 		next.crl, next.crlSigned = *in, data
 	} else {
-		crl := identity.CRL{Seq: max(cur.crl.Seq, in.Seq) + 1, IssuedAt: now, Serials: slices.Sorted(maps.Keys(serials)), Nonces: nonces}
+		crl := identity.CRL{Seq: max(cur.crl.Seq, in.Seq) + 1, IssuedAt: now, Serials: slices.Sorted(maps.Keys(serials)), Nonces: nonces, Callers: callers}
 		if err := next.signCRL(crl); err != nil {
 			return nil, err
 		}
@@ -130,7 +131,25 @@ func (s *Signer) PushCRL(data []byte) ([]byte, error) {
 // successor returns the list that follows a's: the next sequence, the same serials, and the
 // nonces whose requests have not expired at now, for the caller to add to before it signs.
 func (a *authorities) successor(now time.Time) identity.CRL {
-	return identity.CRL{Seq: a.crl.Seq + 1, IssuedAt: now, Serials: slices.Clone(a.crl.Serials), Nonces: liveNonces(a.crl.Nonces, now)}
+	return identity.CRL{Seq: a.crl.Seq + 1, IssuedAt: now, Serials: slices.Clone(a.crl.Serials), Nonces: liveNonces(a.crl.Nonces, now), Callers: maps.Clone(a.crl.Callers)}
+}
+
+// mergeCallers returns the callers revoked by either list, each at the later of its two times, so
+// a merge never moves a revocation back. A caller revoked by neither list gives nil.
+func mergeCallers(own, in map[string]time.Time) map[string]time.Time {
+	if len(own) == 0 && len(in) == 0 {
+		return own
+	}
+	out := maps.Clone(own)
+	if out == nil {
+		out = map[string]time.Time{}
+	}
+	for name, at := range in {
+		if cur, ok := out[name]; !ok || at.After(cur) {
+			out[name] = at
+		}
+	}
+	return out
 }
 
 // liveNonces returns a copy of nonces without those whose request has expired at now.

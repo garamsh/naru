@@ -10,6 +10,7 @@ require (
 
 require (
 	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000 // indirect
+	github.com/garamsh/naru/lib/machineapi v0.0.0-00010101000000-000000000000 // indirect
 	go.yaml.in/yaml/v4 v4.0.0 // indirect
 )
 
@@ -33,3 +34,5 @@ replace github.com/garamsh/naru/lib/init => ../init
 replace github.com/garamsh/naru/lib/metrics => ../metrics
 
 replace github.com/garamsh/naru/lib/orchapi => ../orchapi
+
+replace github.com/garamsh/naru/lib/machineapi => ../machineapi

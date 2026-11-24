@@ -3,9 +3,11 @@ package orchtest
 import (
 	"context"
 	"crypto"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"sort"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/orch/internal/inventory"
+	"github.com/garamsh/naru/orch/internal/signer"
 )
 
 // Signer stands in for naru-signer. It does what the signer does with a statement: verifies it
@@ -27,6 +30,10 @@ type Signer struct {
 	calls int
 	// fail, when set, is what IssueHost answers instead of signing.
 	fail error
+	// tokens are the callers' registration tokens not yet spent, by token, each the caller's name.
+	tokens map[string]string
+	// renewed are the serials of the caller certificates that have renewed, each once.
+	renewed map[string]bool
 }
 
 // Fail makes IssueHost answer err from now on; nil makes it sign again.
@@ -221,4 +228,83 @@ func (c *Clock) Advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
+}
+
+// CallerToken is a registration token for the caller name, as root asks naru-signer for one. It is
+// taken once.
+func (s *Signer) CallerToken(name string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tokens == nil {
+		s.tokens = map[string]string{}
+	}
+	token := "naru-ct-" + rand.Text()
+	s.tokens[token] = name
+	return token
+}
+
+// RegisterCaller spends a token CallerToken gave for a caller certificate of 90 days, as
+// naru-signer's POST /v1/caller-register does.
+func (s *Signer) RegisterCaller(_ context.Context, token string, csr []byte) (identity.Issued, error) {
+	s.mu.Lock()
+	name, ok := s.tokens[token]
+	delete(s.tokens, token)
+	s.mu.Unlock()
+	if !ok {
+		return identity.Issued{}, fmt.Errorf("%w: the registration token is not valid, or was spent or has expired", inventory.ErrSignerRefused)
+	}
+	return s.issueCaller(name, csr)
+}
+
+// RenewCaller issues a further caller certificate for a renewal signed in the last 30 days of the
+// signing certificate, for a new key, once per certificate, as naru-signer's POST /v1/caller-renew
+// does.
+func (s *Signer) RenewCaller(_ context.Context, signed []byte) (identity.Issued, error) {
+	data, err := s.CA.CRL()
+	if err != nil {
+		return identity.Issued{}, err
+	}
+	crl, err := identity.VerifyCRL(s.CA.RevocationKey(), data)
+	if err != nil {
+		return identity.Issued{}, err
+	}
+	who, raw, err := identity.VerifyRequest(signed, identity.ActionRenewCaller, s.CA.Pool(), crl, time.Now())
+	if err != nil || who.Role != identity.RoleCaller {
+		return identity.Issued{}, fmt.Errorf("%w: not a caller's renewal: %v", inventory.ErrSignerRefused, err)
+	}
+	if time.Now().Before(who.NotAfter.Add(-identity.CallerRenewWindow)) {
+		return identity.Issued{}, identity.ErrCallerNotDue
+	}
+	var req identity.CallerRenewal
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return identity.Issued{}, err
+	}
+	if csr, err := x509.ParseCertificateRequest(req.CSR); err == nil {
+		if k, ok := csr.PublicKey.(interface{ Equal(crypto.PublicKey) bool }); ok && k.Equal(who.PublicKey) {
+			return identity.Issued{}, fmt.Errorf("%w: a renewal is for a new key", signer.ErrInvalid)
+		}
+	}
+	s.mu.Lock()
+	if s.renewed == nil {
+		s.renewed = map[string]bool{}
+	}
+	renewed := s.renewed[who.Serial]
+	s.renewed[who.Serial] = true
+	s.mu.Unlock()
+	if renewed {
+		return identity.Issued{}, fmt.Errorf("%w: the certificate has renewed already", inventory.ErrSignerRefused)
+	}
+	return s.issueCaller(who.Subject, req.CSR)
+}
+
+func (s *Signer) issueCaller(name string, csrDER []byte) (identity.Issued, error) {
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		return identity.Issued{}, fmt.Errorf("%w: %v", signer.ErrInvalid, err)
+	}
+	cert, der, err := s.CA.signUntil(name, string(identity.RoleCaller), csr.PublicKey, nil, time.Now().AddDate(0, 0, identity.MaxCallerDays), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+	if err != nil {
+		return identity.Issued{}, err
+	}
+	return identity.Issued{Certificate: der, Serial: identity.SerialOf(cert), NotAfter: cert.NotAfter}, nil
 }
