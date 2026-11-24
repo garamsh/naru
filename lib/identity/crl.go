@@ -20,9 +20,10 @@ var (
 
 // CRL lists the serials, in lowercase hexadecimal, that are no longer trusted, the nonces of the
 // once-only requests the signers took, each with the expiry of its request, and the callers revoked
-// by name, each with when (ADR 0116): every caller certificate of that name issued at or before
-// that time is no longer trusted, whichever signer issued it. Seq grows with every list the signer
-// signs.
+// by name (ADR 0116), each with the NotBefore a certificate the signer issued at the revocation
+// carries: every caller certificate of that name whose NotBefore is at or before it is no longer
+// trusted, whichever signer issued it, and one issued later is. Seq grows with every list the
+// signer signs.
 type CRL struct {
 	Seq      uint64               `json:"seq"`
 	IssuedAt time.Time            `json:"issuedAt"`
