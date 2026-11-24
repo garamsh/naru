@@ -200,7 +200,8 @@ func Secrets(t *testing.T, c Config) {
 }
 
 // RunningOnly checks that exec and the file calls are refused while a Machine does not run, and
-// answer once it does.
+// answer once it does: an exec reads a file a write put in the guest. It checks the bounds of both:
+// a timeout above MaxExecSeconds is 422, and a file above MaxGuestBytes is 413.
 func RunningOnly(t *testing.T, c Config) {
 	c = c.check(t)
 	ctx := t.Context()
@@ -210,7 +211,7 @@ func RunningOnly(t *testing.T, c Config) {
 	create(t, c.Caller, name, spec)
 	waitPhase(t, c, c.Caller, name, machineapi.PhaseStopped)
 	file := c.Spec.Volumes[0].MountPath + "/conformance"
-	exec := machineapi.ExecRequest{Command: []string{"cat"}, Stdin: []byte("ping"), TimeoutSeconds: 30}
+	exec := machineapi.ExecRequest{Command: []string{"cat", file}, TimeoutSeconds: 30}
 
 	_, err := c.Caller.Exec(ctx, name, exec)
 	refused(t, err, http.StatusConflict, machineapi.CodeNotRunning, "an exec in a stopped Machine")
@@ -222,16 +223,28 @@ func RunningOnly(t *testing.T, c Config) {
 	_, err = c.Caller.StartMachine(ctx, name)
 	require.NoError(t, err)
 	waitPhase(t, c, c.Caller, name, machineapi.PhaseRunning)
+	require.NoError(t, c.Caller.WriteFile(ctx, name, file, []byte("hello")), "a file write in the running Machine")
 	out, err := c.Caller.Exec(ctx, name, exec)
 	require.NoError(t, err, "an exec in the running Machine")
 	assert.Equal(t, int32(0), out.ExitCode)
-	assert.Equal(t, "ping", string(out.Stdout))
-	require.NoError(t, c.Caller.WriteFile(ctx, name, file, []byte("hello")), "a file write in the running Machine")
+	assert.False(t, out.TimedOut)
+	assert.Equal(t, "hello", string(out.Stdout), "the exec reads the file the write put")
 	content, err := c.Caller.ReadFile(ctx, name, file)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(content))
 	_, err = c.Caller.ReadFile(ctx, name, file+"-absent")
 	refused(t, err, http.StatusNotFound, machineapi.CodeFileNotFound, "a file the guest has not")
+
+	long := exec
+	long.TimeoutSeconds = machineapi.MaxExecSeconds + 1
+	_, err = c.Caller.Exec(ctx, name, long)
+	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeInvalid, "a timeout above the most an exec runs")
+	long.TimeoutSeconds = machineapi.MaxExecSeconds
+	_, err = c.Caller.Exec(ctx, name, long)
+	require.NoError(t, err, "control: the most an exec runs")
+	err = c.Caller.WriteFile(ctx, name, file, make([]byte, machineapi.MaxGuestBytes+1))
+	refused(t, err, http.StatusRequestEntityTooLarge, machineapi.CodeInvalid, "a file above the most a guest file holds")
+	require.NoError(t, c.Caller.WriteFile(ctx, name, file, make([]byte, machineapi.MaxGuestBytes)), "control: the most a guest file holds")
 }
 
 // CursorExpired checks that a cursor older than the log keeps is 410, so the caller lists again,

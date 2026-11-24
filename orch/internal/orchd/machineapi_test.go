@@ -74,10 +74,10 @@ func oneHost() *orchtest.FakeMachineHosts {
 	return h
 }
 
-// The scenarios of machineapitest that run Machines on a host but reach no guest. The rest are
-// turned on here by the issues that reach the guests (#383: Restore, Isolation, Secrets,
-// RunningOnly) and keep aliases (#387), when machineapitest.Run runs whole.
-func TestOrch_PassesTheMachineAPIConformanceScenariosThatReachNoGuest(t *testing.T) {
+// The scenarios of machineapitest that need no alias. The rest are turned on here by the issue that
+// keeps aliases (#387: Aliases, and Isolation, which reads an alias), when machineapitest.Run runs
+// whole.
+func TestOrch_PassesTheMachineAPIConformanceScenariosThatNeedNoAlias(t *testing.T) {
 	hosts := oneHost()
 	// An hour between passes: every pass after the first is the one a write of a Machine or a
 	// snapshot wakes, as the reconciler runs at once after an API write.
@@ -103,7 +103,8 @@ func TestOrch_PassesTheMachineAPIConformanceScenariosThatReachNoGuest(t *testing
 		{"Create", machineapitest.Create}, {"OtherRole", machineapitest.OtherRole}, {"Credentials", machineapitest.Credentials},
 		{"StartStop", machineapitest.StartStop},
 		{"Delete", machineapitest.Delete}, {"Snapshots", machineapitest.Snapshots}, {"Events", machineapitest.Events},
-		{"CursorExpired", machineapitest.CursorExpired},
+		{"CursorExpired", machineapitest.CursorExpired}, {"RunningOnly", machineapitest.RunningOnly},
+		{"Secrets", machineapitest.Secrets}, {"Restore", machineapitest.Restore},
 	} {
 		t.Run(s.name, func(t *testing.T) { s.run(t, cfg) })
 	}
@@ -321,15 +322,15 @@ func TestOrch_RefusesARevokedCaller(t *testing.T) {
 	require.NoError(t, err, "control: another caller is served")
 }
 
-func TestOrch_AnswersTheOperationsOfLaterIssuesAsUnimplemented(t *testing.T) {
+func TestOrch_AnswersTheAliasesAsUnimplementedAndAGuestCallToAMachineNotPlacedAsNotRunning(t *testing.T) {
 	o := startMachineOrch(t)
 	ctx := t.Context()
 	_, _, err := o.garam.CreateMachine(ctx, "web", machineSpec())
 	require.NoError(t, err)
 	_, err = o.garam.Exec(ctx, "web", machineapi.ExecRequest{Command: []string{"cat"}})
-	refused(t, err, http.StatusNotImplemented, machineapi.CodeUnimplemented, "exec")
+	refused(t, err, http.StatusConflict, machineapi.CodeNotRunning, "exec")
 	_, err = o.garam.ReadFile(ctx, "web", "/data/a")
-	refused(t, err, http.StatusNotImplemented, machineapi.CodeUnimplemented, "a file read")
+	refused(t, err, http.StatusConflict, machineapi.CodeNotRunning, "a file read")
 	_, _, err = o.garam.PutAlias(ctx, "app."+machineZone, machineapi.AliasRequest{Machine: "web"})
 	refused(t, err, http.StatusNotImplemented, machineapi.CodeUnimplemented, "an alias")
 }

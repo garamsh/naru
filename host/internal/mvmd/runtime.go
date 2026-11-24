@@ -210,6 +210,34 @@ type Restore struct {
 	RoutedPrefixes []string
 }
 
+// ExecStatus is how far an exec got.
+type ExecStatus int
+
+const (
+	ExecStarted ExecStatus = iota
+	// ExecNotStarted is a command the guest did not start; the record's Reason says why.
+	ExecNotStarted
+	// ExecCutShort is a command the Machine's stop ended.
+	ExecCutShort
+	// ExecExited is a command that ended: ExitCode, or TermSignal when a signal ended it.
+	ExecExited
+)
+
+// ExecRecord is an exec as mvmd records it.
+type ExecRecord struct {
+	Status     ExecStatus
+	Reason     string
+	ExitCode   int32
+	TermSignal int32
+}
+
+// Chunk is a piece of an exec's output: Stderr's or stdout's, at Offset in the whole output.
+type Chunk struct {
+	Stderr bool
+	Offset uint64
+	Data   []byte
+}
+
 // Runtime is mvmd. Every method returns one of the errors above, wrapped, or mvmd's own.
 type Runtime interface {
 	Info(ctx context.Context) (Info, error)
@@ -265,4 +293,20 @@ type Runtime interface {
 	// RemoveBootSet removes a set added by AddBootSet. An absent one is success; a set a Machine
 	// names, or one the node's configuration offers, is ErrPrecondition.
 	RemoveBootSet(ctx context.Context, name string) error
+
+	// Exec starts command in the Running Machine under execID, once: the same ID again is the same
+	// record. A Machine that is not Running is ErrPrecondition.
+	Exec(ctx context.Context, machineID, execID string, command []string) (ExecRecord, error)
+	// ReadExecOutput passes each chunk of the exec's output after the offset to sink, in order,
+	// and returns the record once the command ended. A read the channel to the guest cut is read
+	// again from the last chunk passed; sink's error ends the read and is returned as it is.
+	ReadExecOutput(ctx context.Context, machineID, execID string, after uint64, sink func(Chunk) error) (ExecRecord, error)
+	// SignalExec sends the signal, its number as on Linux, to the exec's command. A command that
+	// has ended is ErrPrecondition.
+	SignalExec(ctx context.Context, machineID, execID string, signal int32) error
+	// ReadFile passes the content of the guest's file to sink, in order; an absent file is
+	// ErrNotFound, and sink's error ends the read and is returned as it is.
+	ReadFile(ctx context.Context, machineID, path string, sink func([]byte) error) error
+	// WriteFile replaces the guest's file with what content reads.
+	WriteFile(ctx context.Context, machineID, path string, content io.Reader) error
 }

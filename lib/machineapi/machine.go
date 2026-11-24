@@ -231,16 +231,28 @@ type EventPage struct {
 	Cursor string  `json:"cursor"`
 }
 
-// ExecRequest is the body of POST .../machines/{name}/exec.
+// ExecRequest is the body of POST .../machines/{name}/exec: the command, run without input (a
+// caller with input writes it as a guest file first), and the seconds it may run, at most
+// MaxExecSeconds; 0 is MaxExecSeconds.
 type ExecRequest struct {
 	Command        []string `json:"command"`
-	Stdin          []byte   `json:"stdin,omitempty"`
 	TimeoutSeconds uint32   `json:"timeoutSeconds,omitempty"`
 }
 
-// ExecResult is what an exec returns, whole.
+// MaxExecSeconds is the most an exec runs before it is ended with SIGKILL.
+const MaxExecSeconds = 600
+
+// MaxGuestBytes is the most an exec's output, stdout and stderr together, or a guest file holds:
+// above it the call is 413.
+const MaxGuestBytes = 16 << 20
+
+// ExecResult is what an exec returns, whole. A command a signal ended has Signal, its number as on
+// Linux, and ExitCode 128 plus it, as a shell gives; TimedOut is a command ended with SIGKILL at its
+// timeout. A command that did not start has ExitCode 127 and the reason in Stderr.
 type ExecResult struct {
 	ExitCode int32  `json:"exitCode"`
+	Signal   int32  `json:"signal,omitempty"`
+	TimedOut bool   `json:"timedOut,omitempty"`
 	Stdout   []byte `json:"stdout"`
 	Stderr   []byte `json:"stderr"`
 }

@@ -6,17 +6,21 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/machineapi"
 	"github.com/garamsh/naru/orch/internal/machines"
 )
 
 // FakeMachineHosts stands in for the hosts' APIs as the Machine reconciler reaches them. Every orch
 // member shares one, as the members share the real hosts. It answers as hostd does: a create of a
 // name it holds is the microVM it holds, a missing microVM or disk snapshot is 404, and a stop or
-// delete of one that is gone is no error to the reconciler.
+// delete of one that is gone is no error to the reconciler. Its guests hold files: those the create
+// placed and those written since, a file under a disk's mount path on that disk, which a disk
+// snapshot copies and a disk made from it holds; an exec runs "cat" over them.
 type FakeMachineHosts struct {
 	mu    sync.Mutex
 	hosts map[string]*fakeMachineHost
@@ -40,6 +44,12 @@ type fakeMachineHost struct {
 	refuse, refuseDisks error
 	// hang, when not nil, holds every call but List until it closes.
 	hang chan struct{}
+	// roots are each microVM's files on no disk, volumes each disk's by its path below its mount
+	// (keyed <microVM>/<disk>), and snapFiles each disk snapshot's; execs are every exec asked.
+	roots     map[string]map[string][]byte
+	volumes   map[string]map[string][]byte
+	snapFiles map[string]map[string][]byte
+	execs     []hostapi.ExecRequest
 }
 
 var _ machines.Hosts = (*FakeMachineHosts)(nil)
@@ -48,7 +58,10 @@ var _ machines.Hosts = (*FakeMachineHosts)(nil)
 func NewFakeMachineHosts(hosts ...machines.Host) *FakeMachineHosts {
 	f := &FakeMachineHosts{hosts: map[string]*fakeMachineHost{}}
 	for _, h := range hosts {
-		f.hosts[h.ID] = &fakeMachineHost{host: h, vms: map[string]hostapi.MicroVM{}, disks: map[string]hostapi.DiskSnapshot{}}
+		f.hosts[h.ID] = &fakeMachineHost{
+			host: h, vms: map[string]hostapi.MicroVM{}, disks: map[string]hostapi.DiskSnapshot{},
+			roots: map[string]map[string][]byte{}, volumes: map[string]map[string][]byte{}, snapFiles: map[string]map[string][]byte{},
+		}
 	}
 	return f
 }
@@ -212,6 +225,17 @@ func (f *FakeMachineHosts) Create(_ context.Context, host string, r hostapi.Crea
 		RootDiskBytes: r.RootDiskBytes, Disks: r.Disks, NetworkPolicy: r.NetworkPolicy,
 	}
 	h.vms[r.Name] = vm
+	h.roots[r.Name] = map[string][]byte{}
+	for _, d := range r.Disks {
+		h.volumes[r.Name+"/"+d.Name] = maps.Clone(h.snapFiles[d.FromSnapshot])
+		if h.volumes[r.Name+"/"+d.Name] == nil {
+			h.volumes[r.Name+"/"+d.Name] = map[string][]byte{}
+		}
+	}
+	for _, file := range r.Files {
+		files, key := h.place(vm, file.Path)
+		files[key] = slices.Clone(file.Content)
+	}
 	return vm, nil
 }
 
@@ -262,7 +286,14 @@ func (f *FakeMachineHosts) Delete(ctx context.Context, host, microVM string) err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.hosts[host].vms, microVM)
+	h := f.hosts[host]
+	if vm, ok := h.vms[microVM]; ok {
+		for _, d := range vm.Disks {
+			delete(h.volumes, microVM+"/"+d.Name)
+		}
+	}
+	delete(h.vms, microVM)
+	delete(h.roots, microVM)
 	return nil
 }
 
@@ -287,6 +318,7 @@ func (f *FakeMachineHosts) SnapshotDisk(_ context.Context, host, microVM, disk, 
 	if _, ok := h.disks[name]; !ok {
 		size := vm.Disks[i].SizeBytes
 		h.disks[name] = hostapi.DiskSnapshot{Name: name, MicroVM: microVM, Disk: disk, SizeBytes: size, AllocatedBytes: size}
+		h.snapFiles[name] = maps.Clone(h.volumes[microVM+"/"+disk])
 	}
 	return nil
 }
@@ -299,5 +331,96 @@ func (f *FakeMachineHosts) DeleteDiskSnapshot(_ context.Context, host, name stri
 		return err
 	}
 	delete(h.disks, name)
+	delete(h.snapFiles, name)
 	return nil
+}
+
+// place is where the microVM's guest keeps the file at p: under its path below the mount path of
+// the disk that holds it, or under p on no disk.
+func (h *fakeMachineHost) place(vm hostapi.MicroVM, p string) (files map[string][]byte, key string) {
+	for _, d := range vm.Disks {
+		if d.MountPath != "" && strings.HasPrefix(p, d.MountPath+"/") {
+			return h.volumes[vm.Name+"/"+d.Name], strings.TrimPrefix(p, d.MountPath)
+		}
+	}
+	return h.roots[vm.Name], p
+}
+
+// guest returns the host's microVM when it runs, for a guest call.
+func (f *FakeMachineHosts) guest(host, microVM string) (*fakeMachineHost, hostapi.MicroVM, error) {
+	h, err := f.answering(host)
+	if err != nil {
+		return nil, hostapi.MicroVM{}, fmt.Errorf("%w: %v", machines.ErrHostUnavailable, err)
+	}
+	vm, ok := h.vms[microVM]
+	if !ok || vm.State != "running" {
+		return nil, hostapi.MicroVM{}, fmt.Errorf("%w: %s", machines.ErrNotRunning, microVM)
+	}
+	return h, vm, nil
+}
+
+// Exec refuses what a host refuses, after it records the call; it runs "cat" over the guest's
+// files, answers "sleep" as a command its timeout ended, and 127 to any other command.
+func (f *FakeMachineHosts) Exec(_ context.Context, host, microVM string, r hostapi.ExecRequest) (hostapi.ExecResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h, vm, err := f.guest(host, microVM)
+	if err != nil {
+		return hostapi.ExecResult{}, err
+	}
+	h.execs = append(h.execs, r)
+	if _, err := r.Check(); err != nil {
+		return hostapi.ExecResult{}, fmt.Errorf("%w: %v", machineapi.ErrInvalid, err)
+	}
+	if r.Command[0] == "sleep" {
+		return hostapi.ExecResult{ExitCode: 137, Signal: 9, TimedOut: true, Stdout: []byte{}, Stderr: []byte{}}, nil
+	}
+	if r.Command[0] != "cat" {
+		return hostapi.ExecResult{ExitCode: 127, Stdout: []byte{}, Stderr: []byte(r.Command[0] + ": not found")}, nil
+	}
+	out := hostapi.ExecResult{Stdout: []byte{}, Stderr: []byte{}}
+	for _, p := range r.Command[1:] {
+		files, key := h.place(vm, p)
+		b, ok := files[key]
+		if !ok {
+			out.ExitCode, out.Stderr = 1, fmt.Appendf(out.Stderr, "cat: %s: No such file or directory\n", p)
+			continue
+		}
+		out.Stdout = append(out.Stdout, b...)
+	}
+	return out, nil
+}
+
+func (f *FakeMachineHosts) ReadFile(_ context.Context, host, microVM, path string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h, vm, err := f.guest(host, microVM)
+	if err != nil {
+		return nil, err
+	}
+	files, key := h.place(vm, path)
+	b, ok := files[key]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", machines.ErrFileNotFound, path)
+	}
+	return slices.Clone(b), nil
+}
+
+func (f *FakeMachineHosts) WriteFile(_ context.Context, host, microVM, path string, content []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h, vm, err := f.guest(host, microVM)
+	if err != nil {
+		return err
+	}
+	files, key := h.place(vm, path)
+	files[key] = slices.Clone(content)
+	return nil
+}
+
+// Execs returns every exec the host was asked, in order.
+func (f *FakeMachineHosts) Execs(id string) []hostapi.ExecRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.hosts[id].execs)
 }

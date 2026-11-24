@@ -91,7 +91,8 @@ func New(deps Deps) *Server {
 
 // Handler returns the routes behind the middleware: a panic is answered with 500, each request is
 // logged once, and the client's role is checked before any route runs. A request that is not a GET
-// needs the provisioner role, and a GET the reader's, which a provisioner has too. A change that
+// needs the provisioner role, and a GET the reader's, which a provisioner has too, but for the read
+// of a guest's file, which needs the provisioner's. A change that
 // carries a leader token is refused when the token is lower than the highest seen.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -105,6 +106,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/microvms/{name}/fence", s.renewFence)
 	mux.HandleFunc("GET /v1/microvms/{name}/fence", s.getFence)
 	mux.HandleFunc("POST /v1/microvms/{name}/snapshot", s.snapshotMicroVM)
+	mux.HandleFunc("POST /v1/microvms/{name}/exec", s.execMicroVM)
+	mux.HandleFunc("GET /v1/microvms/{name}/files", s.readFile)
+	mux.HandleFunc("PUT /v1/microvms/{name}/files", s.writeFile)
 	mux.HandleFunc("GET /v1/snapshots", s.listSnapshots)
 	mux.HandleFunc("GET /v1/snapshots/{name}", s.getSnapshot)
 	mux.HandleFunc("DELETE /v1/snapshots/{name}", s.deleteSnapshot)
@@ -126,11 +130,12 @@ func (s *Server) Handler() http.Handler {
 	return s.recovering(s.logged(s.authorised(s.leaderToken(mux))))
 }
 
-// authorised answers 403 to a client whose role does not cover the method.
+// authorised answers 403 to a client whose role does not cover the method, or the read of a guest's
+// file.
 func (s *Server) authorised(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		need := Reader
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead || guestRead(r) {
 			need = Provisioner
 		}
 		if roleOf(clientCertificate(r)) < need {

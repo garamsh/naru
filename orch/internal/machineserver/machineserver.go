@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 
@@ -26,6 +27,14 @@ import (
 
 // maxBody bounds a request body: a spec's files hold at most 1 MiB, base64 in JSON.
 const maxBody = 4 << 20
+
+// The longest a request's body may take to arrive, a guest file's included, and its answer to be
+// written: an exec answers once its command ended, at most machineapi.MaxExecSeconds, and the host
+// takes up to a minute more to end it.
+const (
+	ReadTimeout  = 2 * time.Minute
+	WriteTimeout = machineapi.MaxExecSeconds*time.Second + 2*time.Minute
+)
 
 // Deps is what the handlers call.
 type Deps struct {
@@ -73,12 +82,14 @@ func (h *handler) routes() []route {
 		{"GET " + p + "snapshots", h.serve(h.snapshots)},
 		{"GET " + p + "snapshots/{name}", h.serve(h.snapshot)},
 		{"DELETE " + p + "snapshots/{name}", h.serve(h.deleteSnapshot)},
+		{"POST " + p + "machines/{name}/exec", h.serve(h.exec)},
+		{"GET " + p + "machines/{name}/files", h.serve(h.readFile)},
+		{"PUT " + p + "machines/{name}/files", h.serve(h.writeFile)},
 		{"GET " + p + "events", h.serve(h.events)},
 		{anonymous, h.register},
 		{"POST " + p + "renew", h.serve(h.renew)},
 	}
 	for _, pattern := range []string{
-		"POST " + p + "machines/{name}/exec", "GET " + p + "machines/{name}/files", "PUT " + p + "machines/{name}/files",
 		"PUT " + p + "aliases/{hostname}", "GET " + p + "aliases/{hostname}", "DELETE " + p + "aliases/{hostname}",
 	} {
 		rs = append(rs, route{pattern, h.serve(unimplemented)})
@@ -177,11 +188,16 @@ func (h *handler) serve(fn caller) http.HandlerFunc {
 			writeError(w, r, err)
 			return
 		}
-		if body == nil {
+		switch b := body.(type) {
+		case nil:
 			w.WriteHeader(status)
-			return
+		case raw:
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(status)
+			_, _ = w.Write(b)
+		default:
+			writeJSON(w, status, body)
 		}
-		writeJSON(w, status, body)
 	}
 }
 
@@ -244,7 +260,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, msg = http.StatusNotFound, machineapi.CodeNotFound, err.Error()
 	case errors.Is(err, errUnimplemented):
 		status, code, msg = http.StatusNotImplemented, machineapi.CodeUnimplemented, err.Error()
-	case errors.Is(err, errTooLarge):
+	case errors.Is(err, errTooLarge), errors.Is(err, machines.ErrTooLarge):
 		status, code, msg = http.StatusRequestEntityTooLarge, machineapi.CodeInvalid, err.Error()
 	case errors.Is(err, errBody), errors.Is(err, machines.ErrBadCursor):
 		status, code, msg = http.StatusBadRequest, machineapi.CodeInvalid, err.Error()
@@ -256,6 +272,13 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, msg = http.StatusConflict, machineapi.CodeConflict, err.Error()
 	case errors.Is(err, machines.ErrDeleting):
 		status, code, msg = http.StatusConflict, machineapi.CodeDeleting, err.Error()
+	case errors.Is(err, machines.ErrNotRunning):
+		status, code, msg = http.StatusConflict, machineapi.CodeNotRunning, err.Error()
+	case errors.Is(err, machines.ErrFileNotFound):
+		status, code, msg = http.StatusNotFound, machineapi.CodeFileNotFound, err.Error()
+	case errors.Is(err, machines.ErrHostUnavailable):
+		status, code, msg = http.StatusServiceUnavailable, machineapi.CodeUnavailable, machines.ErrHostUnavailable.Error()
+		logger(r).Error("the Machine's host did not answer a guest call", "err", err.Error())
 	case errors.Is(err, machines.ErrCursorExpired):
 		status, code, msg = http.StatusGone, machineapi.CodeCursorExpired, err.Error()
 	case errors.Is(err, machines.ErrMachineNotFound):

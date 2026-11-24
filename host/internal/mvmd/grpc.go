@@ -593,3 +593,116 @@ func (g *GRPC) RemoveBootSet(ctx context.Context, name string) error {
 	})
 	return err
 }
+
+// fileChunk is the size of one message of a WriteFile stream.
+const fileChunk = 1 << 20
+
+func (g *GRPC) Exec(ctx context.Context, machineID, execID string, command []string) (ExecRecord, error) {
+	resp, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.ExecResponse, error) {
+		// The exec's own ID is its request ID: hostd never runs one twice.
+		return c.Exec(ctx, &v1alpha2.ExecRequest{ExecId: execID, RequestId: execID, MachineId: machineID, Command: command})
+	})
+	if err != nil {
+		return ExecRecord{}, err
+	}
+	return execRecordFromProto(resp.GetRecord()), nil
+}
+
+// ReadExecOutput's sink error reaches the caller as it is: fail passes on what is no gRPC status.
+func (g *GRPC) ReadExecOutput(ctx context.Context, machineID, execID string, after uint64, sink func(Chunk) error) (ExecRecord, error) {
+	rec, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.ExecRecord, error) {
+		return v1alpha2.ReadExecOutput(ctx, c, machineID, execID, after, func(ch *v1alpha2.OutputChunk) error {
+			return sink(Chunk{Stderr: ch.GetStream() == v1alpha2.OutputStream_OUTPUT_STREAM_STDERR, Offset: ch.GetOffset(), Data: ch.GetData()})
+		})
+	})
+	if err != nil {
+		return ExecRecord{}, err
+	}
+	return execRecordFromProto(rec), nil
+}
+
+func execRecordFromProto(r *v1alpha2.ExecRecord) ExecRecord {
+	out := ExecRecord{Reason: r.GetReason(), ExitCode: r.GetExitCode(), TermSignal: r.GetTermSignal()}
+	switch r.GetStatus() {
+	case v1alpha2.ExecStatus_EXEC_STATUS_NOT_STARTED:
+		out.Status = ExecNotStarted
+	case v1alpha2.ExecStatus_EXEC_STATUS_CUT_SHORT:
+		out.Status = ExecCutShort
+	case v1alpha2.ExecStatus_EXEC_STATUS_EXITED:
+		out.Status = ExecExited
+	default:
+		out.Status = ExecStarted
+	}
+	return out
+}
+
+func (g *GRPC) SignalExec(ctx context.Context, machineID, execID string, signal int32) error {
+	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.SignalExecResponse, error) {
+		return c.SignalExec(ctx, &v1alpha2.SignalExecRequest{MachineId: machineID, ExecId: execID, Signal: signal})
+	})
+	return err
+}
+
+// ReadFile's sink error reaches the caller as it is, as ReadExecOutput's does.
+func (g *GRPC) ReadFile(ctx context.Context, machineID, path string, sink func([]byte) error) error {
+	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (struct{}, error) {
+		stream, err := c.ReadFile(ctx, &v1alpha2.ReadFileRequest{MachineId: machineID, Path: path})
+		if err != nil {
+			return struct{}{}, err
+		}
+		for {
+			msg, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				return struct{}{}, nil
+			}
+			if err != nil {
+				return struct{}{}, err
+			}
+			if err := sink(msg.GetChunk()); err != nil {
+				return struct{}{}, err
+			}
+		}
+	})
+	return err
+}
+
+func (g *GRPC) WriteFile(ctx context.Context, machineID, path string, content io.Reader) error {
+	_, err := call(ctx, g, func(c v1alpha2.RuntimeServiceClient) (*v1alpha2.WriteFileResponse, error) {
+		stream, err := c.WriteFile(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := sendFile(stream, machineID, path, content); err != nil {
+			// A send that fails with io.EOF means the server ended the stream: its status is the reason.
+			if errors.Is(err, io.EOF) {
+				_, err = stream.CloseAndRecv()
+			}
+			return nil, err
+		}
+		return stream.CloseAndRecv()
+	})
+	return err
+}
+
+// sendFile sends the start of a WriteFile, then content in chunks.
+func sendFile(stream v1alpha2.RuntimeService_WriteFileClient, machineID, path string, content io.Reader) error {
+	start := &v1alpha2.WriteFileRequest{Part: &v1alpha2.WriteFileRequest_Start{Start: &v1alpha2.WriteFileStart{MachineId: machineID, Path: path}}}
+	if err := stream.Send(start); err != nil {
+		return err
+	}
+	buf := make([]byte, fileChunk)
+	for {
+		n, err := content.Read(buf)
+		if n > 0 {
+			if err := stream.Send(&v1alpha2.WriteFileRequest{Part: &v1alpha2.WriteFileRequest_Chunk{Chunk: buf[:n]}}); err != nil {
+				return err
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read the file's content: %w", err)
+		}
+	}
+}
