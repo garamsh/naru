@@ -279,7 +279,9 @@ func TestProxy_AnswersARequestForANameTheConnectionDoesNotServe421(t *testing.T)
 	f := newFixture(t, time.Hour, "", httpRoute(nameA, machineA, a.port), httpRoute(nameB, machineB, b.port))
 	shop := httpRoute(alias, machineB, b.port)
 	shop.Certificate, shop.Key = f.pki.aliasCert, f.pki.aliasKey
-	f.write(2, "", httpRoute(nameA, machineA, a.port), httpRoute(nameB, machineB, b.port), shop)
+	stream := httpRoute("0000000000000001.m.test", machineB, b.port)
+	stream.Protocol = hostapi.RouteTCP
+	f.write(2, "", httpRoute(nameA, machineA, a.port), httpRoute(nameB, machineB, b.port), shop, stream)
 	require.NoError(t, f.routes.Load())
 
 	c, err := f.dialTLS(&tls.Config{ServerName: nameA, NextProtos: []string{"http/1.1"}})
@@ -291,6 +293,7 @@ func TestProxy_AnswersARequestForANameTheConnectionDoesNotServe421(t *testing.T)
 	assert.Equal(t, int64(1), b.hits.Load())
 	assert.Equal(t, http.StatusMisdirectedRequest, request(t, c, br, alias).StatusCode, "an alias with its own certificate")
 	assert.Equal(t, http.StatusMisdirectedRequest, request(t, c, br, "0000000000000000.m.test").StatusCode, "a name the certificate covers with no route")
+	assert.Equal(t, http.StatusMisdirectedRequest, request(t, c, br, "0000000000000001.m.test").StatusCode, "a name whose route is a tcp service")
 	assert.Equal(t, int64(1), b.hits.Load())
 }
 
@@ -403,6 +406,40 @@ func TestProxy_CarriesATCPServiceAsPlainTCPAfterAPROXYHeaderWhenItAsksForOne(t *
 	}
 }
 
+func TestProxy_ClosesATCPServiceOfAMachineThatIsNotRunningWithoutDialling(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	var dialled atomic.Int64
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			dialled.Add(1)
+			_, _ = c.Write([]byte("pong"))
+			_ = c.Close()
+		}
+	}()
+	r := httpRoute(nameA, machineA, l.Addr().(*net.TCPAddr).Port)
+	r.Protocol = hostapi.RouteTCP
+	stopped := r
+	stopped.Hostname, stopped.Running = nameB, false
+	f := newFixture(t, time.Hour, "", r, stopped)
+
+	read := func(name string) error {
+		c, err := f.dialTLS(&tls.Config{ServerName: name})
+		require.NoError(t, err)
+		defer func() { _ = c.Close() }()
+		_, err = io.ReadFull(c, make([]byte, 4))
+		return err
+	}
+	require.NoError(t, read(nameA), "control: a running Machine answers")
+	require.Error(t, read(nameB))
+	assert.Equal(t, int64(1), dialled.Load(), "the stopped Machine was not dialled")
+}
+
 func TestProxy_WritesThePROXYHeaderOfEachClientBeforeAnHTTPRequestWhenTheServiceAsksForOne(t *testing.T) {
 	port, got := tcpBackend(t)
 	r := httpRoute(nameA, machineA, port)
@@ -498,6 +535,8 @@ func TestRoutes_ATableOfALowerRevisionOrOneThatDoesNotParseLeavesTheLastGoodOne(
 	bad.Protocol = "udp"
 	f.write(4, "", bad)
 	require.Error(t, f.routes.Load(), "a route that does not parse")
+	f.writeRaw([]byte(`{"revision": 5, "routes": []}`))
+	require.Error(t, f.routes.Load(), "a file without the time hostd took it")
 	f.writeRaw([]byte("{not json"))
 	require.Error(t, f.routes.Load(), "a file that does not parse")
 	require.NoError(t, os.Remove(f.path()))
