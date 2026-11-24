@@ -37,6 +37,8 @@ The words Node, host, microVM and Machine are those of the [glossary](./glossary
 | `snapshots/` shares a file system with the Machines' run directories, and root disks stay files in `disks/` of the state directory. | `runtime.md` §State and stability; ADR 0021 |
 | The guest kernel meets mvmd's built-in conditions. | `guest.md` §Current decisions |
 
+- **What Machines across hosts ask of mvmd (decided, not built).** A stream read of a disk no running Machine holds, or of a disk snapshot, and a Create disk from a stream with its size and SHA-256 ([ADR 0109](./adr/0109-each-host-is-authoritative-for-what-runs-on-it-and-keeps-running-it-without-orch-orch-keeps-desired-state-placement-and-routes-and-a-machine-is-rebound-only-on-its-old-hosts-acknowledgement-or-abandonment.md) item 8), for the first goal; and, for the GPU goal, device attach in Create Machine with Snapshot refused while a device is attached, the Cloud Hypervisor Driver's VFIO devices, vCPU affinity, hugepages and NUMA with a capability `device-passthrough`, and the device inventory in runtime information ([ADR 0111](./adr/0111-a-gpu-machine-runs-on-the-cloud-hypervisor-driver-with-whole-devices-by-vfio-on-a-bare-metal-host-pinned-to-the-devices-numa-node-with-hugepages.md) item 10). Each is an addition to `v1alpha2` and an issue in garamsh/mvmd.
+
 ## Rationale
 
 - [ADR 0002](./adr/0002-gaon-depends-on-naru-one-way-through-the-node-api-and-naru-has-no-control-plane.md): why the boundary with gaon sits at the node API, why naru has no control plane, and why init holds no orchestrator logic. It records the consequences and the signs it was wrong.

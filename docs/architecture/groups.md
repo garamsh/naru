@@ -22,7 +22,7 @@ What orch's groups engine does: how it keeps a group of microVMs at its declared
   | Rolling update | A member whose template hash differs is retired; creation is bounded by `count + maxSurge`, and a running member is removed only while available members stay at or above the larger of `minAvailable` and `count - maxUnavailable`. |
   | Drain | A member on a draining host is retired by the same bound, so members leave within `minAvailable`. |
   | Required label | A member on a host that no longer holds the group's region or required labels is retired and placed elsewhere. |
-  | Placement | Among hosts that are ready, not draining, in the region, carrying the required labels, with the node version in the host's window and with room: highest preferred score, then fewest members of the group, then most free memory, then lowest ID. |
+  | Placement | Among hosts that are ready, not draining, in the region, carrying the required labels, with the node version in the host's window and with room: highest preferred score, then fewest members of the group, then most free memory, then lowest ID.. The room is orch's one account of a host, shared with Machines, and a member's record commits with the host's allocation record (`/naru/orch/host-allocations/<host>`), so a member and a Machine placed in one pass cannot both take the last of a host (decided, not built: [ADR 0110](./adr/0110-orch-places-a-machine-on-the-host-that-fits-its-shape-by-capacity-orch-accounts-for-itself-and-labels-and-spreads-machines-across-hosts-amending-adr-0042s-placement.md)). |
   | Node version | A template naming a node version the host does not list (its N and N-1) is refused for that host. |
   | Count lowered | Surplus members are retired by the same bound. |
 
