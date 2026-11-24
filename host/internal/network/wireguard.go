@@ -67,7 +67,10 @@ func (w *WireGuard) Port() int { return w.port }
 func (w *WireGuard) Close() error { return w.client.Close() }
 
 // Set implements Tunnel.
-func (w *WireGuard) Set(peers []Peer) error {
+func (w *WireGuard) Set(mesh netip.Addr, peers []Peer) error {
+	if err := w.setAddress(mesh); err != nil {
+		return err
+	}
 	cfg := wgtypes.Config{ReplacePeers: true}
 	want := map[string]netip.Prefix{}
 	for _, p := range sortedPeers(peers) {
@@ -79,7 +82,7 @@ func (w *WireGuard) Set(peers []Peer) error {
 		if p.Endpoint.IsValid() {
 			pc.Endpoint = net.UDPAddrFromAddrPort(p.Endpoint)
 		}
-		for _, x := range sortedPrefixes(p.Prefixes) {
+		for _, x := range sortedPrefixes(p.allowed()) {
 			pc.AllowedIPs = append(pc.AllowedIPs, *prefixNet(x))
 			want[x.String()] = x
 		}
@@ -107,6 +110,33 @@ func (w *WireGuard) Set(peers []Peer) error {
 		r := &netlink.Route{LinkIndex: w.link.Attrs().Index, Dst: prefixNet(p), Scope: netlink.SCOPE_LINK, Protocol: routeProtocol}
 		if err := netlink.RouteReplace(r); err != nil {
 			return fmt.Errorf("route %s to %s: %w", p, w.name, err)
+		}
+	}
+	return nil
+}
+
+// setAddress makes mesh, as a /32, the interface's only IPv4 address, and leaves it with none when
+// mesh is the zero value. The kernel then takes mesh as the source of the host's own traffic routed
+// through the interface.
+func (w *WireGuard) setAddress(mesh netip.Addr) error {
+	have, err := netlink.AddrList(w.link, netlink.FAMILY_V4)
+	if err != nil {
+		return fmt.Errorf("list addresses of %s: %w", w.name, err)
+	}
+	want := netip.PrefixFrom(mesh, 32)
+	kept := false
+	for _, a := range have {
+		if p, ok := netPrefix(a.IPNet); ok && mesh.IsValid() && p == want {
+			kept = true
+			continue
+		}
+		if err := netlink.AddrDel(w.link, &a); err != nil {
+			return fmt.Errorf("remove address %s from %s: %w", a.IPNet, w.name, err)
+		}
+	}
+	if mesh.IsValid() && !kept {
+		if err := netlink.AddrAdd(w.link, &netlink.Addr{IPNet: prefixNet(want)}); err != nil {
+			return fmt.Errorf("add the mesh address %s to %s: %w", mesh, w.name, err)
 		}
 	}
 	return nil

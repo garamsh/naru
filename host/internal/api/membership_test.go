@@ -17,16 +17,17 @@ import (
 // fakeTunnel is the network.Tunnel of the tests: it records the peers it was set to.
 type fakeTunnel struct {
 	peers []network.Peer
+	mesh  netip.Addr
 	fail  bool
 }
 
 func (f *fakeTunnel) PublicKey() string { return "PUBLICKEYOFTHISHOST" }
 func (f *fakeTunnel) Port() int         { return 51820 }
-func (f *fakeTunnel) Set(p []network.Peer) error {
+func (f *fakeTunnel) Set(mesh netip.Addr, p []network.Peer) error {
 	if f.fail {
 		return errors.New("the tunnel is down")
 	}
-	f.peers = p
+	f.peers, f.mesh = p, mesh
 	return nil
 }
 

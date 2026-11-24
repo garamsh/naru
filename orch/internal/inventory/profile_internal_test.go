@@ -38,7 +38,7 @@ func TestEveryFieldOfTheProfileIsDecidedForShown(t *testing.T) {
 	var shownFields = map[string]bool{
 		"FirecrackerSHA256": true, "TimeServers": true, "Registries": true, "AWS": true,
 		"MetricsListen": true, "Network": true, "Storage": true, "Extensions": true, "Orch": true,
-		"APIClientCA": true, "MachinePool": true,
+		"APIClientCA": true, "MachinePool": true, "MeshPool": true,
 	}
 	typ := reflect.TypeFor[layout.HostProfile]()
 	for i := range typ.NumField() {

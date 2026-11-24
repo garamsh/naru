@@ -21,7 +21,7 @@ func fixture(t *testing.T) (*exposures.Service, *exposurestest.Store) {
 	st := exposurestest.NewStore()
 	nets := exposurestest.Networks{{Name: "a", Prefix: "10.1.0.0/24"}, {Name: "b", Prefix: "10.2.0.0/24"}}
 	members := exposurestest.Members{"a": {"10.1.0.5", "10.1.0.6"}, "b": {"10.2.0.5"}}
-	s := exposures.New(st, nets, members, &exposurestest.Log{}, &exposurestest.Clock{T: time.Unix(1000, 0)})
+	s := exposures.New(st, nets, members, exposurestest.Profile{}, &exposurestest.Log{}, &exposurestest.Clock{T: time.Unix(1000, 0)})
 	_, err := s.ApplyPool(t.Context(), "op", "lan", orchapi.AddressPoolSpec{CIDRs: []string{"192.168.0.80/29", "192.168.0.88/31"}, Networks: []string{"a"}})
 	require.NoError(t, err)
 	return s, st
@@ -262,7 +262,7 @@ func TestAnUpdateKeepsTheAddressAndRefusesAChangeOfPool(t *testing.T) {
 
 func TestANetworkHoldsAtMostSixtyFourExposures(t *testing.T) {
 	st := exposurestest.NewStore()
-	s := exposures.New(st, exposurestest.Networks{{Name: "a", Prefix: "10.1.0.0/24"}}, exposurestest.Members{"a": {"10.1.0.5"}}, &exposurestest.Log{}, &exposurestest.Clock{})
+	s := exposures.New(st, exposurestest.Networks{{Name: "a", Prefix: "10.1.0.0/24"}}, exposurestest.Members{"a": {"10.1.0.5"}}, exposurestest.Profile{}, &exposurestest.Log{}, &exposurestest.Clock{})
 	_, err := s.ApplyPool(t.Context(), "op", "big", orchapi.AddressPoolSpec{CIDRs: []string{"172.16.0.0/24"}, Networks: []string{"a"}})
 	require.NoError(t, err)
 	sp := spec("a", "10.1.0.5")
@@ -304,7 +304,7 @@ func TestAnExposureHoldsAtMostSixteenPortsAndSixtyFourBackendsWithoutDuplicates(
 	for i := range exposures.MaxBackends + 1 {
 		members = append(members, netip.AddrFrom4([4]byte{10, 1, 0, byte(i + 1)}).String())
 	}
-	s := exposures.New(st, exposurestest.Networks{{Name: "a", Prefix: "10.1.0.0/24"}}, exposurestest.Members{"a": members}, &exposurestest.Log{}, &exposurestest.Clock{})
+	s := exposures.New(st, exposurestest.Networks{{Name: "a", Prefix: "10.1.0.0/24"}}, exposurestest.Members{"a": members}, exposurestest.Profile{}, &exposurestest.Log{}, &exposurestest.Clock{})
 	_, err := s.ApplyPool(t.Context(), "op", "lan", orchapi.AddressPoolSpec{CIDRs: []string{"192.168.0.80/29"}, Networks: []string{"a"}})
 	require.NoError(t, err)
 	ports := func(n int) []orchapi.ExposurePort {
@@ -372,7 +372,7 @@ func TestAnApplyOverARenewalIsReadAgainAndKeepsTheRenewal(t *testing.T) {
 		st := &renewing{Store: exposurestest.NewStore(), n: 0}
 		nets := exposurestest.Networks{{Name: "a", Prefix: "10.1.0.0/24"}}
 		members := exposurestest.Members{"a": {"10.1.0.5", "10.1.0.6"}}
-		s := exposures.New(st, nets, members, &exposurestest.Log{}, &exposurestest.Clock{T: time.Unix(1000, 0)})
+		s := exposures.New(st, nets, members, exposurestest.Profile{}, &exposurestest.Log{}, &exposurestest.Clock{T: time.Unix(1000, 0)})
 		_, err := s.ApplyPool(t.Context(), "op", "lan", orchapi.AddressPoolSpec{CIDRs: []string{"192.168.0.80/29"}, Networks: []string{"a"}})
 		require.NoError(t, err)
 		_, err = s.ApplyExposure(t.Context(), "op", "a", "web", spec("a", "10.1.0.5"))

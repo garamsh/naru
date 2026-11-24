@@ -51,51 +51,65 @@ func (s *service) Admit(ctx context.Context, by string, req orchapi.AdmitRequest
 	now := s.clock.Now()
 	h := Host{ID: p.HostID, PublicKey: p.PublicKey, Region: req.Region, Labels: req.Labels, Address: p.Address, AdmittedAt: now}
 	ev := orchapi.Event{Time: now, Type: EventAdmitted, Subject: p.HostID, Detail: map[string]string{"by": by, "region": req.Region}}
-	if p.Hardware == nil {
-		if h.Certificate, err = s.issue(ctx, req.Statement, p); err != nil {
-			return orchapi.Host{}, err
-		}
-		if err := s.store.Admit(ctx, p, h, ev, nil); err != nil {
-			return orchapi.Host{}, err
-		}
-		return h.api(), nil
-	}
-	// The pool hands out only a prefix no admitted host holds, so every admitted host's prefix must be
-	// on record before it is asked: a host enrolled with its own configuration chose its prefix itself.
-	if err := s.requireRecorded(ctx); err != nil {
-		return orchapi.Host{}, err
-	}
-	// A joined host takes its prefix first, so a full pool is refused before the signer issues
-	// anything. The reservation holds the prefix while the signer is asked; one transaction then
-	// writes the host and confirms the prefix, and any failure before that drops the reservation.
-	res, err := s.store.Reserve(ctx, h.ID, func(claimed []netip.Prefix) (netip.Prefix, error) {
-		return nextPrefix(joined.profile.MachinePool, claimed)
-	}, now.Add(reservationTTL), now)
+	meshPool, err := MeshPool(ctx, s.store)
 	if err != nil {
 		return orchapi.Host{}, err
 	}
-	released := false
+	if p.Hardware != nil {
+		// The pool hands out only a prefix no admitted host holds, so every admitted host's prefix
+		// must be on record before it is asked: a host enrolled with its own configuration chose its
+		// prefix itself.
+		if err := s.requireRecorded(ctx); err != nil {
+			return orchapi.Host{}, err
+		}
+	}
+	// What the host is given is reserved first, so a full pool is refused before the signer issues
+	// anything. The reservations hold while the signer is asked; one transaction then writes the host
+	// and confirms them, and any failure before that drops them.
+	var reserved []Allocation
+	committed := false
 	defer func() {
-		if !released {
-			// The admission may have been cancelled, and the reservation is dropped regardless.
-			_ = s.store.Release(context.WithoutCancel(ctx), res)
+		if !committed {
+			for _, a := range reserved {
+				// The admission may have been cancelled, and the reservation is dropped regardless.
+				_ = s.store.Release(context.WithoutCancel(ctx), a)
+			}
 		}
 	}()
+	if p.Hardware != nil {
+		res, err := s.store.Reserve(ctx, SpaceMachine, h.ID, func(claimed []netip.Prefix) (netip.Prefix, error) {
+			return nextPrefix(joined.profile.MachinePool, claimed)
+		}, now.Add(reservationTTL), now)
+		if err != nil {
+			return orchapi.Host{}, err
+		}
+		reserved = append(reserved, res)
+		h.MachinePrefix = res.Prefix
+	}
+	if meshPool.IsValid() {
+		res, err := s.store.Reserve(ctx, SpaceMesh, h.ID, s.meshPick(ctx), now.Add(reservationTTL), now)
+		if err != nil {
+			return orchapi.Host{}, err
+		}
+		reserved = append(reserved, res)
+		h.MeshAddress = netip.MustParsePrefix(res.Prefix).Addr().String()
+		ev.Detail["meshAddress"] = h.MeshAddress
+	}
 	if h.Certificate, err = s.issue(ctx, req.Statement, p); err != nil {
 		return orchapi.Host{}, err
 	}
-	prefix := netip.MustParsePrefix(res.Prefix)
-	h.MachinePrefix = res.Prefix
-	// The configuration is built here only to refuse an admission it cannot be built for; it is not
-	// stored, and is built again from the record on each answer.
-	if _, err := joined.buildConfig(h, prefix, s.conf.OrchCA, s.conf.RevocationPublicKey); err != nil {
+	if p.Hardware != nil {
+		// The configuration is built here only to refuse an admission it cannot be built for; it is
+		// not stored, and is built again from the record on each answer.
+		if _, err := joined.buildConfig(h, netip.MustParsePrefix(h.MachinePrefix), s.conf.OrchCA, s.conf.RevocationPublicKey); err != nil {
+			return orchapi.Host{}, err
+		}
+		ev.Detail["machinePrefix"] = h.MachinePrefix
+	}
+	if err := s.store.Admit(ctx, p, h, ev, reserved...); err != nil {
 		return orchapi.Host{}, err
 	}
-	ev.Detail["machinePrefix"] = h.MachinePrefix
-	if err := s.store.Admit(ctx, p, h, ev, &res); err != nil {
-		return orchapi.Host{}, err
-	}
-	released = true
+	committed = true
 	return h.api(), nil
 }
 
@@ -110,7 +124,7 @@ func (s *service) requireRecorded(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	allocations, err := s.store.ListAllocations(ctx)
+	allocations, err := s.store.ListAllocations(ctx, SpaceMachine)
 	if err != nil {
 		return err
 	}

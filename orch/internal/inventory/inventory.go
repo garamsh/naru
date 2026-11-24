@@ -22,6 +22,8 @@ var (
 	ErrTooManyPending = errors.New("too many pending enrollments")
 	// ErrPoolFull is an admission that finds every prefix of the Machine pool given to a host.
 	ErrPoolFull = errors.New("the Machine pool has no free prefix")
+	// ErrMeshPoolFull is an admission that finds every address of the mesh pool given to a host.
+	ErrMeshPoolFull = errors.New("the mesh pool has no free address")
 	// ErrRedacted is a profile set with the redaction GET /v1/profile shows in place of a secret.
 	ErrRedacted = errors.New("the host profile holds a redacted secret")
 	// ErrNoProfile is the admission of a host that joined from the install seed while no host profile
@@ -74,13 +76,26 @@ type Pending struct {
 	Hardware *orchapi.Hardware `json:"hardware,omitempty"`
 }
 
-// Allocation is the Machine prefix given to a host. A non-zero ReservedUntil marks a reservation,
-// which an admission holds between asking the signer and writing the host and which another
-// admission may take over once it has passed; confirming the allocation clears it.
+// Space is an address space orch gives hosts parts of. Each is allocated from its own records, so a
+// reservation in one never takes over one in the other.
+type Space int
+
+const (
+	// SpaceMachine is the hosts' Machine prefixes, from the profile's Machine pool.
+	SpaceMachine Space = iota
+	// SpaceMesh is the hosts' mesh addresses, /32s from the profile's mesh pool (ADR 0113 item 1).
+	SpaceMesh
+)
+
+// Allocation is a part of a Space given to a host: a Machine prefix, or a mesh address as a /32. A
+// non-zero ReservedUntil marks a reservation, which an admission holds between asking the signer
+// and writing the host and which another admission may take over once it has passed; confirming the
+// allocation clears it. Space is where the store keeps the record, not part of it.
 type Allocation struct {
 	Prefix        string    `json:"prefix"`
 	HostID        string    `json:"hostId"`
 	ReservedUntil time.Time `json:"reservedUntil,omitzero"`
+	Space         Space     `json:"-"`
 }
 
 // Host is an admitted host.
@@ -98,6 +113,9 @@ type Host struct {
 	// empty for a host enrolled with its own configuration. Orch builds the naru.yaml of a joined host
 	// on each answer from this record and the current profile, so no credential is stored here.
 	MachinePrefix string `json:"machinePrefix,omitempty"`
+	// MeshAddress is the host's address on its tunnel, from the mesh pool; empty until orch gives it
+	// one. Its allocation in SpaceMesh is written in the same step.
+	MeshAddress string `json:"meshAddress,omitempty"`
 	// Config is what records written before ADR 0066 carried: the naru.yaml with the profile's
 	// credential in it. It is read only so that the migration can drop it, and never written.
 	Config []byte `json:"config,omitempty"`
@@ -108,5 +126,5 @@ func (h Host) api() orchapi.Host {
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	return orchapi.Host{ID: h.ID, Region: h.Region, Labels: labels, Address: h.Address, AdmittedAt: h.AdmittedAt, LastSeen: h.LastSeen, Draining: h.Draining, MachinePrefix: h.MachinePrefix}
+	return orchapi.Host{ID: h.ID, Region: h.Region, Labels: labels, Address: h.Address, AdmittedAt: h.AdmittedAt, LastSeen: h.LastSeen, Draining: h.Draining, MachinePrefix: h.MachinePrefix, MeshAddress: h.MeshAddress}
 }

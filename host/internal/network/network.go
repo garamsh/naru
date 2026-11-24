@@ -30,13 +30,24 @@ type Member struct {
 	Address netip.Addr `json:"address"`
 }
 
-// Peer is another host the tunnel reaches: its public key, where it listens, and the prefixes it
-// holds, which are the only ones the tunnel accepts from it and sends to it.
+// Peer is another host the tunnel reaches: its public key, where it listens, the prefixes it
+// holds and its mesh address, which are the only addresses the tunnel accepts from it and sends to
+// it. Mesh is the zero value for a peer that has none.
 type Peer struct {
 	Name      string         `json:"name"`
 	PublicKey string         `json:"publicKey"`
 	Endpoint  netip.AddrPort `json:"endpoint"`
 	Prefixes  []netip.Prefix `json:"prefixes"`
+	Mesh      netip.Addr     `json:"meshAddress,omitzero"`
+}
+
+// allowed is what the tunnel accepts from p and routes to p: its prefixes and its mesh address.
+func (p Peer) allowed() []netip.Prefix {
+	out := append([]netip.Prefix(nil), p.Prefixes...)
+	if p.Mesh.IsValid() {
+		out = append(out, netip.PrefixFrom(p.Mesh, 32))
+	}
+	return out
 }
 
 // Config is everything the ruleset and the tunnel are made from.
@@ -44,6 +55,8 @@ type Config struct {
 	Networks []Network
 	Members  []Member
 	Peers    []Peer
+	// Mesh is the host's own address on the tunnel (ADR 0113 item 1); the zero value means none.
+	Mesh netip.Addr
 	// Management is the prefix of the management plane: nothing from a network reaches it, and it
 	// reaches only a network's API endpoint.
 	Management netip.Prefix

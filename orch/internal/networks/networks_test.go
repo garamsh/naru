@@ -65,6 +65,11 @@ type clock struct{}
 
 func (clock) Now() time.Time { return time.Unix(7000, 0).UTC() }
 
+// noProfile is a store with no host profile, so no mesh pool.
+type noProfile struct{}
+
+func (noProfile) GetProfile(context.Context) ([]byte, error) { return nil, inventory.ErrNotFound }
+
 type poolList []orchapi.AddressPool
 
 func (p poolList) ListPools(context.Context) ([]orchapi.AddressPool, error) { return p, nil }
@@ -76,7 +81,7 @@ func newSvc(gs ...groups.GroupSpec) (*networks.Service, *store, *log) {
 func newSvcWithPools(p poolList, gs ...groups.GroupSpec) (*networks.Service, *store, *log) {
 	st := &store{nets: map[string]orchapi.Network{}}
 	l := &log{}
-	return networks.New(st, groupList(gs), p, l, clock{}), st, l
+	return networks.New(st, groupList(gs), p, noProfile{}, l, clock{}), st, l
 }
 
 func TestApplyStoresAndLogsAValidNetwork(t *testing.T) {

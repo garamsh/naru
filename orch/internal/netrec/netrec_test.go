@@ -24,6 +24,7 @@ type fakeHost struct {
 	networks map[string]netrec.NetworkState
 	peers    []netrec.Peer
 	peered   bool
+	mesh     string // the mesh address the host was told is its own
 }
 
 type fakeHosts struct {
@@ -68,11 +69,11 @@ func (f *fakeHosts) PutNetwork(_ context.Context, id, name string, n netrec.Netw
 	return nil
 }
 
-func (f *fakeHosts) PutPeers(_ context.Context, id string, p []netrec.Peer) error {
+func (f *fakeHosts) PutPeers(_ context.Context, id, mesh string, p []netrec.Peer) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	h := f.hosts[id]
-	h.peers, h.peered = p, true
+	h.peers, h.peered, h.mesh = p, true, mesh
 	return nil
 }
 
@@ -140,6 +141,27 @@ func TestTwoHostsAndTwoNetworksEachGetTheOthersMembersAndPeers(t *testing.T) {
 
 	assert.Equal(t, []netrec.Peer{{Name: "h2", PublicKey: "key2", Endpoint: "192.0.2.2:51821", Prefixes: []string{"10.200.2.0/24"}}}, h1.peers)
 	assert.Equal(t, []netrec.Peer{{Name: "h1", PublicKey: "key1", Endpoint: "192.0.2.1:51820", Prefixes: []string{"10.200.1.0/24"}}}, h2.peers)
+}
+
+func TestEachHostIsToldItsOwnMeshAddressAndEveryPeersBesideItsPrefixes(t *testing.T) {
+	f := fleet()
+	f.hosts["h1"].MeshAddress = "10.99.0.1"
+	f.hosts["h2"].MeshAddress = "10.99.0.2"
+	require.NoError(t, newRec(f, twoNetworks, &bytes.Buffer{}).Reconcile(t.Context()))
+
+	h1, h2 := f.hosts["h1"], f.hosts["h2"]
+	assert.Equal(t, "10.99.0.1", h1.mesh, "h1 is told its own")
+	assert.Equal(t, "10.99.0.2", h2.mesh)
+	require.Len(t, h1.peers, 1)
+	assert.Equal(t, "10.99.0.2", h1.peers[0].MeshAddress, "and its peer's")
+	assert.Equal(t, []string{"10.200.2.0/24"}, h1.peers[0].Prefixes, "the mesh address is not one of the peer's prefixes")
+	require.Len(t, h2.peers, 1)
+	assert.Equal(t, "10.99.0.1", h2.peers[0].MeshAddress)
+
+	f.hosts["h2"].MeshAddress = ""
+	require.NoError(t, newRec(f, twoNetworks, &bytes.Buffer{}).Reconcile(t.Context()))
+	assert.Empty(t, f.hosts["h1"].peers[0].MeshAddress, "the control: a host orch gave none is a peer with none")
+	assert.Empty(t, f.hosts["h2"].mesh)
 }
 
 func TestAMemberThatIsRemovedDisappearsFromTheOtherHosts(t *testing.T) {

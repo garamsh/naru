@@ -52,6 +52,9 @@ type HostProfile struct {
 	Orch              ProfileOrch   `yaml:"orch"`
 	APIClientCA       string        `yaml:"apiClientCA,omitempty"`
 	MachinePool       netip.Prefix  `yaml:"machinePool"`
+	// MeshPool is the IPv4 prefix orch gives each admitted host its mesh address from, a /32 on its
+	// tunnel (ADR 0113 item 1). Nil gives no host a mesh address.
+	MeshPool *netip.Prefix `yaml:"meshPool,omitempty"`
 }
 
 // ProfileOrch is where a joined host's agent reaches orch after admission: spec.host.orch's url and
@@ -134,6 +137,9 @@ func (p HostProfile) Check() error {
 	case pool.Bits() == 0:
 		return errors.New("the Machine pool is the default route")
 	}
+	if err := p.checkMeshPool(); err != nil {
+		return err
+	}
 	for what, pem := range map[string]string{"apiClientCA": p.APIClientCA} {
 		if strings.Contains(pem, "PRIVATE KEY") {
 			return fmt.Errorf("%s holds a private key: a host profile carries nothing that is one host's own", what)
@@ -158,6 +164,27 @@ func (p HostProfile) Check() error {
 	}
 	_, err = p.Node(probe)
 	return err
+}
+
+// checkMeshPool reports a mesh pool that is not an IPv4 prefix in its canonical form, is the default
+// route, or overlaps the Machine pool or the management prefix: a host's own traffic to another
+// host must leave by the tunnel, and no other route may claim its addresses.
+func (p HostProfile) checkMeshPool() error {
+	if p.MeshPool == nil {
+		return nil
+	}
+	pool := *p.MeshPool
+	switch {
+	case !pool.IsValid() || !pool.Addr().Is4():
+		return errors.New("the mesh pool is not an IPv4 prefix")
+	case pool != pool.Masked():
+		return fmt.Errorf("the mesh pool %s has host bits set; write %s", pool, pool.Masked())
+	case pool.Overlaps(p.MachinePool):
+		return fmt.Errorf("the mesh pool %s overlaps the Machine pool %s", pool, p.MachinePool)
+	case p.Network != nil && pool.Overlaps(p.Network.ManagementPrefix):
+		return fmt.Errorf("the mesh pool %s overlaps the management prefix %s", pool, p.Network.ManagementPrefix)
+	}
+	return nil
 }
 
 // probeHost is a host the profile is tried on: a certificate from a throwaway authority, and the

@@ -23,8 +23,9 @@ type Networks interface {
 	Networks() []network.Network
 	Attach(ctx context.Context, m network.Member) error
 	Detach(ctx context.Context, a netip.Addr) error
-	SetPeers(ctx context.Context, peers []network.Peer) error
+	SetPeers(ctx context.Context, mesh netip.Addr, peers []network.Peer) error
 	Peers() []network.Peer
+	Mesh() netip.Addr
 	Members() []network.Member
 	TunnelInfo() (network.TunnelInfo, bool)
 }
@@ -237,6 +238,9 @@ func peerViews(in []network.Peer) []hostapi.Peer {
 		if p.Endpoint.IsValid() {
 			v.Endpoint = p.Endpoint.String()
 		}
+		if p.Mesh.IsValid() {
+			v.MeshAddress = p.Mesh.String()
+		}
 		for _, x := range p.Prefixes {
 			v.Prefixes = append(v.Prefixes, x.String())
 		}
@@ -246,8 +250,10 @@ func peerViews(in []network.Peer) []hostapi.Peer {
 	return out
 }
 
-// putPeers replaces the tunnel's peers. Each has a WireGuard public key (44 base64 characters), at
-// most one endpoint and the prefixes it holds; a prefix is held by one peer only.
+// putPeers replaces the tunnel's peers and the host's mesh address. Each peer has a WireGuard public
+// key (44 base64 characters), at most one endpoint, the prefixes it holds and at most one mesh
+// address; a prefix or a mesh address is held by one peer only, and the host's own mesh address by
+// none.
 func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 	if s.noNetworks(w) {
 		return
@@ -270,6 +276,13 @@ func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 		if !slices.Contains(fields, f) {
 			fields = append(fields, f)
 		}
+	}
+	mesh, ok := meshAddress(req.MeshAddress)
+	if !ok {
+		bad("meshAddress")
+	}
+	if mesh.IsValid() {
+		held[netip.PrefixFrom(mesh, 32)] = true
 	}
 	for _, p := range req.Peers {
 		np := network.Peer{Name: p.Name, PublicKey: p.PublicKey}
@@ -297,6 +310,12 @@ func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 			held[pf] = true
 			np.Prefixes = append(np.Prefixes, pf)
 		}
+		if m, ok := meshAddress(p.MeshAddress); !ok || held[netip.PrefixFrom(m, 32)] {
+			bad("peers.meshAddress")
+		} else if m.IsValid() {
+			held[netip.PrefixFrom(m, 32)] = true
+			np.Mesh = m
+		}
 		peers = append(peers, np)
 	}
 	if len(fields) > 0 {
@@ -305,18 +324,40 @@ func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := s.deps.Networks.SetPeers(ctx, peers); err != nil {
+	if err := s.deps.Networks.SetPeers(ctx, mesh, peers); err != nil {
 		s.networkFail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, hostapi.PeersRequest{Peers: peerViews(s.deps.Networks.Peers())})
+	s.writePeers(w)
 }
 
 func (s *Server) getPeers(w http.ResponseWriter, _ *http.Request) {
 	if s.noNetworks(w) {
 		return
 	}
-	writeJSON(w, http.StatusOK, hostapi.PeersRequest{Peers: peerViews(s.deps.Networks.Peers())})
+	s.writePeers(w)
+}
+
+// writePeers answers the peers and the mesh address the host holds.
+func (s *Server) writePeers(w http.ResponseWriter) {
+	out := hostapi.PeersRequest{Peers: peerViews(s.deps.Networks.Peers())}
+	if m := s.deps.Networks.Mesh(); m.IsValid() {
+		out.MeshAddress = m.String()
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// meshAddress parses a mesh address: empty for none, else an IPv4 address that may be a host's own.
+// ok is false for anything else.
+func meshAddress(s string) (netip.Addr, bool) {
+	if s == "" {
+		return netip.Addr{}, true
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil || !a.Is4() || !a.IsGlobalUnicast() {
+		return netip.Addr{}, false
+	}
+	return a, true
 }
 
 // validWireGuardKey reports whether k is a WireGuard key as wg prints it: 32 bytes in base64,
@@ -334,8 +375,8 @@ func validWireGuardKey(k string) bool {
 	return strings.ContainsRune("AEIMQUYcgkosw048", rune(k[42]))
 }
 
-// getTunnel reports what a peer needs to reach this host: the tunnel's public key and port, and
-// the prefixes the host's microVMs have addresses in. The private key is never reported.
+// getTunnel reports what a peer needs to reach this host: the tunnel's public key and port, the
+// prefixes the host's microVMs have addresses in, and the host's mesh address. The private key is never reported.
 func (s *Server) getTunnel(w http.ResponseWriter, r *http.Request) {
 	if s.noNetworks(w) {
 		return
@@ -356,5 +397,9 @@ func (s *Server) getTunnel(w http.ResponseWriter, r *http.Request) {
 	if prefixes == nil {
 		prefixes = []string{}
 	}
-	writeJSON(w, http.StatusOK, hostapi.Tunnel{PublicKey: t.PublicKey, ListenPort: t.Port, MachinePrefixes: prefixes})
+	out := hostapi.Tunnel{PublicKey: t.PublicKey, ListenPort: t.Port, MachinePrefixes: prefixes}
+	if t.Mesh.IsValid() {
+		out.MeshAddress = t.Mesh.String()
+	}
+	writeJSON(w, http.StatusOK, out)
 }

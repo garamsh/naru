@@ -20,24 +20,30 @@ type Network struct {
 }
 
 // Tunnel is what GET /v1/tunnel answers: what another host needs to peer with this one. The
-// private key is made by the host and never leaves it.
+// private key is made by the host and never leaves it. MeshAddress is the host's own address on the
+// tunnel, empty until orch declares one (ADR 0113 item 1).
 type Tunnel struct {
 	PublicKey       string   `json:"publicKey"`
 	ListenPort      int      `json:"listenPort"`
 	MachinePrefixes []string `json:"machinePrefixes"`
+	MeshAddress     string   `json:"meshAddress,omitempty"`
 }
 
-// Peer is another host the tunnel reaches. Prefixes are the ones that host holds: the only source
-// addresses the tunnel accepts from it and the only destinations it sends to it.
+// Peer is another host the tunnel reaches. Prefixes are the ones that host holds, and MeshAddress
+// is its own address on the tunnel: together the only source addresses the tunnel accepts from it
+// and the only destinations it sends to it.
 type Peer struct {
-	Name      string   `json:"name"`
-	PublicKey string   `json:"publicKey"`
-	Endpoint  string   `json:"endpoint,omitempty"`
-	Prefixes  []string `json:"prefixes"`
+	Name        string   `json:"name"`
+	PublicKey   string   `json:"publicKey"`
+	Endpoint    string   `json:"endpoint,omitempty"`
+	Prefixes    []string `json:"prefixes"`
+	MeshAddress string   `json:"meshAddress,omitempty"`
 }
 
 // PeersRequest is the body of PUT /v1/peers, and what GET /v1/peers answers: the whole list of
-// peers, which replaces the host's.
+// peers, which replaces the host's, and the host's own mesh address, which the host puts on its
+// tunnel interface. An empty MeshAddress leaves the interface with none.
 type PeersRequest struct {
-	Peers []Peer `json:"peers"`
+	MeshAddress string `json:"meshAddress,omitempty"`
+	Peers       []Peer `json:"peers"`
 }

@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -22,7 +23,8 @@ type PrefixHosts interface {
 
 // Recorder writes the Machine prefix every admitted host reports into the allocation records the
 // pool reads, whether the host joined from the install seed (orch chose its prefix) or enrolled with
-// a configuration of its own (it did). Whoever holds the leader lease runs one.
+// a configuration of its own (it did), and gives a mesh address to every admitted host that has none,
+// such as one admitted before the profile had a mesh pool. Whoever holds the leader lease runs one.
 type Recorder struct {
 	store    Store
 	hosts    PrefixHosts
@@ -58,10 +60,14 @@ func (r *Recorder) Run(ctx context.Context) error {
 	}
 }
 
-// Reconcile is one pass. A prefix another host holds is an event and is never overwritten, and a
-// confirmed allocation of a host that is no longer admitted is released.
+// Reconcile is one pass. A prefix another host holds is an event and is never overwritten, a
+// confirmed allocation of a host that is no longer admitted is released, and a host with no mesh
+// address is given one.
 func (r *Recorder) Reconcile(ctx context.Context) error {
 	if err := r.releaseOrphans(ctx); err != nil {
+		return err
+	}
+	if err := r.giveMeshAddresses(ctx); err != nil {
 		return err
 	}
 	reported, err := r.hosts.MachinePrefixes(ctx)
@@ -113,10 +119,15 @@ func (r *Recorder) conflict(ctx context.Context, host, prefix string) {
 // a host missing from the second read was removed after the first; the release deletes the record
 // only while it still holds the value read.
 func (r *Recorder) releaseOrphans(ctx context.Context) error {
-	allocations, err := r.store.ListAllocations(ctx)
+	allocations, err := r.store.ListAllocations(ctx, SpaceMachine)
 	if err != nil {
 		return err
 	}
+	mesh, err := r.store.ListAllocations(ctx, SpaceMesh)
+	if err != nil {
+		return err
+	}
+	allocations = append(allocations, mesh...)
 	hosts, err := r.store.ListHosts(ctx)
 	if err != nil {
 		return err
@@ -128,8 +139,36 @@ func (r *Recorder) releaseOrphans(ctx context.Context) error {
 	var errs []error
 	for _, a := range allocations {
 		if a.ReservedUntil.IsZero() && !admitted[a.HostID] {
-			r.log.Warn("releasing the Machine prefix of a host that is not admitted", "host", a.HostID, "prefix", a.Prefix)
+			r.log.Warn("releasing an allocation of a host that is not admitted", "host", a.HostID, "prefix", a.Prefix)
 			errs = append(errs, r.store.Release(ctx, a))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// giveMeshAddresses gives each admitted host that has no mesh address one from the profile's mesh
+// pool, when it has one.
+func (r *Recorder) giveMeshAddresses(ctx context.Context) error {
+	pool, err := MeshPool(ctx, r.store)
+	if err != nil || !pool.IsValid() {
+		return err
+	}
+	hosts, err := r.store.ListHosts(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, h := range hosts {
+		if h.MeshAddress != "" {
+			continue
+		}
+		got, err := r.store.GiveMeshAddress(ctx, h.ID, meshPickFrom(ctx, r.store))
+		switch {
+		case err == nil:
+			r.log.Info("gave a host its mesh address", "host", h.ID, "mesh_address", got.MeshAddress)
+		case errors.Is(err, ErrNotFound):
+		default:
+			errs = append(errs, fmt.Errorf("host %s: mesh address: %w", h.ID, err))
 		}
 	}
 	return errors.Join(errs...)

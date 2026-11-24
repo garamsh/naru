@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"net/netip"
 	"time"
 
 	"github.com/garamsh/naru/lib/orchapi"
@@ -63,8 +64,21 @@ type Config struct {
 	RevocationPublicKey string
 }
 
+// Claim is a prefix another part of orch holds, and what holds it, such as "network a".
+type Claim struct {
+	Prefix netip.Prefix
+	By     string
+}
+
+// AddressSpace lists the prefixes the networks and the address pools hold, which the profile's mesh
+// pool is kept apart from.
+type AddressSpace interface {
+	Claimed(ctx context.Context) ([]Claim, error)
+}
+
 type service struct {
 	store   Store
+	space   AddressSpace
 	signer  Signer
 	clock   Clock
 	conf    Config
@@ -73,8 +87,9 @@ type service struct {
 	polls   *limiter
 }
 
-// NewService returns the service over store and signer.
-func NewService(store Store, signer Signer, clock Clock, conf Config) Service {
+// NewService returns the service over store and signer. space is what a profile's mesh pool is
+// checked against.
+func NewService(store Store, space AddressSpace, signer Signer, clock Clock, conf Config) Service {
 	if conf.SourceRate == 0 {
 		conf.SourceRate = 1
 	}
@@ -97,7 +112,7 @@ func NewService(store Store, signer Signer, clock Clock, conf Config) Service {
 		conf.MaxPending = 1000
 	}
 	return &service{
-		store: store, signer: signer, clock: clock, conf: conf,
+		store: store, space: space, signer: signer, clock: clock, conf: conf,
 		sources: newLimiter(clock, conf.SourceRate, conf.SourceBurst),
 		keys:    newLimiter(clock, conf.KeyRate, conf.KeyBurst),
 		polls:   newLimiter(clock, conf.PollRate, conf.PollBurst),

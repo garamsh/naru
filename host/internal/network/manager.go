@@ -71,6 +71,8 @@ type state struct {
 	Networks []Network `json:"networks"`
 	Members  []Member  `json:"members"`
 	Peers    []Peer    `json:"peers"`
+	// Mesh is the host's mesh address, the zero value when orch declared none.
+	Mesh netip.Addr `json:"meshAddress,omitzero"`
 	// Boot and Exposures are the leases with the time they end, counted from the start of the boot
 	// Boot names: a restart in the same boot restores a lease that has not run out, and a reboot,
 	// which took the addresses and the rules with it, restores none.
@@ -98,7 +100,7 @@ func (m *Manager) Load(ctx context.Context) error {
 			if err := json.Unmarshal(raw, &s); err != nil {
 				return fmt.Errorf("%s: %w", m.State, err)
 			}
-			next.Networks, next.Members, next.Peers = s.Networks, s.Members, s.Peers
+			next.Networks, next.Members, next.Peers, next.Mesh = s.Networks, s.Members, s.Peers, s.Mesh
 			next.Exposures = m.restoreLeases(s, next)
 		case !errors.Is(err, os.ErrNotExist):
 			return err
@@ -164,12 +166,15 @@ func (m *Manager) boot() (string, time.Duration, error) {
 	return strings.TrimSpace(string(id)), time.Duration(up * float64(time.Second)), nil
 }
 
-// TunnelInfo returns the tunnel's public key and port; false when the host has no tunnel.
+// TunnelInfo returns the tunnel's public key, port and mesh address; false when the host has no
+// tunnel.
 func (m *Manager) TunnelInfo() (TunnelInfo, bool) {
 	if m.Tunnel == nil {
 		return TunnelInfo{}, false
 	}
-	return TunnelInfo{PublicKey: m.Tunnel.PublicKey(), Port: m.Tunnel.Port()}, true
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return TunnelInfo{PublicKey: m.Tunnel.PublicKey(), Port: m.Tunnel.Port(), Mesh: m.c.Mesh}, true
 }
 
 // Networks returns the declared networks, ordered by name.
@@ -307,13 +312,20 @@ func (m *Manager) Reconcile(ctx context.Context, live func(context.Context) ([]n
 	return m.apply(ctx, next)
 }
 
-// SetPeers replaces the tunnel's peers, and applies.
-func (m *Manager) SetPeers(ctx context.Context, peers []Peer) error {
+// SetPeers replaces the tunnel's peers and the host's mesh address, and applies.
+func (m *Manager) SetPeers(ctx context.Context, mesh netip.Addr, peers []Peer) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	next := m.c
-	next.Peers = append([]Peer(nil), peers...)
+	next.Peers, next.Mesh = append([]Peer(nil), peers...), mesh
 	return m.apply(ctx, next)
+}
+
+// Mesh returns the host's mesh address, the zero value when it has none.
+func (m *Manager) Mesh() netip.Addr {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.c.Mesh
 }
 
 // Peers returns the tunnel's peers, ordered by public key.
@@ -343,7 +355,7 @@ func (m *Manager) withBase(c Config) Config {
 	return c
 }
 
-// push writes c to the host: the ruleset, then the tunnel's peers. committed is whether the ruleset
+// push writes c to the host: the ruleset, then the tunnel's address and peers. committed is whether the ruleset
 // was committed, so that a failure of the tunnel is known to have changed the host.
 func (m *Manager) push(ctx context.Context, c Config) (committed bool, err error) {
 	c.At = m.now()
@@ -351,7 +363,7 @@ func (m *Manager) push(ctx context.Context, c Config) (committed bool, err error
 		return false, fmt.Errorf("apply the ruleset: %w", err)
 	}
 	if m.Tunnel != nil {
-		if err := m.Tunnel.Set(c.Peers); err != nil {
+		if err := m.Tunnel.Set(c.Mesh, c.Peers); err != nil {
 			return true, fmt.Errorf("set the tunnel's peers: %w", err)
 		}
 	}
@@ -415,7 +427,7 @@ func (m *Manager) save() error {
 		return nil
 	}
 	boot, up, berr := m.boot()
-	st := state{Networks: sortedNetworks(m.c.Networks), Members: m.c.Members, Peers: sortedPeers(m.c.Peers), Boot: boot}
+	st := state{Networks: sortedNetworks(m.c.Networks), Members: m.c.Members, Peers: sortedPeers(m.c.Peers), Mesh: m.c.Mesh, Boot: boot}
 	for _, e := range sortedExposures(m.c.Exposures) {
 		st.Exposures = append(st.Exposures, leaseState{Exposure: e, Until: up + e.Deadline.Sub(m.now())})
 	}
@@ -470,6 +482,6 @@ func stateOf(c Config) string {
 	raw, _ := json.Marshal(struct {
 		state
 		Exposures []Exposure
-	}{state{Networks: nets, Members: members, Peers: peers}, exposures})
+	}{state{Networks: nets, Members: members, Peers: peers, Mesh: c.Mesh}, exposures})
 	return string(raw)
 }

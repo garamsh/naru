@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,15 +21,17 @@ type Tunnel interface {
 	PublicKey() string
 	// Port is the UDP port the tunnel listens on.
 	Port() int
-	// Set makes peers the whole peer list of the interface, and routes each peer's prefixes to it
-	// and no other prefix.
-	Set(peers []Peer) error
+	// Set makes mesh the interface's one address (none when mesh is the zero value) and peers its
+	// whole peer list, and routes each peer's prefixes and mesh address to it and no other prefix.
+	Set(mesh netip.Addr, peers []Peer) error
 }
 
-// TunnelInfo is what the host API reports of a tunnel.
+// TunnelInfo is what the host API reports of a tunnel. Mesh is the zero value until orch declares
+// the host's mesh address.
 type TunnelInfo struct {
 	PublicKey string
 	Port      int
+	Mesh      netip.Addr
 }
 
 // LoadKey returns the private key in the file at path, which is made with a new key when it does

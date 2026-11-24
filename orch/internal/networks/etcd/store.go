@@ -16,9 +16,9 @@ import (
 // Prefix is where a network is kept, under its name.
 const Prefix = "/naru/orch/networks/"
 
-// GuardKey is the key a network and an address pool both move when they are written with an overlap
-// check, and both compare when they commit: a pool and a network that overlap, written from the same
-// reading, cannot both be kept.
+// GuardKey is the key a network, an address pool and the host profile move when they are written
+// with an overlap check, and compare when they commit: two of them that overlap, written from the
+// same reading, cannot both be kept.
 const GuardKey = "/naru/orch/address-space"
 
 // Guard reads GuardKey and returns the comparison that holds while nothing has written it since.

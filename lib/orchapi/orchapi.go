@@ -27,6 +27,9 @@ type Host struct {
 	// MachinePrefix is the prefix orch allocated for the Machines of a host that joined from the
 	// install seed. It is empty for a host enrolled with its own configuration.
 	MachinePrefix string `json:"machinePrefix,omitempty"`
+	// MeshAddress is the host's own address on its tunnel, from the profile's mesh pool (ADR 0113
+	// item 1). It is empty until orch gives the host one.
+	MeshAddress string `json:"meshAddress,omitempty"`
 }
 
 // Pending is an enrollment waiting for a person's admission. Code is orch's own computation from

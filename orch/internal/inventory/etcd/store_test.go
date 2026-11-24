@@ -79,7 +79,7 @@ func TestAnEnrollmentWriteNeverResurrectsAPendingRecordNextToAnAdmittedHost(t *t
 	require.ErrorIs(t, s.PutPending(ctx, p, nil, true), inventory.ErrConflict, "a create finds it pending")
 	require.NoError(t, s.PutPending(ctx, p, nil, false), "control: an update of a pending host holds")
 
-	require.NoError(t, s.Admit(ctx, p, inventory.Host{ID: "h1", PublicKey: p.PublicKey}, ev, nil))
+	require.NoError(t, s.Admit(ctx, p, inventory.Host{ID: "h1", PublicKey: p.PublicKey}, ev))
 	require.ErrorIs(t, s.PutPending(ctx, p, nil, false), inventory.ErrAlreadyAdmitted, "an update after the admission")
 	require.ErrorIs(t, s.PutPending(ctx, p, nil, true), inventory.ErrAlreadyAdmitted, "a create after the admission")
 	_, err := s.GetPending(ctx, "h1")
@@ -95,30 +95,30 @@ func TestReservationsNeverOverlapAreTakenOverWhenExpiredAndReleasedOnlyByTheirHo
 		return prefixes.Allocate(netip.MustParsePrefix("10.200.0.0/22"), 24, claimed)
 	}
 
-	a, err := s.Reserve(ctx, "h-a", pick, now.Add(time.Minute), now)
+	a, err := s.Reserve(ctx, inventory.SpaceMachine, "h-a", pick, now.Add(time.Minute), now)
 	require.NoError(t, err)
 	require.Equal(t, "10.200.0.0/24", a.Prefix)
-	b, err := s.Reserve(ctx, "h-b", pick, now.Add(time.Minute), now)
+	b, err := s.Reserve(ctx, inventory.SpaceMachine, "h-b", pick, now.Add(time.Minute), now)
 	require.NoError(t, err)
 	require.Equal(t, "10.200.1.0/24", b.Prefix)
-	again, err := s.Reserve(ctx, "h-a", pick, now.Add(2*time.Minute), now)
+	again, err := s.Reserve(ctx, inventory.SpaceMachine, "h-a", pick, now.Add(2*time.Minute), now)
 	require.NoError(t, err)
 	require.Equal(t, a.Prefix, again.Prefix, "a host that asks again keeps its reservation")
 
 	later := now.Add(3 * time.Minute)
-	c2, err := s.Reserve(ctx, "h-c", pick, later.Add(time.Minute), later)
+	c2, err := s.Reserve(ctx, inventory.SpaceMachine, "h-c", pick, later.Add(time.Minute), later)
 	require.NoError(t, err)
 	require.Equal(t, "10.200.0.0/24", c2.Prefix, "an expired reservation is taken over")
-	all, err := s.ListAllocations(ctx)
+	all, err := s.ListAllocations(ctx, inventory.SpaceMachine)
 	require.NoError(t, err)
 	require.Len(t, all, 1, "the expired reservations are dropped, not left beside the new one")
 
 	require.NoError(t, s.Release(ctx, a), "a stale holder's release")
-	all, err = s.ListAllocations(ctx)
+	all, err = s.ListAllocations(ctx, inventory.SpaceMachine)
 	require.NoError(t, err)
 	require.Equal(t, []inventory.Allocation{c2}, all, "does not drop what another host holds now")
 	require.NoError(t, s.Release(ctx, c2))
-	all, err = s.ListAllocations(ctx)
+	all, err = s.ListAllocations(ctx, inventory.SpaceMachine)
 	require.NoError(t, err)
 	require.Empty(t, all)
 }
@@ -234,10 +234,10 @@ func TestTheEventLogDropsEventsOlderThanTheirAgeByTheStoresClockOnEveryWriteThat
 	require.Equal(t, []time.Time{aged.Add(time.Hour)}, times(), "each append drops the events past the age, and the newest stays")
 
 	// A write other than an append records an event too, and bounds the log by age as well.
-	require.NoError(t, s.PutProfile(t.Context(), []byte("a: b"), at(now)))
+	require.NoError(t, s.PutProfile(t.Context(), []byte("a: b"), at(now), nil))
 	now = now.Add(2 * time.Hour)
 	require.Len(t, times(), 2, "the clock moving on drops nothing by itself")
-	require.NoError(t, s.PutProfile(t.Context(), []byte("a: c"), at(now)))
+	require.NoError(t, s.PutProfile(t.Context(), []byte("a: c"), at(now), nil))
 	require.Equal(t, []time.Time{now.Add(-2 * time.Hour), now}, times(), "a profile write dropped the event the age passed, not only an append")
 
 	// The control: an event dated far ahead, as a clock that jumped forward would date it, does not
@@ -251,7 +251,7 @@ func admitPlain(t *testing.T, s *invetcd.Store, h string, now time.Time) {
 	t.Helper()
 	p := inventory.Pending{HostID: h, PublicKey: []byte("k"), FirstSeen: now}
 	require.NoError(t, s.PutPending(t.Context(), p, nil, true))
-	require.NoError(t, s.Admit(t.Context(), p, inventory.Host{ID: h, PublicKey: p.PublicKey}, orchapi.Event{Time: now, Type: inventory.EventAdmitted, Subject: h}, nil))
+	require.NoError(t, s.Admit(t.Context(), p, inventory.Host{ID: h, PublicKey: p.PublicKey}, orchapi.Event{Time: now, Type: inventory.EventAdmitted, Subject: h}))
 }
 
 func TestAClaimedPrefixIsNeverGivenByAReservationAndAClaimNeverTakesAnotherHostsPrefix(t *testing.T) {
@@ -266,20 +266,20 @@ func TestAClaimedPrefixIsNeverGivenByAReservationAndAClaimNeverTakesAnotherHosts
 	admitPlain(t, s, "other", now)
 
 	// The control: with nothing claimed the pool gives the first prefix, which is what the control host holds.
-	first, err := s.Reserve(ctx, "joined-0", pick, now.Add(time.Minute), now)
+	first, err := s.Reserve(ctx, inventory.SpaceMachine, "joined-0", pick, now.Add(time.Minute), now)
 	require.NoError(t, err)
 	require.Equal(t, "10.200.0.0/24", first.Prefix)
 	require.NoError(t, s.Release(ctx, first))
 
 	require.NoError(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.0.0/24", HostID: "control"}))
 	require.NoError(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.0.0/24", HostID: "control"}), "a host that reports again changes nothing")
-	got, err := s.Reserve(ctx, "joined-1", pick, now.Add(time.Minute), now)
+	got, err := s.Reserve(ctx, inventory.SpaceMachine, "joined-1", pick, now.Add(time.Minute), now)
 	require.NoError(t, err)
 	require.Equal(t, "10.200.1.0/24", got.Prefix, "the prefix the control host holds is not given again")
 
 	require.ErrorIs(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.0.0/24", HostID: "other"}), inventory.ErrAllocationTaken)
 	require.ErrorIs(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.2.0/24", HostID: "gone"}), inventory.ErrNotFound, "a host that is not admitted holds nothing")
-	all, err := s.ListAllocations(ctx)
+	all, err := s.ListAllocations(ctx, inventory.SpaceMachine)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []inventory.Allocation{{Prefix: "10.200.0.0/24", HostID: "control"}, got}, all)
 }
@@ -298,7 +298,7 @@ func TestRemovingAHostFreesEveryPrefixItHeld(t *testing.T) {
 	_, err := s.RemoveHost(ctx, "control", orchapi.Event{Time: now, Type: inventory.EventRemoved, Subject: "control"})
 	require.NoError(t, err)
 
-	all, err := s.ListAllocations(ctx)
+	all, err := s.ListAllocations(ctx, inventory.SpaceMachine)
 	require.NoError(t, err)
 	require.Equal(t, []inventory.Allocation{{Prefix: "10.200.2.0/24", HostID: "kept"}}, all, "the other host keeps its prefix")
 }
@@ -319,7 +319,7 @@ func TestARecorderPassReleasesTheConfirmedPrefixesOfHostsThatAreNotAdmittedAndNo
 	require.NoError(t, s.ClaimPrefix(ctx, inventory.Allocation{Prefix: "10.200.2.0/24", HostID: "removed"}))
 	// A reservation of a host that is only pending is not an orphan: its admission is in flight.
 	pick := func([]netip.Prefix) (netip.Prefix, error) { return netip.MustParsePrefix("10.200.3.0/24"), nil }
-	reservation, err := s.Reserve(ctx, "pending", pick, now.Add(time.Hour), now)
+	reservation, err := s.Reserve(ctx, inventory.SpaceMachine, "pending", pick, now.Add(time.Hour), now)
 	require.NoError(t, err)
 	// The removal that a claim raced: the host's record is gone and its allocation stayed.
 	_, err = kv.Delete(ctx, "/naru/orch/hosts/removed")
@@ -328,7 +328,7 @@ func TestARecorderPassReleasesTheConfirmedPrefixesOfHostsThatAreNotAdmittedAndNo
 	r := inventory.NewRecorder(s, noPrefixes{}, fixedClock{now}, time.Minute, slog.New(slog.DiscardHandler))
 	require.NoError(t, r.Reconcile(ctx))
 
-	all, err := s.ListAllocations(ctx)
+	all, err := s.ListAllocations(ctx, inventory.SpaceMachine)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []inventory.Allocation{{Prefix: "10.200.1.0/24", HostID: "kept"}, reservation}, all,
 		"the removed host's prefix is released; an admitted host's and an in-flight reservation stay")
@@ -337,3 +337,79 @@ func TestARecorderPassReleasesTheConfirmedPrefixesOfHostsThatAreNotAdmittedAndNo
 type fixedClock struct{ t time.Time }
 
 func (c fixedClock) Now() time.Time { return c.t }
+
+// profileSet is the event a profile write records.
+func profileSet(now time.Time) orchapi.Event {
+	return orchapi.Event{Time: now, Type: inventory.EventProfileSet, Subject: "host-profile"}
+}
+
+func TestAMeshAddressIsNeverCommittedFromAProfileThatChangedWhileItWasPicked(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	s := invetcd.New(c.Members[0].Etcd())
+	ctx := t.Context()
+	now := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
+	admitPlain(t, s, "h1", now)
+	require.NoError(t, s.PutProfile(ctx, []byte("pool: old"), profileSet(now), nil))
+
+	// The first pick reads the old pool, and the profile is replaced before its write: that write is
+	// refused and the next pick, of the new pool, is the one kept.
+	picks := 0
+	pick := func([]netip.Prefix) (netip.Prefix, error) {
+		picks++
+		if picks == 1 {
+			require.NoError(t, s.PutProfile(ctx, []byte("pool: new"), profileSet(now), nil))
+			return netip.MustParsePrefix("10.99.0.1/32"), nil
+		}
+		return netip.MustParsePrefix("10.98.0.1/32"), nil
+	}
+	h, err := s.GiveMeshAddress(ctx, "h1", pick)
+	require.NoError(t, err)
+	require.Equal(t, "10.98.0.1", h.MeshAddress)
+	require.Equal(t, 2, picks)
+
+	admitPlain(t, s, "h2", now)
+	picks = 0
+	res, err := s.Reserve(ctx, inventory.SpaceMesh, "h2", func(claimed []netip.Prefix) (netip.Prefix, error) {
+		picks++
+		if picks == 1 {
+			require.NoError(t, s.PutProfile(ctx, []byte("pool: newer"), profileSet(now), nil))
+			return netip.MustParsePrefix("10.98.0.9/32"), nil
+		}
+		return netip.MustParsePrefix("10.97.0.1/32"), nil
+	}, now.Add(time.Minute), now)
+	require.NoError(t, err)
+	require.Equal(t, "10.97.0.1/32", res.Prefix, "a reservation is refused the same way")
+	require.Equal(t, inventory.SpaceMesh, res.Space)
+
+	// The control: in the Machine space the profile is not compared, so the first pick is kept.
+	picks = 0
+	res, err = s.Reserve(ctx, inventory.SpaceMachine, "h2", func([]netip.Prefix) (netip.Prefix, error) {
+		picks++
+		require.NoError(t, s.PutProfile(ctx, []byte("pool: newest"), profileSet(now), nil))
+		return netip.MustParsePrefix("10.200.1.0/24"), nil
+	}, now.Add(time.Minute), now)
+	require.NoError(t, err)
+	require.Equal(t, 1, picks)
+	require.Equal(t, "10.200.1.0/24", res.Prefix)
+}
+
+func TestAProfileIsNotWrittenOverAMeshAddressGivenWhileItWasChecked(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	s := invetcd.New(c.Members[0].Etcd())
+	ctx := t.Context()
+	now := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
+	admitPlain(t, s, "h1", now)
+
+	err := s.PutProfile(ctx, []byte("pool: new"), profileSet(now), func() error {
+		_, err := s.GiveMeshAddress(ctx, "h1", func([]netip.Prefix) (netip.Prefix, error) { return netip.MustParsePrefix("10.99.0.1/32"), nil })
+		return err
+	})
+	require.ErrorIs(t, err, inventory.ErrConflict, "the check read the addresses before one was given")
+	_, err = s.GetProfile(ctx)
+	require.ErrorIs(t, err, inventory.ErrNotFound, "and nothing was written")
+
+	require.NoError(t, s.PutProfile(ctx, []byte("pool: new"), profileSet(now), func() error { return nil }), "the control: a check nothing raced")
+	all, err := s.ListAllocations(ctx, inventory.SpaceMesh)
+	require.NoError(t, err)
+	require.Equal(t, []inventory.Allocation{{Prefix: "10.99.0.1/32", HostID: "h1", Space: inventory.SpaceMesh}}, all)
+}

@@ -128,18 +128,18 @@ func (c *Client) DeleteNetwork(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, networkPath(name), nil, nil)
 }
 
-// SetPeers replaces the tunnel's peers and returns them.
-func (c *Client) SetPeers(ctx context.Context, peers []Peer) ([]Peer, error) {
+// SetPeers replaces the tunnel's peers and the host's mesh address, and returns what the host holds.
+func (c *Client) SetPeers(ctx context.Context, req PeersRequest) (PeersRequest, error) {
 	var out PeersRequest
-	err := c.do(ctx, http.MethodPut, "/v1/peers", PeersRequest{Peers: peers}, &out)
-	return out.Peers, err
+	err := c.do(ctx, http.MethodPut, "/v1/peers", req, &out)
+	return out, err
 }
 
-// Peers returns the tunnel's peers.
-func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
+// Peers returns the tunnel's peers and the host's mesh address.
+func (c *Client) Peers(ctx context.Context) (PeersRequest, error) {
 	var out PeersRequest
 	err := c.do(ctx, http.MethodGet, "/v1/peers", nil, &out)
-	return out.Peers, err
+	return out, err
 }
 
 // Tunnel returns the host's tunnel public key and port, and the Machine prefixes its microVMs'

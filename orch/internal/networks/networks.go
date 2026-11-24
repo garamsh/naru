@@ -85,13 +85,15 @@ type Service struct {
 	store  Store
 	groups Groups
 	pools  Pools
-	log    Log
-	clock  Clock
+	// profile is the host profile, whose mesh pool no network overlaps.
+	profile inventory.ProfileReader
+	log     Log
+	clock   Clock
 }
 
 // New returns a Service.
-func New(store Store, groups Groups, pools Pools, log Log, clock Clock) *Service {
-	return &Service{store: store, groups: groups, pools: pools, log: log, clock: clock}
+func New(store Store, groups Groups, pools Pools, profile inventory.ProfileReader, log Log, clock Clock) *Service {
+	return &Service{store: store, groups: groups, pools: pools, profile: profile, log: log, clock: clock}
 }
 
 // Apply creates the network or replaces its spec; by is the caller, for the event log. A network
@@ -132,13 +134,20 @@ func (s *Service) Apply(ctx context.Context, by, name string, spec orchapi.Netwo
 	return n, s.log.AppendEvent(ctx, ev)
 }
 
-// clear refuses a network whose prefix overlaps an address pool.
+// clear refuses a network whose prefix overlaps an address pool or the profile's mesh pool.
 func (s *Service) clear(ctx context.Context, n orchapi.Network) error {
 	pools, err := s.pools.ListPools(ctx)
 	if err != nil {
 		return err
 	}
 	p, _ := netip.ParsePrefix(n.Prefix)
+	mesh, err := inventory.MeshPool(ctx, s.profile)
+	if err != nil {
+		return err
+	}
+	if mesh.IsValid() && mesh.Overlaps(p) {
+		return fmt.Errorf("%w: prefix %s overlaps the mesh pool %s", inventory.ErrConflict, n.Prefix, mesh)
+	}
 	for _, pool := range pools {
 		for _, c := range pool.CIDRs {
 			if q, err := netip.ParsePrefix(c); err == nil && q.Overlaps(p) {
