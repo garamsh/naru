@@ -581,3 +581,18 @@ func TestRoutes_WatchLoadsTheTableHostdWritesWithoutBeingAsked(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "5", revisionFile(t, f))
 }
+
+func TestProxy_AnswersAMachineThatDoesNotAnswer502(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	closed := l.Addr().(*net.TCPAddr).Port
+	require.NoError(t, l.Close())
+	b := newBackend(t)
+	f := newFixture(t, time.Hour, "", httpRoute(nameA, machineA, closed), httpRoute(nameB, machineB, b.port))
+	c := f.client(true)
+
+	resp, _ := f.get(c, nameA)
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	resp, _ = f.get(c, nameB)
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "control: a Machine that answers")
+}
