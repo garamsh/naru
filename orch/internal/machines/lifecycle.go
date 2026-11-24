@@ -49,21 +49,23 @@ func (s *service) Create(ctx context.Context, caller, name string, spec machinea
 		case !errors.Is(err, ErrNotFound):
 			return machineapi.Machine{}, false, err
 		}
-		if err := s.checkRestore(ctx, caller, spec); err != nil {
+		from, err := s.checkRestore(ctx, caller, spec)
+		if err != nil {
 			return machineapi.Machine{}, false, err
 		}
 		id := newID()
 		r := Record{Caller: caller, Name: name, ID: id, Spec: spec, Status: machineapi.Status{
 			Phase: machineapi.PhasePending, Address: machineapi.Address{Name: id + "." + s.zone}, Generation: 1, Capabilities: capabilities(spec),
 		}}
-		err = s.store.Create(ctx, r, s.event(machineapi.EventStatus, r))
+		err = s.store.Create(ctx, r, from, s.event(machineapi.EventStatus, r))
 		if err == nil {
 			return r.Machine(), true, nil
 		}
-		if !errors.Is(err, ErrExists) {
+		if !errors.Is(err, ErrRaced) {
 			return machineapi.Machine{}, false, err
 		}
-		// The name was created meanwhile, or the id is another Machine's: read again.
+		// The name was created meanwhile, the id is another Machine's, or the snapshot changed: read
+		// again.
 	}
 	return machineapi.Machine{}, false, fmt.Errorf("create %s/%s: %d writes raced", caller, name, retries)
 }
@@ -80,23 +82,24 @@ func same(have Record, spec machineapi.Spec) (machineapi.Machine, bool, error) {
 }
 
 // checkRestore refuses a restore from a snapshot the caller has not, or whose volumes are not the
-// spec's by name and size.
-func (s *service) checkRestore(ctx context.Context, caller string, spec machineapi.Spec) error {
+// spec's by name and size. It returns the revision of the snapshot it checked, which the create
+// guards on, 0 when the spec restores nothing.
+func (s *service) checkRestore(ctx context.Context, caller string, spec machineapi.Spec) (int64, error) {
 	src := spec.FromSnapshot
 	if src == nil {
-		return nil
+		return 0, nil
 	}
-	snap, err := s.store.Snapshot(ctx, caller, src.Snapshot)
+	snap, rev, err := s.store.Snapshot(ctx, caller, src.Snapshot)
 	if errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("%w: %s", ErrSnapshotNotFound, src.Snapshot)
+		return 0, fmt.Errorf("%w: %s", ErrSnapshotNotFound, src.Snapshot)
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := machineapi.MatchVolumes(snap.Snapshot.Spec.Volumes, spec.Volumes); err != nil {
-		return fmt.Errorf("%w: %v", ErrSnapshotMismatch, err)
+		return 0, fmt.Errorf("%w: %v", ErrSnapshotMismatch, err)
 	}
-	return nil
+	return rev, nil
 }
 
 func (s *service) Machine(ctx context.Context, caller, name string) (machineapi.Machine, error) {

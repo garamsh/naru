@@ -68,10 +68,11 @@ func New(d Deps) http.Handler {
 	return h.middleware(m)
 }
 
-// Unavailable is the handler of a member that waits for a restore: 503 to every request.
-func Unavailable() http.Handler {
+// Unavailable is the handler of a member that cannot serve the API, such as one that waits for a
+// restore: 503 to every request, saying why.
+func Unavailable(why string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusServiceUnavailable, machineapi.ErrorBody{Error: "this orch member waits for a restore", Code: machineapi.CodeUnavailable})
+		writeJSON(w, http.StatusServiceUnavailable, machineapi.ErrorBody{Error: why, Code: machineapi.CodeUnavailable})
 	})
 }
 

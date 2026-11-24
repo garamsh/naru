@@ -351,3 +351,51 @@ func TestOrch_ServesNoMachineAPIWithoutAZone(t *testing.T) {
 	z := orchtest.Start(t, orchtest.Options{Members: 1, MachineZone: machineZone})
 	assert.NotEmpty(t, z.Members[0].MachineAPIAddr(), "control: a zone serves it")
 }
+
+// A caller's keys end in a "/" after its name, so a caller whose name begins another's reads none
+// of the other's.
+func TestOrch_KeepsACallerApartFromOneWhoseNameExtendsIts(t *testing.T) {
+	o := startMachineOrch(t)
+	ctx := t.Context()
+	garam2 := o.c.MachineClient(t, 0, o.c.CA.Issue(t, "garam2", identity.RoleCaller))
+	_, _, err := garam2.CreateMachine(ctx, "web", machineSpec())
+	require.NoError(t, err)
+	_, _, err = garam2.PutSnapshot(ctx, "before", machineapi.SnapshotRequest{Machine: "web"})
+	require.NoError(t, err)
+
+	for who, cl := range map[string]*machineapi.Client{"garam2, control": garam2, "garam": o.garam} {
+		own := who != "garam"
+		list, err := cl.Machines(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, own, len(list.Machines) == 1, "%s: Machines %v", who, list.Machines)
+		snaps, err := cl.Snapshots(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, own, len(snaps) == 1, "%s: snapshots %v", who, snaps)
+		page, err := cl.Events(ctx, "")
+		require.NoError(t, err)
+		assert.Equal(t, own, len(page.Events) == 1, "%s: events %v", who, page.Events)
+	}
+}
+
+// Every member is started with the same --machine-zone; a member started with another serves 503,
+// so no Machine is named under a second zone.
+func TestOrch_RefusesTheMachineAPIOnAMemberOfAnotherZone(t *testing.T) {
+	o := startMachineOrch(t)
+	ctx := t.Context()
+	_, _, err := o.garam.CreateMachine(ctx, "web", machineSpec())
+	require.NoError(t, err)
+	require.NoError(t, o.c.Members[0].Stop())
+
+	o.c.RestartInZone(t, 0, "other.example.test")
+	_, err = o.c.MachineClient(t, 0, o.garamID).Machines(ctx)
+	refused(t, err, http.StatusServiceUnavailable, machineapi.CodeUnavailable, "a member of another zone")
+	var e *machineapi.Error
+	require.ErrorAs(t, err, &e)
+	assert.Contains(t, e.Message, machineZone, "it names the cluster's zone")
+
+	require.NoError(t, o.c.Members[0].Stop())
+	o.c.RestartInZone(t, 0, machineZone)
+	m, err := o.c.MachineClient(t, 0, o.garamID).Machine(ctx, "web")
+	require.NoError(t, err, "control: the cluster's zone")
+	assert.True(t, strings.HasSuffix(m.Status.Address.Name, "."+machineZone), m.Status.Address.Name)
+}

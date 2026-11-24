@@ -3,6 +3,7 @@
 //   - a Machine under /naru/orch/machines/<caller>/<name>, its id claimed under
 //     /naru/orch/machine-ids/<id> in the transaction that creates it, so no two Machines share one;
 //   - a snapshot under /naru/orch/snapshots/<caller>/<name>;
+//   - the zone of the stable names, which every member is started with, under /naru/orch/machine-zone;
 //   - each caller's event log under /naru/orch/machine-events/<caller>/, apart from the fleet's,
 //     with the revision of the newest event it dropped under /naru/orch/machine-event-floors/<caller>.
 //
@@ -33,6 +34,7 @@ const (
 	SnapshotPrefix = "/naru/orch/snapshots/"
 	EventPrefix    = "/naru/orch/machine-events/"
 	FloorPrefix    = "/naru/orch/machine-event-floors/"
+	ZoneKey        = "/naru/orch/machine-zone"
 )
 
 // maxEvents and maxEventAge bound each caller's log: its newest 20000 events, none older than 7
@@ -121,17 +123,21 @@ func decode[T any](resp *clientv3.GetResponse) ([]T, error) {
 	return out, nil
 }
 
-func (s *Store) Create(ctx context.Context, r machines.Record, ev machineapi.Event) error {
+func (s *Store) Create(ctx context.Context, r machines.Record, from int64, ev machineapi.Event) error {
 	key, id := machineKey(r.Caller, r.Name), IDPrefix+r.ID
+	guards := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(id), "=", 0)}
+	if src := r.Spec.FromSnapshot; src != nil {
+		guards = append(guards, clientv3.Compare(clientv3.ModRevision(snapshotKey(r.Caller, src.Snapshot)), "=", from))
+	}
 	resp, err := s.kv.Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(id), "=", 0)).
+		If(guards...).
 		Then(clientv3.OpPut(key, encode(r)), clientv3.OpPut(id, r.Caller+"/"+r.Name), eventOp(r.Caller, ev)).
 		Commit()
 	if err != nil {
 		return err
 	}
 	if !resp.Succeeded {
-		return machines.ErrExists
+		return machines.ErrRaced
 	}
 	s.trim(ctx, r.Caller)
 	return nil
@@ -153,16 +159,16 @@ func (s *Store) Update(ctx context.Context, r machines.Record, rev int64, ev mac
 	return nil
 }
 
-func (s *Store) Snapshot(ctx context.Context, caller, name string) (machines.Snapshot, error) {
+func (s *Store) Snapshot(ctx context.Context, caller, name string) (machines.Snapshot, int64, error) {
 	resp, err := s.kv.Get(ctx, snapshotKey(caller, name))
 	if err != nil {
-		return machines.Snapshot{}, err
+		return machines.Snapshot{}, 0, err
 	}
 	if len(resp.Kvs) == 0 {
-		return machines.Snapshot{}, machines.ErrNotFound
+		return machines.Snapshot{}, 0, machines.ErrNotFound
 	}
 	var snap machines.Snapshot
-	return snap, json.Unmarshal(resp.Kvs[0].Value, &snap)
+	return snap, resp.Kvs[0].ModRevision, json.Unmarshal(resp.Kvs[0].Value, &snap)
 }
 
 func (s *Store) Snapshots(ctx context.Context, caller string) ([]machines.Snapshot, error) {
@@ -173,14 +179,17 @@ func (s *Store) Snapshots(ctx context.Context, caller string) ([]machines.Snapsh
 	return decode[machines.Snapshot](resp)
 }
 
-func (s *Store) CreateSnapshot(ctx context.Context, snap machines.Snapshot) error {
+func (s *Store) CreateSnapshot(ctx context.Context, snap machines.Snapshot, machine int64) error {
 	key := snapshotKey(snap.Caller, snap.Snapshot.Name)
-	resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).Then(clientv3.OpPut(key, encode(snap))).Commit()
+	resp, err := s.kv.Txn(ctx).
+		If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.ModRevision(machineKey(snap.Caller, snap.Snapshot.Machine)), "=", machine)).
+		Then(clientv3.OpPut(key, encode(snap))).
+		Commit()
 	if err != nil {
 		return err
 	}
 	if !resp.Succeeded {
-		return machines.ErrExists
+		return machines.ErrRaced
 	}
 	return nil
 }
@@ -228,6 +237,24 @@ func (s *Store) Events(ctx context.Context, caller string, after *int64) ([]mach
 		out = append(out, ev)
 	}
 	return out, rev, nil
+}
+
+func (s *Store) ClaimZone(ctx context.Context, zone string) (string, error) {
+	if zone == "" {
+		resp, err := s.kv.Get(ctx, ZoneKey)
+		if err != nil || len(resp.Kvs) == 0 {
+			return "", err
+		}
+		return string(resp.Kvs[0].Value), nil
+	}
+	resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(ZoneKey), "=", 0)).Then(clientv3.OpPut(ZoneKey, zone)).Else(clientv3.OpGet(ZoneKey)).Commit()
+	if err != nil {
+		return "", err
+	}
+	if resp.Succeeded {
+		return zone, nil
+	}
+	return string(resp.Responses[0].GetResponseRange().Kvs[0].Value), nil
 }
 
 // floorOf is the revision of the newest event the log dropped, 0 when it dropped none.

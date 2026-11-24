@@ -283,6 +283,14 @@ func (c *Cluster) Restart(t testing.TB, i int) *orchd.Orchd {
 	return m
 }
 
+// RestartInZone starts member i again, which must be stopped, as Restart does but with
+// --machine-zone zone, and returns it.
+func (c *Cluster) RestartInZone(t testing.TB, i int, zone string) *orchd.Orchd {
+	t.Helper()
+	c.cfgs[i].MachineZone = zone
+	return c.Restart(t, i)
+}
+
 // MemberConfig is the etcd configuration member i first started with.
 func (c *Cluster) MemberConfig(i int) member.Config { return c.cfgs[i].Config }
 
