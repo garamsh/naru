@@ -2,8 +2,8 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"crypto/x509"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httputil"

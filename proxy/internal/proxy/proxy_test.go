@@ -3,6 +3,7 @@ package proxy_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -595,4 +596,36 @@ func TestProxy_AnswersAMachineThatDoesNotAnswer502(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
 	resp, _ = f.get(c, nameB)
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "control: a Machine that answers")
+}
+
+// failingOnce is a listener whose first accept fails, as one with no file descriptor left does.
+type failingOnce struct {
+	net.Listener
+	failed atomic.Bool
+}
+
+func (l *failingOnce) Accept() (net.Conn, error) {
+	if !l.failed.Swap(true) {
+		return nil, errors.New("accept: too many open files")
+	}
+	return l.Listener.Accept()
+}
+
+func TestProxy_KeepsAcceptingAfterAnAcceptFails(t *testing.T) {
+	b := newBackend(t)
+	f := newFixture(t, time.Hour, "", httpRoute(nameA, machineA, b.port))
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	l := &failingOnce{Listener: inner}
+	srv := proxy.New(proxy.Config{Zone: f.pki.zone, Routes: f.routes, MaxAge: time.Hour, Now: time.Now, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = srv.Serve(ctx, l); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	f.addr = inner.Addr().String()
+
+	c, err := f.dialTLS(&tls.Config{ServerName: nameA})
+	require.NoError(t, err)
+	_ = c.Close()
+	assert.True(t, l.failed.Load(), "the accept before this connection's failed")
 }

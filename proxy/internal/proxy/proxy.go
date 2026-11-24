@@ -108,18 +108,26 @@ func (s *Server) shutdown(listeners []net.Listener) {
 	_ = s.http.Close()
 }
 
+// acceptRetry is the pause after an accept that fails, such as one with no file descriptor left,
+// before the next.
+const acceptRetry = 100 * time.Millisecond
+
+// accept takes connections from l until it is closed. An accept that fails otherwise is logged and
+// tried again, so the proxy outlives a moment with no file descriptor left.
 func (s *Server) accept(ctx context.Context, l net.Listener) error {
 	for {
 		c, err := l.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
-				continue
+			s.conf.Log.Warn("an accept failed", "listen", l.Addr().String(), "err", err)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(acceptRetry):
 			}
-			return err
+			continue
 		}
 		go s.handle(ctx, c)
 	}
