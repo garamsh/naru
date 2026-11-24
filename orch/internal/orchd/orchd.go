@@ -335,7 +335,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	if d.NewMachineHosts != nil {
 		reconcilers = append(reconcilers, machines.NewReconciler(machines.ReconcilerConfig{
 			Store: machinesetcd.New(leaderKV), Hosts: d.NewMachineHosts(svc), Clock: d.Clock, Interval: c.MachineInterval, Reserve: c.HostReserve,
-			Wake:  func(ctx context.Context) <-chan struct{} { return machinesetcd.Watch(ctx, m.Client()) },
+			Wake:  func(ctx context.Context) <-chan struct{} { return machinesetcd.Watch(ctx, m.Client(), d.Log) },
 			Fleet: leaderInv, Log: d.Log,
 		}))
 	}

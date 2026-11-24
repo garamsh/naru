@@ -2,8 +2,9 @@
 //
 //   - a Machine under /naru/orch/machines/<caller>/<name>, its id claimed under
 //     /naru/orch/machine-ids/<id> in the transaction that creates it, so no two Machines share one;
-//   - a snapshot under /naru/orch/snapshots/<caller>/<name>, and a deleted one whose disk snapshots
-//     are still on its host under /naru/orch/snapshot-deletions/<id>;
+//   - a snapshot under /naru/orch/snapshots/<caller>/<name>, and the disk snapshots of a deleted or
+//     failed one under /naru/orch/snapshot-deletions/<id>, kept as its tombstone once deleted;
+//   - a removed Machine's tombstone under /naru/orch/machine-tombstones/<id>;
 //   - each host's allocation, the sum of what its bound Machines take, under
 //     /naru/orch/host-allocations/<host>;
 //   - the zone of the stable names, which every member is started with, under /naru/orch/machine-zone;
@@ -39,6 +40,8 @@ const (
 	FloorPrefix    = "/naru/orch/machine-event-floors/"
 	ZoneKey        = "/naru/orch/machine-zone"
 	DeletionPrefix = "/naru/orch/snapshot-deletions/"
+	// TombstonePrefix is where each removed Machine's tombstone is kept.
+	TombstonePrefix = "/naru/orch/machine-tombstones/"
 	// AllocationPrefix is where each host's allocation is kept.
 	AllocationPrefix = "/naru/orch/host-allocations/"
 )

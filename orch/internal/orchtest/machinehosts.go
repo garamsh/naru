@@ -26,11 +26,18 @@ type FakeMachineHosts struct {
 }
 
 type fakeMachineHost struct {
-	host    machines.Host
-	down    bool
-	vms     map[string]hostapi.MicroVM
-	disks   map[string]hostapi.DiskSnapshot
+	host  machines.Host
+	down  bool
+	stale bool
+	vms   map[string]hostapi.MicroVM
+	disks map[string]hostapi.DiskSnapshot
+	// creates are every create asked, and graces every stop's grace.
 	creates []hostapi.CreateRequest
+	graces  []uint32
+	// refuse answers each create, and refuseDisks each disk snapshot, with this error when not nil.
+	refuse, refuseDisks error
+	// hang, when not nil, holds every call but List until it closes.
+	hang chan struct{}
 }
 
 var _ machines.Hosts = (*FakeMachineHosts)(nil)
@@ -47,6 +54,46 @@ func NewFakeMachineHosts(hosts ...machines.Host) *FakeMachineHosts {
 // Fail makes the host stop answering, and Recover answer again; what it holds stays.
 func (f *FakeMachineHosts) Fail(id string)    { f.set(id, func(h *fakeMachineHost) { h.down = true }) }
 func (f *FakeMachineHosts) Recover(id string) { f.set(id, func(h *fakeMachineHost) { h.down = false }) }
+
+// Stale makes List give the host's answer as one its probe repeated, as a host that missed one
+// probe is given.
+func (f *FakeMachineHosts) Stale(id string, stale bool) {
+	f.set(id, func(h *fakeMachineHost) { h.stale = stale })
+}
+
+// Refuse makes the host answer every create with err, and RefuseDisks every disk snapshot; nil
+// stops it.
+func (f *FakeMachineHosts) Refuse(id string, err error) {
+	f.set(id, func(h *fakeMachineHost) { h.refuse = err })
+}
+func (f *FakeMachineHosts) RefuseDisks(id string, err error) {
+	f.set(id, func(h *fakeMachineHost) { h.refuseDisks = err })
+}
+
+// Hang holds every call to the host but List until the function it returns is called.
+func (f *FakeMachineHosts) Hang(id string) (release func()) {
+	ch := make(chan struct{})
+	f.set(id, func(h *fakeMachineHost) { h.hang = ch })
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.set(id, func(h *fakeMachineHost) { h.hang = nil })
+			close(ch)
+		})
+	}
+}
+
+// PutDiskSnapshot places a disk snapshot on the host behind the reconciler's back.
+func (f *FakeMachineHosts) PutDiskSnapshot(id string, d hostapi.DiskSnapshot) {
+	f.set(id, func(h *fakeMachineHost) { h.disks[d.Name] = d })
+}
+
+// Graces returns every stop's grace the host was given, in order.
+func (f *FakeMachineHosts) Graces(id string) []uint32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.hosts[id].graces)
+}
 
 // Exit stops a microVM as if it stopped on its own, in state (stopped or faulted).
 func (f *FakeMachineHosts) Exit(id, microVM, state string) {
@@ -100,7 +147,7 @@ func (f *FakeMachineHosts) List(context.Context) ([]machines.Host, error) {
 			continue
 		}
 		o := &out[len(out)-1]
-		o.Answering = true
+		o.Answering, o.Stale = true, h.stale
 		for _, n := range slices.Sorted(maps.Keys(h.vms)) {
 			o.MicroVMs = append(o.MicroVMs, h.vms[n])
 		}
@@ -111,9 +158,16 @@ func (f *FakeMachineHosts) List(context.Context) ([]machines.Host, error) {
 	return out, nil
 }
 
-// answering returns the host when it answers; the caller holds f.mu.
+// answering returns the host when it answers, after any hang; the caller holds f.mu, which this
+// releases while it hangs.
 func (f *FakeMachineHosts) answering(id string) (*fakeMachineHost, error) {
 	h, ok := f.hosts[id]
+	if ok && h.hang != nil {
+		ch := h.hang
+		f.mu.Unlock()
+		<-ch
+		f.mu.Lock()
+	}
 	if !ok || h.down {
 		return nil, fmt.Errorf("host %s does not answer", id)
 	}
@@ -132,6 +186,9 @@ func (f *FakeMachineHosts) Create(_ context.Context, host string, r hostapi.Crea
 		return hostapi.MicroVM{}, err
 	}
 	h.creates = append(h.creates, r)
+	if h.refuse != nil {
+		return hostapi.MicroVM{}, h.refuse
+	}
 	if vm, ok := h.vms[r.Name]; ok {
 		return vm, nil
 	}
@@ -168,7 +225,12 @@ func (f *FakeMachineHosts) Start(_ context.Context, host, microVM string) (hosta
 	return f.state(host, microVM, "running")
 }
 
-func (f *FakeMachineHosts) Stop(_ context.Context, host, microVM string, _ uint32) (hostapi.MicroVM, error) {
+func (f *FakeMachineHosts) Stop(_ context.Context, host, microVM string, grace uint32) (hostapi.MicroVM, error) {
+	f.mu.Lock()
+	if h, ok := f.hosts[host]; ok {
+		h.graces = append(h.graces, grace)
+	}
+	f.mu.Unlock()
 	vm, err := f.state(host, microVM, "stopped")
 	if he, ok := err.(*hostapi.Error); ok && he.Status == http.StatusNotFound {
 		return hostapi.MicroVM{Name: microVM, State: "stopped"}, nil
@@ -200,6 +262,9 @@ func (f *FakeMachineHosts) SnapshotDisk(_ context.Context, host, microVM, disk, 
 	h, err := f.answering(host)
 	if err != nil {
 		return err
+	}
+	if h.refuseDisks != nil {
+		return h.refuseDisks
 	}
 	vm, ok := h.vms[microVM]
 	if !ok {

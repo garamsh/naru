@@ -58,11 +58,16 @@ func (m *MachineHosts) List(ctx context.Context) ([]machines.Host, error) {
 	for i, h := range admitted {
 		out[i] = machines.Host{ID: h.ID, Region: h.Region, Labels: h.Labels, Draining: h.Draining}
 		wg.Go(func() {
-			r, err := m.reports.get(h.ID, func() (report, error) { return m.probe(ctx, h) })
+			fresh := false
+			r, err := m.reports.get(h.ID, func() (report, error) {
+				r, err := m.probe(ctx, h)
+				fresh = err == nil
+				return r, err
+			})
 			if err != nil {
 				return
 			}
-			out[i].Answering = true
+			out[i].Answering, out[i].Stale = true, !fresh
 			out[i].Reported = r.info.ReportedLabels
 			out[i].Capacity = r.info.Capacity
 			out[i].MicroVMs = r.microVMs

@@ -55,9 +55,9 @@ type Store interface {
 	Snapshot(ctx context.Context, caller, name string) (Snapshot, int64, error)
 	// AllSnapshots returns every caller's snapshots.
 	AllSnapshots(ctx context.Context) ([]SnapshotEntry, error)
-	// UpdateSnapshot writes s while it is still the one written at rev, and returns the revision it
-	// wrote at; ErrRaced otherwise.
-	UpdateSnapshot(ctx context.Context, s Snapshot, rev int64) (int64, error)
+	// UpdateSnapshot writes s, and del when it is not nil, while s is still the one written at rev,
+	// and returns the revision it wrote at; ErrRaced otherwise.
+	UpdateSnapshot(ctx context.Context, s Snapshot, rev int64, del *Deletion) (int64, error)
 	// Snapshots returns the caller's snapshots, ordered by name.
 	Snapshots(ctx context.Context, caller string) ([]Snapshot, error)
 	// CreateSnapshot writes s while the caller has no snapshot of its name and the snapshot's Machine
@@ -66,10 +66,16 @@ type Store interface {
 	// DeleteSnapshot removes s, while it is still the one written at rev, and records its Deletion
 	// when it names a host; ErrRaced otherwise.
 	DeleteSnapshot(ctx context.Context, s Snapshot, rev int64) error
-	// Deletions returns the deleted snapshots whose disk snapshots are still to be deleted.
+	// Deletions returns every snapshot deletion, done or not.
 	Deletions(ctx context.Context) ([]Deletion, error)
-	// DropDeletion removes a deletion once its disk snapshots are gone.
+	// PutDeletion writes d, as done once its disk snapshots are gone.
+	PutDeletion(ctx context.Context, d Deletion) error
+	// DropDeletion removes a deletion, once it is done and TombstoneAge old.
 	DropDeletion(ctx context.Context, id string) error
+	// Tombstones returns every removed Machine's tombstone by id.
+	Tombstones(ctx context.Context) (map[string]Tombstone, error)
+	// DropTombstone removes a tombstone once it is TombstoneAge old.
+	DropTombstone(ctx context.Context, id string) error
 	// Allocations returns each host's allocation that has one.
 	Allocations(ctx context.Context) (map[string]Allocation, error)
 	// Bind writes r, which names its binding, with its host's allocation of a new sum, while r is
@@ -77,9 +83,9 @@ type Store interface {
 	// placements never both take the last of a host.
 	// It returns the revision it wrote at, the record's and the allocation's.
 	Bind(ctx context.Context, r Record, rev int64, alloc Allocation) (int64, error)
-	// Remove deletes r and frees its id and name, appending ev, and writes its host's allocation's
-	// new sum when alloc is not nil, while r and the allocation are still the ones read; ErrRaced
-	// otherwise.
+	// Remove deletes r and frees its id and name, appending ev, writes its tombstone, dated by ev,
+	// and writes its host's allocation's new sum when alloc is not nil, while r and the allocation
+	// are still the ones read; ErrRaced otherwise.
 	// It returns the revision it wrote at, the allocation's.
 	Remove(ctx context.Context, r Record, rev int64, alloc *Allocation, ev machineapi.Event) (int64, error)
 	// Events returns the caller's events committed after the revision after, oldest first, and the

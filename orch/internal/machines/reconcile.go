@@ -6,11 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"net/http"
 	"reflect"
-	"regexp"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
@@ -22,11 +19,15 @@ import (
 const (
 	// DefaultInterval is the pause between passes, --machine-interval's default (ADR 0109 item 4).
 	DefaultInterval = 5 * time.Second
+	// DefaultHostTimeout bounds the work of one pass on one host.
+	DefaultHostTimeout = 10 * time.Minute
 	// RestartEvery is how often, at most, a Machine that stopped on its own while desired running
 	// is started again.
 	RestartEvery = time.Minute
-	// parallel bounds how many Machines one pass drives on their hosts at once.
-	parallel = 16
+	// MaxSnapshotRefusals is how many refusals of its disk snapshots fail a snapshot.
+	MaxSnapshotRefusals = 3
+	// parallel bounds how many Machines one host's work drives at once.
+	parallel = 4
 )
 
 // The reasons a caller reads in a Machine's status.
@@ -39,14 +40,22 @@ const (
 	ReasonRestartWait     = "the Machine stopped on its own; it is started again at most once a minute"
 )
 
-// The types of the fleet's events the reconciler appends, with the Machine as caller/name for
-// subject.
+// The types of the fleet's events the reconciler appends. A Machine's has caller/name for subject;
+// a host's thing has host/name.
 const (
 	// EventRestart is a Machine that stopped on its own started again; each attempt is one.
 	EventRestart = "machine.restart"
 	// EventOlderEpoch is the microVM of an older epoch of a live Machine stopped, and left on its
 	// host with its disks for the move that settles it.
 	EventOlderEpoch = "machine.older-epoch"
+	// EventUnknownMicroVM is a microVM named as a Machine's whose id has neither a record nor a
+	// tombstone: it is left as it is, disks and all (ADR 0109 item 7). One per microVM per leader.
+	EventUnknownMicroVM = "machine.unknown-microvm"
+	// EventUnknownDiskSnapshot is a disk snapshot named as a snapshot's whose id has neither a
+	// snapshot nor a deletion: it is left as it is. One per disk snapshot per leader.
+	EventUnknownDiskSnapshot = "machine.unknown-disk-snapshot"
+	// EventAllocationDrift is a host whose allocation is not the sum of its bindings. One per change.
+	EventAllocationDrift = "machine.allocation-drift"
 )
 
 // ReconcilerConfig is what the reconciler runs over.
@@ -54,11 +63,14 @@ type ReconcilerConfig struct {
 	Store Store
 	Hosts Hosts
 	Clock Clock
-	// Interval is the pause between passes; DefaultInterval when zero.
+	// Interval is the pause between passes, and the longest a pass waits for a host's work;
+	// DefaultInterval when zero.
 	Interval time.Duration
-	Reserve  Reserve
-	// Wake, when not nil, returns a channel that is sent on after each write of a Machine or a
-	// snapshot, for a pass at once; the ticker still runs when the channel closes.
+	// HostTimeout bounds the work of one pass on one host; DefaultHostTimeout when zero.
+	HostTimeout time.Duration
+	Reserve     Reserve
+	// Wake, when not nil, returns a channel that is sent on after each Machine API write the
+	// reconciler acts on, for a pass at once; the ticker still runs when the channel closes.
 	Wake func(ctx context.Context) <-chan struct{}
 	// Fleet is the fleet's event log.
 	Fleet Appender
@@ -69,6 +81,14 @@ type ReconcilerConfig struct {
 // Machine on a host and makes the host run it as its record asks.
 type Reconciler struct {
 	cfg ReconcilerConfig
+
+	mu sync.Mutex
+	// busy are the hosts whose work an earlier pass left running; a pass gives them none.
+	busy map[string]bool
+	// noted are the unknown microVMs and disk snapshots already in the fleet's log, as host/name.
+	noted map[string]bool
+	// drift is each host's last allocation mismatch in the fleet's log.
+	drift map[string]string
 }
 
 // NewReconciler returns the reconciler of cfg.
@@ -76,10 +96,13 @@ func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 	if cfg.Interval <= 0 {
 		cfg.Interval = DefaultInterval
 	}
+	if cfg.HostTimeout <= 0 {
+		cfg.HostTimeout = DefaultHostTimeout
+	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Reconciler{cfg: cfg}
+	return &Reconciler{cfg: cfg, busy: map[string]bool{}, noted: map[string]bool{}, drift: map[string]string{}}
 }
 
 // Run runs a pass every interval and after each wake until ctx ends.
@@ -112,25 +135,40 @@ type pass struct {
 	entries []*Entry
 	byID    map[string]*Entry
 	snaps   []SnapshotEntry
-	// bySnapshot is each caller's snapshots by name.
+	// bySnapshot is each caller's snapshots by name, and snapByID every snapshot by its id.
 	bySnapshot map[string]map[string]*SnapshotEntry
+	snapByID   map[string]*SnapshotEntry
+	deletions  map[string]Deletion
+	tombstones map[string]Tombstone
+	// epochs is the highest epoch of each id among the microVMs the hosts report.
+	epochs map[string]uint64
 
 	mu     sync.Mutex
 	allocs map[string]Allocation
+	// errs are the host work's failures while the pass waits for it; late says it no longer does,
+	// and a failure after that is logged.
+	errs []error
+	late bool
 }
 
-// Reconcile runs one pass. It plans from what it read at its start alone (ADR 0109 item 4).
+// Reconcile runs one pass. It plans from what it read at its start alone (ADR 0109 item 4). What
+// needs no host is done first; then each host that answers gets its own work, with its own
+// deadline, and the pass waits for it at most an interval: a host whose work outlasts that keeps it,
+// and gets none from the passes that follow until it ends.
 func (r *Reconciler) Reconcile(ctx context.Context) error {
 	p, err := r.observe(ctx)
 	if err != nil {
 		return err
 	}
+	r.audit(ctx, p)
 	errs := []error{r.place(ctx, p)}
-	errs = append(errs, r.drive(ctx, p)...)
-	errs = append(errs, r.snapshot(ctx, p)...)
-	errs = append(errs, r.sweep(ctx, p)...)
-	errs = append(errs, r.deleteDiskSnapshots(ctx, p)...)
-	return errors.Join(errs...)
+	errs = append(errs, r.unattended(ctx, p)...)
+	errs = append(errs, r.age(ctx, p)...)
+	r.dispatch(ctx, p)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.late = true
+	return errors.Join(append(errs, p.errs...)...)
 }
 
 func (r *Reconciler) observe(ctx context.Context) (*pass, error) {
@@ -150,9 +188,25 @@ func (r *Reconciler) observe(ctx context.Context) (*pass, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read allocations: %w", err)
 	}
-	p := &pass{hosts: map[string]Host{}, byID: map[string]*Entry{}, snaps: snaps, bySnapshot: map[string]map[string]*SnapshotEntry{}, allocs: allocs}
+	dels, err := r.cfg.Store.Deletions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read deletions: %w", err)
+	}
+	tombs, err := r.cfg.Store.Tombstones(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read tombstones: %w", err)
+	}
+	p := &pass{
+		hosts: map[string]Host{}, byID: map[string]*Entry{}, snaps: snaps, bySnapshot: map[string]map[string]*SnapshotEntry{},
+		snapByID: map[string]*SnapshotEntry{}, deletions: map[string]Deletion{}, tombstones: tombs, epochs: map[string]uint64{}, allocs: allocs,
+	}
 	for _, h := range hosts {
 		p.hosts[h.ID] = h
+		for _, vm := range h.MicroVMs {
+			if id, epoch, ok := parseMicroVM(vm.Name); ok {
+				p.epochs[id] = max(p.epochs[id], epoch)
+			}
+		}
 	}
 	for i := range entries {
 		e := &entries[i]
@@ -165,6 +219,10 @@ func (r *Reconciler) observe(ctx context.Context) (*pass, error) {
 			p.bySnapshot[s.Caller] = map[string]*SnapshotEntry{}
 		}
 		p.bySnapshot[s.Caller][s.Snapshot.Snapshot.Name] = s
+		p.snapByID[s.ID] = s
+	}
+	for _, d := range dels {
+		p.deletions[d.ID] = d
 	}
 	return p, nil
 }
@@ -193,19 +251,47 @@ func (r *Reconciler) candidates(p *pass) []candidate {
 	return out
 }
 
-// place binds each Machine that has no host to the one placement chooses, or records why none
-// fits. A Machine deleted before it was placed is removed.
+// audit compares each host's allocation with the sum of what its bindings take, and records a
+// mismatch, once per change, in the log and the fleet's log. Placement keeps using the allocation,
+// which the guards compare.
+func (r *Reconciler) audit(ctx context.Context, p *pass) {
+	sums := map[string]amounts{}
+	for _, e := range p.entries {
+		if e.Binding != nil {
+			sums[e.Binding.Host] = sums[e.Binding.Host].plus(need(e.Spec))
+		}
+	}
+	hosts := map[string]bool{}
+	for h := range sums {
+		hosts[h] = true
+	}
+	for h := range p.allocs {
+		hosts[h] = true
+	}
+	for _, h := range slices.Sorted(maps.Keys(hosts)) {
+		want, have := sums[h].resources(), p.allocs[h].Resources
+		mismatch := ""
+		if want != have {
+			mismatch = fmt.Sprintf("allocation %+v, bindings %+v", have, want)
+		}
+		r.mu.Lock()
+		changed := r.drift[h] != mismatch
+		r.drift[h] = mismatch
+		r.mu.Unlock()
+		if changed && mismatch != "" {
+			r.cfg.Log.Error("a host's allocation is not the sum of its bindings", "host", h, "allocation", fmt.Sprintf("%+v", have), "bindings", fmt.Sprintf("%+v", want))
+			r.fleetEvent(ctx, EventAllocationDrift, h, map[string]string{"allocation": fmt.Sprintf("%+v", have), "bindings": fmt.Sprintf("%+v", want)})
+		}
+	}
+}
+
+// place binds each Machine that has no host and is not deleted to the one placement chooses, or
+// records why none fits.
 func (r *Reconciler) place(ctx context.Context, p *pass) error {
 	cs := r.candidates(p)
 	var errs []error
 	for _, e := range p.entries {
-		if e.Binding != nil {
-			continue
-		}
-		if e.Status.Phase == machineapi.PhaseDeleting {
-			if err := r.remove(ctx, p, e); err != nil {
-				errs = append(errs, err)
-			}
+		if e.Binding != nil || e.Status.Phase == machineapi.PhaseDeleting {
 			continue
 		}
 		onto, reason := "", ""
@@ -253,13 +339,14 @@ func (r *Reconciler) place(ctx context.Context, p *pass) error {
 	return errors.Join(errs...)
 }
 
-// bind binds e to host under its first epoch, adding what it needs to the host's allocation in the
-// same transaction.
+// bind binds e to host, adding what it needs to the host's allocation in the same transaction. The
+// epoch is above any a host reports for the id, so a placement never takes the name of a microVM
+// an earlier one left, as one an etcd restore forgot (ADR 0109 item 3).
 func (r *Reconciler) bind(ctx context.Context, p *pass, e *Entry, host string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	next := e.Record
-	next.Binding = &Binding{Host: host, Epoch: 1}
+	next.Binding = &Binding{Host: host, Epoch: p.epochs[e.ID] + 1}
 	next.Status.Reason, next.OperatorReason = "", ""
 	alloc := p.allocs[host]
 	alloc.Resources = of(alloc.Resources).plus(need(e.Spec)).resources()
@@ -273,31 +360,111 @@ func (r *Reconciler) bind(ctx context.Context, p *pass, e *Entry, host string) e
 	return nil
 }
 
-// remove removes a deleted Machine whose microVM is gone, freeing its name and its host's
-// allocation, with its deleted event.
-func (r *Reconciler) remove(ctx context.Context, p *pass, e *Entry) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	ev := r.event(machineapi.EventDeleted, e.Record)
-	var alloc *Allocation
-	if e.Binding != nil {
-		a := p.allocs[e.Binding.Host]
-		a.Resources = of(a.Resources).minus(need(e.Spec)).resources()
-		alloc = &a
+// unattended does for each Machine and snapshot what needs no host: a deleted Machine that was
+// never placed goes, a placed one whose host does not answer shows unknown, and a pending snapshot
+// whose Machine is gone or being deleted fails.
+func (r *Reconciler) unattended(ctx context.Context, p *pass) []error {
+	var errs []error
+	for _, e := range p.entries {
+		switch {
+		case e.Binding == nil && e.Status.Phase == machineapi.PhaseDeleting:
+			errs = append(errs, r.finish(ctx, p, e))
+		case e.Binding == nil || e.Status.Phase == machineapi.PhaseDeleting:
+		default:
+			if _, ok := p.answering(e.Binding.Host); ok {
+				continue
+			}
+			// Nothing is inferred of a host that does not answer, and nothing is placed elsewhere.
+			host := e.Binding.Host
+			errs = append(errs, r.set(ctx, e, func(rec *Record) {
+				rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = machineapi.PhaseUnknown, ReasonNotAnswering, ReasonNotAnswering+": "+host
+			}))
+		}
 	}
-	rev, err := r.cfg.Store.Remove(ctx, e.Record, e.Rev, alloc, ev)
-	if err != nil {
-		return fmt.Errorf("remove %s/%s: %w", e.Caller, e.Name, err)
+	for i := range p.snaps {
+		s := &p.snaps[i]
+		if s.Snapshot.Snapshot.Phase != machineapi.SnapshotPending {
+			continue
+		}
+		if e := p.byID[s.Snapshot.Snapshot.MachineID]; e == nil || e.Status.Phase == machineapi.PhaseDeleting {
+			errs = append(errs, r.setSnapshot(ctx, s, nil, func(n *Snapshot) {
+				n.Snapshot.Phase, n.Snapshot.Reason = machineapi.SnapshotFailed, ReasonMachineDeleted
+			}))
+		}
 	}
-	if alloc != nil {
-		alloc.Rev = rev
-		p.allocs[e.Binding.Host] = *alloc
-	}
-	return nil
+	return errs
 }
 
-// drive brings each bound Machine's microVM to its record, on its host, several Machines at once.
-func (r *Reconciler) drive(ctx context.Context, p *pass) []error {
+// age drops the tombstones, and the deletions done, that are TombstoneAge old.
+func (r *Reconciler) age(ctx context.Context, p *pass) []error {
+	now := r.cfg.Clock.Now()
+	var errs []error
+	for id, t := range p.tombstones {
+		if now.Sub(t.Removed) >= TombstoneAge {
+			errs = append(errs, r.cfg.Store.DropTombstone(ctx, id))
+		}
+	}
+	for id, d := range p.deletions {
+		if !d.Done.IsZero() && now.Sub(d.Done) >= TombstoneAge {
+			errs = append(errs, r.cfg.Store.DropDeletion(ctx, id))
+		}
+	}
+	return errs
+}
+
+// dispatch starts each answering host's work that no earlier pass left running, and waits for it
+// at most an interval.
+func (r *Reconciler) dispatch(ctx context.Context, p *pass) {
+	var wg sync.WaitGroup
+	for _, id := range slices.Sorted(maps.Keys(p.hosts)) {
+		if !p.hosts[id].Answering {
+			continue
+		}
+		r.mu.Lock()
+		busy := r.busy[id]
+		r.busy[id] = true
+		r.mu.Unlock()
+		if busy {
+			r.cfg.Log.Warn("a host's work from an earlier pass still runs; this pass gives it none", "host", id)
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hctx, cancel := context.WithTimeout(ctx, r.cfg.HostTimeout)
+			err := errors.Join(r.work(hctx, p, id)...)
+			cancel()
+			r.mu.Lock()
+			delete(r.busy, id)
+			r.mu.Unlock()
+			if err == nil {
+				return
+			}
+			err = fmt.Errorf("host %s: %w", id, err)
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			if p.late {
+				r.cfg.Log.Error("machine host work failed after its pass", "err", err.Error())
+				return
+			}
+			p.errs = append(p.errs, err)
+		}()
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	t := time.NewTimer(r.cfg.Interval)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		r.cfg.Log.Warn("the pass ends with host work still running", "after", r.cfg.Interval.String())
+	case <-ctx.Done():
+	}
+}
+
+// work is one pass's work on one answering host: its Machines, several at once, then its
+// snapshots, then what it holds that no record names.
+func (r *Reconciler) work(ctx context.Context, p *pass, host string) []error {
 	var (
 		mu   sync.Mutex
 		errs []error
@@ -305,14 +472,14 @@ func (r *Reconciler) drive(ctx context.Context, p *pass) []error {
 	)
 	sem := make(chan struct{}, parallel)
 	for _, e := range p.entries {
-		if e.Binding == nil {
+		if e.Binding == nil || e.Binding.Host != host {
 			continue
 		}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			if err := r.driveOne(ctx, p, e); err != nil {
+			if err := r.drive(ctx, p, e); err != nil {
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("%s/%s: %w", e.Caller, e.Name, err))
 				mu.Unlock()
@@ -320,318 +487,9 @@ func (r *Reconciler) drive(ctx context.Context, p *pass) []error {
 		}()
 	}
 	wg.Wait()
-	return errs
-}
-
-func (r *Reconciler) driveOne(ctx context.Context, p *pass, e *Entry) error {
-	b := *e.Binding
-	name := b.MicroVM(e.ID)
-	h, ok := p.answering(b.Host)
-	if !ok {
-		if e.Status.Phase == machineapi.PhaseDeleting {
-			return nil
-		}
-		// Nothing is inferred of a host that does not answer, and nothing is placed elsewhere.
-		return r.set(ctx, e, func(rec *Record) {
-			rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = machineapi.PhaseUnknown, ReasonNotAnswering, ReasonNotAnswering+": "+b.Host
-		})
-	}
-	if e.Status.Phase == machineapi.PhaseDeleting {
-		if err := r.cfg.Hosts.Delete(ctx, b.Host, name); err != nil {
-			return fmt.Errorf("delete %s on %s: %w", name, b.Host, err)
-		}
-		return r.remove(ctx, p, e)
-	}
-	vm, ok := h.microVM(name)
-	if !ok {
-		return r.create(ctx, p, e)
-	}
-	return r.converge(ctx, e, vm)
-}
-
-// create makes the Machine's microVM on its host, which starts it, and stops it after when it is
-// desired stopped.
-func (r *Reconciler) create(ctx context.Context, p *pass, e *Entry) error {
-	b := *e.Binding
-	req, err := r.request(p, e)
-	if err != nil {
-		return r.set(ctx, e, func(rec *Record) {
-			rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = machineapi.PhaseFailed, err.Error(), err.Error()
-		})
-	}
-	if err := r.set(ctx, e, func(rec *Record) {
-		rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = machineapi.PhaseStarting, "", ""
-	}); err != nil {
-		return err
-	}
-	vm, err := r.cfg.Hosts.Create(ctx, b.Host, req)
-	if refused(err) {
-		var he *hostapi.Error
-		errors.As(err, &he)
-		reason := "the host refused the Machine: " + he.Message
-		return r.set(ctx, e, func(rec *Record) {
-			rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = machineapi.PhaseFailed, reason, reason
-			rec.Status.ObservedGeneration = rec.Status.Generation
-		})
-	}
-	if err != nil {
-		return fmt.Errorf("create %s on %s: %w", req.Name, b.Host, err)
-	}
-	return r.converge(ctx, e, vm)
-}
-
-// refused is a host's answer that the same request will meet again: a 4xx other than a conflict
-// or a missing name.
-func refused(err error) bool {
-	var he *hostapi.Error
-	return errors.As(err, &he) && he.Status >= 400 && he.Status < 500 &&
-		he.Status != http.StatusConflict && he.Status != http.StatusNotFound && he.Status != http.StatusTooManyRequests
-}
-
-// The states the host API reports of a microVM.
-const (
-	vmCreated = "created"
-	vmRunning = "running"
-	vmPaused  = "paused"
-	vmStopped = "stopped"
-	vmFaulted = "faulted"
-)
-
-// converge starts or stops the microVM to the desired state, and records the phase it reached.
-// A desired state the reconciler has not yet acted on is acted on at once; a Machine that stopped
-// on its own after that is started again at most once per RestartEvery.
-func (r *Reconciler) converge(ctx context.Context, e *Entry, vm hostapi.MicroVM) error {
-	b := *e.Binding
-	name := b.MicroVM(e.ID)
-	fresh := e.Status.ObservedGeneration < e.Status.Generation
-	running := vm.State == vmRunning || vm.State == vmPaused
-	var err error
-	switch {
-	case e.Spec.State == machineapi.StateStopped && running:
-		if err := r.set(ctx, e, func(rec *Record) {
-			rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = machineapi.PhaseStopping, "", ""
-			rec.Status.ObservedGeneration = rec.Status.Generation
-		}); err != nil {
-			return err
-		}
-		vm, err = r.cfg.Hosts.Stop(ctx, b.Host, name, e.StopGraceSeconds)
-	case e.Spec.State != machineapi.StateStopped && !running:
-		now := r.cfg.Clock.Now()
-		if !fresh && vm.State != vmCreated && now.Sub(e.Restarted) < RestartEvery {
-			return r.set(ctx, e, func(rec *Record) {
-				rec.Status.Phase, rec.Status.Reason = stopped(vm), ReasonRestartWait
-				rec.OperatorReason = ReasonRestartWait
-				if vm.Failure != "" {
-					rec.OperatorReason += ": " + vm.Failure
-				}
-			})
-		}
-		if err := r.set(ctx, e, func(rec *Record) {
-			rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = machineapi.PhaseStarting, "", ""
-			if !fresh && vm.State != vmCreated {
-				rec.Restarted = now
-			}
-			rec.Status.ObservedGeneration = rec.Status.Generation
-		}); err != nil {
-			return err
-		}
-		if !fresh && vm.State != vmCreated {
-			r.fleet(ctx, EventRestart, e.Record, map[string]string{"host": b.Host, "microvm": name, "state": vm.State, "failure": vm.Failure})
-		}
-		vm, err = r.cfg.Hosts.Start(ctx, b.Host, name)
-	}
-	if err != nil {
-		return fmt.Errorf("%s on %s: %w", name, b.Host, err)
-	}
-	return r.set(ctx, e, func(rec *Record) {
-		rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = phaseOf(vm), "", ""
-		rec.Status.ObservedGeneration = rec.Status.Generation
-	})
-}
-
-// phaseOf is the phase of a microVM in the state the host reports.
-func phaseOf(vm hostapi.MicroVM) machineapi.Phase {
-	switch vm.State {
-	case vmRunning, vmPaused:
-		return machineapi.PhaseRunning
-	case vmCreated:
-		return machineapi.PhaseStarting
-	}
-	return stopped(vm)
-}
-
-func stopped(vm hostapi.MicroVM) machineapi.Phase {
-	if vm.State == vmFaulted {
-		return machineapi.PhaseFailed
-	}
-	return machineapi.PhaseStopped
-}
-
-// request is the host API's body for the Machine's microVM: created unfenced, with restartOnBoot
-// (ADR 0109 item 1), its volumes as disks at their paths, from the snapshot's disk snapshots for a
-// restore.
-func (r *Reconciler) request(p *pass, e *Entry) (hostapi.CreateRequest, error) {
-	s := e.Spec
-	restart := true
-	req := hostapi.CreateRequest{
-		Name: e.Binding.MicroVM(e.ID), Image: s.Image, CPU: s.CPU, Memory: s.MemoryBytes, RootDiskBytes: s.RootDiskBytes,
-		Env: s.Env, Command: s.Command, Args: s.Args, User: s.User, WorkingDir: s.WorkingDir, RestartOnBoot: &restart,
-	}
-	for _, rule := range s.NetworkPolicy.Egress {
-		out := hostapi.Rule{Prefix: rule.Prefix, Protocol: rule.Protocol}
-		for _, pr := range rule.Ports {
-			out.Ports = append(out.Ports, hostapi.PortRange{First: uint32(pr.First), Last: uint32(pr.Last)})
-		}
-		req.NetworkPolicy.Egress = append(req.NetworkPolicy.Egress, out)
-	}
-	for _, f := range s.Files {
-		req.Files = append(req.Files, hostapi.File{Path: f.Path, Mode: f.Mode, Content: f.Content})
-	}
-	var snap *SnapshotEntry
-	if from := s.FromSnapshot; from != nil {
-		snap = p.bySnapshot[e.Caller][from.Snapshot]
-		if snap == nil {
-			return hostapi.CreateRequest{}, errors.New(ReasonSnapshotGone)
-		}
-	}
-	for _, v := range s.Volumes {
-		d := hostapi.DiskSpec{Name: v.Name, SizeBytes: v.SizeBytes, MountPath: v.MountPath}
-		if snap != nil {
-			i := slices.IndexFunc(snap.Snapshot.Snapshot.Spec.Volumes, func(w machineapi.Volume) bool { return w.Name == v.Name })
-			if i < 0 {
-				return hostapi.CreateRequest{}, fmt.Errorf("the snapshot has no volume %s", v.Name)
-			}
-			d.FromSnapshot = snap.DiskSnapshot(i)
-		}
-		req.Disks = append(req.Disks, d)
-	}
-	return req, nil
-}
-
-// snapshot takes each pending snapshot on its Machine's host: it records the host first, so a
-// deletion that follows finds the disk snapshots, then takes one per volume, then marks it ready.
-// A snapshot whose Machine is gone or being deleted fails.
-func (r *Reconciler) snapshot(ctx context.Context, p *pass) []error {
-	var errs []error
-	for i := range p.snaps {
-		s := &p.snaps[i]
-		if s.Snapshot.Snapshot.Phase != machineapi.SnapshotPending {
-			continue
-		}
-		e := p.byID[s.Snapshot.Snapshot.MachineID]
-		if e == nil || e.Status.Phase == machineapi.PhaseDeleting {
-			errs = append(errs, r.setSnapshot(ctx, s, func(n *Snapshot) {
-				n.Snapshot.Phase, n.Snapshot.Reason = machineapi.SnapshotFailed, ReasonMachineDeleted
-			}))
-			continue
-		}
-		if e.Binding == nil {
-			continue
-		}
-		b := *e.Binding
-		h, ok := p.answering(b.Host)
-		if !ok {
-			continue
-		}
-		name := b.MicroVM(e.ID)
-		if _, ok := h.microVM(name); !ok {
-			continue
-		}
-		if s.Host == "" {
-			if err := r.setSnapshot(ctx, s, func(n *Snapshot) { n.Host = b.Host }); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-		}
-		if s.Host != b.Host {
-			continue
-		}
-		var err error
-		for i, v := range s.Snapshot.Snapshot.Spec.Volumes {
-			if err = r.cfg.Hosts.SnapshotDisk(ctx, b.Host, name, v.Name, s.DiskSnapshot(i)); err != nil {
-				break
-			}
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("snapshot %s/%s: %w", s.Caller, s.Snapshot.Snapshot.Name, err))
-			continue
-		}
-		errs = append(errs, r.setSnapshot(ctx, s, func(n *Snapshot) { n.Snapshot.Phase = machineapi.SnapshotReady }))
-	}
-	return errs
-}
-
-// sweep reaches the microVMs the reconciler named on each host that answers and that no current
-// binding names: one of a Machine that is gone is deleted with its disks, and one of an older
-// epoch of a live Machine is stopped and left with its disks, with an event.
-func (r *Reconciler) sweep(ctx context.Context, p *pass) []error {
-	var errs []error
-	for _, id := range slices.Sorted(maps.Keys(p.hosts)) {
-		h := p.hosts[id]
-		if !h.Answering {
-			continue
-		}
-		for _, vm := range h.MicroVMs {
-			mid, epoch, ok := parseMicroVM(vm.Name)
-			if !ok {
-				continue
-			}
-			e := p.byID[mid]
-			switch {
-			case e == nil:
-				if err := r.cfg.Hosts.Delete(ctx, h.ID, vm.Name); err != nil {
-					errs = append(errs, fmt.Errorf("delete %s on %s: %w", vm.Name, h.ID, err))
-				}
-			case e.Binding != nil && e.Binding.Host == h.ID && e.Binding.Epoch == epoch:
-			case vm.State == vmRunning || vm.State == vmPaused:
-				if _, err := r.cfg.Hosts.Stop(ctx, h.ID, vm.Name, 0); err != nil {
-					errs = append(errs, fmt.Errorf("stop %s on %s: %w", vm.Name, h.ID, err))
-					continue
-				}
-				r.fleet(ctx, EventOlderEpoch, e.Record, map[string]string{"host": h.ID, "microvm": vm.Name})
-			}
-		}
-	}
-	return errs
-}
-
-// microVMName is a name the reconciler gives: m-<id>-<epoch>.
-var microVMName = regexp.MustCompile(`^` + MicroVMPrefix + `([0-9a-f]{16})-([1-9][0-9]*)$`)
-
-func parseMicroVM(name string) (id string, epoch uint64, ok bool) {
-	m := microVMName.FindStringSubmatch(name)
-	if m == nil {
-		return "", 0, false
-	}
-	epoch, err := strconv.ParseUint(m[2], 10, 64)
-	return m[1], epoch, err == nil
-}
-
-// deleteDiskSnapshots deletes the disk snapshots of each deleted snapshot on its host, once the host
-// answers, and then the deletion.
-func (r *Reconciler) deleteDiskSnapshots(ctx context.Context, p *pass) []error {
-	dels, err := r.cfg.Store.Deletions(ctx)
-	if err != nil {
-		return []error{fmt.Errorf("read deletions: %w", err)}
-	}
-	var errs []error
-	for _, d := range dels {
-		if _, ok := p.answering(d.Host); !ok {
-			continue
-		}
-		var err error
-		for _, disk := range d.Disks {
-			if err = r.cfg.Hosts.DeleteDiskSnapshot(ctx, d.Host, disk); err != nil {
-				break
-			}
-		}
-		if err == nil {
-			err = r.cfg.Store.DropDeletion(ctx, d.ID)
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("delete the disk snapshots of %s on %s: %w", d.ID, d.Host, err))
-		}
-	}
+	errs = append(errs, r.snapshot(ctx, p, host)...)
+	errs = append(errs, r.sweep(ctx, p, host)...)
+	errs = append(errs, r.disks(ctx, p, host)...)
 	return errs
 }
 
@@ -656,13 +514,14 @@ func (r *Reconciler) set(ctx context.Context, e *Entry, change func(*Record)) er
 	return nil
 }
 
-func (r *Reconciler) setSnapshot(ctx context.Context, s *SnapshotEntry, change func(*Snapshot)) error {
+// setSnapshot writes the change to s when it changes anything, with del when it is not nil.
+func (r *Reconciler) setSnapshot(ctx context.Context, s *SnapshotEntry, del *Deletion, change func(*Snapshot)) error {
 	next := s.Snapshot
 	change(&next)
 	if reflect.DeepEqual(next, s.Snapshot) {
 		return nil
 	}
-	rev, err := r.cfg.Store.UpdateSnapshot(ctx, next, s.Rev)
+	rev, err := r.cfg.Store.UpdateSnapshot(ctx, next, s.Rev, del)
 	if err != nil {
 		return fmt.Errorf("write snapshot %s/%s: %w", s.Caller, s.Snapshot.Snapshot.Name, err)
 	}
@@ -674,14 +533,37 @@ func (r *Reconciler) event(typ machineapi.EventType, rec Record) machineapi.Even
 	return machineapi.Event{Type: typ, Machine: rec.Name, ID: rec.ID, Status: rec.Status, Time: r.cfg.Clock.Now().UTC()}
 }
 
-// fleet appends an event to the fleet's log; a failure is logged, and the pass goes on.
+// fleet appends a Machine's event to the fleet's log.
 func (r *Reconciler) fleet(ctx context.Context, typ string, rec Record, detail map[string]string) {
+	detail["id"] = rec.ID
+	r.fleetEvent(ctx, typ, rec.Caller+"/"+rec.Name, detail)
+}
+
+// fleetEvent appends an event to the fleet's log; a failure is logged, and the pass goes on.
+func (r *Reconciler) fleetEvent(ctx context.Context, typ, subject string, detail map[string]string) {
 	if r.cfg.Fleet == nil {
 		return
 	}
-	detail["id"] = rec.ID
-	ev := orchapi.Event{Time: r.cfg.Clock.Now().UTC(), Type: typ, Subject: rec.Caller + "/" + rec.Name, Detail: detail}
+	ev := orchapi.Event{Time: r.cfg.Clock.Now().UTC(), Type: typ, Subject: subject, Detail: detail}
 	if err := r.cfg.Fleet.AppendEvent(ctx, ev); err != nil {
-		r.cfg.Log.Error("append a fleet event", "type", typ, "subject", ev.Subject, "err", err.Error())
+		r.cfg.Log.Error("append a fleet event", "type", typ, "subject", subject, "err", err.Error())
 	}
+}
+
+// note reports whether the host's thing named is not yet in the fleet's log, and marks it so.
+func (r *Reconciler) note(host, name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := host + "/" + name
+	if r.noted[k] {
+		return false
+	}
+	r.noted[k] = true
+	return true
+}
+
+// hostError is the host API's refusal in err, if it is one.
+func hostError(err error) (*hostapi.Error, bool) {
+	var he *hostapi.Error
+	return he, errors.As(err, &he)
 }

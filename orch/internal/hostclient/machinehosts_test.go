@@ -106,3 +106,24 @@ func TestMachineHostsTakesAMicroVMOrDiskSnapshotAlreadyGoneAsDone(t *testing.T) 
 	require.Error(t, err, "a start of one that is gone fails")
 	require.Error(t, m.SnapshotDisk(ctx, "h", "gone", "data", "s-1-0"), "as does a snapshot of it")
 }
+
+func TestMachineHostsMarksAnAnswerItRepeatsStale(t *testing.T) {
+	h := newHost(t)
+	m, hosts := machineHosts(t, inventory{{ID: "h", Address: h.addr()}})
+	require.False(t, hosts[0].Stale, "control: a fresh answer")
+
+	h.mu.Lock()
+	h.status["GET /v1/microvms"] = 500
+	h.mu.Unlock()
+	hosts, err := m.List(t.Context())
+	require.NoError(t, err)
+	assert.True(t, hosts[0].Answering)
+	assert.True(t, hosts[0].Stale, "the last answer, given again")
+
+	h.mu.Lock()
+	delete(h.status, "GET /v1/microvms")
+	h.mu.Unlock()
+	hosts, err = m.List(t.Context())
+	require.NoError(t, err)
+	assert.False(t, hosts[0].Stale)
+}

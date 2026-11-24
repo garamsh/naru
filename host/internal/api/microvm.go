@@ -26,7 +26,7 @@ const callTimeout = 5 * time.Minute
 // most it may name, which leaves the stop room within callTimeout.
 const (
 	defaultGrace = 10 * time.Second
-	maxGrace     = 240
+	maxGrace     = hostapi.MaxGraceSeconds
 )
 
 // maxBody bounds a request body. An OS-form body carries the seed's user-data in base64, and the

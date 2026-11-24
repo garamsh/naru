@@ -49,6 +49,9 @@ type Record struct {
 	OperatorReason string `json:"operatorReason,omitempty"`
 	// Restarted is when the reconciler last started the Machine again after it stopped on its own.
 	Restarted time.Time `json:"restarted,omitzero"`
+	// Refused is the generation whose create the host refused; the reconciler makes no create while
+	// it is the Machine's generation.
+	Refused uint64 `json:"refused,omitempty"`
 }
 
 // Binding is a placement of a Machine: its host, and the epoch that counts its placements.
@@ -78,6 +81,8 @@ type Snapshot struct {
 	Snapshot machineapi.Snapshot `json:"snapshot"`
 	ID       string              `json:"id"`
 	Host     string              `json:"host,omitempty"`
+	// Refusals counts the host's refusals of its disk snapshots; at MaxSnapshotRefusals it fails.
+	Refusals int `json:"refusals,omitempty"`
 }
 
 // DiskSnapshot is the name of the disk snapshot that holds the snapshot's i-th volume on its host:
@@ -93,13 +98,27 @@ func (s Snapshot) DiskSnapshots() []string {
 	return out
 }
 
-// Deletion is a deleted snapshot whose disk snapshots the reconciler still deletes on its host,
-// under /naru/orch/snapshot-deletions/<id>.
+// Deletion is a deleted or failed snapshot's disk snapshots on its host, under
+// /naru/orch/snapshot-deletions/<id>. Until Done the reconciler deletes them; after, the record is
+// the tombstone that lets it delete one a host still holds, until it is TombstoneAge old.
 type Deletion struct {
-	ID    string   `json:"id"`
-	Host  string   `json:"host"`
-	Disks []string `json:"disks"`
+	ID    string    `json:"id"`
+	Host  string    `json:"host"`
+	Disks []string  `json:"disks"`
+	Done  time.Time `json:"done,omitzero"`
 }
+
+// Tombstone is a removed Machine, under /naru/orch/machine-tombstones/<id>: the reconciler deletes a
+// microVM of an id it names, and of no other id without a record (ADR 0109 item 7), until it is
+// TombstoneAge old.
+type Tombstone struct {
+	ID      string    `json:"id"`
+	Removed time.Time `json:"removed"`
+}
+
+// TombstoneAge is how long a tombstone is kept: a microVM a late create left behind is found on the
+// first pass its host answers, and one whose host stays away longer is left, as unknown.
+const TombstoneAge = 7 * 24 * time.Hour
 
 // Answer is the snapshot as the API answers it, with no secret in it.
 func (s Snapshot) Answer() machineapi.Snapshot {

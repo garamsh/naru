@@ -33,7 +33,10 @@ type Host struct {
 	Reported map[string]string
 	Draining bool
 	// Answering is whether the host answered this pass. What follows is empty when it did not.
-	Answering     bool
+	Answering bool
+	// Stale is an answer that is the host's last one, given again while the probe of this pass
+	// failed: a microVM made since is missing from it.
+	Stale         bool
 	Capacity      hostapi.Resources
 	MicroVMs      []hostapi.MicroVM
 	DiskSnapshots []hostapi.DiskSnapshot

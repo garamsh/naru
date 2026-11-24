@@ -2,6 +2,9 @@ package machines_test
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -51,7 +54,7 @@ type rig struct {
 	t     *testing.T
 	svc   machines.Service
 	store *machinesetcd.Store
-	kv    clientv3.KV
+	kv    *clientv3.Client
 	hosts *orchtest.FakeMachineHosts
 	clock *orchtest.Clock
 	fleet *fleetLog
@@ -331,7 +334,56 @@ func TestReconcile_CountsAMicroVMItDidNotPlaceAgainstTheHost(t *testing.T) {
 	assert.Contains(t, r.hosts.MicroVMs("h-a"), "web-1", "and the member is not its to touch")
 }
 
-func TestReconcile_DeletesAMicroVMOfAGoneMachineAndStopsAnOlderEpochOfALiveOne(t *testing.T) {
+func TestReconcile_DeletesAMicroVMOfARemovedMachineAndLeavesOneItDoesNotKnow(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	old := r.create("old", spec())
+	r.pass()
+	_, err := r.svc.Delete(t.Context(), "garam", "old")
+	require.NoError(t, err)
+	r.pass()
+	late := "m-" + old.ID + "-1"
+	require.NotContains(t, r.hosts.MicroVMs("h-a"), late, "control: the delete deleted it")
+	// A create that timed out before the removal lands after it.
+	r.hosts.Put("h-a", hostapi.MicroVM{Name: late, State: "running"})
+	unknown := "m-00000000000000ff-3"
+	r.hosts.Put("h-a", hostapi.MicroVM{Name: unknown, State: "running"})
+
+	r.pass()
+	vms := r.hosts.MicroVMs("h-a")
+	assert.NotContains(t, vms, late, "a microVM of a removed Machine, which its tombstone names, is deleted")
+	require.Contains(t, vms, unknown, "one whose id orch neither has nor removed is left, disks and all")
+	assert.Equal(t, "running", vms[unknown].State, "running")
+	events := r.fleet.of(machines.EventUnknownMicroVM)
+	require.Len(t, events, 1, "with an event")
+	assert.Equal(t, "h-a/"+unknown, events[0].Subject)
+	r.pass()
+	assert.Len(t, r.fleet.of(machines.EventUnknownMicroVM), 1, "once")
+}
+
+func TestReconcile_DropsATombstoneOnceItIsAWeekOld(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	old := r.create("old", spec())
+	r.pass()
+	_, err := r.svc.Delete(t.Context(), "garam", "old")
+	require.NoError(t, err)
+	r.pass()
+	tombs, err := r.store.Tombstones(t.Context())
+	require.NoError(t, err)
+	require.Contains(t, tombs, old.ID)
+
+	r.clock.Advance(machines.TombstoneAge - time.Minute)
+	r.pass()
+	tombs, err = r.store.Tombstones(t.Context())
+	require.NoError(t, err)
+	assert.Contains(t, tombs, old.ID, "kept within the week")
+	r.clock.Advance(time.Minute)
+	r.pass()
+	tombs, err = r.store.Tombstones(t.Context())
+	require.NoError(t, err)
+	assert.NotContains(t, tombs, old.ID, "dropped after it")
+}
+
+func TestReconcile_StopsAnOlderEpochOfALiveMachineAndLeavesIt(t *testing.T) {
 	r := newRig(t, host("h-a", 64*gib), host("h-b", 64*gib))
 	m := r.create("web", spec())
 	r.pass()
@@ -339,15 +391,12 @@ func TestReconcile_DeletesAMicroVMOfAGoneMachineAndStopsAnOlderEpochOfALiveOne(t
 	other := map[string]string{"h-a": "h-b", "h-b": "h-a"}[bound]
 	stale := "m-" + m.ID + "-1"
 	r.hosts.Put(other, hostapi.MicroVM{Name: stale, State: "running", CPU: 2, Memory: 4 * gib})
-	gone := "m-00000000000000ff-3"
-	r.hosts.Put(other, hostapi.MicroVM{Name: gone, State: "running"})
 	for _, name := range []string{"m-web", "m-00000000000000ff", "m-00000000000000ff-0", "web-1"} {
 		r.hosts.Put(other, hostapi.MicroVM{Name: name, State: "running"})
 	}
 
 	r.pass()
 	vms := r.hosts.MicroVMs(other)
-	assert.NotContains(t, vms, gone, "a microVM of a Machine that is gone is deleted")
 	require.Contains(t, vms, stale, "an older epoch of a live Machine is left")
 	assert.Equal(t, "stopped", vms[stale].State, "stopped")
 	events := r.fleet.of(machines.EventOlderEpoch)
@@ -357,10 +406,211 @@ func TestReconcile_DeletesAMicroVMOfAGoneMachineAndStopsAnOlderEpochOfALiveOne(t
 	for _, name := range []string{"m-web", "m-00000000000000ff", "m-00000000000000ff-0", "web-1"} {
 		assert.Equal(t, "running", vms[name].State, "%s is no name the reconciler gives", name)
 	}
+	assert.Empty(t, r.fleet.of(machines.EventUnknownMicroVM), "nor one it reports")
 	assert.Equal(t, "running", r.hosts.MicroVMs(bound)[stale].State, "the bound one runs on")
 
 	r.pass()
 	assert.Len(t, r.fleet.of(machines.EventOlderEpoch), 1, "a stopped one is left alone after")
+}
+
+// After an etcd restore from before a Machine was placed, its record has no binding while its
+// microVM runs: the new placement takes an epoch above it, and the old one is stopped and left.
+func TestReconcile_BindsAboveEveryEpochAHostReportsForTheID(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib), host("h-b", 64*gib))
+	m := r.create("web", spec())
+	before := "m-" + m.ID + "-1"
+	r.hosts.Put("h-b", hostapi.MicroVM{Name: before, State: "running", CPU: 2, Memory: 4 * gib})
+
+	r.pass()
+	b := r.record("web").Binding
+	require.NotNil(t, b)
+	assert.Equal(t, uint64(2), b.Epoch, "above the epoch h-b reports")
+	assert.Contains(t, r.hosts.MicroVMs(b.Host), "m-"+m.ID+"-2", "under a name of its own")
+	assert.Equal(t, "stopped", r.hosts.MicroVMs("h-b")[before].State, "the one before is stopped")
+	assert.Len(t, r.fleet.of(machines.EventOlderEpoch), 1)
+}
+
+func TestReconcile_CreatesAGenerationTheHostRefusedOnceAndNotAgain(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	r.hosts.Refuse("h-a", &hostapi.Error{Status: http.StatusUnprocessableEntity, Message: "image: not found"})
+	m := r.create("web", spec())
+	r.pass()
+	r.pass()
+	r.pass()
+	assert.Len(t, r.hosts.Creates("h-a"), 1, "one create for the generation")
+	rec := r.record("web")
+	assert.Equal(t, machineapi.PhaseFailed, rec.Status.Phase)
+	assert.Equal(t, "the host refused the Machine: image: not found", rec.Status.Reason)
+	phases, _ := r.phases(m.ID)
+	assert.Equal(t, []machineapi.Phase{machineapi.PhasePending, machineapi.PhaseStarting, machineapi.PhaseFailed}, phases, "and one failure in the caller's log")
+
+	r.hosts.Refuse("h-a", nil)
+	_, err := r.svc.Stop(t.Context(), "garam", "web", machineapi.StopRequest{})
+	require.NoError(t, err)
+	r.pass()
+	assert.Len(t, r.hosts.Creates("h-a"), 2, "a new generation is created")
+	assert.Equal(t, machineapi.PhaseStopped, r.record("web").Status.Phase)
+}
+
+func TestReconcile_RetriesACreateTheHostDidNotTakeAsARefusal(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict, http.StatusTooManyRequests, http.StatusInternalServerError} {
+		r := newRig(t, host("h-a", 64*gib))
+		r.hosts.Refuse("h-a", &hostapi.Error{Status: status, Message: "not now"})
+		r.create("web", spec())
+		assert.Error(t, r.rec.Reconcile(t.Context()), "%d", status)
+		assert.Error(t, r.rec.Reconcile(t.Context()), "%d", status)
+		assert.Len(t, r.hosts.Creates("h-a"), 2, "%d: each pass creates again", status)
+		assert.NotEqual(t, machineapi.PhaseFailed, r.record("web").Status.Phase, "%d: the Machine has not failed", status)
+	}
+}
+
+// countingHosts counts the passes, each of which lists the hosts once.
+type countingHosts struct {
+	machines.Hosts
+	mu     sync.Mutex
+	passes int
+}
+
+func (c *countingHosts) List(ctx context.Context) ([]machines.Host, error) {
+	c.mu.Lock()
+	c.passes++
+	c.mu.Unlock()
+	return c.Hosts.List(ctx)
+}
+
+func (c *countingHosts) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.passes
+}
+
+// runOnWatch runs the reconciler on the etcd watch alone for two seconds after a create, and returns
+// how many passes it ran.
+func runOnWatch(t *testing.T, r *rig) int {
+	t.Helper()
+	hosts := &countingHosts{Hosts: r.hosts}
+	rec := machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: hosts, Clock: r.clock, Interval: time.Hour, Fleet: r.fleet,
+		Wake: func(ctx context.Context) <-chan struct{} {
+			return machinesetcd.Watch(ctx, r.kv, slog.New(slog.DiscardHandler))
+		},
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- rec.Run(ctx) }()
+	require.Eventually(t, func() bool { return hosts.count() == 1 }, 5*time.Second, 10*time.Millisecond, "the first pass")
+	r.create("web", spec())
+	time.Sleep(2 * time.Second)
+	cancel()
+	<-done
+	return hosts.count()
+}
+
+// The reconciler's own writes (a binding, starting, running) wake no pass: the create wakes one.
+func TestReconcile_RunsNoPassOnItsOwnWrites(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	assert.Equal(t, 2, runOnWatch(t, r), "the first pass and the one the create woke")
+	assert.Equal(t, machineapi.PhaseRunning, r.record("web").Status.Phase, "control: the pass ran the Machine")
+}
+
+// The reproduction of the refused create's loop.
+func TestReconcile_MakesOneCreateOfARefusedGenerationOnTheWatch(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	r.hosts.Refuse("h-a", &hostapi.Error{Status: http.StatusUnprocessableEntity, Message: "image: not found"})
+	runOnWatch(t, r)
+	assert.Len(t, r.hosts.Creates("h-a"), 1, "one create in two seconds")
+}
+
+func TestReconcile_GivesAHostThatHangsNoMoreWorkAndTheOthersTheirs(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib), host("h-b", 64*gib))
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Interval: 300 * time.Millisecond, Fleet: r.fleet,
+		Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib},
+	})
+	release := r.hosts.Hang("h-a")
+	defer release()
+	// A pass that waited on the hung host would end here, not before.
+	time.AfterFunc(4*time.Second, release)
+	// Two Machines whose rendezvous ties put one on each host.
+	var on map[string]string
+	for i := 0; on == nil || len(on) < 2; i++ {
+		name := fmt.Sprintf("web-%d", i)
+		r.create(name, spec())
+		require.NoError(t, r.rec.Reconcile(t.Context()))
+		on = map[string]string{}
+		for _, n := range []string{"web-0", "web-1", "web-2", "web-3", "web-4", "web-5"} {
+			if rec, _, err := r.store.Machine(t.Context(), "garam", n); err == nil && rec.Binding != nil {
+				on[rec.Binding.Host] = n
+			}
+		}
+		require.Less(t, i, 6, "the spread put no Machine on both hosts")
+	}
+	start := time.Now()
+	require.NoError(t, r.rec.Reconcile(t.Context()))
+	assert.Less(t, time.Since(start), 2*time.Second, "the pass does not wait on the hung host")
+	assert.Equal(t, machineapi.PhaseRunning, r.record(on["h-b"]).Status.Phase, "the other host's Machine runs")
+	assert.Len(t, r.hosts.Creates("h-a"), 0, "the hung host has made nothing yet")
+
+	release()
+	require.Eventually(t, func() bool { return len(r.hosts.Creates("h-a")) == 1 }, 5*time.Second, 50*time.Millisecond, "its work goes on once it answers")
+	require.Eventually(t, func() bool {
+		require.NoError(t, r.rec.Reconcile(t.Context()))
+		return r.record(on["h-a"]).Status.Phase == machineapi.PhaseRunning
+	}, 5*time.Second, 100*time.Millisecond)
+	assert.Len(t, r.hosts.Creates("h-a"), 1, "and no pass gave it the same work while it hung")
+}
+
+func TestReconcile_MakesNoCreateFromAStaleAnswer(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	r.hosts.Stale("h-a", true)
+	r.create("web", spec())
+	r.pass()
+	assert.Empty(t, r.hosts.Creates("h-a"), "a microVM made since the answer would be missing from it")
+	assert.NotNil(t, r.record("web").Binding, "control: the Machine is placed")
+	r.hosts.Stale("h-a", false)
+	r.pass()
+	assert.Len(t, r.hosts.Creates("h-a"), 1)
+}
+
+func TestReconcile_ShowsAMachineCreatedStoppedAsStoppingUntilItIsStopped(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	s := spec()
+	s.State = machineapi.StateStopped
+	m := r.create("web", s)
+	r.pass()
+	phases, _ := r.phases(m.ID)
+	assert.Equal(t, []machineapi.Phase{machineapi.PhasePending, machineapi.PhaseStopping, machineapi.PhaseStopped}, phases)
+	assert.Equal(t, "stopped", r.hosts.MicroVMs("h-a")["m-"+m.ID+"-1"].State)
+}
+
+func TestReconcile_StopsWithAGraceAtMostTheHostsBound(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	r.create("web", spec())
+	r.pass()
+	// A grace the API took before it was bounded.
+	rec, rev, err := r.store.Machine(t.Context(), "garam", "web")
+	require.NoError(t, err)
+	rec.Spec.State, rec.StopGraceSeconds = machineapi.StateStopped, 500
+	rec.Status.Generation++
+	_, err = r.store.Update(t.Context(), rec, rev, nil)
+	require.NoError(t, err)
+	r.pass()
+	assert.Equal(t, []uint32{hostapi.MaxGraceSeconds}, r.hosts.Graces("h-a"))
+	assert.Equal(t, machineapi.PhaseStopped, r.record("web").Status.Phase)
+}
+
+func TestReconcile_RecordsAHostWhoseAllocationIsNotTheSumOfItsBindings(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	r.create("web", spec())
+	r.pass()
+	assert.Empty(t, r.fleet.of(machines.EventAllocationDrift), "control: none while they agree")
+	_, err := r.kv.Put(t.Context(), machinesetcd.AllocationPrefix+"h-a", `{"cpu":1,"memory":1,"disk":1}`)
+	require.NoError(t, err)
+	r.pass()
+	r.pass()
+	events := r.fleet.of(machines.EventAllocationDrift)
+	require.Len(t, events, 1, "one per change")
+	assert.Equal(t, "h-a", events[0].Subject)
 }
 
 func TestReconcile_TakesASnapshotOnTheMachinesHostAndDeletesItThereAfter(t *testing.T) {
@@ -386,7 +636,49 @@ func TestReconcile_TakesASnapshotOnTheMachinesHostAndDeletesItThereAfter(t *test
 	assert.Empty(t, r.hosts.DiskSnapshots("h-a"), "the disk snapshots go from the host")
 	dels, err = r.store.Deletions(t.Context())
 	require.NoError(t, err)
-	assert.Empty(t, dels, "and then the deletion")
+	require.Len(t, dels, 1)
+	assert.False(t, dels[0].Done.IsZero(), "and the deletion is done, kept as the tombstone")
+
+	// One a leader that overlapped took after the deletion is deleted by the tombstone; one no
+	// snapshot or deletion names is left.
+	leaked, unknown := "s-"+snap.ID+"-0", "s-00000000000000ff-0"
+	r.hosts.PutDiskSnapshot("h-a", hostapi.DiskSnapshot{Name: leaked})
+	r.hosts.PutDiskSnapshot("h-a", hostapi.DiskSnapshot{Name: unknown})
+	r.pass()
+	assert.Equal(t, []string{unknown}, r.hosts.DiskSnapshots("h-a"))
+	events := r.fleet.of(machines.EventUnknownDiskSnapshot)
+	require.Len(t, events, 1)
+	assert.Equal(t, "h-a/"+unknown, events[0].Subject)
+
+	r.clock.Advance(machines.TombstoneAge)
+	r.pass()
+	dels, err = r.store.Deletions(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, dels, "a week after it is done the deletion goes")
+}
+
+func TestReconcile_FailsASnapshotTheHostRefusesThreeTimesAndDeletesWhatItTook(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	r.create("web", spec())
+	r.pass()
+	r.hosts.RefuseDisks("h-a", &hostapi.Error{Status: http.StatusUnprocessableEntity, Message: "no room"})
+	_, _, err := r.svc.PutSnapshot(t.Context(), "garam", "before", machineapi.SnapshotRequest{Machine: "web"})
+	require.NoError(t, err)
+	for i := 1; i < machines.MaxSnapshotRefusals; i++ {
+		r.pass()
+		snap, _, err := r.store.Snapshot(t.Context(), "garam", "before")
+		require.NoError(t, err)
+		assert.Equal(t, machineapi.SnapshotPending, snap.Snapshot.Phase, "after %d refusals", i)
+	}
+	r.pass()
+	snap, _, err := r.store.Snapshot(t.Context(), "garam", "before")
+	require.NoError(t, err)
+	assert.Equal(t, machineapi.SnapshotFailed, snap.Snapshot.Phase)
+	assert.Equal(t, "the host refused the snapshot: no room", snap.Snapshot.Reason)
+	dels, err := r.store.Deletions(t.Context())
+	require.NoError(t, err)
+	require.Len(t, dels, 1, "what it took goes")
+	assert.Equal(t, []string{"s-" + snap.ID + "-0"}, dels[0].Disks)
 }
 
 func TestReconcile_FailsASnapshotOfAMachineBeingDeleted(t *testing.T) {
@@ -470,4 +762,10 @@ func TestReconcile_KeepsARestoreWaitingWhenTheSnapshotsHostIsFull(t *testing.T) 
 	assert.Equal(t, "the snapshot's host does not meet it: no host fits the memory", rec.Status.Reason)
 	assert.Equal(t, "the snapshot's host h-a does not meet it: no host has 9.0 GiB of memory free; the most free is 8.0 GiB", rec.OperatorReason)
 	assert.Empty(t, r.hosts.Creates("h-b"))
+}
+
+// The Machine API's bound on a stop's grace is the one the host API takes, since orch passes a
+// caller's grace to the host as it is.
+func TestGraceBound_IsTheHostAPIs(t *testing.T) {
+	assert.Equal(t, hostapi.MaxGraceSeconds, machineapi.MaxGraceSeconds)
 }

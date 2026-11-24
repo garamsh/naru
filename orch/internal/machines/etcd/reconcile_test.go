@@ -1,12 +1,16 @@
 package etcd_test
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/machineapi"
@@ -87,7 +91,7 @@ func TestBind_RefusesARecordThatChangedSinceItWasRead(t *testing.T) {
 	assert.Empty(t, allocs, "and nothing is allocated")
 }
 
-func TestRemove_FreesTheNameTheIDAndTheAllocationWithItsEvent(t *testing.T) {
+func TestRemove_FreesTheNameTheIDAndTheAllocationWithItsEventAndLeavesATombstone(t *testing.T) {
 	s := newStore(t)
 	ctx := t.Context()
 	r := record("garam", "web", "0123456789abcdef")
@@ -100,11 +104,19 @@ func TestRemove_FreesTheNameTheIDAndTheAllocationWithItsEvent(t *testing.T) {
 
 	_, err = s.Remove(ctx, r, at, &machines.Allocation{Resources: hostapi.Resources{CPU: 1}, Rev: at - 1}, machineapi.Event{Type: machineapi.EventDeleted, Machine: "web", ID: r.ID, Time: time.Now()})
 	require.ErrorIs(t, err, machines.ErrRaced, "an allocation that changed since it was read")
-	_, err = s.Remove(ctx, r, at, &machines.Allocation{Rev: at}, machineapi.Event{Type: machineapi.EventDeleted, Machine: "web", ID: r.ID, Time: time.Now()})
+	removed := time.Now().UTC().Round(0)
+	_, err = s.Remove(ctx, r, at, &machines.Allocation{Rev: at}, machineapi.Event{Type: machineapi.EventDeleted, Machine: "web", ID: r.ID, Time: removed})
 	require.NoError(t, err)
 
 	_, _, err = s.Machine(ctx, "garam", "web")
 	require.ErrorIs(t, err, machines.ErrNotFound)
+	tombs, err := s.Tombstones(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]machines.Tombstone{r.ID: {ID: r.ID, Removed: removed}}, tombs, "the removal leaves its tombstone, dated by its event")
+	require.NoError(t, s.DropTombstone(ctx, r.ID))
+	tombs, err = s.Tombstones(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, tombs)
 	again := record("garam", "web", "0123456789abcdef")
 	require.NoError(t, s.Create(ctx, again, 0, event(again, time.Now())), "the name and the id are free")
 	allocs, err := s.Allocations(ctx)
@@ -139,7 +151,7 @@ func TestDeleteSnapshot_LeavesADeletionOfTheDiskSnapshotsOnItsHost(t *testing.T)
 	require.Len(t, all, 2)
 
 	for _, e := range all {
-		_, err := s.UpdateSnapshot(ctx, e.Snapshot, e.Rev-1)
+		_, err := s.UpdateSnapshot(ctx, e.Snapshot, e.Rev-1, nil)
 		require.ErrorIs(t, err, machines.ErrRaced, "an update of a snapshot that changed since it was read")
 		require.NoError(t, s.DeleteSnapshot(ctx, e.Snapshot, e.Rev))
 	}
@@ -153,36 +165,148 @@ func TestDeleteSnapshot_LeavesADeletionOfTheDiskSnapshotsOnItsHost(t *testing.T)
 	assert.Empty(t, dels)
 }
 
-func TestWatch_WakesOnAWriteOfAMachineOrASnapshotAndNothingElse(t *testing.T) {
+func TestUpdateSnapshot_WritesTheDeletionOfAFailedSnapshotWithIt(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	src := record("garam", "src", "0123456789abcdef")
+	require.NoError(t, s.Create(ctx, src, 0, event(src, time.Now())))
+	_, mrev, err := s.Machine(ctx, "garam", "src")
+	require.NoError(t, err)
+	snap := machines.Snapshot{Caller: "garam", ID: "00000000000000aa", Host: "h-a", Snapshot: machineapi.Snapshot{Name: "s", Machine: "src", MachineID: src.ID, Spec: machineapi.Spec{Volumes: []machineapi.Volume{{Name: "a"}}}}}
+	require.NoError(t, s.CreateSnapshot(ctx, snap, mrev))
+	_, rev, err := s.Snapshot(ctx, "garam", "s")
+	require.NoError(t, err)
+	del := machines.Deletion{ID: snap.ID, Host: "h-a", Disks: snap.DiskSnapshots()}
+
+	snap.Snapshot.Phase = machineapi.SnapshotFailed
+	_, err = s.UpdateSnapshot(ctx, snap, rev-1, &del)
+	require.ErrorIs(t, err, machines.ErrRaced)
+	dels, err := s.Deletions(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, dels, "nothing of a refused write")
+	_, err = s.UpdateSnapshot(ctx, snap, rev, &del)
+	require.NoError(t, err)
+	dels, err = s.Deletions(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []machines.Deletion{del}, dels)
+
+	del.Done = time.Unix(1700000000, 0).UTC()
+	require.NoError(t, s.PutDeletion(ctx, del))
+	dels, err = s.Deletions(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []machines.Deletion{del}, dels, "kept once done, as the tombstone")
+}
+
+// waker reads a Watch channel.
+type waker struct {
+	t    *testing.T
+	wake <-chan struct{}
+}
+
+func (w waker) quiet(what string) {
+	w.t.Helper()
+	select {
+	case <-w.wake:
+		w.t.Fatalf("a wake after %s", what)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func (w waker) woken(what string, within time.Duration) {
+	w.t.Helper()
+	select {
+	case _, open := <-w.wake:
+		if !open {
+			w.t.Fatalf("the channel closed, not woken, after %s", what)
+		}
+	case <-time.After(within):
+		w.t.Fatalf("no wake after %s", what)
+	}
+}
+
+func TestWatch_WakesOnTheMachineAPIsWritesAndNotOnTheReconcilersOwn(t *testing.T) {
 	c := orchtest.Start(t, orchtest.Options{Members: 1})
 	kv := c.Members[0].Etcd()
 	s := machinesetcd.New(kv)
 	ctx := t.Context()
-	wake := machinesetcd.Watch(ctx, c.Members[0].Etcd())
-	quiet := func(what string) {
-		select {
-		case <-wake:
-			t.Fatalf("a wake after %s", what)
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-	woken := func(what string) {
-		select {
-		case <-wake:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("no wake after %s", what)
-		}
-	}
-	quiet("nothing")
+	w := waker{t, machinesetcd.Watch(ctx, kv, slog.New(slog.DiscardHandler))}
+	w.quiet("nothing")
 	_, err := kv.Put(ctx, machinesetcd.AllocationPrefix+"h-a", "{}")
 	require.NoError(t, err)
-	quiet("an allocation")
+	w.quiet("an allocation")
+
 	r := record("garam", "web", "0123456789abcdef")
+	r.Status.Generation = 1
 	require.NoError(t, s.Create(ctx, r, 0, event(r, time.Now())))
-	woken("a Machine")
-	quiet("the one wake of the Machine")
-	_, mrev, err := s.Machine(ctx, "garam", "web")
+	w.woken("a Machine's create", 5*time.Second)
+	w.quiet("the one wake of the create")
+
+	_, rev, err := s.Machine(ctx, "garam", "web")
 	require.NoError(t, err)
-	require.NoError(t, s.CreateSnapshot(ctx, machines.Snapshot{Caller: "garam", ID: "00000000000000aa", Snapshot: machineapi.Snapshot{Name: "s", Machine: "web", MachineID: r.ID}}, mrev))
-	woken("a snapshot")
+	r.Status.Phase = machineapi.PhaseRunning
+	r.Binding = &machines.Binding{Host: "h-a", Epoch: 1}
+	rev, err = s.Update(ctx, r, rev, nil)
+	require.NoError(t, err)
+	w.quiet("a phase and a binding, which the reconciler writes")
+
+	r.Status.Generation = 2
+	rev, err = s.Update(ctx, r, rev, nil)
+	require.NoError(t, err)
+	w.woken("a new generation, which a start or stop writes", 5*time.Second)
+
+	r.Status.Phase = machineapi.PhaseDeleting
+	rev, err = s.Update(ctx, r, rev, nil)
+	require.NoError(t, err)
+	w.woken("the mark of a delete", 5*time.Second)
+
+	snap := machines.Snapshot{Caller: "garam", ID: "00000000000000aa", Snapshot: machineapi.Snapshot{Name: "s", Machine: "web", MachineID: r.ID}}
+	require.NoError(t, s.CreateSnapshot(ctx, snap, rev))
+	w.woken("a snapshot's create", 5*time.Second)
+	_, srev, err := s.Snapshot(ctx, "garam", "s")
+	require.NoError(t, err)
+	snap.Host = "h-a"
+	srev, err = s.UpdateSnapshot(ctx, snap, srev, nil)
+	require.NoError(t, err)
+	w.quiet("a snapshot's host, which the reconciler writes")
+	require.NoError(t, s.DeleteSnapshot(ctx, snap, srev))
+	w.woken("a snapshot's delete", 5*time.Second)
+
+	_, err = s.Remove(ctx, r, rev, nil, machineapi.Event{Type: machineapi.EventDeleted, Machine: "web", ID: r.ID, Time: time.Now()})
+	require.NoError(t, err)
+	w.quiet("a removal, which the reconciler writes")
+}
+
+// closingWatcher closes its first watch at once, as a watch whose member lost its leader closes,
+// and serves the others from the real watcher.
+type closingWatcher struct {
+	clientv3.Watcher
+	mu     sync.Mutex
+	closed int
+}
+
+func (c *closingWatcher) Watch(ctx context.Context, key string, opts ...clientv3.OpOption) clientv3.WatchChan {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed < 2 {
+		c.closed++
+		ch := make(chan clientv3.WatchResponse)
+		close(ch)
+		return ch
+	}
+	return c.Watcher.Watch(ctx, key, opts...)
+}
+
+func TestWatch_OpensAClosedWatchAgainAndWakes(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	kv := c.Members[0].Etcd()
+	s := machinesetcd.New(kv)
+	var logs bytes.Buffer
+	w := waker{t, machinesetcd.Watch(t.Context(), &closingWatcher{Watcher: kv}, slog.New(slog.NewTextHandler(&logs, nil)))}
+
+	w.woken("the watch opened again", 5*time.Second)
+	assert.Contains(t, logs.String(), "the Machine watch closed", "the fallback is logged")
+	assert.Contains(t, logs.String(), "the Machine watch is open again")
+	r := record("garam", "web", "0123456789abcdef")
+	require.NoError(t, s.Create(t.Context(), r, 0, event(r, time.Now())))
+	w.woken("a Machine's create on the watch opened again", 5*time.Second)
 }
