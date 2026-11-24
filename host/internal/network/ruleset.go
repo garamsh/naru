@@ -144,7 +144,7 @@ func Ruleset(c Config) string {
 	return b.String()
 }
 
-// exposureForward writes the rules of the forward chain that let the LAN reach the backends' NodePorts
+// exposureForward writes the rules of the forward chain that let the LAN reach the backend ports
 // of the exposures, and nothing else: one rule per forwarded port, from the LAN interface, to that
 // exposure's backends, for a flow the DNAT made.
 func exposureForward(c Config, line func(string, ...any)) {

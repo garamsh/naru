@@ -65,7 +65,7 @@ func TestAddressPoolListAndDeleteAndExposureListAndRelease(t *testing.T) {
 	assert.Contains(t, out, "address pool lan deleted")
 	out, err = run(t, op.args(f, "exposure", "list")...)
 	require.NoError(t, err, out)
-	assert.Regexp(t, `lab\s+d\.web\.0a1b2c3d\s+exposer\s+192\.168\.0\.80\s+h1\s+announced`, out)
+	assert.Regexp(t, `lab\s+d\.web\.0a1b2c3d\s+operator\s+192\.168\.0\.80\s+h1\s+announced`, out)
 	out, err = run(t, op.args(f, "exposure", "delete", "lab", "d.web.0a1b2c3d")...)
 	require.NoError(t, err, out)
 

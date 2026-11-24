@@ -4,13 +4,10 @@ package tests_test
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -32,9 +29,8 @@ import (
 // address, forwarded and through the PROXY protocol v2 listener of the host, and cannot once the lease
 // is deleted, moved to the other host or not renewed. The client is naru-lanclient on every Node, the
 // backend is naru-entry probe in the microVM, and the host is read back through naru-nftprobe: the
-// addresses on its interfaces and its DNAT rules. The LoadBalancer scenario below drives the same path
-// through orch, as the CCM does. The Services and the Pods that terminate TLS (ADR 0085, criterion 10) are
-// not run here.
+// addresses on its interfaces and its DNAT rules. The operator's exposures below drive the same path
+// through orch.
 const (
 	// The addresses are in the management prefix 10.78.0.0/24, so the client resolves them with ARP and
 	// reaches the host that announced them.
@@ -208,45 +204,37 @@ func TestFleet_AClientOnTheLANReachesAMicroVMThroughALeasedAddressAndNotOnceTheL
 	}
 }
 
-// The LoadBalancer scenario (#275, ADR 0085 item 10), driven as naru-ccm's service controller drives orch:
-// an exposer of one network asks orch for an exposure, orch assigns the address from the operator's pool, a
-// host announces it on the LAN, and a client outside the network reaches a microVM through it. The host that
+// The operator's exposure (ADR 0102): orch assigns the address from the operator's pool, a host
+// announces it on the LAN, and a client outside the network reaches a microVM through it. The host that
 // announces is stopped and the address moves to the other; the exposure is deleted and the address is freed.
-// What it does not exercise is Kubernetes: the Services and the Nodes of a cluster. The cloud-provider's
-// service controller, which turns a Service into the call below, is upstream code, and a cluster whose Nodes
-// are microVMs placed by orch has no harness yet.
 const (
 	lbPool = "10.78.0.80/29"
 	// lbAddress is the lowest address of lbPool, which orch assigns first.
 	lbAddress = "10.78.0.80"
-	lbService = "default.web.0a1b2c3d"
+	lbService = "web"
 )
 
-// exposerClient issues the credential of the network with naructl, as an operator does, and returns an orch
-// client that presents it.
-func (f *fleet) exposerClient(network string) *orchapi.Client {
+// applyExposure declares the operator's exposure id with naructl.
+func (f *fleet) applyExposure(id string, spec orchapi.ExposureSpec) result {
 	f.t.Helper()
-	cert, key := filepath.Join(f.dir, "exposer.crt"), filepath.Join(f.dir, "exposer.key")
-	f.must(nrun("ccm", "credential", "--network", network, "--admin", f.root.file, "--passphrase-file", f.pass,
-		"--config", f.c.API.Admin, "--cert-out", cert, "--key-out", key), "ccm credential")
-	pair, err := tls.LoadX509KeyPair(cert, key)
+	b, err := json.Marshal(struct {
+		ID string `json:"id"`
+		orchapi.ExposureSpec
+	}{id, spec})
 	require.NoError(f.t, err)
-	pool := x509.NewCertPool()
-	require.True(f.t, pool.AppendCertsFromPEM([]byte(f.orchCA)))
-	cl, err := orchapi.New(f.orchURL(1), orchapi.HTTPClient(orchapi.TrustCA(pool, &pair), 30*time.Second))
-	require.NoError(f.t, err)
-	return cl
+	return f.orch("exposure", "apply", "-f", f.file("exposure-"+id+".json", string(b)))
 }
 
-func orchStatus(err error) int {
-	var e *orchapi.Error
-	if errors.As(err, &e) {
-		return e.Status
+// exposureOf reads one exposure of network with naructl; ok is false when orch does not show it.
+func (f *fleet) exposureOf(network, id string) (e orchapi.Exposure, ok bool) {
+	got := f.orch("exposure", "get", network, id)
+	if got.Err != nil {
+		return orchapi.Exposure{}, false
 	}
-	return 0
+	return e, json.Unmarshal([]byte(got.Stdout), &e) == nil
 }
 
-func TestFleet_AnExposerGetsALANAddressFromOrchAndItMovesWithItsHostAndIsFreedOnDelete(t *testing.T) {
+func TestFleet_TheOperatorsExposureGetsALANAddressThatMovesWithItsHostAndIsFreedOnDelete(t *testing.T) {
 	target := lbAddress + ":80"
 	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1024, capture: true, userData: withLANInterface,
 		services: []node.ExtraService{
@@ -260,8 +248,6 @@ func TestFleet_AnExposerGetsALANAddressFromOrchAndItMovesWithItsHostAndIsFreedOn
 	vm1, vm2 := f.netVMOn(h1, "a1", netA), f.netVMOn(h2, "a2", netA)
 	f.must(f.orch("address-pool", "apply", "-f", f.file("pool.yaml", "name: lan\ncidrs: ["+lbPool+"]\nnetworks: ["+netA+"]\n")), "address-pool apply")
 
-	ctx := context.Background()
-	exposer := f.exposerClient(netA)
 	spec := orchapi.ExposureSpec{
 		Network: netA, Pool: "lan", Backends: []string{vm1.ip, vm2.ip},
 		Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 80, BackendPort: plainBackend}},
@@ -271,19 +257,18 @@ func TestFleet_AnExposerGetsALANAddressFromOrchAndItMovesWithItsHostAndIsFreedOn
 	holds := func(i int) bool { return strings.Contains(lanLine(f.node(i), "lan-addr"), lbAddress+"/32") }
 	announced := func(wantHost string) func() bool {
 		return func() bool {
-			e, err := exposer.Exposure(ctx, lbService)
-			return err == nil && e.Phase == orchapi.ExposureAnnounced && (wantHost == "" || e.Host == wantHost)
+			e, ok := f.exposureOf(netA, lbService)
+			return ok && e.Phase == orchapi.ExposureAnnounced && (wantHost == "" || e.Host == wantHost)
 		}
 	}
 
-	// The exposer asks; orch assigns the pool's lowest address and one host announces it.
-	e, err := exposer.ApplyExposure(ctx, lbService, spec)
-	require.NoError(t, err)
-	require.Equal(t, lbAddress, e.Address, "the lowest free address of the pool")
+	// The operator declares it; orch assigns the pool's lowest address and one host announces it.
+	applied := f.must(f.applyExposure(lbService, spec), "exposure apply")
+	require.Contains(t, applied, "address "+lbAddress, "the lowest free address of the pool")
 	eventually(t, "a host announces the address", announced(""))
 	holder := map[string]int{hostIDs[h1]: h1, hostIDs[h2]: h2}
-	first, err := exposer.Exposure(ctx, lbService)
-	require.NoError(t, err)
+	first, ok := f.exposureOf(netA, lbService)
+	require.True(t, ok)
 	holderNode := holder[first.Host]
 	require.NotZero(t, holderNode, "the announcing host is one of the two")
 	otherNode := h1 + h2 - holderNode
@@ -291,19 +276,9 @@ func TestFleet_AnExposerGetsALANAddressFromOrchAndItMovesWithItsHostAndIsFreedOn
 	assert.True(t, holds(holderNode), "the announcing host holds the address on its LAN interface")
 	assert.False(t, holds(otherNode), "the other host does not: one host answers an address at a time")
 
-	// The credential reaches its own network's exposures and nothing else of orch, whichever call is tried.
-	_, err = exposer.Hosts(ctx)
-	assert.Equal(t, 403, orchStatus(err), "an exposer reads no host")
-	_, err = exposer.Groups(ctx)
-	assert.Equal(t, 403, orchStatus(err), "nor a group")
-	_, err = exposer.ApplyExposure(ctx, "other", orchapi.ExposureSpec{Network: netB, Pool: "lan", Backends: []string{vm1.ip},
-		Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 80, BackendPort: plainBackend}}})
-	assert.Equal(t, 403, orchStatus(err), "nor another network's exposure")
-	_, err = exposer.ApplyExposure(ctx, "wild", orchapi.ExposureSpec{Network: netA, Pool: "lan", Backends: []string{"10.250.0.1"},
-		Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 80, BackendPort: plainBackend}}})
-	assert.Equal(t, 422, orchStatus(err), "a backend that is no member of the network is refused")
-	_, err = exposer.NetworkMembers(ctx, netB)
-	assert.Equal(t, 404, orchStatus(err), "another network's members are not there")
+	wild := spec
+	wild.Backends = []string{"10.250.0.1"}
+	assert.Error(t, f.applyExposure("wild", wild).Err, "a backend that is no member of the network is refused")
 
 	// The announcing host is lost: the address moves to the other host after the lease and the skew, and the
 	// client reaches the microVM that runs there.
@@ -315,47 +290,22 @@ func TestFleet_AnExposerGetsALANAddressFromOrchAndItMovesWithItsHostAndIsFreedOn
 
 	// Deleted, the address leaves the host and the client no longer reaches it, and orch frees it: another
 	// exposure is given the same address.
-	require.NoError(t, exposer.DeleteExposure(ctx, lbService))
+	f.must(f.orch("exposure", "delete", netA, lbService), "exposure delete")
 	eventually(t, "the host removed the address", func() bool { return !holds(otherNode) })
 	eventually(t, "the client reaches nothing", func() bool { return answerOf(client, target) == "fail" })
-	// An exposer no longer sees the record at once; a reader's list shows it while it releases, so the wait is on that list.
-	eventually(t, "orch freed the address: the reader's list no longer holds the exposure", func() bool {
+	// A get no longer shows the record at once; the list shows it while it releases, so the wait is on that list.
+	eventually(t, "orch freed the address: the list no longer holds the exposure", func() bool {
 		list := f.orch("exposure", "list")
 		return list.Err == nil && !strings.Contains(list.Stdout, lbService)
 	})
-	again, err := exposer.ApplyExposure(ctx, "again", spec)
-	require.NoError(t, err)
-	assert.Equal(t, lbAddress, again.Address, "the control: the freed address is the lowest free one again")
+	again := f.must(f.applyExposure("again", spec), "exposure apply again")
+	assert.Contains(t, again, "address "+lbAddress, "the control: the freed address is the lowest free one again")
 }
 
-func TestFleet_ARevokedExposersCredentialIsRefusedAtOnce(t *testing.T) {
-	f := newFleet(t, fleetOpts{controls: 1, hosts: 1, vmMiB: 512})
-	f.startOrch()
-	f.enrollAndAdmit("eu-1", "disk=ssd")
-	f.must(f.orch("network", "apply", "-f", f.networkFile(netA, prefixA)), "network apply "+netA)
-	ctx := context.Background()
-	exposer := f.exposerClient(netA)
-	_, err := exposer.Exposures(ctx)
-	require.NoError(t, err, "the control: the credential is accepted before it is revoked")
-
-	serial := serialOfFile(t, filepath.Join(f.dir, "exposer.crt"))
-	f.must(nrun("operator", "revoke", "--admin", f.root.file, "--passphrase-file", f.pass, "--config", f.c.API.Admin, "--serial", serial), "revoke the exposer")
-	// The refusal is the handshake's: orch's verifier rejects the revoked chain (ADR 0062) and the client hears
-	// the TLS alert, not an HTTP answer and not a timeout.
-	var last error
-	eventually(t, "orch refuses the revoked pair at the handshake", func() bool {
-		_, last = exposer.Exposures(ctx)
-		return last != nil && strings.Contains(last.Error(), "bad certificate")
-	})
-	assert.Zero(t, orchStatus(last), "an alert, not an HTTP status")
-	assert.NotErrorIs(t, last, context.DeadlineExceeded, "not a timeout")
-}
-
-// A Service that sets externalTrafficPolicy Local is sent only to the Nodes that run an endpoint of it (ADR 0097,
-// amending ADR 0085 item 8): naru-ccm hands orch those Nodes as the backends, so a client outside the network
-// reaches the Service, the host of a Node with no endpoint is not leased the address, and the address moves to
-// the host of the Node the endpoint moved to.
-func TestFleet_ALocalServiceIsReachedThroughTheNodeWithItsEndpointAndNoOtherHostIsLeased(t *testing.T) {
+// An exposure is leased only to a host that runs one of its backends: a client outside the network
+// reaches it, the host that runs no backend is not leased the address, and the address moves to the host
+// the backend moved to when the operator names it.
+func TestFleet_AnExposureIsLeasedOnlyToTheHostOfItsBackendAndMovesWithIt(t *testing.T) {
 	target := lbAddress + ":80"
 	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1024, capture: true, userData: withLANInterface,
 		services: []node.ExtraService{
@@ -369,46 +319,38 @@ func TestFleet_ALocalServiceIsReachedThroughTheNodeWithItsEndpointAndNoOtherHost
 	vm1, vm2 := f.netVMOn(h1, "a1", netA), f.netVMOn(h2, "a2", netA)
 	f.must(f.orch("address-pool", "apply", "-f", f.file("pool.yaml", "name: lan\ncidrs: ["+lbPool+"]\nnetworks: ["+netA+"]\n")), "address-pool apply")
 
-	ctx := context.Background()
-	exposer := f.exposerClient(netA)
 	client := f.node(lanClient)
 	reaches := func() bool { return strings.HasPrefix(answerOf(client, target), "src=10.") }
 	holds := func(i int) bool { return strings.Contains(lanLine(f.node(i), "lan-addr"), lbAddress+"/32") }
 	announcedBy := func(host string) func() bool {
 		return func() bool {
-			e, err := exposer.Exposure(ctx, lbService)
-			return err == nil && e.Phase == orchapi.ExposureAnnounced && e.Host == host
+			e, ok := f.exposureOf(netA, lbService)
+			return ok && e.Phase == orchapi.ExposureAnnounced && e.Host == host
 		}
 	}
-	// spec is what naru-ccm stores for a Local Service whose only ready endpoint runs on the Node at backend.
 	spec := func(backend string) orchapi.ExposureSpec {
 		return orchapi.ExposureSpec{Network: netA, Pool: "lan", Backends: []string{backend},
 			Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 80, BackendPort: plainBackend}}}
 	}
 
-	// The endpoint runs on the first Node: its host answers, the other holds nothing and forwards nothing.
-	_, err := exposer.ApplyExposure(ctx, lbService, spec(vm1.ip))
-	require.NoError(t, err)
-	eventually(t, "the host of the Node with the endpoint announces the address", announcedBy(hostIDs[h1]))
-	eventually(t, "the client outside the network reaches the Service", func() bool { return holds(h1) && reaches() })
-	assert.False(t, holds(h2), "the host of the Node with no endpoint is not leased the address")
+	// The backend runs on the first host: it answers, the other holds nothing and forwards nothing.
+	f.must(f.applyExposure(lbService, spec(vm1.ip)), "exposure apply")
+	eventually(t, "the host of the backend announces the address", announcedBy(hostIDs[h1]))
+	eventually(t, "the client outside the network reaches the backend", func() bool { return holds(h1) && reaches() })
+	assert.False(t, holds(h2), "the host with no backend is not leased the address")
 	assert.Contains(t, lanLine(f.node(h1), "nft-dnat"), vm1.ip)
-	assert.NotContains(t, lanLine(f.node(h1), "nft-dnat"), vm2.ip, "the Node with no endpoint is no backend")
+	assert.NotContains(t, lanLine(f.node(h1), "nft-dnat"), vm2.ip, "the microVM that is no backend is not forwarded to")
 	assert.NotContains(t, lanLine(f.node(h2), "nft-dnat"), lbAddress, "nothing is forwarded from the other host")
 
-	// The endpoint moves to the second Node (the slices changed): the exposure is stored again with it, and the
-	// address moves to its host.
-	_, err = exposer.ApplyExposure(ctx, lbService, spec(vm2.ip))
-	require.NoError(t, err)
-	eventually(t, "the address is announced by the host of the Node the endpoint moved to", announcedBy(hostIDs[h2]))
-	eventually(t, "the client reaches the Service again through it", func() bool { return holds(h2) && !holds(h1) && reaches() })
+	// The backend moves to the second host: the exposure is applied again with it, and the address moves.
+	f.must(f.applyExposure(lbService, spec(vm2.ip)), "exposure apply again")
+	eventually(t, "the address is announced by the host the backend moved to", announcedBy(hostIDs[h2]))
+	eventually(t, "the client reaches the backend again through it", func() bool { return holds(h2) && !holds(h1) && reaches() })
 }
 
-// The operator's exposure (ADR 0102): the operator declares a LAN address that forwards to a port outside
-// a Service's range, as it does to a member's API server on 6443, before any certificate names it. The
-// exposer, the cluster's own credential, may name no such port, does not see the exposure and cannot
-// delete it.
-func TestFleet_TheOperatorDeclaresALANAddressForAPortOutsideTheNodePortRangeAndAnExposerNeitherMakesNorSeesIt(t *testing.T) {
+// The operator's exposure of a member's port outside a Service's old range (ADR 0102), as of a member's
+// API server on 6443, at the address the operator declared.
+func TestFleet_TheOperatorDeclaresALANAddressForAMembersPortAndReleasesIt(t *testing.T) {
 	target := lbAddress + ":6443"
 	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1024, capture: true, userData: withLANInterface,
 		services: []node.ExtraService{
@@ -422,34 +364,16 @@ func TestFleet_TheOperatorDeclaresALANAddressForAPortOutsideTheNodePortRangeAndA
 	vm1 := f.netVMOn(h1, "a1", netA)
 	f.must(f.orch("address-pool", "apply", "-f", f.file("pool.yaml", "name: lan\ncidrs: ["+lbPool+"]\nnetworks: ["+netA+"]\n")), "address-pool apply")
 
-	ctx := context.Background()
-	exposer := f.exposerClient(netA)
-	api := orchapi.ExposureSpec{
-		Network: netA, Pool: "lan", RequestedAddress: lbAddress, Backends: []string{vm1.ip},
-		Ports: []orchapi.ExposurePort{{Protocol: "TCP", Port: 6443, BackendPort: 6443}},
-	}
-	_, err := exposer.ApplyExposure(ctx, "api", api)
-	assert.Equal(t, 403, orchStatus(err), "control: the exposer may not name port 6443")
-
 	file := f.file("api.yaml", "id: api\nnetwork: "+netA+"\npool: lan\nrequestedAddress: "+lbAddress+"\nports: [{protocol: TCP, port: 6443, backendPort: 6443}]\nbackends: ["+vm1.ip+"]\n")
 	f.must(f.orch("exposure", "apply", "-f", file), "exposure apply")
 	got := f.orch("exposure", "get", netA, "api")
 	require.NoError(t, got.Err)
-	assert.Contains(t, got.Stdout, lbAddress, "the address is the declared one, claimed before any certificate names it")
+	assert.Contains(t, got.Stdout, lbAddress, "the address is the declared one")
 
 	client := f.node(lanClient)
 	eventually(t, "the client outside the network reaches the microVM's port 6443 through the address", func() bool {
 		return strings.HasPrefix(answerOf(client, target), "src=10.")
 	})
-
-	_, err = exposer.Exposure(ctx, "api")
-	assert.Equal(t, 404, orchStatus(err), "an exposer does not see the operator's exposure")
-	list, err := exposer.Exposures(ctx)
-	require.NoError(t, err)
-	assert.Empty(t, list, "nor in its list")
-	require.NoError(t, exposer.DeleteExposure(ctx, "api"), "its delete of what it does not see is no error")
-	time.Sleep(2 * time.Second)
-	assert.True(t, strings.HasPrefix(answerOf(client, target), "src=10."), "and releases nothing")
 
 	f.must(f.orch("exposure", "delete", netA, "api"), "exposure delete")
 	eventually(t, "the client reaches nothing once the operator released it", func() bool { return answerOf(client, target) == "fail" })

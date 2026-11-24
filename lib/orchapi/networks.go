@@ -43,28 +43,3 @@ func (c *Client) Network(ctx context.Context, name string) (Network, error) {
 func (c *Client) DeleteNetwork(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/networks/"+url.PathEscape(name), nil, nil, nil)
 }
-
-// ZoneLabel is the host label whose value a network member reports as its zone.
-const ZoneLabel = "topology.kubernetes.io/zone"
-
-// NetworkMember is one microVM of a group on a network, as the node controller of a cloud-controller-manager
-// needs it: the member's name is its Node's name, Host and Address place it, Running is whether its host
-// reports it running, and Region and Zone are its host's. Reported is whether a host reported the
-// microVM at all: a member whose host did not answer is listed with Reported false, so it is not
-// taken for a stopped one. A member that is gone is not listed.
-type NetworkMember struct {
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	Phase    string `json:"phase"`
-	Reported bool   `json:"reported"`
-	Running  bool   `json:"running"`
-	Address  string `json:"address,omitempty"`
-	Region   string `json:"region,omitempty"`
-	Zone     string `json:"zone,omitempty"`
-}
-
-// NetworkMembers lists the members of the network. An exposer may list its own network's only.
-func (c *Client) NetworkMembers(ctx context.Context, name string) ([]NetworkMember, error) {
-	var out []NetworkMember
-	return out, c.do(ctx, http.MethodGet, "/v1/networks/"+url.PathEscape(name)+"/members", nil, nil, &out)
-}

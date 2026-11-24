@@ -1,6 +1,6 @@
 # ADR 0085: a Service of type LoadBalancer is fulfilled by a naru cloud-controller-manager that asks orch for an address from a pool, one host announces it on the LAN and forwards it to the Nodes' NodePorts
 
-> Status: accepted
+> Status: accepted; the cloud-controller-manager, the `exposer` role and the members endpoint superseded by [ADR 0114](./0114-naru-runs-no-kubernetes-or-gaon-and-their-layouts-programs-images-tests-and-documents-are-removed.md)
 > Date: 2026-11-21
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

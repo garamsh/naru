@@ -9,7 +9,7 @@ import (
 )
 
 // AddressPoolSpec is what an operator declares for an address pool: the IPv4 ranges the LAN's
-// owner gave naru, and the networks whose controller may draw from them.
+// owner gave naru, and the networks whose exposures may draw from them.
 type AddressPoolSpec struct {
 	CIDRs    []string `json:"cidrs"`
 	Networks []string `json:"networks"`
@@ -23,8 +23,7 @@ type AddressPool struct {
 }
 
 // ExposurePort is one port of an exposure: the port on the address and the port the backends serve
-// it at. A Service's is its NodePort. Which backend ports a caller may name is orch's policy per
-// owner (ADR 0102).
+// it at.
 type ExposurePort struct {
 	Protocol    wire.Protocol `json:"protocol"`
 	Port        int           `json:"port"`
@@ -34,9 +33,8 @@ type ExposurePort struct {
 // ProxyProtocolV2 is the one value of ExposureSpec.ProxyProtocol besides the empty one.
 const ProxyProtocolV2 = "v2"
 
-// ExposureSpec is what a caller asks for one exposure: a cloud-controller-manager for a Service,
-// the operator for a declared one. Network is the caller's
-// own; Backends are Node addresses on it. RequestedAddress is the Service's loadBalancerIP.
+// ExposureSpec is what the operator declares for one exposure. Network is the one the exposure is
+// of; Backends are members' addresses on it. RequestedAddress is the address asked for in the pool.
 type ExposureSpec struct {
 	Network          string         `json:"network"`
 	Pool             string         `json:"pool"`
@@ -46,12 +44,10 @@ type ExposureSpec struct {
 	ProxyProtocol    string         `json:"proxyProtocol,omitempty"`
 }
 
-// The owners of an exposure: the role of the caller that made it. An exposer sees and changes only
-// its own network's exposures it owns, and the operator sees and deletes every owner's.
-const (
-	OwnerExposer  = "exposer"
-	OwnerOperator = "operator"
-)
+// OwnerOperator is the owner of every exposure orch makes. An exposure stored before ADR 0114 may
+// be owned by "exposer", and one stored before ADR 0102 by none: orch leases neither, and the
+// operator deletes them.
+const OwnerOperator = "operator"
 
 // The phases of an exposure.
 const (
@@ -64,7 +60,7 @@ const (
 type Exposure struct {
 	ID      string `json:"id"`
 	Network string `json:"network"`
-	// Owner is OwnerExposer or OwnerOperator, the role that made it.
+	// Owner is OwnerOperator, the role that made it, but in an exposure stored before ADR 0114.
 	Owner         string         `json:"owner"`
 	Pool          string         `json:"pool"`
 	Address       string         `json:"address"`
@@ -93,41 +89,21 @@ func (c *Client) DeleteAddressPool(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/address-pools/"+url.PathEscape(name), nil, nil, nil)
 }
 
-// ApplyExposure creates the exposure or replaces its spec, and returns it with its address.
-func (c *Client) ApplyExposure(ctx context.Context, id string, spec ExposureSpec) (Exposure, error) {
-	var out Exposure
-	return out, c.do(ctx, http.MethodPut, "/v1/exposures/"+url.PathEscape(id), nil, spec, &out)
-}
-
-// Exposures lists the exposures the caller may see.
+// Exposures lists every network's exposures.
 func (c *Client) Exposures(ctx context.Context) ([]Exposure, error) {
 	var out []Exposure
 	return out, c.do(ctx, http.MethodGet, "/v1/exposures", nil, nil, &out)
 }
 
-// Exposure returns one exposure of the caller's network. An id of another network is not found, as an absent one is.
-func (c *Client) Exposure(ctx context.Context, id string) (Exposure, error) {
-	var out Exposure
-	return out, c.do(ctx, http.MethodGet, "/v1/exposures/"+url.PathEscape(id), nil, nil, &out)
-}
-
-// DeleteExposure starts the release of the exposure's address; the address is given to another
-// exposure once the host that announced it confirmed the removal or its lease ran out. It is
-// idempotent: an absent exposure, and an id of another network, is not an error.
-func (c *Client) DeleteExposure(ctx context.Context, id string) error {
-	return c.do(ctx, http.MethodDelete, "/v1/exposures/"+url.PathEscape(id), nil, nil, nil)
-}
-
-// DeleteNetworkExposure starts the release of one exposure of a network, as DeleteExposure does for
-// an exposer's own. An operator uses it for the exposures a revoked exposer's controller left. It is
-// idempotent.
+// DeleteNetworkExposure starts the release of one exposure of a network, of whichever owner; the
+// address is given to another exposure once the host that announced it confirmed the removal or
+// its lease ran out. It is idempotent: an absent exposure is not an error.
 func (c *Client) DeleteNetworkExposure(ctx context.Context, network, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/networks/"+url.PathEscape(network)+"/exposures/"+url.PathEscape(id), nil, nil, nil)
 }
 
 // ApplyNetworkExposure creates the operator's exposure of the network or replaces its spec, and
-// returns it with its address. The exposure is owned by the operator: no exposer sees or changes it,
-// and it may name any backend port.
+// returns it with its address. The exposure is owned by the operator.
 func (c *Client) ApplyNetworkExposure(ctx context.Context, network, id string, spec ExposureSpec) (Exposure, error) {
 	var out Exposure
 	return out, c.do(ctx, http.MethodPut, "/v1/networks/"+url.PathEscape(network)+"/exposures/"+url.PathEscape(id), nil, spec, &out)

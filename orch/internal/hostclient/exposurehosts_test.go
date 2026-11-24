@@ -118,23 +118,6 @@ func TestAHostThatDoesNotAnswerHoldsBackNoOtherProbe(t *testing.T) {
 	require.False(t, hosts[2].Silent)
 }
 
-func TestMachinesAreTheNetworksMicroVMsOfTheHostsThatAnswerWithTheirState(t *testing.T) {
-	apis := map[string]*exposureAPI{
-		"h1": {vms: []hostapi.MicroVM{
-			{Name: "up", Network: "a", State: "running", Addresses: []string{"10.1.0.5"}},
-			{Name: "dead", Network: "a", State: "stopped", Addresses: []string{"10.1.0.7"}},
-			{Name: "other", Network: "b", State: "running", Addresses: []string{"10.2.0.5"}},
-		}},
-		"h2": {hangs: true},
-	}
-	got, err := exposureHosts(apis).Machines(t.Context(), "a")
-	require.NoError(t, err)
-	require.ElementsMatch(t, []exposures.Machine{
-		{Name: "up", Host: "h1", Address: "10.1.0.5", Running: true},
-		{Name: "dead", Host: "h1", Address: "10.1.0.7"},
-	}, got, "a stopped one is listed, not running; another network's and a silent host's are not")
-}
-
 // The lease orch puts reaches the host API in the protocol's one spelling, which hostd's
 // conformance test (lib/hostapi/hostapitest) shows it takes (ADR 0107).
 func TestALeaseReachesTheHostInTheSharedProtocolSpelling(t *testing.T) {
