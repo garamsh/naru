@@ -46,6 +46,8 @@ The API's types, client, conformance test and in-memory implementation are built
   | `GET`, `PUT .../machines/{name}/files?path=` | One guest file. Running only. |
   | `GET .../events?since=<cursor>` | Each status change of the caller's Machines after the cursor, from the caller's own log (20000 events, 7 days). A cursor older than the log is 410, and `GET .../machines` returns the cursor its listing is current at. |
   | `PUT`, `GET`, `DELETE .../aliases/{hostname}` | ADR 0112. |
+  | `POST .../register` (`token`, `csr`) | The one operation with no client certificate. Spends a registration token for a caller certificate of the request's key (`certificate`, `notAfter`). A token not valid, spent or expired is 403 `token-refused`; more than 1 a second (burst 10) from one source address is 429 `rate-limited` ([ADR 0116](./adr/0116-a-caller-registers-once-with-a-one-time-token-root-asks-the-signer-for-and-a-key-it-makes-where-it-runs-and-renews-its-own-certificate-superseding-adr-0108-item-4s-issuance.md)). |
+  | `POST .../renew` (`signed`) | A renewal the caller signed with its current certificate for a new key's request; answers like `register`. Before the certificate's last 30 days it is 409 `not-due`; a revoked or expired certificate is 403. |
 
   Exec and files are answered by the member that took the call, which calls the Machine's host. Errors are `{"error", "code"}`.
 - **What `lib/machineapi` fixes beside the table.**
