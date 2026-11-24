@@ -90,15 +90,31 @@ type NaruInfo struct {
 	LastUpgrade *Upgrade `json:"lastUpgrade,omitempty"`
 }
 
+// LabelVirtualization is the label a host reports of how it runs microVMs: VirtualizationMetal, or
+// VirtualizationNested when its CPU reports the hypervisor flag (ADR 0110 item 3).
+const LabelVirtualization = "naru.garam.sh/virtualization"
+
+// The values of LabelVirtualization.
+const (
+	VirtualizationMetal  = "metal"
+	VirtualizationNested = "nested"
+)
+
+// ReportedLabels are the labels a host reports itself, which an operator cannot set.
+var ReportedLabels = []string{LabelVirtualization}
+
 // Host is the body of GET /v1/host. HostID is the ID a reset confirms (ADR 0082); a host started
 // without a reset leaves it empty.
 type Host struct {
-	HostID   string            `json:"hostId,omitempty"`
-	Region   string            `json:"region"`
-	Labels   map[string]string `json:"labels"`
-	Capacity Resources         `json:"capacity"`
-	Free     Resources         `json:"free"`
-	Mvmd     MvmdInfo          `json:"mvmd"`
+	HostID string `json:"hostId,omitempty"`
+	Region string `json:"region"`
+	// Labels are the operator's, from spec.host, and ReportedLabels the host's own facts, under the
+	// keys the package's ReportedLabels lists. The two never share a key.
+	Labels         map[string]string `json:"labels"`
+	ReportedLabels map[string]string `json:"reportedLabels"`
+	Capacity       Resources         `json:"capacity"`
+	Free           Resources         `json:"free"`
+	Mvmd           MvmdInfo          `json:"mvmd"`
 	// Naru is absent when init has not written its status for the host.
 	Naru *NaruInfo `json:"naru,omitempty"`
 	// LANInterface is the interface the host announces exposed addresses on; empty when it
@@ -111,6 +127,44 @@ type DiskSpec struct {
 	Name      string `json:"name"`
 	SizeBytes uint64 `json:"sizeBytes"`
 	ReadOnly  bool   `json:"readOnly,omitempty"`
+	// MountPath is where the guest mounts the disk before the entrypoint runs; empty mounts nothing.
+	// An image-form microVM's only.
+	MountPath string `json:"mountPath,omitempty"`
+	// FromSnapshot names a disk snapshot (POST /v1/microvms/{name}/disks/{disk}/snapshot) the disk
+	// starts as a copy of, at least its size. A request field only: a microVM's disks do not show it.
+	FromSnapshot string `json:"fromSnapshot,omitempty"`
+}
+
+// File is a file placed in an image-form microVM before its entrypoint runs, at every start.
+type File struct {
+	Path    string `json:"path"`
+	Mode    uint32 `json:"mode"`
+	Content []byte `json:"content,omitempty"`
+}
+
+// StopRequest is the optional body of POST /v1/microvms/{name}/stop: how long the guest has to
+// stop before it is ended. Zero is the host's default, 10 seconds.
+type StopRequest struct {
+	GraceSeconds uint32 `json:"graceSeconds,omitempty"`
+}
+
+// DiskSnapshotRequest is the body of POST /v1/microvms/{name}/disks/{disk}/snapshot: the name the
+// disk snapshot takes.
+type DiskSnapshotRequest struct {
+	Name string `json:"name"`
+}
+
+// DiskSnapshot is a copy of one disk the host keeps, which a disk of a new microVM starts from.
+type DiskSnapshot struct {
+	Name string `json:"name"`
+	// MicroVM and Disk are the microVM and disk it was taken of, which may no longer exist.
+	MicroVM string `json:"microvm"`
+	Disk    string `json:"disk"`
+	// SizeBytes is the disk's size when it was taken, the least a disk made from it has, and
+	// AllocatedBytes the space the copy occupies on the host.
+	SizeBytes      uint64    `json:"sizeBytes"`
+	AllocatedBytes uint64    `json:"allocatedBytes"`
+	CreatedAt      time.Time `json:"createdAt,omitzero"`
 }
 
 // FenceRequest is the body of POST /v1/microvms/{name}/fence: the fence's deadline becomes

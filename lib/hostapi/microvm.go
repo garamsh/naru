@@ -14,7 +14,13 @@ type CreateRequest struct {
 	Disks         []DiskSpec        `json:"disks,omitempty"`
 	NetworkPolicy Policy            `json:"networkPolicy"`
 	Env           map[string]string `json:"env,omitempty"`
-	Command       []string          `json:"command,omitempty"`
+	// Command replaces the image's entrypoint and Args its command; User, in the OCI form, and
+	// WorkingDir replace the image's; Files are placed before the entrypoint runs. The image form's.
+	Command    []string `json:"command,omitempty"`
+	Args       []string `json:"args,omitempty"`
+	User       string   `json:"user,omitempty"`
+	WorkingDir string   `json:"workingDir,omitempty"`
+	Files      []File   `json:"files,omitempty"`
 	// RestartOnBoot makes mvmd start the microVM again after the host reboots, when it ran and was
 	// not stopped. Absent, it is true for the OS form and false for the image form.
 	RestartOnBoot *bool `json:"restartOnBoot,omitempty"`

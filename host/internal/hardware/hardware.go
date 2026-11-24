@@ -1,6 +1,7 @@
-// Package hardware reads what a host is made of, for the report a host that booted from the install
-// seed sends orch with its enrollment: its processors, memory, disks and network links. The person
-// who admits the host reads it beside the pairing code, to know which machine is asking.
+// Package hardware reads what a host is made of: for the report a host that booted from the install
+// seed sends orch with its enrollment, its processors, memory, disks and network links, which the
+// person who admits the host reads beside the pairing code; and for GET /v1/host, whether it runs
+// its microVMs on metal or nested.
 package hardware
 
 import (
@@ -9,24 +10,49 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/orchapi"
 )
 
 // Source is where the report is read from. Live is the running system; a test points the paths at a
 // tree it built.
 type Source struct {
-	// Meminfo is /proc/meminfo and Sys /sys.
-	Meminfo, Sys string
-	CPUs         int
+	// Meminfo is /proc/meminfo, Cpuinfo /proc/cpuinfo and Sys /sys.
+	Meminfo, Cpuinfo, Sys string
+	CPUs                  int
 }
 
 // Live is the running system.
 func Live() Source {
-	return Source{Meminfo: "/proc/meminfo", Sys: "/sys", CPUs: runtime.NumCPU()}
+	return Source{Meminfo: "/proc/meminfo", Cpuinfo: "/proc/cpuinfo", Sys: "/sys", CPUs: runtime.NumCPU()}
+}
+
+// Virtualization is how the host runs microVMs, the value of hostapi.LabelVirtualization:
+// nested when a processor's flags include hypervisor, which a CPU running under a hypervisor
+// reports, and metal otherwise (ADR 0110 item 3).
+func (s Source) Virtualization() (string, error) {
+	f, err := os.Open(s.Cpuinfo)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for sc.Scan() {
+		key, value, ok := strings.Cut(sc.Text(), ":")
+		if ok && strings.TrimSpace(key) == "flags" && slices.Contains(strings.Fields(value), "hypervisor") {
+			return hostapi.VirtualizationNested, nil
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", fmt.Errorf("%s: %w", s.Cpuinfo, err)
+	}
+	return hostapi.VirtualizationMetal, nil
 }
 
 // Collect reads the report. It states what it reads and calls no disk blank: that is init's check.

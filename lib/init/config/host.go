@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/garamsh/naru/lib/hostapi"
 )
 
 // HostFile is the file init writes from spec.host, for naru-hostd to read on each request
@@ -68,6 +70,9 @@ func (v *validation) host(h *Host, files []File) {
 		}
 		if !labelValueRE.MatchString(val) {
 			v.fail("spec.host.labels", "has the invalid value %q for %q: at most 63 letters, digits, '-', '_' and '.', beginning and ending with a letter or digit", val, k)
+		}
+		if slices.Contains(hostapi.ReportedLabels, k) {
+			v.fail("spec.host.labels", "has %q, which the host reports itself (ADR 0110 item 3)", k)
 		}
 	}
 }

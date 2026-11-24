@@ -48,10 +48,31 @@ type Disk struct {
 	Holder    string
 }
 
-// Attachment is a disk of a Machine.
+// Attachment is a disk of a Machine, and where the guest mounts it; empty mounts nothing.
 type Attachment struct {
-	ID       string
-	ReadOnly bool
+	ID        string
+	ReadOnly  bool
+	MountPath string
+}
+
+// File is a file mvmd places in an image-form Machine before its entrypoint runs, and FileInfo what
+// mvmd reports of one: no content.
+type (
+	File     = hostapi.File
+	FileInfo struct {
+		Path      string
+		Mode      uint32
+		SizeBytes uint64
+	}
+)
+
+// DiskSnapshot is a copy of a disk mvmd keeps. AllocatedBytes is the space its file occupies.
+type DiskSnapshot struct {
+	ID             string
+	DiskID         string
+	SizeBytes      uint64
+	AllocatedBytes uint64
+	CreatedAt      time.Time
 }
 
 // Machine is what mvmd reports of a Machine.
@@ -77,6 +98,11 @@ type Machine struct {
 	// zero until it has. After a lapse Failure begins "the Machine's own fence lapsed".
 	Fenced        bool
 	FenceLapsedAt time.Time
+	// EnvNames, Files and WorkingDir are what mvmd reports of an image-form Machine's environment,
+	// files and working directory: the names, and the files without their content.
+	EnvNames   []string
+	Files      []FileInfo
+	WorkingDir string
 }
 
 // Create is what CreateMachine takes.
@@ -103,6 +129,14 @@ type Create struct {
 	// Fenced gives the Machine a fence of its own, not armed until it is renewed; mvmd refuses to
 	// start a fenced Machine before that.
 	Fenced bool
+	// Command, Args, Env, User, WorkingDir and Files are an image-form Machine's, each replacing or
+	// adding to the image's as mvmd's CreateMachine describes; empty keeps the image's.
+	Command    []string
+	Args       []string
+	Env        map[string]string
+	User       string
+	WorkingDir string
+	Files      []File
 }
 
 // Kernel is a guest kernel the node offers, in the host API's type.
@@ -182,6 +216,15 @@ type Runtime interface {
 	// Pull pulls the image repository@digest, which mvmd keeps by digest.
 	Pull(ctx context.Context, repository, digest string) error
 	CreateDisk(ctx context.Context, id string, sizeBytes uint64) error
+	// CreateDiskFrom creates a disk of sizeBytes, at least the snapshot's, as a copy of the disk
+	// snapshot; ErrNotFound when mvmd has no such snapshot.
+	CreateDiskFrom(ctx context.Context, id string, sizeBytes uint64, snapshotID string) error
+	// SnapshotDisk copies a disk into a disk snapshot under the ID the caller chooses; the same ID
+	// again is the original outcome.
+	SnapshotDisk(ctx context.Context, snapshotID, diskID string) (DiskSnapshot, error)
+	ListDiskSnapshots(ctx context.Context) ([]DiskSnapshot, error)
+	// DeleteDiskSnapshot deletes a disk snapshot; an absent one is ErrNotFound.
+	DeleteDiskSnapshot(ctx context.Context, id string) error
 	// CreateRawDisk creates a disk with no filesystem holding contents (at most 1 MiB), of the
 	// contents' length rounded up to 512 when sizeBytes is 0. The same contents under the same ID
 	// is the original outcome; other contents are ErrConflict.
@@ -194,7 +237,8 @@ type Runtime interface {
 	// AttachDisk attaches a disk to a Created or Stopped Machine; it appears at the next boot.
 	AttachDisk(ctx context.Context, machineID string, a Attachment) (Machine, error)
 	StartMachine(ctx context.Context, id string) (Machine, error)
-	StopMachine(ctx context.Context, id string) error
+	// StopMachine stops the Machine, ending it when its guest has not stopped within grace.
+	StopMachine(ctx context.Context, id string, grace time.Duration) error
 	// DeleteMachine deletes a Created, Stopped or Faulted Machine. An absent one is success.
 	DeleteMachine(ctx context.Context, id string) error
 	InspectMachine(ctx context.Context, id string) (Machine, error)

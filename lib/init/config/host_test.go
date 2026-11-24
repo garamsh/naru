@@ -63,6 +63,7 @@ func TestParse_HostRefuses(t *testing.T) {
 		{"label key with two slashes", "disk: ssd", "a/b/c: x", "spec.host.labels"},
 		{"label key too long", "disk: ssd", strings.Repeat("k", 64) + ": x", "spec.host.labels"},
 		{"label key with an uppercase prefix", "disk: ssd", "Example.com/x: y", "spec.host.labels"},
+		{"a label the host reports", "disk: ssd", "naru.garam.sh/virtualization: metal", "spec.host.labels"},
 		{"unknown field", "region: eu-1", "region: eu-1\n    zone: a", "spec.host.zone"},
 	}
 	for _, tt := range tests {

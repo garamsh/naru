@@ -201,7 +201,7 @@ func (c *Client) Delete(ctx context.Context, hostID, machineID string) error {
 // Stop stops the microVM.
 func (c *Client) Stop(ctx context.Context, hostID, machineID string) error {
 	return c.act(ctx, hostID, true, func(ctx context.Context, a *hostapi.Client) error {
-		_, err := a.StopMicroVM(ctx, machineID)
+		_, err := a.StopMicroVM(ctx, machineID, hostapi.StopRequest{})
 		return err
 	})
 }

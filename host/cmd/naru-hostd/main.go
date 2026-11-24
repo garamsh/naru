@@ -18,6 +18,7 @@ import (
 	"github.com/garamsh/naru/host/internal/api"
 	"github.com/garamsh/naru/host/internal/enroll"
 	"github.com/garamsh/naru/host/internal/fence"
+	"github.com/garamsh/naru/host/internal/hardware"
 	"github.com/garamsh/naru/host/internal/mvmd"
 	"github.com/garamsh/naru/host/internal/network"
 	"github.com/garamsh/naru/lib/identity"
@@ -193,8 +194,12 @@ func main() {
 	if err != nil {
 		log.Warn("cannot tell the host's ID; the reset call is off", "err", err.Error())
 	}
+	virt, err := hardware.Live().Virtualization()
+	if err != nil {
+		log.Error("cannot tell whether the host runs nested; it reports no virtualization label", "err", err.Error())
+	}
 	// A reset of the data disk deletes serving.pem, so the pair that serves after it is the configuration's.
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, Virtualization: virt, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
 		HostID: resetID, ResetMarker: *resetMarker, Reboot: rebootInit, CheckPair: pairAfterReset(revocations, *cert)})
 	if *metricsAddr != "" {
 		go func() {

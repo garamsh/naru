@@ -188,10 +188,10 @@ func (c *Client) MicroVMs(ctx context.Context) ([]MicroVM, error) {
 	return out.MicroVMs, err
 }
 
-// StopMicroVM stops the microVM and returns it as it is after.
-func (c *Client) StopMicroVM(ctx context.Context, name string) (MicroVM, error) {
+// StopMicroVM stops the microVM, giving its guest r's grace, and returns it as it is after.
+func (c *Client) StopMicroVM(ctx context.Context, name string, r StopRequest) (MicroVM, error) {
 	var m MicroVM
-	err := c.do(ctx, http.MethodPost, microVMPath(name)+"/stop", nil, &m)
+	err := c.do(ctx, http.MethodPost, microVMPath(name)+"/stop", r, &m)
 	return m, err
 }
 
@@ -247,6 +247,27 @@ func (c *Client) Snapshot(ctx context.Context, name string) (Snapshot, error) {
 // DeleteSnapshot deletes the snapshot.
 func (c *Client) DeleteSnapshot(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, snapshotPath(name), nil, nil)
+}
+
+// SnapshotDisk copies the microVM's disk into a disk snapshot named by r.
+func (c *Client) SnapshotDisk(ctx context.Context, microVM, disk string, r DiskSnapshotRequest) (DiskSnapshot, error) {
+	var d DiskSnapshot
+	err := c.do(ctx, http.MethodPost, microVMPath(microVM)+"/disks/"+url.PathEscape(disk)+"/snapshot", r, &d)
+	return d, err
+}
+
+// DiskSnapshots lists the disk snapshots the host keeps, ordered by name.
+func (c *Client) DiskSnapshots(ctx context.Context) ([]DiskSnapshot, error) {
+	var out struct {
+		DiskSnapshots []DiskSnapshot `json:"diskSnapshots"`
+	}
+	err := c.do(ctx, http.MethodGet, "/v1/disk-snapshots", nil, &out)
+	return out.DiskSnapshots, err
+}
+
+// DeleteDiskSnapshot deletes the disk snapshot; an absent one is success.
+func (c *Client) DeleteDiskSnapshot(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/disk-snapshots/"+url.PathEscape(name), nil, nil)
 }
 
 // ResumeSnapshot makes a running microVM from the snapshot.

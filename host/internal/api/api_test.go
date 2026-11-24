@@ -392,7 +392,24 @@ func TestCreate_Validation(t *testing.T) {
 		"networkPolicy.egress[0]": func(b map[string]any) {
 			b["networkPolicy"] = map[string]any{"egress": []map[string]any{{"prefix": "10.0.0.1/8", "protocol": "tcp"}}}
 		},
-		"env": func(b map[string]any) { b["env"] = map[string]string{"A": "b"} },
+		"env":        func(b map[string]any) { b["env"] = map[string]string{"A=B": "c"} },
+		"workingDir": func(b map[string]any) { b["workingDir"] = "srv/app" },
+		"files[0]":   func(b map[string]any) { b["files"] = []map[string]any{{"path": "etc/app.conf", "mode": 0o600}} },
+		"files[1]": func(b map[string]any) {
+			b["files"] = []map[string]any{{"path": "/etc/a", "mode": 0o600}, {"path": "/etc/a", "mode": 0o600}}
+		},
+		"files[2]": func(b map[string]any) {
+			b["files"] = []map[string]any{{"path": "/a", "mode": 0o600}, {"path": "/b", "mode": 0o644}, {"path": "/c", "mode": 0o10000}}
+		},
+		"files": func(b map[string]any) {
+			b["files"] = []map[string]any{{"path": "/big", "mode": 0o600, "content": make([]byte, maxFilesContent+1)}}
+		},
+		"disks[0]": func(b map[string]any) {
+			b["disks"] = []map[string]any{{"name": "data", "sizeBytes": 1, "mountPath": "/proc/data"}}
+		},
+	}
+	for path, ok := range map[string]bool{"/data": true, "/srv/data": true, "/": false, "/data/": false, "/a/../b": false, "/sys": false, "/dev/x": false, "/run/mvmd/x": false, "/run/x": true} {
+		assert.Equal(t, ok, mountable(path), path)
 	}
 	for field, mutate := range cases {
 		t.Run(field, func(t *testing.T) {

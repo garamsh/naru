@@ -51,8 +51,20 @@ func validateOS(r hostapi.CreateRequest) (plan, []string, string) {
 	if len(r.Command) > 0 {
 		bad("command")
 	}
+	if len(r.Args) > 0 {
+		bad("args")
+	}
+	if r.User != "" {
+		bad("user")
+	}
+	if r.WorkingDir != "" {
+		bad("workingDir")
+	}
+	if len(r.Files) > 0 {
+		bad("files")
+	}
 	if len(fields) > 0 {
-		return plan{}, fields, "a microVM has an image or a boot set, not both: bootSet, cmdline, seed and dataDisk are the OS form's, image, rootDiskBytes, disks, env and command the image form's"
+		return plan{}, fields, "a microVM has an image or a boot set, not both: bootSet, cmdline, seed and dataDisk are the OS form's, image, rootDiskBytes, disks, env, command, args, user, workingDir and files the image form's"
 	}
 	if !dnsLabel.MatchString(r.Name) {
 		bad("name")

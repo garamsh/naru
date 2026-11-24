@@ -350,7 +350,9 @@ func microvmLifecycle(verb string) binder {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), hostCallTimeout)
 			defer cancel()
-			act := cl.StopMicroVM
+			act := func(ctx context.Context, name string) (hostapi.MicroVM, error) {
+				return cl.StopMicroVM(ctx, name, hostapi.StopRequest{})
+			}
 			if verb == "start" {
 				act = cl.StartMicroVM
 			}

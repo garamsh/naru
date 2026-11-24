@@ -8,7 +8,10 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
-require go.yaml.in/yaml/v4 v4.0.0 // indirect
+require (
+	github.com/garamsh/naru/lib/hostapi v0.0.0-00010101000000-000000000000 // indirect
+	go.yaml.in/yaml/v4 v4.0.0 // indirect
+)
 
 require (
 	github.com/garamsh/naru/lib/atomicfile v0.0.0-00010101000000-000000000000 // indirect

@@ -49,7 +49,10 @@ func TestClient_EachCallSendsItsMethodPathAndBody(t *testing.T) {
 		}, "POST", "/v1/microvms", `"fenced":true`, hostapi.MicroVM{Name: "web"}},
 		{"get", func(c *hostapi.Client) error { _, err := c.MicroVM(ctx, "web"); return err }, "GET", "/v1/microvms/web", "", hostapi.MicroVM{}},
 		{"list", func(c *hostapi.Client) error { _, err := c.MicroVMs(ctx); return err }, "GET", "/v1/microvms", "", map[string]any{"microvms": []any{}}},
-		{"stop", func(c *hostapi.Client) error { _, err := c.StopMicroVM(ctx, "web"); return err }, "POST", "/v1/microvms/web/stop", "", hostapi.MicroVM{}},
+		{"stop", func(c *hostapi.Client) error {
+			_, err := c.StopMicroVM(ctx, "web", hostapi.StopRequest{GraceSeconds: 30})
+			return err
+		}, "POST", "/v1/microvms/web/stop", `{"graceSeconds":30}`, hostapi.MicroVM{}},
 		{"start", func(c *hostapi.Client) error { _, err := c.StartMicroVM(ctx, "web"); return err }, "POST", "/v1/microvms/web/start", "", hostapi.MicroVM{}},
 		{"delete", func(c *hostapi.Client) error { return c.DeleteMicroVM(ctx, "web") }, "DELETE", "/v1/microvms/web", "", nil},
 		{"renew", func(c *hostapi.Client) error {
@@ -64,6 +67,12 @@ func TestClient_EachCallSendsItsMethodPathAndBody(t *testing.T) {
 		{"snapshots", func(c *hostapi.Client) error { _, err := c.Snapshots(ctx); return err }, "GET", "/v1/snapshots", "", map[string]any{"snapshots": []any{}}},
 		{"snapshot get", func(c *hostapi.Client) error { _, err := c.Snapshot(ctx, "s"); return err }, "GET", "/v1/snapshots/s", "", hostapi.Snapshot{}},
 		{"snapshot delete", func(c *hostapi.Client) error { return c.DeleteSnapshot(ctx, "s") }, "DELETE", "/v1/snapshots/s", "", nil},
+		{"disk snapshot", func(c *hostapi.Client) error {
+			_, err := c.SnapshotDisk(ctx, "web", "data", hostapi.DiskSnapshotRequest{Name: "before"})
+			return err
+		}, "POST", "/v1/microvms/web/disks/data/snapshot", `{"name":"before"}`, hostapi.DiskSnapshot{}},
+		{"disk snapshots", func(c *hostapi.Client) error { _, err := c.DiskSnapshots(ctx); return err }, "GET", "/v1/disk-snapshots", "", map[string]any{"diskSnapshots": []any{}}},
+		{"disk snapshot delete", func(c *hostapi.Client) error { return c.DeleteDiskSnapshot(ctx, "before") }, "DELETE", "/v1/disk-snapshots/before", "", nil},
 		{"resume", func(c *hostapi.Client) error {
 			_, err := c.ResumeSnapshot(ctx, "s", hostapi.ResumeRequest{Name: "web2"})
 			return err

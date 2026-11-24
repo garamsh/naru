@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/netip"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -11,11 +12,14 @@ import (
 	"github.com/garamsh/naru/lib/hostapi"
 )
 
-// Limits on one request.
+// Limits on one request. A Machine's files are mvmd's limit: 64 files and 1 MiB of content.
 const (
-	maxDisks = 16
-	maxRules = 64
-	maxPorts = 16
+	maxDisks        = 16
+	maxRules        = 64
+	maxPorts        = 16
+	maxFiles        = 64
+	maxFilesContent = 1 << 20
+	maxFileMode     = 0o7777
 )
 
 var (
@@ -64,36 +68,75 @@ func validate(r hostapi.CreateRequest) (plan, []string, string) {
 	}
 	seen := map[string]bool{}
 	for i, d := range r.Disks {
-		if !dnsLabel.MatchString(d.Name) || seen[d.Name] || d.SizeBytes == 0 {
+		if !dnsLabel.MatchString(d.Name) || seen[d.Name] || d.SizeBytes == 0 ||
+			d.MountPath != "" && !mountable(d.MountPath) || d.FromSnapshot != "" && !dnsLabel.MatchString(d.FromSnapshot) {
 			bad(fmt.Sprintf("disks[%d]", i))
 		}
 		seen[d.Name] = true
 	}
+	for name := range r.Env {
+		if name == "" || strings.Contains(name, "=") {
+			bad("env")
+			break
+		}
+	}
+	if r.WorkingDir != "" && !cleanAbsolute(r.WorkingDir) {
+		bad("workingDir")
+	}
+	fields = append(fields, checkFiles(r.Files)...)
 	fields = append(fields, checkRules("networkPolicy.egress", r.NetworkPolicy.Egress)...)
 	fields = append(fields, checkRules("networkPolicy.ingress", r.NetworkPolicy.Ingress)...)
 	if len(fields) > 0 {
 		return plan{}, fields, "the request is invalid"
 	}
-	// The pinned mvmd's CreateMachine has no environment or command for a Machine, so a request
-	// that carries one is refused whole: it would otherwise be accepted and do nothing.
-	var unsupported []string
-	if len(r.Env) > 0 {
-		unsupported = append(unsupported, "env")
-	}
-	if len(r.Command) > 0 {
-		unsupported = append(unsupported, "command")
-	}
-	if len(unsupported) > 0 {
-		return plan{}, unsupported, "this host's mvmd (runtime API v1alpha2) gives a Machine no environment and no command: the image's own entrypoint runs"
-	}
 	p := plan{repository: m[1], disks: slices.Clone(r.Disks), create: mvmd.Create{
 		ID: r.Name, ImageDigest: m[2], CPU: r.CPU, MemoryBytes: r.Memory, RootDiskBytes: r.RootDiskBytes, Policy: r.NetworkPolicy,
 		RestartOnBoot: restartOnBoot(r.RestartOnBoot, false), Fenced: r.Fenced,
+		Command: r.Command, Args: r.Args, Env: r.Env, User: r.User, WorkingDir: r.WorkingDir, Files: r.Files,
 	}}
 	for _, d := range r.Disks {
-		p.create.Disks = append(p.create.Disks, mvmd.Attachment{ID: diskID(r.Name, d.Name), ReadOnly: d.ReadOnly})
+		p.create.Disks = append(p.create.Disks, mvmd.Attachment{ID: diskID(r.Name, d.Name), ReadOnly: d.ReadOnly, MountPath: d.MountPath})
 	}
 	return p, nil, ""
+}
+
+// cleanAbsolute reports whether p is an absolute path with no ".", ".." or empty element and no
+// trailing slash, as mvmd takes a guest path.
+func cleanAbsolute(p string) bool { return path.IsAbs(p) && path.Clean(p) == p }
+
+// mountable reports whether the guest may mount a disk at p: a clean absolute path other than the
+// root, and outside the trees the guest's own system holds.
+func mountable(p string) bool {
+	if !cleanAbsolute(p) || p == "/" {
+		return false
+	}
+	for _, sys := range []string{"/proc", "/sys", "/dev", "/run/mvmd"} {
+		if p == sys || strings.HasPrefix(p, sys+"/") {
+			return false
+		}
+	}
+	return true
+}
+
+// checkFiles returns the fields of the files mvmd would refuse: more than maxFiles, more than
+// maxFilesContent in all, a path that is not clean and absolute or given twice, a mode above 07777.
+func checkFiles(files []hostapi.File) []string {
+	var bad []string
+	if len(files) > maxFiles {
+		bad = append(bad, "files")
+	}
+	total, seen := 0, map[string]bool{}
+	for i, f := range files {
+		total += len(f.Content)
+		if !cleanAbsolute(f.Path) || seen[f.Path] || f.Mode > maxFileMode {
+			bad = append(bad, fmt.Sprintf("files[%d]", i))
+		}
+		seen[f.Path] = true
+	}
+	if total > maxFilesContent && !slices.Contains(bad, "files") {
+		bad = append(bad, "files")
+	}
+	return bad
 }
 
 // restartOnBoot is the request's choice, or the form's default when it made none.
