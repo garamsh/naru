@@ -133,6 +133,9 @@ func (s *service) Start(ctx context.Context, caller, name string) (machineapi.Ma
 }
 
 func (s *service) Stop(ctx context.Context, caller, name string, req machineapi.StopRequest) (machineapi.Machine, error) {
+	if err := req.Check(); err != nil {
+		return machineapi.Machine{}, err
+	}
 	return s.change(ctx, caller, name, func(r *Record) bool {
 		if r.Spec.State == machineapi.StateStopped {
 			return false
@@ -157,7 +160,16 @@ func (s *service) change(ctx context.Context, caller, name string, change func(r
 			return r.Machine(), nil
 		}
 		r.Status.Generation++
-		err = s.store.Update(ctx, r, rev, s.event(machineapi.EventStatus, r))
+		// A placed Machine shows the state it heads for at once, in the event this change appends;
+		// one that waits for a host stays pending, and one whose host does not answer stays unknown.
+		if r.Binding != nil && r.Status.Phase != machineapi.PhaseUnknown {
+			r.Status.Phase, r.Status.Reason = machineapi.PhaseStarting, ""
+			if r.Spec.State == machineapi.StateStopped {
+				r.Status.Phase = machineapi.PhaseStopping
+			}
+		}
+		ev := s.event(machineapi.EventStatus, r)
+		_, err = s.store.Update(ctx, r, rev, &ev)
 		if err == nil {
 			return r.Machine(), nil
 		}
@@ -178,7 +190,8 @@ func (s *service) Delete(ctx context.Context, caller, name string) (machineapi.M
 			return r.Machine(), nil
 		}
 		r.Status.Phase = machineapi.PhaseDeleting
-		err = s.store.Update(ctx, r, rev, s.event(machineapi.EventStatus, r))
+		ev := s.event(machineapi.EventStatus, r)
+		_, err = s.store.Update(ctx, r, rev, &ev)
 		if err == nil {
 			return r.Machine(), nil
 		}
@@ -196,7 +209,11 @@ func (s *service) All(ctx context.Context) ([]orchapi.Machine, error) {
 	}
 	out := make([]orchapi.Machine, 0, len(rs))
 	for _, r := range rs {
-		out = append(out, orchapi.Machine{Caller: r.Caller, Machine: r.Machine()})
+		m := orchapi.Machine{Caller: r.Caller, Machine: r.Machine(), Reason: r.OperatorReason}
+		if r.Binding != nil {
+			m.Binding = &orchapi.MachineBinding{Host: r.Binding.Host, Epoch: r.Binding.Epoch}
+		}
+		out = append(out, m)
 	}
 	return out, nil
 }

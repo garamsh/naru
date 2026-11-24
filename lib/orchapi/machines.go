@@ -14,6 +14,9 @@ type Machine struct {
 	machineapi.Machine
 	// Binding is absent while the Machine is bound to no host.
 	Binding *MachineBinding `json:"binding,omitempty"`
+	// Reason is why a pending Machine waits, with the fleet's figures the caller's reason leaves
+	// out, such as "no host has 16 GiB of memory free; the most free is 12 GiB".
+	Reason string `json:"reason,omitempty"`
 }
 
 // MachineBinding is the host a Machine runs on and the epoch of its placement there: its microVM

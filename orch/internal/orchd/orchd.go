@@ -75,6 +75,11 @@ type Config struct {
 	// NetworkInterval is the pause between the network reconciler's passes; it defaults to
 	// netrec.DefaultInterval.
 	NetworkInterval time.Duration
+	// MachineInterval is the pause between the Machine reconciler's passes; it defaults to
+	// machines.DefaultInterval. HostReserve is what each host keeps for itself, apart from what the
+	// reconciler places, taken as given.
+	MachineInterval time.Duration
+	HostReserve     machines.Reserve
 	Limits          inventory.Config
 	// Restore, when the data directory holds no etcd member, starts no etcd: the member serves only
 	// PUT /v1/restore until a snapshot is restored into it. With a member in the directory it is
@@ -104,6 +109,10 @@ type Deps struct {
 	// records each admitted host's prefixes beside the groups engine; without it none is recorded, and
 	// the admission of a joined host waits for every admitted host's prefix.
 	NewPrefixHosts func(inv inventory.Service) inventory.PrefixHosts
+	// NewMachineHosts returns the Machine reconciler's view of the hosts. With it the leader places
+	// the Machine API's Machines on hosts and runs them there; without it every Machine stays
+	// pending.
+	NewMachineHosts func(inv inventory.Service) machines.Hosts
 	// BootSets, with NewBootSetHosts, turns on the adding of the boot sets the groups' node
 	// versions need to the hosts that lack them. The leader runs it beside the groups engine.
 	BootSets        groups.ReleaseStore
@@ -323,6 +332,13 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	}
 	machineStore := machinesetcd.New(m.Client())
 	machineSvc := machines.NewService(machineStore, d.Clock, c.MachineZone)
+	if d.NewMachineHosts != nil {
+		reconcilers = append(reconcilers, machines.NewReconciler(machines.ReconcilerConfig{
+			Store: machinesetcd.New(leaderKV), Hosts: d.NewMachineHosts(svc), Clock: d.Clock, Interval: c.MachineInterval, Reserve: c.HostReserve,
+			Wake:  func(ctx context.Context) <-chan struct{} { return machinesetcd.Watch(ctx, m.Client(), d.Log) },
+			Fleet: leaderInv, Log: d.Log,
+		}))
+	}
 	limits := c.Limits.WithDefaults()
 	serveMachines := machineserver.New(machineserver.Deps{Machines: machineSvc, Auth: d.Auth, Credentials: d.Credentials,
 		Sources:       ratelimit.New(d.Clock, limits.SourceRate, limits.SourceBurst),

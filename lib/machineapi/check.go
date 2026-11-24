@@ -66,6 +66,14 @@ func CheckPath(p string) error {
 	return nil
 }
 
+// Check refuses a stop whose grace is above MaxGraceSeconds, with a FieldError.
+func (r StopRequest) Check() error {
+	if r.GraceSeconds > MaxGraceSeconds {
+		return invalid("graceSeconds", "is %d; at most %d", r.GraceSeconds, MaxGraceSeconds)
+	}
+	return nil
+}
+
 // Check refuses a spec a create cannot take, with a FieldError naming the first field at fault.
 func (s Spec) Check() error {
 	switch {

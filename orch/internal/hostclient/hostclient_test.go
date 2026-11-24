@@ -53,9 +53,11 @@ func newHost(t *testing.T) *fakeHost {
 		}
 		switch key {
 		case "GET /v1/host":
-			_, _ = w.Write([]byte(`{"free":{"cpu":6,"memory":8589934592},"mvmd":{"machinePrefixes":["10.77.1.0/24"],"kernels":[{"name":"naru"}],"bootSets":[{"name":"node-1","origin":"configured"},{"name":"node-2","origin":"added"}]}}`))
+			_, _ = w.Write([]byte(`{"capacity":{"cpu":8,"memory":17179869184,"disk":1099511627776},"reportedLabels":{"naru.garam.sh/virtualization":"metal"},"free":{"cpu":6,"memory":8589934592},"mvmd":{"machinePrefixes":["10.77.1.0/24"],"kernels":[{"name":"naru"}],"bootSets":[{"name":"node-1","origin":"configured"},{"name":"node-2","origin":"added"}]}}`))
 		case "GET /v1/microvms":
 			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","state":"running","network":"lab","addresses":["10.9.0.2"]},{"name":"b","state":"stopped"},{"name":"c","state":"created"}]}`))
+		case "GET /v1/disk-snapshots":
+			_, _ = w.Write([]byte(`{"diskSnapshots":[{"name":"s-1-0","microvm":"m-0123456789abcdef-1","disk":"data","sizeBytes":1024,"allocatedBytes":512}]}`))
 		case "GET /v1/microvms/db-1/fence":
 			_, _ = w.Write([]byte(`{"phase":"armed","remainingSeconds":90}`))
 		case "GET /v1/microvms/db-1":

@@ -33,7 +33,7 @@ func (s *service) PutSnapshot(ctx context.Context, caller, name string, req mach
 		if m.Status.Phase == machineapi.PhaseDeleting {
 			return machineapi.Snapshot{}, false, fmt.Errorf("%w: %s", ErrDeleting, req.Machine)
 		}
-		snap := Snapshot{Caller: caller, Snapshot: machineapi.Snapshot{
+		snap := Snapshot{Caller: caller, ID: newID(), Snapshot: machineapi.Snapshot{
 			Name: name, Machine: m.Name, MachineID: m.ID, Spec: m.Spec, Phase: machineapi.SnapshotPending, CreatedAt: s.clock.Now().UTC(),
 		}}
 		// The write is guarded on the Machine as read, so one marked deleting meanwhile is not snapshot.
@@ -68,6 +68,18 @@ func (s *service) Snapshots(ctx context.Context, caller string) ([]machineapi.Sn
 	return out, nil
 }
 
+// DeleteSnapshot removes the snapshot at once, so its name is free. The disk snapshots it holds on
+// its host are deleted by the reconciler after.
 func (s *service) DeleteSnapshot(ctx context.Context, caller, name string) error {
-	return notFound(s.store.DeleteSnapshot(ctx, caller, name), "snapshot", name)
+	for range retries {
+		snap, rev, err := s.store.Snapshot(ctx, caller, name)
+		if err != nil {
+			return notFound(err, "snapshot", name)
+		}
+		err = s.store.DeleteSnapshot(ctx, snap, rev)
+		if !errors.Is(err, ErrRaced) {
+			return err
+		}
+	}
+	return fmt.Errorf("delete snapshot %s/%s: %d writes raced", caller, name, retries)
 }

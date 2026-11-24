@@ -143,10 +143,13 @@ type File struct {
 }
 
 // StopRequest is the optional body of POST /v1/microvms/{name}/stop: how long the guest has to
-// stop before it is ended. Zero is the host's default, 10 seconds.
+// stop before it is ended. Zero is the host's default, 10 seconds; above MaxGraceSeconds is 422.
 type StopRequest struct {
 	GraceSeconds uint32 `json:"graceSeconds,omitempty"`
 }
+
+// MaxGraceSeconds is the most grace a stop takes.
+const MaxGraceSeconds = 240
 
 // DiskSnapshotRequest is the body of POST /v1/microvms/{name}/disks/{disk}/snapshot: the name the
 // disk snapshot takes.

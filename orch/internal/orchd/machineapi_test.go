@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,15 +16,19 @@ import (
 	"github.com/stretchr/testify/require"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/machineapi"
 	"github.com/garamsh/naru/lib/machineapi/machineapitest"
+	"github.com/garamsh/naru/orch/internal/inventory"
+	"github.com/garamsh/naru/orch/internal/machines"
+	machinesetcd "github.com/garamsh/naru/orch/internal/machines/etcd"
 	"github.com/garamsh/naru/orch/internal/orchtest"
 )
 
 const machineZone = "m.example.test"
 
-// machineSpec is a spec orch records; nothing runs it, since this orch has no hosts.
+// machineSpec is a spec orch records, and runs on a host when it has one.
 func machineSpec() machineapi.Spec {
 	return machineapi.Spec{
 		Image:         "registry.example.test/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -45,7 +50,14 @@ type machineOrch struct {
 
 func startMachineOrch(t *testing.T) machineOrch {
 	t.Helper()
-	c := orchtest.Start(t, orchtest.Options{Members: 1, MachineZone: machineZone})
+	return startMachineOrchWith(t, orchtest.Options{})
+}
+
+// startMachineOrchWith starts the member with the options o adds, such as its hosts.
+func startMachineOrchWith(t *testing.T, o orchtest.Options) machineOrch {
+	t.Helper()
+	o.Members, o.MachineZone = 1, machineZone
+	c := orchtest.Start(t, o)
 	garam := c.CA.Issue(t, "garam", identity.RoleCaller)
 	return machineOrch{
 		c: c, garamID: garam, garam: c.MachineClient(t, 0, garam),
@@ -54,17 +66,47 @@ func startMachineOrch(t *testing.T) machineOrch {
 	}
 }
 
-// The scenarios of machineapitest that need no host. The rest wait for a Machine to run, and are
-// turned on here by the issues that place and run Machines (#382), reach their guests (#383) and keep
-// aliases (#387), when machineapitest.Run runs whole.
-func TestOrch_PassesTheMachineAPIConformanceScenariosThatNeedNoHost(t *testing.T) {
-	o := startMachineOrch(t)
-	cfg := machineapitest.Config{Caller: o.garam, Other: o.functions, OtherRole: o.op, Zone: machineZone, Spec: machineSpec(), Timeout: 10 * time.Second,
+// oneHost is a host that fits every Machine the scenarios make, and holds each delete for longer
+// than a round trip of the API.
+func oneHost() *orchtest.FakeMachineHosts {
+	h := orchtest.NewFakeMachineHosts(machines.Host{ID: "h-a", Region: "kr-seoul", Capacity: hostapi.Resources{CPU: 64, Memory: 256 << 30, Disk: 4 << 40}})
+	h.DeleteDelay = 300 * time.Millisecond
+	return h
+}
+
+// The scenarios of machineapitest that run Machines on a host but reach no guest. The rest are
+// turned on here by the issues that reach the guests (#383: Restore, Isolation, Secrets,
+// RunningOnly) and keep aliases (#387), when machineapitest.Run runs whole.
+func TestOrch_PassesTheMachineAPIConformanceScenariosThatReachNoGuest(t *testing.T) {
+	hosts := oneHost()
+	// An hour between passes: every pass after the first is the one a write of a Machine or a
+	// snapshot wakes, as the reconciler runs at once after an API write.
+	o := startMachineOrchWith(t, orchtest.Options{NewMachineHosts: func(inventory.Service) machines.Hosts { return hosts }, MachineInterval: time.Hour})
+	kv := o.c.Members[0].Etcd()
+	cfg := machineapitest.Config{
+		Caller: o.garam, Other: o.functions, OtherRole: o.op, Zone: machineZone, Spec: machineSpec(), Timeout: 10 * time.Second,
 		Anonymous: o.c.MachineClient(t, 0, orchtest.Identity{}), Token: func(_ *testing.T, name string) string { return o.c.Signer.CallerToken(name) },
-		CallerKey: o.garamID.TLS.PrivateKey.(crypto.Signer), CallerCert: o.garamID.Cert}
-	t.Run("Create", func(t *testing.T) { machineapitest.Create(t, cfg) })
-	t.Run("OtherRole", func(t *testing.T) { machineapitest.OtherRole(t, cfg) })
-	t.Run("Credentials", func(t *testing.T) { machineapitest.Credentials(t, cfg) })
+		CallerKey: o.garamID.TLS.PrivateKey.(crypto.Signer), CallerCert: o.garamID.Cert,
+		// The log's age drops every event the caller's log holds: its trim deletes them and records
+		// the floor as the newest it dropped.
+		ExpireLog: func(t *testing.T) {
+			del, err := kv.Delete(t.Context(), machinesetcd.EventPrefix+"garam/", clientv3.WithPrefix())
+			require.NoError(t, err)
+			_, err = kv.Put(t.Context(), machinesetcd.FloorPrefix+"garam", strconv.FormatInt(del.Header.Revision, 10))
+			require.NoError(t, err)
+		},
+	}
+	for _, s := range []struct {
+		name string
+		run  func(*testing.T, machineapitest.Config)
+	}{
+		{"Create", machineapitest.Create}, {"OtherRole", machineapitest.OtherRole}, {"Credentials", machineapitest.Credentials},
+		{"StartStop", machineapitest.StartStop},
+		{"Delete", machineapitest.Delete}, {"Snapshots", machineapitest.Snapshots}, {"Events", machineapitest.Events},
+		{"CursorExpired", machineapitest.CursorExpired},
+	} {
+		t.Run(s.name, func(t *testing.T) { s.run(t, cfg) })
+	}
 }
 
 // refused asserts err is the Machine API's refusal with status and code.
