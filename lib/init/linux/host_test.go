@@ -111,14 +111,12 @@ func TestHost_ReadSeedMountsTheCidataVolumeAndReadsItsFiles(t *testing.T) {
 	require.NoError(t, os.MkdirAll(h.seedMountPoint, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(h.seedMountPoint, "user-data"), []byte("the naru.yaml"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(h.seedMountPoint, "network-config"), []byte("the network"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(h.seedMountPoint, "meta-data"), []byte("the meta-data"), 0o644))
 
-	userData, networkConfig, metaData, err := h.ReadSeed()
+	userData, networkConfig, err := h.ReadSeed()
 
 	require.NoError(t, err)
 	assert.Equal(t, "the naru.yaml", string(userData))
 	assert.Equal(t, "the network", string(networkConfig))
-	assert.Equal(t, "the meta-data", string(metaData))
 	assert.Equal(t, []mountCall{{filepath.Join(h.devDir, "sr0"), h.seedMountPoint, "iso9660"}}, *calls,
 		"the label matches in either case, and an ext4 disk labelled cidata is not the drive")
 }
@@ -128,7 +126,7 @@ func TestHost_ReadSeedMountsReadOnlyAndHardened(t *testing.T) {
 	var flags uintptr
 	h.mount = func(_, _, _ string, f uintptr, _ string) error { flags = f; return nil }
 
-	_, _, _, _ = h.ReadSeed()
+	_, _, _ = h.ReadSeed()
 
 	want := uintptr(syscall.MS_RDONLY | syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC)
 	assert.Equal(t, want, flags)
@@ -138,7 +136,7 @@ func TestHost_ReadSeedRefuses(t *testing.T) {
 	t.Run("a Node with no cidata volume", func(t *testing.T) {
 		h, calls := testHost(t, map[string]string{"vda": ext4test.Image(t, "NARUCFG", "", nil), "sr0": isoImage(t, "other")})
 
-		_, _, _, err := h.ReadSeed()
+		_, _, err := h.ReadSeed()
 
 		assert.ErrorIs(t, err, errNoDisk)
 		assert.ErrorIs(t, err, boot.ErrNoSeed, "the boot sequence runs the stored configuration")
@@ -150,7 +148,7 @@ func TestHost_ReadSeedRefuses(t *testing.T) {
 		require.NoError(t, os.MkdirAll(h.seedMountPoint, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(h.seedMountPoint, "user-data"), []byte("x"), 0o644))
 
-		_, network, _, err := h.ReadSeed()
+		_, network, err := h.ReadSeed()
 
 		require.NoError(t, err, "a drive without a network-config leaves the network to DHCPv4")
 		assert.Empty(t, network)
@@ -161,7 +159,7 @@ func TestHost_ReadSeedRefuses(t *testing.T) {
 		h, _ := testHost(t, map[string]string{"sr0": isoImage(t, "cidata")})
 		require.NoError(t, os.MkdirAll(h.seedMountPoint, 0o755))
 
-		_, _, _, err := h.ReadSeed()
+		_, _, err := h.ReadSeed()
 
 		assert.ErrorIs(t, err, os.ErrNotExist)
 	})
@@ -450,28 +448,6 @@ func TestHost_EnableForwardingWritesOnlyTheNamedFamilies(t *testing.T) {
 
 	require.NoError(t, h.EnableForwarding([]config.Family{config.IPv4}))
 	assert.Equal(t, "1", read(t, v4))
-}
-
-func TestHost_EnableBridgeNetfilterWritesOneToTheBridgeCallFile(t *testing.T) {
-	h, _ := testHost(t, nil)
-	dir := filepath.Join(h.procSys, "net/bridge")
-	require.NoError(t, os.MkdirAll(dir, 0o755))
-	file := filepath.Join(dir, "bridge-nf-call-iptables")
-	require.NoError(t, os.WriteFile(file, []byte("0"), 0o644))
-	other := filepath.Join(dir, "bridge-nf-call-ip6tables")
-	require.NoError(t, os.WriteFile(other, []byte("0"), 0o644))
-
-	require.NoError(t, h.EnableBridgeNetfilter())
-
-	assert.Equal(t, "1", read(t, file))
-	assert.Equal(t, "0", read(t, other), "only the IPv4 hook is turned on")
-}
-
-func TestHost_EnableBridgeNetfilterFailsWhenTheKernelHasNoBridgeNetfilter(t *testing.T) {
-	// The control: the file does not exist because the module is not there, and the error says so.
-	h, _ := testHost(t, nil)
-
-	assert.ErrorIs(t, h.EnableBridgeNetfilter(), os.ErrNotExist)
 }
 
 func read(t *testing.T, path string) string {

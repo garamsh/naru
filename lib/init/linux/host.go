@@ -117,34 +117,30 @@ func NewHost(diskWait time.Duration, reaper *Reaper) *Host {
 }
 
 // ReadSeed mounts the NoCloud drive read-only and returns its user-data, the
-// Node's naru.yaml, its network-config and its meta-data. When no disk carries the label it returns an error
+// Node's naru.yaml, and its network-config. When no disk carries the label it returns an error
 // wrapping boot.ErrNoSeed, after waiting up to diskWait for one.
-func (h *Host) ReadSeed() (userData, networkConfig, metaData []byte, err error) {
+func (h *Host) ReadSeed() (userData, networkConfig []byte, err error) {
 	dev, err := h.find(isoLabel, isSeedLabel)
 	if errors.Is(err, errNoDisk) {
-		return nil, nil, nil, fmt.Errorf("NoCloud drive %q: %w: %w", seedLabel, err, boot.ErrNoSeed)
+		return nil, nil, fmt.Errorf("NoCloud drive %q: %w: %w", seedLabel, err, boot.ErrNoSeed)
 	}
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("NoCloud drive %q: %w", seedLabel, err)
+		return nil, nil, fmt.Errorf("NoCloud drive %q: %w", seedLabel, err)
 	}
 	if err := os.MkdirAll(h.seedMountPoint, 0o755); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	if err := h.mount(dev, h.seedMountPoint, "iso9660", syscall.MS_RDONLY|hardened, ""); err != nil {
-		return nil, nil, nil, fmt.Errorf("mount %s: %w", dev, err)
+		return nil, nil, fmt.Errorf("mount %s: %w", dev, err)
 	}
 	if userData, err = os.ReadFile(filepath.Join(h.seedMountPoint, "user-data")); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	// A drive without a network-config leaves the network to DHCPv4 (netcfg.Parse of nothing).
 	if networkConfig, err = os.ReadFile(filepath.Join(h.seedMountPoint, netcfg.FileName)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	// meta-data is optional too: a drive without one carries no values of this member.
-	if metaData, err = os.ReadFile(filepath.Join(h.seedMountPoint, "meta-data")); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, nil, nil, err
-	}
-	return userData, networkConfig, metaData, nil
+	return userData, networkConfig, nil
 }
 
 // MountDataDisk finds the data disk, checks that it is ext4 with the verity
@@ -244,11 +240,6 @@ func (h *Host) WriteRegistries(spec config.Spec) error {
 
 // SetAsidePair sets the pair file of p aside when its certificate lacks the Organization p names.
 func (h *Host) SetAsidePair(p config.KeptPair) (bool, error) { return keptpair.SetAside(p) }
-
-// EnableBridgeNetfilter sets net.bridge.bridge-nf-call-iptables=1.
-func (h *Host) EnableBridgeNetfilter() error {
-	return os.WriteFile(filepath.Join(h.procSys, "net/bridge/bridge-nf-call-iptables"), []byte("1"), 0o644)
-}
 
 // EnableForwarding turns forwarding on for each family named.
 func (h *Host) EnableForwarding(families []config.Family) error {

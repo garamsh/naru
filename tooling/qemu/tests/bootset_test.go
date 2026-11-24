@@ -10,19 +10,48 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v3"
 
+	"github.com/garamsh/naru/lib/init/config"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
-	"github.com/garamsh/naru/tooling/qemu/internal/node"
 	"github.com/garamsh/naru/tooling/qemu/internal/release"
 )
 
 // The test of the Node boot set (ADR 0046) boots one Node that runs naru-hostd, takes a release's
 // boot set from the files make image wrote, adds it to the host through `naructl host boot-set add`
-// with no reboot, creates a Node microVM from it with the user-data `naructl gen kubernetes-node`
-// writes for the control-plane role, and removes both. It does not wait for Ready: the harness route
-// reaches the microVM in bootset_ready_test.go.
+// with no reboot, creates a Node microVM from it with the user-data osFormSeed writes, and removes
+// both. The harness route reaches the microVM's Node API in bootset_ready_test.go.
 
-func TestNode_HostAPITakesAReleasesNodeBootSetWithNoRebootAndCreatesAControlPlaneNodeMicroVMFromIt(t *testing.T) {
+// osFormSeed writes into dir the user-data of a Node that is a microVM of the OS form and runs no
+// service: its data disk, which hostd gives it blank, and its Node API, whose serving pair names
+// address and is issued from the Node API authority in ca (gen ca and gen api-ca). naructl writes no
+// such Node by itself, so spec.api is taken from what gen node writes for that address.
+func osFormSeed(t *testing.T, ca, name, address, dir string) string {
+	t.Helper()
+	gen := filepath.Join(dir, name+"-gen.yaml")
+	require.NoError(t, tool.GenNode(naructl.Node{
+		CA: ca, Name: name, Address: address + "/24", APIServer: address, PairsAsFiles: true,
+		MachinePrefix: "10.201.0.0/24", Firecracker: strings.Repeat("0", 64), Out: gen,
+	}))
+	raw, err := os.ReadFile(gen)
+	require.NoError(t, err)
+	var written config.NodeConfig
+	require.NoError(t, yaml.Unmarshal(raw, &written))
+	require.NotNil(t, written.Spec.API, "gen node issued the Node API's serving pair")
+	cfg := config.NodeConfig{APIVersion: written.APIVersion, Kind: written.Kind, Metadata: config.Metadata{Name: name}}
+	cfg.Spec.DataDisk = config.DataDisk{Label: wire.DataLabel, MountPoint: wire.DataMount, FormatBlank: true}
+	cfg.Spec.API = written.Spec.API
+	out, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	_, err = config.Parse(out)
+	require.NoError(t, err, "init takes the seed")
+	seed := filepath.Join(dir, name+"-user-data")
+	require.NoError(t, os.WriteFile(seed, out, 0o600))
+	return seed
+}
+
+func TestNode_HostAPITakesAReleasesNodeBootSetWithNoRebootAndCreatesANodeMicroVMFromIt(t *testing.T) {
 	c := hostCluster(t)
 	nd := c.Nodes[0]
 	prov, reader := c.Host.Provisioner, c.Host.Reader
@@ -46,20 +75,16 @@ func TestNode_HostAPITakesAReleasesNodeBootSetWithNoRebootAndCreatesAControlPlan
 	again := hctl(prov, []string{"host", "boot-set", "add"}, manifest)
 	require.NoError(t, again.Err, again.refusal())
 
-	// The user-data of a control-plane Node that is a microVM.
+	// The user-data of a Node that is a microVM.
 	dir := t.TempDir()
 	ca := filepath.Join(dir, "ca")
 	require.NoError(t, tool.GenCA(ca))
-	require.NoError(t, tool.GenKubernetes(ca, "10.200.0.2", ""))
-	seed := filepath.Join(dir, "user-data")
-	require.NoError(t, tool.GenKubernetesNode(naructl.KubernetesNode{
-		CA: ca, Name: "kcp", Role: "control-plane", Address: "10.200.0.2/24", Endpoint: "10.200.0.2",
-		PodNetwork: node.KubePodNetwork, PodPrefix: node.KubePodPrefix(1), Out: seed,
-	}))
+	require.NoError(t, tool.GenAPICA(ca))
+	seed := osFormSeed(t, ca, "vm", "10.200.0.2", dir)
 
-	// The microVM is created from the boot set, with its seed, a data disk and its Pod prefix.
-	made := hctl(prov, []string{"microvm", "create"}, "--name", "kcp", "--boot-set", set, "--seed", seed,
-		"--data-disk", "1073741824", "--pod-prefix", node.KubePodPrefix(1))
+	// The microVM is created from the boot set, with its seed and a data disk.
+	made := hctl(prov, []string{"microvm", "create"}, "--name", "vm", "--boot-set", set, "--seed", seed,
+		"--data-disk", "1073741824")
 	require.NoError(t, made.Err, made.refusal())
 	eventually(t, "mvmd lists the Machine Running", func() bool { return strings.Contains(machines(nd), "=RUNNING") })
 
@@ -67,7 +92,7 @@ func TestNode_HostAPITakesAReleasesNodeBootSetWithNoRebootAndCreatesAControlPlan
 	inUse := hctl(prov, []string{"host", "boot-set", "remove"}, set)
 	require.Error(t, inUse.Err)
 	assert.Contains(t, inUse.refusal(), "409")
-	deleted := hctl(prov, []string{"microvm", "delete"}, "kcp")
+	deleted := hctl(prov, []string{"microvm", "delete"}, "vm")
 	require.NoError(t, deleted.Err, deleted.refusal())
 	eventually(t, "mvmd no longer lists the Machine", func() bool { return machines(nd) == "none" })
 	removed := hctl(prov, []string{"host", "boot-set", "remove"}, set)

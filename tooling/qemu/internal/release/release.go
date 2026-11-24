@@ -222,26 +222,6 @@ func checkExtension(o Options) error {
 	return nil
 }
 
-// checkVolumesExtension is checkExtension for the volume extension: its description states the
-// digest of its image and the release's version.
-func checkVolumesExtension(o Options) error {
-	info, err := fixture.ReadVolumesExtensionInfo(filepath.Join(o.Out, fixture.ReleaseVolumesExtensionName(o.Version, ".json")))
-	if err != nil {
-		return err
-	}
-	a, err := digest(filepath.Join(o.Out, fixture.ReleaseVolumesExtensionName(o.Version, ".sqfs")))
-	if err != nil {
-		return err
-	}
-	if a.SHA256 != info.SHA256 {
-		return fmt.Errorf("the volume extension's description states SHA-256 %s, and its image is %s (make image)", info.SHA256, a.SHA256)
-	}
-	if info.Version != o.Version {
-		return fmt.Errorf("the volume extension was built for version %s, not the release's %s (make image)", info.Version, o.Version)
-	}
-	return nil
-}
-
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
 // Asset is a file Build wrote.
@@ -262,13 +242,6 @@ func Build(o Options) ([]Asset, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the boot disk's ESP (make disk): %w", err)
 	}
-	// The manifest's esp.bytes is the ESP's room for kernels (ADR 0037): what the extensions on it
-	// take is not room for a trial kernel (ADR 0096).
-	extRoom, err := ExtensionRoom(o.DiskDir)
-	if err != nil {
-		return nil, err
-	}
-	esp -= extRoom
 	if err := checkNodeInitramfs(filepath.Join(o.ImageDir, "node-initrd.cpio.gz")); err != nil {
 		return nil, err
 	}
@@ -317,10 +290,8 @@ func Build(o Options) ([]Asset, error) {
 	// The upgrade bundle is the kernel, initramfs inside, that the boot disk's default slot holds:
 	// what an A/B upgrade writes to the trial slot (ADR 0020).
 	bundle := BundleName(o.Version)
-	volumesImage, volumesInfo := fixture.VolumesExtensionAssets(filepath.Join(o.ImageDir, fixture.ExtensionDir))
 	if err := WriteBundle(filepath.Join(o.Out, bundle), o.Version, kernel, esp,
-		BundleExtension{Name: fixture.ExtensionName, Path: filepath.Join(o.ImageDir, fixture.ExtensionDir, fixture.ExtensionImageName)},
-		BundleExtension{Name: fixture.VolumesExtensionName, Path: volumesImage}); err != nil {
+		BundleExtension{Name: fixture.ExtensionName, Path: filepath.Join(o.ImageDir, fixture.ExtensionDir, fixture.ExtensionImageName)}); err != nil {
 		return nil, fmt.Errorf("the upgrade bundle (make image): %w", err)
 	}
 	names = append(names, bundle)
@@ -374,19 +345,6 @@ func Build(o Options) ([]Asset, error) {
 		return nil, err
 	}
 
-	// The system extension that carries the volume add-on (ADR 0083): delivered and named the same
-	// way, with no service of its own.
-	for suffix, from := range map[string]string{".sqfs": volumesImage, ".json": volumesInfo} {
-		asset := fixture.ReleaseVolumesExtensionName(o.Version, suffix)
-		if err := copyFile(from, filepath.Join(o.Out, asset)); err != nil {
-			return nil, fmt.Errorf("the volume extension (make image): %w", err)
-		}
-		names = append(names, asset)
-	}
-	if err := checkVolumesExtension(o); err != nil {
-		return nil, err
-	}
-
 	// naructl is the operator's tool and the one owner of the Node layout: the release ships the
 	// binary and writes the test user-data with it. naru-cluster is what a harness runs.
 	tool := "naructl-" + o.Version + "-linux-amd64"
@@ -432,11 +390,7 @@ func Build(o Options) ([]Asset, error) {
 	if err != nil {
 		return nil, err
 	}
-	images, err := ReadAddonImages(o.Archives)
-	if err != nil {
-		return nil, err
-	}
-	sbom, err := SBOM(o.Version, o.Epoch, comps, bins, images)
+	sbom, err := SBOM(o.Version, o.Epoch, comps, bins)
 	if err != nil {
 		return nil, err
 	}

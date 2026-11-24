@@ -33,13 +33,8 @@ fi
 (cd "$root/tooling/disk" && CGO_ENABLED=0 GOFLAGS=-mod=readonly go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build/naru-disk" ./cmd/naru-disk)
 
 rm -f "$img/naru.img.part" "$img/naru.qcow2.part"
-# The volumes extension rides on the ESP, for init to take into a blank Node's store (ADR 0096).
-ext=()
-if [ -f "$img/extensions/naru-volumes.json" ]; then
-  ext=(-extension "$img/extensions/naru-volumes.json")
-fi
 "$build/naru-disk" -kernel "$img/bzImage" -out "$img/naru.img.part" \
-  -disk-guid "$DISK_GUID" -esp-guid "$ESP_GUID" -layout "$img/naru-esp.json" "${ext[@]}"
+  -disk-guid "$DISK_GUID" -esp-guid "$ESP_GUID"
 mv "$img/naru.img.part" "$img/naru.img"
 qemu-img convert -f raw -O qcow2 "$img/naru.img" "$img/naru.qcow2.part"
 mv "$img/naru.qcow2.part" "$img/naru.qcow2"

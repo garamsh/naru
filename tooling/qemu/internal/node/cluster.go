@@ -88,7 +88,7 @@ type ClusterSpec struct {
 	// ExtraServices, with Gaon, are services appended to every Node's user-data, after naructl's.
 	ExtraServices []ExtraService
 	// MemoryMiB, when not 0, is every Node's memory in place of the default (Config.MemoryMiB): a host
-	// that runs a Kubernetes Node as a microVM needs the microVM's memory and its own.
+	// that runs a Node as a microVM needs the microVM's memory and its own.
 	MemoryMiB int
 	// HostMemoryMiB, when not 0, is the memory of the Nodes that run naru-hostd in place of MemoryMiB:
 	// a fleet's control Nodes keep the default while a host adds its microVMs' memory to it.

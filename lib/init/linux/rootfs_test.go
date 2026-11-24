@@ -2,9 +2,7 @@ package linux
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 
@@ -75,72 +73,4 @@ func TestMoveContents_KeepsTheExtendedAttributes(t *testing.T) {
 	n, err := syscall.Getxattr(filepath.Join(to, "f"), "user.naru", buf)
 	require.NoError(t, err)
 	assert.Equal(t, "v", string(buf[:n]))
-}
-
-const shareHelperEnv = "NARU_SHARE_MOUNT_HELPER"
-
-// TestShareMount_MakesTheMountAndTheMountsUnderItShared runs shareMountHelper in a mount namespace of
-// its own, where it may mount.
-func TestShareMount_MakesTheMountAndTheMountsUnderItShared(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=^TestShareMountHelper$")
-	cmd.Env = append(os.Environ(), shareHelperEnv+"=1")
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
-		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-	}
-	out, err := cmd.CombinedOutput()
-	if err != nil && strings.Contains(string(out), "SKIP") {
-		t.Skipf("no mount namespace for this user: %s", out)
-	}
-	require.NoError(t, err, string(out))
-}
-
-func TestShareMountHelper(t *testing.T) {
-	if os.Getenv(shareHelperEnv) == "" {
-		t.Skip("runs inside TestShareMount_MakesTheMountAndTheMountsUnderItShared")
-	}
-	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
-		t.Fatalf("SKIP make the mounts private: %v", err)
-	}
-	dir := t.TempDir()
-	child := filepath.Join(dir, "child")
-	require.NoError(t, syscall.Mount("tmpfs", dir, "tmpfs", 0, ""))
-	t.Cleanup(func() { _ = syscall.Unmount(dir, syscall.MNT_DETACH) })
-	require.NoError(t, os.Mkdir(child, 0o755))
-	require.NoError(t, syscall.Mount("tmpfs", child, "tmpfs", 0, ""))
-	assert.False(t, isShared(t, dir), "a mount is private until it is shared (control)")
-	assert.False(t, isShared(t, child), "so is the one under it (control)")
-
-	require.NoError(t, shareMount(dir))
-
-	assert.True(t, isShared(t, dir), "the mount")
-	assert.True(t, isShared(t, child), "the mount under it")
-	later := filepath.Join(dir, "later")
-	require.NoError(t, os.Mkdir(later, 0o755))
-	require.NoError(t, syscall.Mount("tmpfs", later, "tmpfs", 0, ""))
-	assert.True(t, isShared(t, later), "a mount made afterwards")
-}
-
-// isShared reports whether /proc/self/mountinfo lists the mount at dir with a shared peer group.
-func isShared(t *testing.T, dir string) bool {
-	t.Helper()
-	raw, err := os.ReadFile("/proc/self/mountinfo")
-	require.NoError(t, err)
-	for _, line := range strings.Split(string(raw), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) > 6 && fields[4] == dir {
-			for _, f := range fields[6:] {
-				if f == "-" {
-					break
-				}
-				if strings.HasPrefix(f, "shared:") {
-					return true
-				}
-			}
-			return false
-		}
-	}
-	t.Fatalf("%s is not a mount point", dir)
-	return false
 }

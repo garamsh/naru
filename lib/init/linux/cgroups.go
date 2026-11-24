@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	// controllers are enabled at the root and in naru/ so a service can create its own limits (mvmd ADR 0015); cpuset and hugetlb are the kubelet's, which refuses a cgroup without them (ADR 0031).
-	controllers = "+cpu +cpuset +hugetlb +memory +pids"
+	// controllers are enabled at the root and in naru/ so a service can create its own limits (mvmd ADR 0015).
+	controllers = "+cpu +memory +pids"
 	naruGroup   = "naru"
 
 	killTimeout   = 5 * time.Second
@@ -38,21 +38,15 @@ func NewCgroupTree(root string) *CgroupTree {
 	return &CgroupTree{root: root}
 }
 
-// Prepare creates naru/ with its detached/ and kubernetes/ groups under root,
-// and enables the cpu, cpuset, hugetlb, memory and pids controllers at root, in
-// naru/ and in naru/kubernetes. kubernetes/ holds no process: the kubelet makes
-// its pod cgroups there (ADR 0031). root must hold no process other than the
-// root of a real cgroup hierarchy.
+// Prepare creates naru/ with its detached/ group under root, and enables the
+// cpu, memory and pids controllers at root and in naru/. root must hold no
+// process other than the root of a real cgroup hierarchy.
 func (t *CgroupTree) Prepare() error {
 	naru := filepath.Join(t.root, naruGroup)
 	if err := os.MkdirAll(filepath.Join(naru, config.DetachedName), 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", naru, err)
 	}
-	delegated := filepath.Join(naru, config.DelegatedName)
-	if err := os.MkdirAll(delegated, 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", delegated, err)
-	}
-	for _, dir := range []string{t.root, naru, delegated} {
+	for _, dir := range []string{t.root, naru} {
 		if err := os.WriteFile(filepath.Join(dir, "cgroup.subtree_control"), []byte(controllers), 0o644); err != nil {
 			return fmt.Errorf("enable %q in %s: %w", controllers, dir, err)
 		}

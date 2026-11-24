@@ -29,15 +29,9 @@ COPY --from=gaon /usr/bin/gaon-node-agent /usr/bin/gaon-apiserver /usr/bin/gaon-
 COPY --from=e2fsprogs /usr/sbin/mke2fs /stage/mkfs.ext4
 COPY --from=xfsprogs /usr/sbin/mkfs.xfs /stage/
 COPY --from=nftables /usr/sbin/nft /stage/
-COPY --from=util-linux /usr/bin/mount /usr/bin/umount /stage/
 COPY --from=etcd /usr/bin/etcd /stage/
 COPY --from=ecr-login /usr/bin/docker-credential-ecr-login /stage/
 COPY --from=rolesanywhere /usr/bin/aws_signing_helper /stage/
-COPY --from=kubernetes /usr/bin/ /stage/
-COPY --from=containerd /usr/bin/ /stage/
-COPY --from=cni /usr/bin/ /stage/
-COPY --from=coredns /usr/lib/naru/addons/ /stage/addons/
-COPY --from=ccm /usr/lib/naru/addons/ /stage/addons/
 COPY --from=cacert /etc/ssl/certs/ca-certificates.crt /cacert.crt
 COPY --from=testroot / /testroot/
 # The guest files and the Node's boot set, as the package lays them out under /out/guest.
@@ -48,8 +42,7 @@ COPY --from=initramfs-node /node-initrd.cpio.gz /node-initrd.cpio.gz
 COPY kernels.env boot-set.env initramfs.list /
 RUN { cat /cacert.crt; if [ -f /testroot/ca.pem ]; then cat /testroot/ca.pem; fi; } >/stage/ca-certificates.crt \
  && for f in naru-init mvmd mvmd-supervisor firecracker mkfs.ext4 mkfs.xfs naru-standin naru-vip naru-fence naru-hostd \
-      gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd docker-credential-ecr-login aws_signing_helper \
-      kube-apiserver kube-controller-manager kube-scheduler kubelet kube-proxy kubectl ctr containerd containerd-shim-runc-v2 runc bridge host-local loopback; do \
+      gaon-node-agent gaon-apiserver gaon-scheduler gaon-controllers etcd docker-credential-ecr-login aws_signing_helper; do \
       file "/stage/$f" | grep -Eq 'statically linked|static-pie linked' || { echo "initramfs: $f is not a static executable" >&2; exit 1; }; \
     done
 COPY assemble.sh /assemble.sh

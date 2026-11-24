@@ -33,8 +33,7 @@ group "upgrade" {
 
 group "default" {
   targets = ["builder", "toolchain", "util-linux", "e2fsprogs", "liburcu", "libinih", "xfsprogs", "libmnl", "libnftnl", "jansson", "nftables", "cacert",
-    "naru", "extension", "etcd", "cni", "ecr-login", "gaon", "kubernetes", "kube-network-policies", "coredns", "ccm", "volumes",
-    "libseccomp", "containerd", "rolesanywhere",
+    "naru", "extension", "etcd", "ecr-login", "gaon", "rolesanywhere",
     "mvmd", "guest-initrds",
     "kernel-host", "kernel-node", "kernel-guest-naru",
     "initramfs-node", "initramfs-host", "bzImage"]
@@ -191,12 +190,6 @@ target "etcd" {
   output   = ["type=oci,dest=${OUT}/etcd.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
-target "cni" {
-  inherits = ["_package"]
-  context  = "cni"
-  output   = ["type=oci,dest=${OUT}/cni.tar,rewrite-timestamp=true,compression=uncompressed"]
-}
-
 target "ecr-login" {
   inherits = ["_package"]
   context  = "ecr-login"
@@ -207,55 +200,6 @@ target "gaon" {
   inherits = ["_package"]
   context  = "gaon"
   output   = ["type=oci,dest=${OUT}/gaon.tar,rewrite-timestamp=true,compression=uncompressed"]
-}
-
-target "kubernetes" {
-  inherits = ["_package"]
-  context  = "kubernetes"
-  output   = ["type=oci,dest=${OUT}/kubernetes.tar,rewrite-timestamp=true,compression=uncompressed"]
-}
-
-target "kube-network-policies" {
-  inherits = ["_package"]
-  context  = "kube-network-policies"
-  output   = ["type=oci,dest=${OUT}/kube-network-policies.tar,rewrite-timestamp=true,compression=uncompressed"]
-}
-
-target "coredns" {
-  inherits = ["_package"]
-  context  = "coredns"
-  output   = ["type=oci,dest=${OUT}/coredns.tar,rewrite-timestamp=true,compression=uncompressed"]
-}
-
-# The cloud-controller add-on (ADR 0085): naru-ccm from the repository, an image archive and the manifests.
-target "ccm" {
-  inherits = ["_package"]
-  context  = "ccm"
-  contexts = { src = "../.." }
-  output   = ["type=oci,dest=${OUT}/ccm.tar,rewrite-timestamp=true,compression=uncompressed"]
-}
-
-# The volume add-on's extension (ADR 0083, 0084): the driver and its sidecars, an image archive and the
-# manifests in a squashfs, with the description make image reads as it reads the naru-orch extension's.
-target "volumes" {
-  inherits = ["_package"]
-  context  = "volumes"
-  contexts = { src = "../.." }
-  args     = { NARU_VERSION = NARU_VERSION }
-  output   = ["type=oci,dest=${OUT}/volumes.tar,rewrite-timestamp=true,compression=uncompressed"]
-}
-
-target "libseccomp" {
-  inherits = ["_ctoolchain"]
-  context  = "libseccomp"
-  output   = ["type=oci,dest=${OUT}/libseccomp.tar,rewrite-timestamp=true,compression=uncompressed"]
-}
-
-target "containerd" {
-  inherits = ["_ctoolchain"]
-  context  = "containerd"
-  contexts = { libseccomp = "target:libseccomp" }
-  output   = ["type=oci,dest=${OUT}/containerd.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
 target "rolesanywhere" {
@@ -342,13 +286,6 @@ target "_initramfs" {
     etcd                   = "target:etcd"
     ecr-login              = "target:ecr-login"
     rolesanywhere          = "target:rolesanywhere"
-    kubernetes             = "target:kubernetes"
-    kube-network-policies  = "target:kube-network-policies"
-    containerd             = "target:containerd"
-    cni                    = "target:cni"
-    coredns                = "target:coredns"
-    ccm                    = "target:ccm"
-    volumes                = "target:volumes"
     cacert                 = "target:cacert"
   }
 }

@@ -1,6 +1,6 @@
 # ADR 0098: a Kubernetes Node in a microVM is one group of one member, takes its Pod prefix from the seed's meta-data into a typed `spec.node`, and needs no peer routes
 
-> Status: accepted
+> Status: superseded by [ADR 0114](./0114-naru-runs-no-kubernetes-or-gaon-and-their-layouts-programs-images-tests-and-documents-are-removed.md)
 > Date: 2026-11-23
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

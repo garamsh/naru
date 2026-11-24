@@ -69,7 +69,7 @@ func newRoot() *cobra.Command {
 	}
 	root.AddCommand(
 		genCommands(),
-		leaf("topology [kubernetes]", "print the services a Node runs, and which signs, as JSON", topology),
+		leaf("topology", "print the services a Node runs, and which signs, as JSON", topology),
 		leaf("version", "print the Node's version, boot ID and uptime", version),
 		leaf("services", "list the Node's services and their state", services),
 		leaf("logs <service>", "print a service's kept log, and with -f each new line", logs),
@@ -200,26 +200,15 @@ func genCommands() *cobra.Command {
 		leaf("etcd-client", "write ca.crt, tls.crt and tls.key, a client pair etcd's members accept", genEtcdClient),
 		leaf("token", "write a Node's bootstrap token, if none is there", genToken),
 		leaf("node", "write a Node's user data", genNode),
-		leaf("kubernetes", "write the front-proxy authority, the ServiceAccount keys and issuers, and admin.conf", genKubernetes),
-		leaf("kubernetes-jwks", "write the OpenID Connect discovery document and key set of the first ServiceAccount issuer, to publish", genKubernetesJWKS),
-		leaf("kubernetes-node", "write a Kubernetes Node's user data", genKubernetesNode),
-		leaf("kubernetes-bootstrap-rbac", "print the RBAC manifest a cluster that takes bootstrap tokens needs", kubernetesBootstrapRBAC),
 	)
 }
 
 func topology(fs *pflag.FlagSet) runner {
 	return func(args []string, stdout, _ io.Writer) error {
-		t := layout.Gaon
-		switch {
-		case len(args) > 1:
-			return fmt.Errorf("topology takes at most one argument, kubernetes")
-		case len(args) == 1:
-			if args[0] != "kubernetes" {
-				return fmt.Errorf("topology %q: the one besides gaon's is kubernetes", args[0])
-			}
-			t = layout.Kubernetes
+		if len(args) > 0 {
+			return fmt.Errorf("topology takes no argument")
 		}
-		b, err := t.JSON()
+		b, err := layout.Gaon.JSON()
 		if err != nil {
 			return err
 		}

@@ -1,6 +1,6 @@
 # ADR 0083: a control-plane Node applies pinned cluster add-ons from its image with an init service and every Node imports their images, so CoreDNS and a local-volume provisioner run by default
 
-> Status: accepted
+> Status: superseded by [ADR 0114](./0114-naru-runs-no-kubernetes-or-gaon-and-their-layouts-programs-images-tests-and-documents-are-removed.md)
 > Date: 2026-11-21
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

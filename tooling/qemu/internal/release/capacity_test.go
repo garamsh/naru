@@ -119,25 +119,6 @@ func TestReadManifest_FailsOnAManifestWithoutAKernelSize(t *testing.T) {
 	assert.ErrorContains(t, err, "no kernel size")
 }
 
-func TestExtensionRoom_ReadsWhatTheDiskBuilderWroteBesideTheDiskAndNothingWithoutIt(t *testing.T) {
-	dir := t.TempDir()
-	room, err := ExtensionRoom(dir)
-	require.NoError(t, err)
-	assert.Zero(t, room, "a disk built before the file spent nothing")
-
-	require.NoError(t, os.WriteFile(filepath.Join(dir, LayoutName), []byte(`{"extensionRoom":108003328}`+"\n"), 0o644))
-	room, err = ExtensionRoom(dir)
-	require.NoError(t, err)
-	assert.EqualValues(t, 103*mib, room)
-
-	require.NoError(t, os.WriteFile(filepath.Join(dir, LayoutName), []byte(`{"extensionRoom":-1}`), 0o644))
-	_, err = ExtensionRoom(dir)
-	assert.ErrorContains(t, err, "negative")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, LayoutName), []byte(`not json`), 0o644))
-	_, err = ExtensionRoom(dir)
-	assert.ErrorContains(t, err, LayoutName)
-}
-
 func TestCheckNodeInitramfs_RefusesOneLargerThanTheLimitAndTakesOneAtIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node-initrd.cpio.gz")
 	f, err := os.Create(path)

@@ -15,10 +15,6 @@ import (
 // outside its own, so no service may take it as a name.
 const DetachedName = "detached"
 
-// DelegatedName is the cgroup init keeps empty, with the cpu, cpuset, hugetlb, memory and pids controllers
-// enabled in it, for the kubelet to make its pod cgroups in (ADR 0031), so no service may take it as a name.
-const DelegatedName = "kubernetes"
-
 // maxLabelLen is the length of an ext4 volume label.
 const maxLabelLen = 16
 
@@ -49,7 +45,6 @@ func Parse(data []byte) (NodeConfig, error) {
 		return NodeConfig{}, err
 	}
 	cfg.Spec.Files = withHostFile(cfg.Spec.Files, cfg.Spec.Host)
-	cfg.Spec.Files = withCNIFile(cfg.Spec.Files, cfg.Spec.Node)
 	cfg = derive(cfg)
 	return cfg, nil
 }
@@ -133,7 +128,6 @@ func validate(cfg NodeConfig) error {
 	v.signer(cfg.Spec.Signer)
 	v.orch(cfg)
 	v.metrics(cfg.Spec.Metrics)
-	v.node(cfg.Spec.Node)
 	return errors.Join(v.errs...)
 }
 
@@ -150,7 +144,7 @@ func (v *validation) services(services []Service) {
 		switch {
 		case !nameRE.MatchString(s.Name):
 			v.fail(field+".name", "must be lowercase letters, digits and '-', at most 63 characters, got %q", s.Name)
-		case s.Name == DetachedName || s.Name == DelegatedName:
+		case s.Name == DetachedName:
 			v.fail(field+".name", "%q is reserved", s.Name)
 		case seen[s.Name]:
 			v.fail(field+".name", "%q is used by an earlier service", s.Name)

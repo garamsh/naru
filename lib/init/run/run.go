@@ -131,7 +131,7 @@ func Main() {
 	})
 	metricsCtx, stopMetrics := context.WithCancel(context.Background())
 	var engine *apply.Engine
-	stopRenewing, booted, refusal := bootAndRenew(bootHost{host, extensions, bootSources()}, issuer, services, configs, server, log)
+	stopRenewing, booted, refusal := bootAndRenew(bootHost{host, extensions}, issuer, services, configs, server, log)
 	// The status is written once the data disk is mounted, where an upgrade that ended in an earlier
 	// boot left its outcome; an upgrade that ends later writes it again through Changed.
 	publish()

@@ -1,7 +1,6 @@
 package fixture
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -113,56 +112,4 @@ func copyFile(from, to string) error {
 		return err
 	}
 	return out.Close()
-}
-
-// The system extension that carries the volume add-on (ADR 0083, 0084): make image builds it beside
-// naru-orch's, and it runs no service. Stage and ReadRelease store it in the same extension store,
-// so every Node's data disk has it for the unpinned entry the layout names on a Kubernetes Node.
-const VolumesExtensionName = "naru-volumes"
-
-// VolumesExtensionAssets are the files of the volume extension in a directory: its image and its
-// description, as make image writes them (the image directory's ExtensionDir).
-func VolumesExtensionAssets(dir string) (image, info string) {
-	return filepath.Join(dir, VolumesExtensionName+".sqfs"), filepath.Join(dir, VolumesExtensionName+".json")
-}
-
-// ReleaseVolumesExtensionName is ReleaseExtensionName for the volume extension.
-func ReleaseVolumesExtensionName(version, suffix string) string {
-	return VolumesExtensionName + "-ext-" + version + suffix
-}
-
-// ReadVolumesExtensionInfo reads and checks the volume extension's description at path: it names
-// naru-volumes, has a version and the SHA-256 of its image, and lists no service.
-func ReadVolumesExtensionInfo(path string) (ExtensionInfo, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ExtensionInfo{}, fmt.Errorf("the volume extension's description (make image): %w", err)
-	}
-	var i ExtensionInfo
-	if err := json.Unmarshal(b, &i); err != nil {
-		return ExtensionInfo{}, fmt.Errorf("%s: %w", path, err)
-	}
-	if i.Name != VolumesExtensionName || i.Version == "" || len(i.Services) != 0 || !extensionDigest.MatchString(i.SHA256) {
-		return ExtensionInfo{}, fmt.Errorf("%s names no %s extension with a version, a SHA-256 and no service", path, VolumesExtensionName)
-	}
-	i.Services = []string{}
-	return i, nil
-}
-
-// storeVolumes lays the volume extension out in storeDir, the way writeStore does naru-orch's, after
-// checking that the image is the one its description states.
-func storeVolumes(infoPath, image, storeDir string) error {
-	info, err := ReadVolumesExtensionInfo(infoPath)
-	if err != nil {
-		return err
-	}
-	b, err := os.ReadFile(image)
-	if err != nil {
-		return fmt.Errorf("the volume extension's image (make image): %w", err)
-	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(b)); got != info.SHA256 {
-		return fmt.Errorf("%s states SHA-256 %s, and its image is %s (make image)", infoPath, info.SHA256, got)
-	}
-	_, err = writeStore(info, image, storeDir)
-	return err
 }

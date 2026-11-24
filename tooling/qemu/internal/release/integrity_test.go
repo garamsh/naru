@@ -127,7 +127,7 @@ func TestReadComponents_EveryPinOfTheRepositoryStatesALicense(t *testing.T) {
 		names[c.Name] = true
 		assert.NotEmpty(t, c.License, c.Name)
 	}
-	for _, want := range []string{"kernel", "util-linux", "e2fsprogs", "gaon", "mvmd", "containerd", "cacert", "musl"} {
+	for _, want := range []string{"kernel", "util-linux", "e2fsprogs", "gaon", "mvmd", "cacert", "musl"} {
 		assert.True(t, names[want], "%s is a component", want)
 	}
 }
@@ -138,9 +138,9 @@ func TestSBOM_IsSPDXWithEveryComponentAndTheModulesOfEveryGoBinaryAndNoTimeButTh
 	require.NoError(t, err)
 	require.Len(t, bins, 1, "naructl is a Go binary")
 
-	a, err := release.SBOM("v9", epoch, comps, bins, nil)
+	a, err := release.SBOM("v9", epoch, comps, bins)
 	require.NoError(t, err)
-	b, err := release.SBOM("v9", epoch, comps, bins, nil)
+	b, err := release.SBOM("v9", epoch, comps, bins)
 	require.NoError(t, err)
 
 	assert.Equal(t, a, b, "equal inputs, equal bytes")
@@ -179,7 +179,7 @@ func TestSBOM_IsSPDXWithEveryComponentAndTheModulesOfEveryGoBinaryAndNoTimeButTh
 }
 
 func TestSBOM_RefusesToRunWithoutAnEpoch(t *testing.T) {
-	_, err := release.SBOM("v9", 0, nil, nil, nil)
+	_, err := release.SBOM("v9", 0, nil, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SOURCE_DATE_EPOCH")

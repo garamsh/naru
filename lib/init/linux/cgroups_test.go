@@ -125,14 +125,25 @@ func alive(pid int) bool {
 	return state != 'Z' && state != 'X'
 }
 
-func TestCgroupTree_PrepareEnablesTheControllersInTheDelegatedGroup(t *testing.T) {
+func TestCgroupTree_PrepareEnablesCPUMemoryAndPidsAtTheRootAndInNaruAndMakesNoOtherGroup(t *testing.T) {
 	root := t.TempDir()
 
 	require.NoError(t, linux.NewCgroupTree(root).Prepare())
 
-	got, err := os.ReadFile(filepath.Join(root, "naru", config.DelegatedName, "cgroup.subtree_control"))
+	for _, dir := range []string{root, filepath.Join(root, "naru")} {
+		got, err := os.ReadFile(filepath.Join(dir, "cgroup.subtree_control"))
+		require.NoError(t, err)
+		assert.Equal(t, "+cpu +memory +pids", string(got), dir)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "naru"))
 	require.NoError(t, err)
-	assert.Equal(t, "+cpu +cpuset +hugetlb +memory +pids", string(got))
+	var groups []string
+	for _, e := range entries {
+		if e.IsDir() {
+			groups = append(groups, e.Name())
+		}
+	}
+	assert.Equal(t, []string{config.DetachedName}, groups)
 }
 
 func waitGone(pid int) bool {

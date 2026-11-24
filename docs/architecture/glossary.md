@@ -55,7 +55,7 @@ The word Node in the older documents named the physical machine, and `boundaries
 | admin | The Node API role `naru:admin`: a client certificate from the Node API authority whose Organization is `naru:admin`. It reads and changes a Node. It is a role on one Node and not a person. | `naructl gen api-client`; [init.md](./init.md) |
 | root person | The person who holds the root certificate and its encrypted person file. Root alone issues operator, reader, automation and orch certificates. A new root comes from `naru-signer init` or from the recovery key's reissue. | `naructl operator request`, `naructl operator person`; `naructl signer reissue-root` |
 | the four authorities | What a signer answers to `GET /v1/ca`: the host authority, the operator authority and the orch authority, which sign certificates, and the revocation key, which signs the revocation list. All four are in the signer's private directory. | `lib/identity` `Authorities`; `naructl signer ca`; [signer.md](./signer.md) |
-| other authorities | Files `naructl` writes with `--ca-dir` and that no signer holds: the cluster authority of gaon's certificates (`gen ca`), the Node API authority (`gen api-ca`), the host API authority (`gen host-ca`) and the Kubernetes front-proxy authority (`gen kubernetes`). | [config.md](./config.md) |
+| other authorities | Files `naructl` writes with `--ca-dir` and that no signer holds: the cluster authority of gaon's certificates (`gen ca`), the Node API authority (`gen api-ca`) and the host API authority (`gen host-ca`). | [config.md](./config.md) |
 
 ## Code layout
 

@@ -23,7 +23,6 @@ func tokenCommand(create bool) func(*pflag.FlagSet) runner {
 		c := newCall(fs)
 		caDir := fs.String("ca-dir", "", "directory of the cluster's authority, which holds tokens/")
 		name := fs.String("name", "", "the Node's name, such as node-3")
-		kubernetes := fs.Bool("kubernetes", false, "the tokens are a Kubernetes cluster's, which its API server reads, and not gaon's")
 		return func(args []string, stdout, stderr io.Writer) error {
 			if err := c.check(args, 0); err != nil {
 				return err
@@ -48,9 +47,6 @@ func tokenCommand(create bool) func(*pflag.FlagSet) runner {
 				return err
 			}
 			path, content, restart := layout.BootstrapTokensFile, layout.TokensContent(tokens), layout.Gaon.APIServer
-			if *kubernetes {
-				path, content, restart = layout.KubeBootstrapTokensFile, layout.KubeTokensContent(tokens), layout.Kubernetes.APIServer
-			}
 			// The mode and restart are the file's own, repeated so a Node that lacks the file gets it as gen node writes it.
 			patch := map[string]any{"spec": map[string]any{"files": []any{map[string]any{
 				"path": path, "mode": "0600", "content": content, "restart": []any{restart},

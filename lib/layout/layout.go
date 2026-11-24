@@ -165,10 +165,6 @@ type Node struct {
 	// The first is mounted at wire.MvmdStorageMount, where mvmd's disks, snapshots and run
 	// directories go; the others under init's storage root.
 	Storage []StorageDisk
-
-	// Kube, when set, makes the Node a Kubernetes Node (ADR 0031): its description is the Kubernetes
-	// topology's, and the Machine, token and Mode fields are not used.
-	Kube *KubeNode
 }
 
 // Registry is one entry of spec.registries. At most one of Helper and Username with Password is set.
@@ -313,11 +309,9 @@ type nodeConfig struct {
 			FormatBlank bool   `yaml:"formatBlank,omitempty"`
 		} `yaml:"dataDisk"`
 		Network struct {
-			Forwarding      []string `yaml:"forwarding"`
-			Routes          []route  `yaml:"routes,omitempty"`
-			BridgeNetfilter bool     `yaml:"bridgeNetfilter,omitempty"`
+			Forwarding []string `yaml:"forwarding"`
+			Routes     []route  `yaml:"routes,omitempty"`
 		} `yaml:"network"`
-		Node     *nodeSpec `yaml:"node,omitempty"`
 		Services []service `yaml:"services"`
 		Files    []file    `yaml:"files"`
 		PKI      *pkiSpec  `yaml:"pki,omitempty"`
@@ -337,9 +331,6 @@ type nodeConfig struct {
 
 // Check reports the first thing wrong with the Node's description.
 func (n Node) Check() error {
-	if n.Kube != nil {
-		return n.checkKube()
-	}
 	switch {
 	case n.Name == "":
 		return errors.New("a Node needs a name")
@@ -404,7 +395,7 @@ func (n Node) checkGaon() error {
 	switch {
 	case n.Host == nil || n.Host.Certificate == "":
 		return errors.New("a Node that runs no gaon serves the host API from the certificate it was issued")
-	case n.CA != nil || n.APIServer.IsValid() || len(n.Members) > 0 || len(n.Peers) > 0 || len(n.Disable) > 0 || n.Kube != nil:
+	case n.CA != nil || n.APIServer.IsValid() || len(n.Members) > 0 || len(n.Peers) > 0 || len(n.Disable) > 0:
 		return errors.New("a Node that runs no gaon has no cluster authority, API server, members, peers or disabled services")
 	}
 	return nil
@@ -484,9 +475,6 @@ func (n Node) apiRoot() string {
 // registry (the scheduler may bind a Machine to any Node, and mvmd pulls from the registry on its
 // own Node), then gaon's. A HostOnly Node runs mvmd alone of these: its registries are its profile's.
 func (n Node) UserData() ([]byte, error) {
-	if n.Kube != nil {
-		return n.kubeUserData()
-	}
 	if err := n.Check(); err != nil {
 		return nil, err
 	}
@@ -796,11 +784,4 @@ func (n Node) registryEntries() []registryEntry {
 		out = append(out, e)
 	}
 	return out
-}
-
-// nodeSpec is spec.node: init writes the CNI configuration for PodPrefix at CNIConf. PodPrefix is
-// absent when the Node takes it from the seed's meta-data.
-type nodeSpec struct {
-	PodPrefix string `yaml:"podPrefix,omitempty"`
-	CNIConf   string `yaml:"cniConf"`
 }

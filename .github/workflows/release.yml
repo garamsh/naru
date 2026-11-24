@@ -206,7 +206,7 @@ jobs:
           name: release-assets
           path: release
 
-      # The 18 assets, their SHA256SUMS and nothing else; the signature bundle is added below, and is
+      # The 16 assets, their SHA256SUMS and nothing else; the signature bundle is added below, and is
       # not in SHA256SUMS because it signs it.
       - name: Check the assets against SHA256SUMS
         working-directory: release
@@ -214,7 +214,7 @@ jobs:
           sha256sum --check SHA256SUMS
           n=$(ls | wc -l)
           echo "release: $n file(s), SHA256SUMS lists $(wc -l <SHA256SUMS)"
-          [ "$n" -eq 19 ] || { echo "release: expected 19 files" >&2; exit 1; }
+          [ "$n" -eq 17 ] || { echo "release: expected 17 files" >&2; exit 1; }
 
       # A tag publishes once (ADR 0076). If the tag's release exists, its SHA256SUMS must agree with
       # this build's on every asset but the ones that differ in each build by design, and then

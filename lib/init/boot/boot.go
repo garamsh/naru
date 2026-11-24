@@ -25,10 +25,9 @@ var ErrNoSeed = errors.New("no NoCloud drive is attached")
 // Host is the machine as the sequence needs it.
 type Host interface {
 	// ReadSeed returns the bytes of the NoCloud drive's user-data, which is
-	// naru.yaml, of its network-config and of its meta-data, which carries the values of this
-	// member alone (config.ApplySeedMeta). A drive with no network-config or no meta-data gives
-	// none. When no drive is attached it returns an error wrapping ErrNoSeed.
-	ReadSeed() (userData, networkConfig, metaData []byte, err error)
+	// naru.yaml, and of its network-config. A drive with no network-config gives none. When no
+	// drive is attached it returns an error wrapping ErrNoSeed.
+	ReadSeed() (userData, networkConfig []byte, err error)
 	// ApplyNetwork brings the network up and writes the resolvers, and returns what the Node was
 	// given: its addresses, its resolvers and the time servers a DHCPv4 lease named.
 	ApplyNetwork(netcfg.Config, *slog.Logger) (netcfg.Applied, error)
@@ -38,9 +37,6 @@ type Host interface {
 	MountDataDisk(config.DataDisk) error
 	// EnableForwarding turns forwarding on for the families.
 	EnableForwarding([]config.Family) error
-	// EnableBridgeNetfilter sets net.bridge.bridge-nf-call-iptables=1 so Pod-to-Pod traffic on
-	// the bridge CNI passes netfilter hooks (ADR 0086).
-	EnableBridgeNetfilter() error
 	// AddRoute installs a static route of spec.network.routes.
 	AddRoute(config.Route) error
 	// WriteFiles writes the files the configuration carries.
@@ -50,10 +46,6 @@ type Host interface {
 	// SetAsidePair sets the pair file of p aside when its certificate lacks the Organization p
 	// names, and reports whether it did.
 	SetAsidePair(config.KeptPair) (bool, error)
-	// ProvideExtensions stores, for each entry of spec.extensions with no digest whose image the
-	// Node's store lacks, the image that came with the Node on its boot medium (ADR 0096). It
-	// refuses nothing: MountExtensions, which follows, refuses the boot when no image is there.
-	ProvideExtensions([]config.Extension)
 	// MountExtensions mounts the system extensions of spec.extensions read-only under their
 	// directories, or refuses: one that is missing, built for another version or fails its digest.
 	MountExtensions([]config.Extension) error
@@ -142,7 +134,7 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 		effective store.Stored
 		applied   netcfg.Applied
 	)
-	userData, networkConfig, metaData, err := host.ReadSeed()
+	userData, networkConfig, err := host.ReadSeed()
 	switch {
 	case errors.Is(err, ErrNoSeed):
 		log.Info("no NoCloud drive; running the stored configuration", "err", err)
@@ -150,7 +142,7 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	case err != nil:
 		return store.Stored{}, fmt.Errorf("read the NoCloud drive: %w", err)
 	default:
-		effective, applied, err = bootSeeded(host, configs, userData, networkConfig, metaData, log)
+		effective, applied, err = bootSeeded(host, configs, userData, networkConfig, log)
 	}
 	if err != nil {
 		return store.Stored{}, err
@@ -164,11 +156,6 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	if err := host.EnableForwarding(cfg.Spec.Network.Forwarding); err != nil {
 		return store.Stored{}, err
 	}
-	if cfg.Spec.Network.BridgeNetfilter {
-		if err := host.EnableBridgeNetfilter(); err != nil {
-			return store.Stored{}, err
-		}
-	}
 	addRoutes(host, cfg.Spec.Network.Routes, log)
 	if err := host.WriteFiles(cfg.Spec.Files); err != nil {
 		return store.Stored{}, err
@@ -177,7 +164,6 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 		return store.Stored{}, fmt.Errorf("write the registry files: %w", err)
 	}
 	if len(cfg.Spec.Extensions) > 0 {
-		host.ProvideExtensions(cfg.Spec.Extensions)
 		if err := host.MountExtensions(cfg.Spec.Extensions); err != nil {
 			return store.Stored{}, fmt.Errorf("mount the system extensions: %w", err)
 		}
@@ -213,12 +199,9 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 // bootSeeded brings the network up from the seed, mounts the data disk the seed's configuration
 // names and chooses the effective configuration against the seed's digest. It stores the seed's
 // network-config for a boot with no seed; a store that cannot take it is logged and the boot goes on.
-func bootSeeded(host Host, configs Configs, userData, networkConfig, metaData []byte, log *slog.Logger) (store.Stored, netcfg.Applied, error) {
+func bootSeeded(host Host, configs Configs, userData, networkConfig []byte, log *slog.Logger) (store.Stored, netcfg.Applied, error) {
 	base, err := config.Parse(userData)
 	if err != nil {
-		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("invalid configuration: %w", err)
-	}
-	if base, err = config.ApplySeedMeta(base, metaData); err != nil {
 		return store.Stored{}, netcfg.Applied{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	network, err := netcfg.Parse(networkConfig)

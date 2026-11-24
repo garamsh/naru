@@ -3,7 +3,6 @@ package command_test
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -90,21 +89,4 @@ func TestTokenRevoke_ATokenThatWasNeverMadeIsRefusedAndNothingIsPatched(t *testi
 	require.Error(t, err)
 	assert.Contains(t, out+err.Error(), "holds no token")
 	assert.Empty(t, node.requests)
-}
-
-func TestTokenCreate_KubernetesPatchesTheAPIServersTokenFile(t *testing.T) {
-	dep := newDeployment(t)
-	apiAuthority(t, dep)
-	node := newFakeNode(t, dep)
-	cfg := node.clientFile(t, dep, "admin")
-
-	out, err := run(t, "token", "create", "--kubernetes", "--ca-dir", dep.ca, "--name", "node-3", "--config", cfg)
-
-	require.NoError(t, err, out)
-	f := patchedFile(t, node.posted)
-	assert.Equal(t, "/run/kubernetes/bootstrap-tokens.csv", f["path"])
-	id, _, _ := strings.Cut(stored(t, dep.ca, "node-3"), ".")
-	assert.Contains(t, f["content"], ",system:bootstrap:"+id+","+id+",\"system:bootstrappers\"\n")
-	assert.Equal(t, []any{"kube-apiserver"}, f["restart"])
-	assert.NotContains(t, out, stored(t, dep.ca, "node-3"), "the output carries no token")
 }

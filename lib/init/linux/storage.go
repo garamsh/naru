@@ -98,7 +98,7 @@ func (h *Host) PrepareStorage(s config.Storage, log *slog.Logger) error {
 	if err := os.MkdirAll(mnt, 0o755); err != nil {
 		return fmt.Errorf("storage %q: %w", s.Name, err)
 	}
-	if err := h.mount(dev, mnt, "xfs", hardened, "prjquota"); err != nil {
+	if err := h.mount(dev, mnt, "xfs", hardened, ""); err != nil {
 		return fmt.Errorf("storage %q: mount %s on %s: %w", s.Name, dev, mnt, err)
 	}
 	h.mu.Lock()
