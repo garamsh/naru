@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/signer"
 )
@@ -102,4 +103,32 @@ func TestAnAnswerLongerThanTheBoundIsRefusedNotCut(t *testing.T) {
 	}))
 	_, err := c.IssueHost(t.Context(), []byte("stmt"), []byte("csr"))
 	require.ErrorContains(t, err, "longer than")
+}
+
+func TestRegistrationAndRenewalReachTheirRoutesAndKeepTheSignersRefusals(t *testing.T) {
+	status, body := http.StatusOK, `{"certificate":"Q0VSVA==","serial":"1"}`
+	var paths []string
+	c := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	_, err := c.RegisterCaller(t.Context(), "tok", []byte("csr"))
+	require.NoError(t, err)
+	_, err = c.RenewCaller(t.Context(), []byte("signed"))
+	require.NoError(t, err)
+	require.Equal(t, []string{"POST /v1/caller", "POST /v1/caller-renew"}, paths)
+
+	status, body = http.StatusConflict, identity.ErrCallerNotDue.Error()+": renew from then"
+	_, err = c.RenewCaller(t.Context(), []byte("signed"))
+	require.ErrorIs(t, err, identity.ErrCallerNotDue)
+
+	body = "the signer has not taken the revocation list lately"
+	_, err = c.RenewCaller(t.Context(), []byte("signed"))
+	require.Error(t, err)
+	require.NotErrorIs(t, err, identity.ErrCallerNotDue, "another conflict is not a renewal before its time")
+
+	status, body = http.StatusBadRequest, "bad csr"
+	_, err = c.RegisterCaller(t.Context(), "tok", []byte("csr"))
+	require.ErrorIs(t, err, signer.ErrInvalid)
 }
