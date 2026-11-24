@@ -96,7 +96,7 @@ type backend struct {
 }
 
 type seen struct {
-	Host, Remote, XFF, XFP, Proto string
+	Host, Remote, XFF, XFP, Proto, XRealIP string
 }
 
 func newBackend(t *testing.T) *backend {
@@ -105,15 +105,36 @@ func newBackend(t *testing.T) *backend {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.hits.Add(1)
 		host, _, _ := net.SplitHostPort(r.RemoteAddr)
-		_ = json.NewEncoder(w).Encode(seen{Host: r.Host, Remote: host, XFF: r.Header.Get("X-Forwarded-For"), XFP: r.Header.Get("X-Forwarded-Proto"), Proto: r.Proto})
+		_ = json.NewEncoder(w).Encode(seen{Host: r.Host, Remote: host, XFF: r.Header.Get("X-Forwarded-For"), XFP: r.Header.Get("X-Forwarded-Proto"), Proto: r.Proto, XRealIP: r.Header.Get("X-Real-Ip")})
 	}))
 	t.Cleanup(srv.Close)
 	b.port = srv.Listener.Addr().(*net.TCPAddr).Port
 	return b
 }
 
+// machineAddr is the address a test route names: a Machine's address is never loopback, which
+// hostapi.Route.Check refuses, so the fixture's dial takes 192.0.2.x to the backend at 127.0.0.x.
+var machineAddr = netip.MustParseAddr("192.0.2.1")
+
 func httpRoute(name, machine string, port int) hostapi.Route {
-	return hostapi.Route{Hostname: name, Machine: machine, Address: netip.MustParseAddr("127.0.0.1"), Port: port, Protocol: hostapi.RouteHTTP, Running: true}
+	return hostapi.Route{Hostname: name, Machine: machine, Address: machineAddr, Port: port, Protocol: hostapi.RouteHTTP, Running: true}
+}
+
+// loopbackDial is the network substitute of the fixture: a dial to 192.0.2.x:port reaches
+// 127.0.0.x:port, from the local address the proxy chose.
+func loopbackDial(ctx context.Context, network, address string, local netip.Addr) (net.Conn, error) {
+	ap, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return nil, err
+	}
+	if b := ap.Addr().As4(); b[0] == 192 && b[1] == 0 && b[2] == 2 {
+		ap = netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, b[3]}), ap.Port())
+	}
+	d := net.Dialer{Timeout: 5 * time.Second}
+	if local.IsValid() {
+		d.LocalAddr = &net.TCPAddr{IP: local.AsSlice()}
+	}
+	return d.DialContext(ctx, network, ap.String())
 }
 
 // fixture is a proxy serving on a loopback listener, with its routes file and clock.
@@ -126,6 +147,25 @@ type fixture struct {
 	srv      *proxy.Server
 	now      atomic.Pointer[time.Time]
 	received time.Time
+	logs     *lockedBuffer
+}
+
+// lockedBuffer is a log the proxy's goroutines write and a test reads.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func (f *fixture) path() string     { return filepath.Join(f.dir, "routes.json") }
@@ -151,14 +191,25 @@ func (f *fixture) writeRaw(raw []byte) {
 
 func newFixture(t *testing.T, maxAge time.Duration, mesh string, routes ...hostapi.Route) *fixture {
 	t.Helper()
-	f := &fixture{t: t, pki: newPKI(t), dir: t.TempDir(), received: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)}
+	return newFixtureWith(t, nil, maxAge, mesh, routes...)
+}
+
+// newFixtureWith is newFixture with tune, when not nil, changing the proxy's configuration.
+func newFixtureWith(t *testing.T, tune func(*proxy.Config), maxAge time.Duration, mesh string, routes ...hostapi.Route) *fixture {
+	t.Helper()
+	f := &fixture{t: t, pki: newPKI(t), dir: t.TempDir(), received: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC), logs: &lockedBuffer{}}
 	now := f.received.Add(time.Minute)
 	f.now.Store(&now)
 	f.write(1, mesh, routes...)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	f.routes = proxy.NewRoutes(f.path(), f.revision(), log)
+	log := slog.New(slog.NewTextHandler(f.logs, nil))
+	clock := func() time.Time { return *f.now.Load() }
+	f.routes = proxy.NewRoutes(f.path(), f.revision(), clock, log)
 	require.NoError(t, f.routes.Load())
-	f.srv = proxy.New(proxy.Config{Zone: f.pki.zone, Routes: f.routes, MaxAge: maxAge, Now: func() time.Time { return *f.now.Load() }, Log: log})
+	conf := proxy.Config{Zone: f.pki.zone, Routes: f.routes, MaxAge: maxAge, Now: clock, Log: log, Dial: loopbackDial}
+	if tune != nil {
+		tune(&conf)
+	}
+	f.srv = proxy.New(conf)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	f.addr = l.Addr().String()
@@ -532,10 +583,6 @@ func TestRoutes_ATableOfALowerRevisionOrOneThatDoesNotParseLeavesTheLastGoodOne(
 
 	f.write(2, "", httpRoute(nameA, machineA, a.port))
 	require.Error(t, f.routes.Load(), "a lower revision")
-	bad := httpRoute(nameA, machineA, a.port)
-	bad.Protocol = "udp"
-	f.write(4, "", bad)
-	require.Error(t, f.routes.Load(), "a route that does not parse")
 	f.writeRaw([]byte(`{"revision": 5, "routes": []}`))
 	require.Error(t, f.routes.Load(), "a file without the time hostd took it")
 	f.writeRaw([]byte("{not json"))
@@ -617,7 +664,7 @@ func TestProxy_KeepsAcceptingAfterAnAcceptFails(t *testing.T) {
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	l := &failingOnce{Listener: inner}
-	srv := proxy.New(proxy.Config{Zone: f.pki.zone, Routes: f.routes, MaxAge: time.Hour, Now: time.Now, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	srv := proxy.New(proxy.Config{Zone: f.pki.zone, Routes: f.routes, MaxAge: time.Hour, Now: time.Now, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Dial: loopbackDial})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { _ = srv.Serve(ctx, l); close(done) }()

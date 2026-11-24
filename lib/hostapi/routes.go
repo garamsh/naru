@@ -1,7 +1,11 @@
 package hostapi
 
 import (
+	"crypto/tls"
+	"errors"
+	"fmt"
 	"net/netip"
+	"regexp"
 	"time"
 )
 
@@ -36,6 +40,47 @@ type Route struct {
 	Running       bool          `json:"running"`
 	Certificate   string        `json:"certificate,omitempty"`
 	Key           string        `json:"key,omitempty"`
+}
+
+// hostnameRE is a lowercase DNS name: labels of letters, digits and inner hyphens.
+var hostnameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
+
+// Check refuses a route a proxy cannot serve, and returns an alias's own pair parsed, nil for a
+// name the zone's certificate covers. It is the one definition of a route a proxy takes: orch
+// refuses an alias, and hostd a table, by it before either reaches a proxy, which drops a route
+// that fails it.
+//
+// The address is a Machine's: IPv4, and not loopback, unspecified, link-local, multicast or the
+// broadcast address, so that no table points a client at the proxy's own host.
+func (r Route) Check() (*tls.Certificate, error) {
+	switch {
+	case len(r.Hostname) > 253 || !hostnameRE.MatchString(r.Hostname):
+		return nil, errors.New("the hostname is not a lowercase DNS name")
+	case r.Machine == "":
+		return nil, errors.New("names no Machine")
+	case !r.Address.Is4():
+		return nil, errors.New("the address is not IPv4")
+	case r.Address.IsLoopback(), r.Address.IsUnspecified(), r.Address.IsLinkLocalUnicast(), r.Address.IsMulticast(),
+		r.Address == netip.AddrFrom4([4]byte{255, 255, 255, 255}):
+		return nil, fmt.Errorf("the address %s is not a Machine's", r.Address)
+	case r.Port < 1 || r.Port > 65535:
+		return nil, fmt.Errorf("the port %d is out of range", r.Port)
+	case !r.Protocol.Valid():
+		return nil, fmt.Errorf("the protocol %q is not http or tcp", r.Protocol)
+	case r.ProxyProtocol != "" && r.ProxyProtocol != "v2":
+		return nil, fmt.Errorf("the PROXY protocol %q is not v2", r.ProxyProtocol)
+	}
+	if r.Certificate == "" && r.Key == "" {
+		return nil, nil
+	}
+	cert, err := tls.X509KeyPair([]byte(r.Certificate), []byte(r.Key))
+	if err != nil {
+		return nil, fmt.Errorf("the alias's certificate and key: %w", err)
+	}
+	if err := cert.Leaf.VerifyHostname(r.Hostname); err != nil {
+		return nil, fmt.Errorf("the alias's certificate: %w", err)
+	}
+	return &cert, nil
 }
 
 // RoutesRequest is the routing table orch's leader puts to each proxy host: the revision of orch's

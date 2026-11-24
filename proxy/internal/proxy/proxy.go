@@ -12,10 +12,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 const (
@@ -23,8 +25,9 @@ const (
 	handshakeTimeout = 10 * time.Second
 	// dialTimeout bounds a connection to a Machine.
 	dialTimeout = 5 * time.Second
-	// idleTimeout closes a tcp service's connection silent for this long in a direction, and an
-	// http connection with no request for this long.
+	// idleTimeout closes a client's connection that has carried nothing in either direction for
+	// this long, an upgraded WebSocket and a tcp service's among them, and an http connection with
+	// no request for this long.
 	idleTimeout = 5 * time.Minute
 	// retryAfter is what a client is told to wait for a Machine that is not running.
 	retryAfter = "5"
@@ -42,6 +45,15 @@ type Config struct {
 	// Now is the clock the table's age is read by.
 	Now func() time.Time
 	Log *slog.Logger
+	// Idle is how long a client's connection may carry nothing in either direction; 0 is five
+	// minutes.
+	Idle time.Duration
+	// MaxConns and MaxPerSource bound the client connections held at once, in all and from one
+	// address; 0 is wire.ProxyMaxConns and wire.ProxyMaxPerSource.
+	MaxConns, MaxPerSource int
+	// Dial connects to a Machine's address from local, the host's mesh address or the zero Addr
+	// for the kernel's choice. Nil is a TCP dial bounded to five seconds.
+	Dial func(ctx context.Context, network, address string, local netip.Addr) (net.Conn, error)
 }
 
 // Server serves the proxy's listeners.
@@ -49,6 +61,7 @@ type Server struct {
 	conf  Config
 	http  *http.Server
 	conns *connQueue
+	limit *limiter
 	// leaves holds the certificate each http connection's handshake chose until the HTTP server
 	// takes the connection, so a request's Host is checked against that certificate.
 	leaves sync.Map
@@ -58,18 +71,31 @@ type Server struct {
 	withHeader *httputil.ReverseProxy
 }
 
-// errUnknownName refuses a handshake for a name the proxy has no route or certificate for.
-var errUnknownName = errors.New("no route for this name")
+// noCertificate is the configuration of a handshake for a name the proxy has no route or
+// certificate for: with no certificate, TLS refuses it with the alert unrecognized_name.
+var noCertificate = &tls.Config{MinVersion: tls.VersionTLS12}
 
 // New returns a server for conf.
 func New(conf Config) *Server {
-	s := &Server{conf: conf, conns: newConnQueue()}
+	if conf.Idle == 0 {
+		conf.Idle = idleTimeout
+	}
+	if conf.MaxConns == 0 {
+		conf.MaxConns = wire.ProxyMaxConns
+	}
+	if conf.MaxPerSource == 0 {
+		conf.MaxPerSource = wire.ProxyMaxPerSource
+	}
+	if conf.Dial == nil {
+		conf.Dial = dialFrom
+	}
+	s := &Server{conf: conf, conns: newConnQueue(), limit: newLimiter(conf.MaxConns, conf.MaxPerSource)}
 	s.plain = s.reverseProxy(false)
 	s.withHeader = s.reverseProxy(true)
 	s.http = &http.Server{
 		Handler:           s,
 		ReadHeaderTimeout: handshakeTimeout,
-		IdleTimeout:       idleTimeout,
+		IdleTimeout:       conf.Idle,
 		ErrorLog:          slog.NewLogLogger(conf.Log.Handler(), slog.LevelDebug),
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			leaf, ok := s.leaves.LoadAndDelete(c)
@@ -113,7 +139,8 @@ func (s *Server) shutdown(listeners []net.Listener) {
 const acceptRetry = 100 * time.Millisecond
 
 // accept takes connections from l until it is closed. An accept that fails otherwise is logged and
-// tried again, so the proxy outlives a moment with no file descriptor left.
+// tried again, so the proxy outlives a moment with no file descriptor left. A connection over the
+// proxy's or its address's limit is closed at once.
 func (s *Server) accept(ctx context.Context, l net.Listener) error {
 	for {
 		c, err := l.Accept()
@@ -129,7 +156,14 @@ func (s *Server) accept(ctx context.Context, l net.Listener) error {
 			}
 			continue
 		}
-		go s.handle(ctx, c)
+		src, _ := netip.ParseAddrPort(c.RemoteAddr().String())
+		addr := src.Addr().Unmap()
+		if !s.limit.acquire(addr) {
+			s.conf.Log.Debug("refused a connection over the limit", "remote", c.RemoteAddr().String())
+			_ = c.Close()
+			continue
+		}
+		go s.handle(ctx, newClientConn(c, s.conf.Idle, func() { s.limit.release(addr) }))
 	}
 }
 
@@ -147,12 +181,12 @@ func (s *Server) handle(ctx context.Context, raw net.Conn) {
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			r, ok := s.conf.Routes.table().lookup(hello.ServerName)
 			if !ok {
-				return nil, errUnknownName
+				return noCertificate, nil
 			}
 			cert := r.cert
 			if cert == nil {
 				if s.conf.Zone.Leaf.VerifyHostname(r.Hostname) != nil {
-					return nil, errUnknownName
+					return noCertificate, nil
 				}
 				cert = &s.conf.Zone
 			}
@@ -185,9 +219,18 @@ func (s *Server) handle(ctx context.Context, raw net.Conn) {
 
 // dial connects to a Machine from the host's mesh address, which the table carries.
 func (s *Server) dial(ctx context.Context, network, address string) (net.Conn, error) {
+	var local netip.Addr
+	if t := s.conf.Routes.table(); t != nil {
+		local = t.source
+	}
+	return s.conf.Dial(ctx, network, address, local)
+}
+
+// dialFrom is a TCP dial from local, or from the kernel's choice for the zero Addr.
+func dialFrom(ctx context.Context, network, address string, local netip.Addr) (net.Conn, error) {
 	d := net.Dialer{Timeout: dialTimeout}
-	if t := s.conf.Routes.table(); t != nil && t.source.IsValid() {
-		d.LocalAddr = &net.TCPAddr{IP: t.source.AsSlice()}
+	if local.IsValid() {
+		d.LocalAddr = &net.TCPAddr{IP: local.AsSlice()}
 	}
 	return d.DialContext(ctx, network, address)
 }

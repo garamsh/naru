@@ -92,6 +92,8 @@ func (s *Server) reverseProxy(header bool) *httputil.ReverseProxy {
 			pr.Out.URL.Scheme = "http"
 			pr.Out.URL.Host = net.JoinHostPort(to.route.Address.String(), strconv.Itoa(to.route.Port))
 			pr.SetXForwarded()
+			// The client's X-Real-IP names no address the proxy saw, and a Machine may trust it.
+			pr.Out.Header.Del("X-Real-Ip")
 		},
 		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

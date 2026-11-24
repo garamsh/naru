@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"regexp"
 	"strings"
 	"time"
 
@@ -31,62 +30,46 @@ type route struct {
 	cert *tls.Certificate
 }
 
-// hostnameRE is a lowercase DNS name: labels of letters, digits and inner hyphens.
-var hostnameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
-
-// parseTable parses a routes file. Any entry that does not parse fails the whole file, so the
-// proxy keeps the table it had rather than forward on part of one.
-func parseTable(raw []byte) (*table, error) {
-	var f hostapi.RoutesFile
-	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, fmt.Errorf("the routes file: %w", err)
-	}
-	if f.ReceivedAt.IsZero() {
-		return nil, errors.New("the routes file has no receivedAt")
-	}
-	if f.MeshAddress.IsValid() && !f.MeshAddress.Is4() {
-		return nil, fmt.Errorf("the mesh address %s is not IPv4", f.MeshAddress)
-	}
-	t := &table{revision: f.Revision, receivedAt: f.ReceivedAt, source: f.MeshAddress, routes: make(map[string]route, len(f.Routes))}
-	for _, r := range f.Routes {
-		parsed, err := parseRoute(r)
-		if err != nil {
-			return nil, fmt.Errorf("route %q: %w", r.Hostname, err)
-		}
-		if _, dup := t.routes[r.Hostname]; dup {
-			return nil, fmt.Errorf("route %q is named twice", r.Hostname)
-		}
-		t.routes[r.Hostname] = parsed
-	}
-	return t, nil
+// dropped is a route of the file the proxy does not serve, and why.
+type dropped struct {
+	hostname string
+	err      error
 }
 
-func parseRoute(r hostapi.Route) (route, error) {
-	switch {
-	case len(r.Hostname) > 253 || !hostnameRE.MatchString(r.Hostname):
-		return route{}, errors.New("the hostname is not a lowercase DNS name")
-	case r.Machine == "":
-		return route{}, errors.New("names no Machine")
-	case !r.Address.Is4():
-		return route{}, errors.New("the address is not IPv4")
-	case r.Port < 1 || r.Port > 65535:
-		return route{}, fmt.Errorf("the port %d is out of range", r.Port)
-	case !r.Protocol.Valid():
-		return route{}, fmt.Errorf("the protocol %q is not http or tcp", r.Protocol)
-	case r.ProxyProtocol != "" && r.ProxyProtocol != "v2":
-		return route{}, fmt.Errorf("the PROXY protocol %q is not v2", r.ProxyProtocol)
+// parseTable parses a routes file. A file that does not parse, or has no receivedAt or a mesh
+// address that is not IPv4, fails whole, and the proxy keeps the table it had. A route that fails
+// hostapi.Route.Check, or a name given twice, is dropped alone and returned with why: dropping a
+// name never sends a client to another address, so one tenant's bad alias does not stop the
+// proxy's routing of every other name.
+func parseTable(raw []byte) (*table, []dropped, error) {
+	var f hostapi.RoutesFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil, nil, fmt.Errorf("the routes file: %w", err)
 	}
-	if r.Certificate == "" && r.Key == "" {
-		return route{Route: r}, nil
+	if f.ReceivedAt.IsZero() {
+		return nil, nil, errors.New("the routes file has no receivedAt")
 	}
-	cert, err := tls.X509KeyPair([]byte(r.Certificate), []byte(r.Key))
-	if err != nil {
-		return route{}, fmt.Errorf("the alias's certificate and key: %w", err)
+	if f.MeshAddress.IsValid() && !f.MeshAddress.Is4() {
+		return nil, nil, fmt.Errorf("the mesh address %s is not IPv4", f.MeshAddress)
 	}
-	if err := cert.Leaf.VerifyHostname(r.Hostname); err != nil {
-		return route{}, fmt.Errorf("the alias's certificate: %w", err)
+	t := &table{revision: f.Revision, receivedAt: f.ReceivedAt, source: f.MeshAddress, routes: make(map[string]route, len(f.Routes))}
+	var out []dropped
+	twice := map[string]bool{}
+	for _, r := range f.Routes {
+		cert, err := r.Check()
+		if err != nil {
+			out = append(out, dropped{r.Hostname, err})
+			continue
+		}
+		if _, dup := t.routes[r.Hostname]; dup || twice[r.Hostname] {
+			delete(t.routes, r.Hostname)
+			twice[r.Hostname] = true
+			out = append(out, dropped{r.Hostname, errors.New("the name is given twice")})
+			continue
+		}
+		t.routes[r.Hostname] = route{Route: r, cert: cert}
 	}
-	return route{Route: r, cert: &cert}, nil
+	return t, out, nil
 }
 
 // lookup returns the route of a name as a client sent it, in any case and with or without a

@@ -51,7 +51,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	routes := proxy.NewRoutes(*routesFile, *revisionFile, log)
+	routes := proxy.NewRoutes(*routesFile, *revisionFile, time.Now, log)
 	srv := proxy.New(proxy.Config{Zone: zone, Routes: routes, MaxAge: *maxAge, Now: time.Now, Log: log})
 	var listeners []net.Listener
 	for addr := range strings.SplitSeq(*listen, ",") {

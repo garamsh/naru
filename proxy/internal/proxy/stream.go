@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -44,9 +45,23 @@ func (s *Server) stream(ctx context.Context, c *tls.Conn, rt route) {
 			return
 		}
 	}
+	cc, ok := c.NetConn().(*clientConn)
+	if !ok {
+		panic("proxy: a client connection not taken by accept")
+	}
+	// Each side ends at its end of stream, closing the other's sending side; a connection idle in
+	// both directions, or a failure, closes both, so neither copy waits on.
 	var wg sync.WaitGroup
-	wg.Go(func() { pipe(back, c) })
-	pipe(c, back)
+	wg.Go(func() {
+		if !pipe(back, c, nil) {
+			_ = c.Close()
+			_ = back.Close()
+		}
+	})
+	if !pipe(c, back, cc.idleAt) {
+		_ = c.Close()
+		_ = back.Close()
+	}
 	wg.Wait()
 }
 
@@ -56,24 +71,30 @@ type halfCloser interface {
 	CloseWrite() error
 }
 
-// pipe copies from src to dst until src ends or is silent for idleTimeout, then closes dst's
-// sending side, so the other direction runs on until it ends too.
-func pipe(dst, src halfCloser) {
+// pipe copies from src to dst until src ends, then closes dst's sending side and reports true. It
+// reports false when a read or write fails, or when src is silent past idleAt: the client's
+// connection keeps its own idle clock, which counts what the other side writes to it, so pipe
+// passes nil for it and the time the client's connection goes idle for the Machine's.
+func pipe(dst, src halfCloser, idleAt func() time.Time) bool {
 	buf := make([]byte, 32<<10)
 	for {
-		_ = src.SetReadDeadline(time.Now().Add(idleTimeout))
+		if idleAt != nil {
+			_ = src.SetReadDeadline(idleAt())
+		}
 		n, err := src.Read(buf)
 		if n > 0 {
 			if _, werr := dst.Write(buf[:n]); werr != nil {
-				break
+				return false
 			}
 		}
-		if err != nil {
-			if errors.Is(err, os.ErrDeadlineExceeded) {
-				_ = src.Close()
-			}
-			break
+		switch {
+		case err == nil:
+		case errors.Is(err, io.EOF):
+			_ = dst.CloseWrite()
+			return true
+		case idleAt != nil && errors.Is(err, os.ErrDeadlineExceeded) && time.Now().Before(idleAt()):
+		default:
+			return false
 		}
 	}
-	_ = dst.CloseWrite()
 }
