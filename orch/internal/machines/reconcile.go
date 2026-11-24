@@ -49,11 +49,6 @@ const (
 	EventOlderEpoch = "machine.older-epoch"
 )
 
-// Appender is the fleet's event log.
-type Appender interface {
-	AppendEvent(ctx context.Context, ev orchapi.Event) error
-}
-
 // ReconcilerConfig is what the reconciler runs over.
 type ReconcilerConfig struct {
 	Store Store
