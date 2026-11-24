@@ -2,8 +2,11 @@ package signer_test
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -33,7 +36,7 @@ func (e *env) registerCaller(token string, csr []byte) (int, []byte) {
 	e.t.Helper()
 	b, err := json.Marshal(identity.CallerRegistration{Token: token, CSR: csr})
 	require.NoError(e.t, err)
-	return e.do(http.MethodPost, "/v1/caller", b)
+	return e.do(http.MethodPost, "/v1/caller-register", b)
 }
 
 // registered registers a caller named name with a key of its own, through a token root asked for.
@@ -178,6 +181,8 @@ func TestCallerRegistration_APeeredSignerThatMissedTheSyncRefusesAndKeepsTheToke
 	c.advance(time.Minute)
 	_, err := s.RegisterCaller(identity.CallerRegistration{Token: tok.Token, CSR: csrFor(t, newKey(t))})
 	require.ErrorIs(t, err, signer.ErrNotSynced)
+	_, err = s.RegisterCaller(identity.CallerRegistration{Token: "naru-ct-not-a-token", CSR: csrFor(t, newKey(t))})
+	require.ErrorIs(t, err, signer.ErrNotSynced, "a bad token gets the same answer, so the answer says nothing of the token")
 	pushList(t, s, replica(t, e))
 	_, err = s.RegisterCaller(identity.CallerRegistration{Token: tok.Token, CSR: csrFor(t, newKey(t))})
 	assert.NoError(t, err, "the refusal did not spend the token")
@@ -207,9 +212,134 @@ func TestCallerRenewal_OnlyInTheLastThirtyDaysForANewKeyWithTheOldOneStillValid(
 	assert.WithinDuration(t, c.now().AddDate(0, 0, identity.MaxCallerDays), next.NotAfter, time.Minute)
 
 	_, err = s.RenewCaller(renewal(t, p, newKey(t), &c))
-	assert.NoError(t, err, "the old certificate is not revoked by its renewal")
+	assert.ErrorIs(t, err, signer.ErrRenewed, "a certificate renews once")
+	assert.NotErrorIs(t, err, identity.ErrRevoked, "the old certificate is not revoked by its renewal")
+	assert.Equal(t, http.StatusForbidden, signer.StatusOf(err))
 	_, err = s.RenewCaller(renewal(t, person{key: key, cert: next}, newKey(t), &c))
 	assert.ErrorIs(t, err, identity.ErrCallerNotDue, "the new one is not due")
+}
+
+func TestCallerRenewal_ARenewalForTheCurrentKeyIsRefusedAndSpendsNothing(t *testing.T) {
+	e := newEnv(t)
+	var c clock
+	s := openClocked(t, e.dir, &c)
+	p := e.registered("ws-provider")
+	c.advance(61 * 24 * time.Hour)
+
+	_, err := s.RenewCaller(renewal(t, p, p.key, &c))
+	assert.ErrorIs(t, err, signer.ErrBadRequest)
+	assert.Equal(t, http.StatusBadRequest, signer.StatusOf(err))
+	_, err = s.RenewCaller(renewal(t, p, newKey(t), &c))
+	assert.NoError(t, err, "control: a new key renews, and the refusal did not spend the renewal")
+}
+
+// signedAt is a request by for action with body, signed at c's time.
+func signedAt(t *testing.T, by person, c *clock, action string, body any) []byte {
+	t.Helper()
+	b, err := identity.SignRequest(action, body, c.now().Add(time.Minute), by.key, by.cert)
+	require.NoError(t, err)
+	return b
+}
+
+// clockedReplica is replica on c's time.
+func clockedReplica(t *testing.T, e *env, c *clock) *signer.Signer {
+	t.Helper()
+	bundle, err := e.s.Bundle(e.signed(e.rootID, identity.ActionBundle, struct{}{}))
+	require.NoError(t, err)
+	sum := sha256.Sum256(bundle)
+	authz := e.signed(e.rootID, identity.ActionRestore, identity.RestoreRequest{BundleSHA256: hex.EncodeToString(sum[:])})
+	dir := privateDir(t, t.TempDir())
+	require.NoError(t, openAt(t, dir).Restore(identity.RestoreBody{Bundle: bundle, Authorisation: authz, RecoveryKey: e.recoveryFile, PassphraseFile: e.passFile}))
+	return openClocked(t, dir, c)
+}
+
+func TestCallerRenewal_ACertificateRenewsOnceOnEverySignerTheListReaches(t *testing.T) {
+	e := newEnv(t)
+	var c clock
+	p := e.registered("ws-provider")
+	a, b := openClocked(t, e.dir, &c), clockedReplica(t, e, &c)
+	c.advance(61 * 24 * time.Hour)
+
+	_, err := a.RenewCaller(renewal(t, p, newKey(t), &c))
+	require.NoError(t, err)
+	pushList(t, b, a)
+	_, err = b.RenewCaller(renewal(t, p, newKey(t), &c))
+	assert.ErrorIs(t, err, signer.ErrRenewed, "the list carried the renewal")
+
+	q := e.registered("other")
+	_, err = b.RenewCaller(renewal(t, q, newKey(t), &c))
+	assert.NoError(t, err, "control: another certificate renews on the synced signer")
+}
+
+// revokeCaller has by revoke the caller name through /v1/revoke-caller.
+func (e *env) revokeCaller(by person, name string) (int, identity.CallerRevocation) {
+	e.t.Helper()
+	status, body := e.do(http.MethodPost, "/v1/revoke-caller", e.signed(by, identity.ActionRevokeCaller, identity.CallerRevokeRequest{Name: name}))
+	var out identity.CallerRevocation
+	if status == http.StatusOK {
+		require.NoError(e.t, json.Unmarshal(body, &out))
+	}
+	return status, out
+}
+
+func TestCallerRevocation_RevokesEveryCertificateOfTheCallerWhicheverSignerIssuedItAndNotALaterRegistration(t *testing.T) {
+	e := newEnv(t)
+	var c clock
+	p, other := e.registered("ws-provider"), e.registered("other")
+	b := clockedReplica(t, e, &c)
+	a := openClocked(t, e.dir, &c)
+	c.advance(61 * 24 * time.Hour)
+	key := newKey(t)
+	issued, err := b.RenewCaller(renewal(t, p, key, &c))
+	require.NoError(t, err, "the successor is issued by the other signer, which a's records do not hold")
+	child := person{key: key, cert: parseCert(t, issued.Certificate)}
+
+	got, err := a.RevokeCaller(signedAt(t, e.rootID, &c, identity.ActionRevokeCaller, identity.CallerRevokeRequest{Name: "ws-provider"}))
+	require.NoError(t, err)
+	assert.Equal(t, []identity.CallerSerial{{Serial: identity.SerialOf(p.cert), Revoked: true}}, got.Serials, "this signer's record of the caller")
+	assert.WithinDuration(t, c.now().Add(-time.Minute), got.RevokedAt, time.Second, "the NotBefore a certificate issued at the revocation has")
+
+	pushList(t, b, a)
+	_, err = b.RenewCaller(renewal(t, child, newKey(t), &c))
+	assert.ErrorIs(t, err, identity.ErrRevoked, "the successor another signer issued is revoked by the caller's name")
+	_, err = a.RenewCaller(renewal(t, child, newKey(t), &c))
+	assert.ErrorIs(t, err, identity.ErrRevoked)
+	_, err = b.RenewCaller(renewal(t, other, newKey(t), &c))
+	assert.NoError(t, err, "control: another caller renews")
+
+	c.advance(time.Second)
+	pushList(t, b, a)
+	tok, err := b.IssueCallerToken(signedAt(t, e.rootID, &c, identity.ActionIssueCallerToken, identity.CallerTokenRequest{Name: "ws-provider"}))
+	require.NoError(t, err)
+	again, err := b.RegisterCaller(identity.CallerRegistration{Token: tok.Token, CSR: csrFor(t, newKey(t))})
+	require.NoError(t, err, "a registration after the revocation")
+	data, err := b.CRL()
+	require.NoError(t, err)
+	crl, err := identity.VerifyCRL(ed25519.PublicKey(e.authorities().RevocationKey), data)
+	require.NoError(t, err)
+	_, err = identity.Authenticate([][]*x509.Certificate{{parseCert(t, again.Certificate)}}, crl)
+	assert.NoError(t, err, "a certificate issued after the revocation is valid")
+}
+
+func TestCallerRevocation_RootOrAnOperatorRevokesAValidName(t *testing.T) {
+	e := newEnv(t)
+	p := e.registered("ws-provider")
+	status, _ := e.revokeCaller(p, "ws-provider")
+	assert.Equal(t, http.StatusForbidden, status, "a caller revokes no one")
+	status, _ = e.revokeCaller(e.issue(identity.RoleOperator, "alice"), "Not_A_Label")
+	assert.Equal(t, http.StatusBadRequest, status)
+	status, got := e.revokeCaller(e.rootID, "never-registered")
+	assert.Equal(t, http.StatusOK, status, "control: a name this signer issued nothing to, which another may have")
+	assert.Empty(t, got.Serials)
+}
+
+func TestCallerRegistration_TheOldRouteSaysTheCallerIsOlderThanTheSigner(t *testing.T) {
+	e := newEnv(t)
+	b, err := json.Marshal(identity.CallerRegistration{Token: "x", CSR: []byte("y")})
+	require.NoError(t, err)
+	status, body := e.do(http.MethodPost, "/v1/caller", b)
+	assert.Equal(t, http.StatusGone, status)
+	assert.Contains(t, string(body), "/v1/caller-issue")
 }
 
 func TestCallerRenewal_ARevokedOrExpiredCertificateOrAnotherRoleIsRefused(t *testing.T) {

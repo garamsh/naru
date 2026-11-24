@@ -104,7 +104,7 @@ func TestAuthenticate(t *testing.T) {
 
 	id, err := identity.Authenticate(chains, nil)
 	require.NoError(t, err)
-	assert.Equal(t, identity.Identity{Subject: "alice", Role: identity.RoleOperator, Serial: "ab", NotAfter: cert.NotAfter}, id, "the identity carries when the certificate expires")
+	assert.Equal(t, identity.Identity{Subject: "alice", Role: identity.RoleOperator, Serial: "ab", NotAfter: cert.NotAfter, PublicKey: cert.PublicKey}, id, "the identity carries when the certificate expires and its key")
 
 	_, err = identity.Authenticate(chains, &identity.CRL{Serials: []string{"ab"}})
 	assert.ErrorIs(t, err, identity.ErrRevoked)
@@ -114,6 +114,25 @@ func TestAuthenticate(t *testing.T) {
 
 	_, err = identity.Authenticate(nil, nil)
 	assert.ErrorIs(t, err, identity.ErrNoChain)
+}
+
+func TestAuthenticate_ACallerRevokedByNameIsRefusedForEveryCertificateIssuedBeforeTheRevocation(t *testing.T) {
+	c := newCA(t)
+	cert, _ := c.issue(t, "ws-provider", 0xab, now.Add(time.Hour), "caller") // NotBefore now-1h
+	chains := [][]*x509.Certificate{{cert, c.cert}}
+
+	_, err := identity.Authenticate(chains, &identity.CRL{Callers: map[string]time.Time{"ws-provider": now}})
+	assert.ErrorIs(t, err, identity.ErrRevoked, "issued before the revocation")
+	_, err = identity.Authenticate(chains, &identity.CRL{Callers: map[string]time.Time{"ws-provider": cert.NotBefore}})
+	assert.ErrorIs(t, err, identity.ErrRevoked, "issued at the revocation")
+	_, err = identity.Authenticate(chains, &identity.CRL{Callers: map[string]time.Time{"ws-provider": cert.NotBefore.Add(-time.Second)}})
+	assert.NoError(t, err, "control: issued after the revocation, as a new registration is")
+	_, err = identity.Authenticate(chains, &identity.CRL{Callers: map[string]time.Time{"other": now}})
+	assert.NoError(t, err, "control: another caller's revocation")
+
+	op, _ := c.issue(t, "ws-provider", 0xac, now.Add(time.Hour), "operator")
+	_, err = identity.Authenticate([][]*x509.Certificate{{op, c.cert}}, &identity.CRL{Callers: map[string]time.Time{"ws-provider": now}})
+	assert.NoError(t, err, "a revoked caller's name revokes no other role's certificate")
 }
 
 func TestCRL(t *testing.T) {

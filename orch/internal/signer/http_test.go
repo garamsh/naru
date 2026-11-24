@@ -117,7 +117,7 @@ func TestRegistrationAndRenewalReachTheirRoutesAndKeepTheSignersRefusals(t *test
 	require.NoError(t, err)
 	_, err = c.RenewCaller(t.Context(), []byte("signed"))
 	require.NoError(t, err)
-	require.Equal(t, []string{"POST /v1/caller", "POST /v1/caller-renew"}, paths)
+	require.Equal(t, []string{"POST /v1/caller-register", "POST /v1/caller-renew"}, paths)
 
 	status, body = http.StatusConflict, identity.ErrCallerNotDue.Error()+": renew from then"
 	_, err = c.RenewCaller(t.Context(), []byte("signed"))

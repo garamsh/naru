@@ -126,7 +126,7 @@ func (c *Client) PushCRL(ctx context.Context, data []byte) ([]byte, error) {
 // RegisterCaller spends a caller's registration token for the certificate of the key csr is the
 // request of. A token the signer refuses is inventory.ErrSignerRefused.
 func (c *Client) RegisterCaller(ctx context.Context, token string, csr []byte) (identity.Issued, error) {
-	return c.issued(ctx, "/v1/caller", identity.CallerRegistration{Token: token, CSR: csr})
+	return c.issued(ctx, "/v1/caller-register", identity.CallerRegistration{Token: token, CSR: csr})
 }
 
 // RenewCaller passes a renewal the caller signed with its current certificate. One before its last

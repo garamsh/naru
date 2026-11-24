@@ -153,7 +153,7 @@ func (s *Signer) IssueCaller(signed []byte) (identity.Issued, error) {
 	if err != nil {
 		return identity.Issued{}, err
 	}
-	issued, err := s.issueCaller(a, s.now(), days, req.Name, csr)
+	issued, err := s.issueCaller(a, s.now(), days, req.Name, csr, "")
 	if err != nil {
 		return identity.Issued{}, err
 	}

@@ -29,7 +29,9 @@ const (
 	// ActionIssueCallerToken asks for a caller registration token.
 	ActionIssueCallerToken = "issue-caller-token"
 	// ActionRenewCaller is signed by a caller's current certificate to renew it.
-	ActionRenewCaller  = signedrequest.ActionRenewCaller
+	ActionRenewCaller = signedrequest.ActionRenewCaller
+	// ActionRevokeCaller revokes every certificate of a caller by its name.
+	ActionRevokeCaller = "revoke-caller"
 	ActionRevoke       = "revoke"
 	ActionReissueHost  = "reissue-host"
 	ActionRegisterHost = "register-host"
@@ -131,6 +133,29 @@ type RetireHostRequest struct {
 type RegisterHostRequest struct {
 	HostID string `json:"hostID"`
 	Serial string `json:"serial"`
+}
+
+// CallerRevokeRequest is the body of ActionRevokeCaller: the caller to revoke.
+type CallerRevokeRequest struct {
+	Name string `json:"name"`
+}
+
+// CallerSerial is a serial the signer issued to a caller, in lowercase hexadecimal: the serial of
+// the certificate whose renewal it was (Parent, empty for a registration or root's issuance), and
+// whether the revocation list carries it.
+type CallerSerial struct {
+	Serial  string `json:"serial"`
+	Parent  string `json:"parent,omitempty"`
+	Revoked bool   `json:"revoked"`
+}
+
+// CallerRevocation is the answer to ActionRevokeCaller: the revocation list's entry for the caller,
+// RevokedAt, before which (as a certificate's NotBefore, inclusive) every caller certificate of the
+// name is revoked whichever signer issued it, and the serials this signer issued to it.
+type CallerRevocation struct {
+	Name      string         `json:"name"`
+	RevokedAt time.Time      `json:"revokedAt"`
+	Serials   []CallerSerial `json:"serials"`
 }
 
 // HostSerialsRequest is the body of ActionLookupHost and ActionRevokeHost: the host whose serials the

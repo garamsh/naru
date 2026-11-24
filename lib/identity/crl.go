@@ -18,14 +18,30 @@ var (
 	ErrCRLStale = errors.New("revocation list is older than the last one seen")
 )
 
-// CRL lists the serials, in lowercase hexadecimal, that are no longer trusted, and the nonces of
-// the once-only requests the signers took, each with the expiry of its request.
-// Seq grows with every list the signer signs.
+// CRL lists the serials, in lowercase hexadecimal, that are no longer trusted, the nonces of the
+// once-only requests the signers took, each with the expiry of its request, and the callers revoked
+// by name, each with when (ADR 0116): every caller certificate of that name issued at or before
+// that time is no longer trusted, whichever signer issued it. Seq grows with every list the signer
+// signs.
 type CRL struct {
 	Seq      uint64               `json:"seq"`
 	IssuedAt time.Time            `json:"issuedAt"`
 	Serials  []string             `json:"serials"`
 	Nonces   map[string]time.Time `json:"nonces,omitempty"`
+	Callers  map[string]time.Time `json:"callers,omitempty"`
+}
+
+// CheckCaller returns ErrRevoked when the list revokes the caller cert names, and cert was issued
+// (its NotBefore) at or before that. A nil list revokes nothing.
+func (c *CRL) CheckCaller(cert *x509.Certificate) error {
+	if c == nil {
+		return nil
+	}
+	name := cert.Subject.CommonName
+	if at, ok := c.Callers[name]; ok && !cert.NotBefore.After(at) {
+		return fmt.Errorf("%w: caller %s, revoked at %s", ErrRevoked, name, at.UTC().Format(time.RFC3339))
+	}
+	return nil
 }
 
 // Used reports whether nonce was taken and its request has not yet expired at now. A nil list has
