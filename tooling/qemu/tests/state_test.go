@@ -115,15 +115,14 @@ func lastPass(console string) int {
 // loginLine is one line of naru-loginprobe on the console.
 var loginLine = regexp.MustCompile(`loginprobe kind=(\S+)(.*)`)
 
-// adrPorts are the TCP ports ADR 0047 lists a control-plane Gaon Node with the Node API as listening
-// on, each named by its configuration: init's Node API (spec.api.listen, by default), gaon's API
-// server, etcd's client and peer ports, and the registry. mvmd, the scheduler, the controllers and
-// the Node Agent open no TCP port.
-var adrPorts = []string{"50000", "6443", "2379", "2380", "5000"}
+// adrPorts are the TCP ports of ADR 0047's list that a Node with the Node API listens on, each named
+// by its configuration: init's Node API (spec.api.listen, by default) and the registry. mvmd opens no
+// TCP port. The other ports of that list were the cluster control plane's, which ADR 0114 removed.
+var adrPorts = []string{"50000", "5000"}
 
 func TestNode_ANodeHasNoLoginPathNoShellNoGettyNoLoginNoSSHDNoReaderOfTheConsoleAndNoUnnamedPort(t *testing.T) {
 	probe := node.ExtraService{Name: "loginprobe", Binary: path.Join(fixture.GuestRoot, "bin/naru-loginprobe")}
-	c := start(t, node.ClusterSpec{N: 1, Gaon: true, NodeAPI: true, ExtraServices: []node.ExtraService{probe}})
+	c := start(t, node.ClusterSpec{N: 1, GenNode: true, NodeAPI: true, ExtraServices: []node.ExtraService{probe}})
 	nd := c.Nodes[0]
 	// pids and documentOf fail the test on an error, which a poll must not do while the Node is still
 	// booting and its API refuses the connection, so the poll below starts once the API answers.

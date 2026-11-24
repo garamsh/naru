@@ -31,7 +31,7 @@ func validHostID(id string) error {
 	return nil
 }
 
-// validAttributes checks a region (a DNS label, or empty) and labels (Kubernetes label syntax).
+// validAttributes checks a region (a DNS label, or empty) and labels (a key of a name and an optional DNS-subdomain prefix, and a value).
 func validAttributes(region string, labels map[string]string) error {
 	if region != "" && !hostIDPattern.MatchString(region) {
 		return invalid("region %q is not a DNS label", region)

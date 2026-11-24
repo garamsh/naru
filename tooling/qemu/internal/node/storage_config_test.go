@@ -10,7 +10,7 @@ import (
 )
 
 func TestConfig_StorageAndItsProbeAreInTheUserData(t *testing.T) {
-	c := cfg(1, 2, true, false)
+	c := cfg(1, 2, false)
 	c.Storage = []Storage{{Name: "vmdisks", Device: "/dev/sdc", MountPoint: "/var/lib/naru/mvmd-storage"}}
 	c.StorageProbe = "/var/lib/naru/mvmd-storage"
 
@@ -21,7 +21,7 @@ func TestConfig_StorageAndItsProbeAreInTheUserData(t *testing.T) {
 }
 
 func TestConfig_WithoutStorageTheUserDataHasNone(t *testing.T) {
-	n := parse(t, cfg(1, 2, true, false))
+	n := parse(t, cfg(1, 2, false))
 
 	assert.Empty(t, n.Spec.Storage)
 	assert.NotContains(t, names(n), "storageprobe")
@@ -31,7 +31,7 @@ func TestQemuArgs_AnExtraDiskIsADriveOnTheSCSIControllerAndNoneWithoutIt(t *test
 	dir := t.TempDir()
 	boot := dir + "/naru.img"
 	require.NoError(t, os.WriteFile(boot, nil, 0o644))
-	spec := Spec{Config: cfg(1, 2, true, false), Disk: boot, Dir: dir, Mcast: "230.78.0.1:5000"}
+	spec := Spec{Config: cfg(1, 2, false), Disk: boot, Dir: dir, Mcast: "230.78.0.1:5000"}
 
 	without, err := qemuArgs(spec, "naru15-node-1", "cidata.img", "data.img", "console.log")
 	require.NoError(t, err)
@@ -52,7 +52,7 @@ func TestInitramfsList_InstallsMkfsXFSForStorageDisks(t *testing.T) {
 }
 
 func TestMvmdJSON_PutsTheRunDirectoriesOnTheStorageDiskMountedWhereInitLinksMvmdsState(t *testing.T) {
-	c := cfg(1, 2, true, false)
+	c := cfg(1, 2, false)
 	c.Storage = []Storage{{Name: "vmdisks", Device: "/dev/sdc", MountPoint: "/var/lib/naru/mvmd-storage"}}
 
 	m := mvmd(t, c)

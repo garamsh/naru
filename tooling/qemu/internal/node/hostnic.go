@@ -2,8 +2,8 @@ package node
 
 import "fmt"
 
-// The control-plane Node of a gaon cluster has a second NIC on QEMU's user-mode network, whose host
-// forward carries the test host to the API server. naructl is told its address and MAC (gen node
+// A Node the test host reaches has a second NIC on QEMU's user-mode network, whose host forwards
+// carry the test host to the Node's APIs. naructl is told its address and MAC (gen node
 // --extra-nic); the layout of the Node itself is naructl's (ADR 0015).
 const (
 	// HostNICAddress is the address of the second NIC. The network is 10.0.2.0/24 with the host
@@ -12,7 +12,7 @@ const (
 	// HostNICPrefix is HostNICAddress with its network's prefix length.
 	HostNICPrefix = HostNICAddress + "/24"
 	// RoutePort is the port naru-mvmroute listens on at HostNICAddress, which the forward of a cluster
-	// with Host reaches (docs/architecture/harness.md).
+	// with Host reaches.
 	RoutePort = "7480"
 )
 
@@ -28,6 +28,3 @@ type Forward struct {
 func (c Config) HostMAC() string {
 	return fmt.Sprintf("02:00:00:01:%02x:%02x", c.Index>>8, c.Index&0xff)
 }
-
-// hostNIC reports whether the Node has the second NIC.
-func (c Config) hostNIC() bool { return c.HostPort != 0 }

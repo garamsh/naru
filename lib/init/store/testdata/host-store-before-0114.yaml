@@ -1,0 +1,188 @@
+revision: 1
+baseSha256: ab
+config:
+  apiVersion: naru.garam.sh/v1alpha1
+  kind: NodeConfig
+  metadata:
+    name: naru-node-1
+  spec:
+    services:
+    - name: mvmd
+      binary: /bin/mvmd
+      args:
+      - -config
+      - /run/mvmd/config.json
+      env:
+        HOME: /run/naru/registry/home
+        PATH: /bin:/run/bin
+      controlPlane: false
+      logFiles:
+      - /run/naru/registry/home/.ecr/log/ecr-login.log
+    - name: naru-hostd
+      binary: /bin/naru-hostd
+      args:
+      - --listen
+      - 0.0.0.0:7443
+      - --host-id
+      - node-1
+      - --advertise
+      - 192.168.0.40:7443
+      - --cert
+      - /run/naru-hostd/tls.crt
+      - --key
+      - /run/naru-hostd/tls.key
+      - --client-ca
+      - /run/naru-hostd/client-ca.crt
+      - --host-file
+      - /run/naru-hostd/host.json
+      - --mvmd-socket
+      - /run/mvmd.sock
+      - --machine-gateway
+      - 10.200.1.1
+      env:
+        PATH: /bin
+      controlPlane: false
+    - name: registry
+      binary: /var/lib/naru/inputs/bin/naru-registry
+      args:
+      - -listen
+      - 127.0.0.1:5000
+      - -dir
+      - /var/lib/naru/inputs/registry
+      env: {}
+      controlPlane: false
+    controlPlane: false
+    dataDisk:
+      device: ''
+      label: NARUDATA
+      mountPoint: /var/lib/naru
+    network:
+      forwarding:
+      - ipv4
+    files:
+    - path: /run/mvmd/config.json
+      mode: '0600'
+      content: |
+        {
+          "boot_timeout": "2m",
+          "call_timeout": "5m",
+          "conversion": {
+            "converter": "naru-converter",
+            "initrd": {{json .converter_initrd.path}},
+            "initrd_sha256": {{json .converter_initrd.sha256}},
+            "kernel": {{json (index .kernels .default_kernel).path}},
+            "kernel_sha256": {{json (index .kernels .default_kernel).sha256}},
+            "limit": "5m",
+            "memory_bytes": 536870912,
+            "name_set_bytes": 1048576,
+            "output_bytes": 268435456,
+            "vcpus": 2
+          },
+          "disk": {
+            "mkfs": "/bin/mkfs.ext4"
+          },
+          "driver": "firecracker",
+          "firecracker": {
+            "binary": "/bin/firecracker",
+            "binary_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "default_kernel": {{json .default_kernel}},
+            "initrd": {{json .guest_initrd.path}},
+            "initrd_sha256": {{json .guest_initrd.sha256}},
+            "kernels": {{json .kernels}}
+          },
+          "network": {
+            "ipv4_gateway": "10.200.1.1",
+            "ipv4_prefix": "10.200.1.0/24",
+            "resolvers": [
+              "10.200.1.1"
+            ]
+          },
+          "pull_timeout": "4m",
+          "registry": {
+            "credentials_file": "/run/naru/registry/credentials.json"
+          },
+          "socket": {
+            "mode": "0660",
+            "path": "/run/mvmd.sock"
+          },
+          "state_dir": "/var/lib/naru/mvmd",
+          "supervision": {
+            "binary": "/bin/mvmd-supervisor",
+            "cgroup": "/sys/fs/cgroup/naru/detached"
+          },
+          "vmm_uid_range": {
+            "count": 1000,
+            "first": 100000
+          }
+        }
+      template: guest
+    - path: /run/gaon/ca.pem
+      mode: '0644'
+      content: |
+        -----BEGIN CERTIFICATE-----
+        MIIBZDCCAQqgAwIBAgIQXQvoTvYPM6zYuXX4+lMR1DAKBggqhkjOPQQDAjASMRAw
+        DgYDVQQDEwduYXJ1LWNhMB4XDTI2MTEyNDEwNDcxM1oXDTM2MTEyMTExNDcxM1ow
+        EjEQMA4GA1UEAxMHbmFydS1jYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABNFG
+        6fwhxBBGORNPO9TLWnTVvXOdI8wgXf7PsxXK4avZaRjqCoUF1yrUQwvFOS6JjyF/
+        +9MdThiAQa3J0WR6VcWjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNVHRMBAf8EBTAD
+        AQH/MB0GA1UdDgQWBBQxCusiPnafEGPcZd3umeNwcJrhojAKBggqhkjOPQQDAgNI
+        ADBFAiBgLtxJiUi472tThuK3JBiIT4XTNHgM9fzKDnebKkp61QIhAJmaPV2L0aS3
+        mv1ylhmHdtGIywCbU8ljZn4pHyhsdv/r
+        -----END CERTIFICATE-----
+    - path: /run/gaon/agent.pem
+      mode: '0644'
+      content: |
+        -----BEGIN CERTIFICATE-----
+        MIIBaTCCAQ+gAwIBAgIQHBpMSan1xRZoInB7oFj6ezAKBggqhkjOPQQDAjASMRAw
+        DgYDVQQDEwduYXJ1LWNhMB4XDTI2MTEyNDEwNDcxM1oXDTI3MTEyNDExNDcxM1ow
+        ETEPMA0GA1UEAxMGbm9kZS0xMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfltk
+        r52xj94nt0VmXyxBb5+1h2VBFSe1XURSKiRPqillSM4VarMRUpfRkBnLwCr9zw6b
+        uMU7cS70VRJNQCxrp6NIMEYwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsG
+        AQUFBwMCMB8GA1UdIwQYMBaAFDEK6yI+dp8QY9xl3e6Z43BwmuGiMAoGCCqGSM49
+        BAMCA0gAMEUCIBgKTjhoxvkiQVG+zL6pFRplJmA9cuHjlqIxa5v3Nn5hAiEA3IpG
+        bp6+BCU5Kc4G3p4vUXNERXQU8rc1xHfb0pPOaj8=
+        -----END CERTIFICATE-----
+    - path: /run/gaon/agent.key
+      mode: '0600'
+      content: |
+        the key is left out of the fixture
+    - path: /run/naru-hostd/tls.crt
+      mode: '0644'
+      content: |
+        -----BEGIN CERTIFICATE-----
+        MIIBhjCCASugAwIBAgIQUFgHXi+bHnoL+IsYQ3sUbjAKBggqhkjOPQQDAjAXMRUw
+        EwYDVQQDEwxuYXJ1LWhvc3QtY2EwHhcNMjYxMTI0MTA0NzEzWhcNMjcxMTI0MTE0
+        NzEzWjARMQ8wDQYDVQQDEwZub2RlLTEwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC
+        AARNRM5SAjyKGVB/XD0tPCvik1XYbLk9D6t4Foyl41HSTd4wAqLiSdLi4L1qQH0p
+        JpolmsEfoViQHIXnNxHNtZWmo18wXTAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAww
+        CgYIKwYBBQUHAwEwHwYDVR0jBBgwFoAUi+PJCwZr7rv0uYPAzXTHAdJ3v28wFQYD
+        VR0RBA4wDIcEwKgAKIcEfwAAATAKBggqhkjOPQQDAgNJADBGAiEA8h1nzQ5t6XTn
+        rwGSFPv4WQ5gMq9Aev0KgKZyF7NovvQCIQDeBRNAqHALSXzM82B9SVhxvJ9c2lts
+        Y37Lx8z1gNbg9Q==
+        -----END CERTIFICATE-----
+    - path: /run/naru-hostd/tls.key
+      mode: '0600'
+      content: |
+        the key is left out of the fixture
+    - path: /run/naru-hostd/client-ca.crt
+      mode: '0644'
+      content: |
+        -----BEGIN CERTIFICATE-----
+        MIIBbjCCARSgAwIBAgIQF/mgvUjTvwtU2Z3HAI5QYTAKBggqhkjOPQQDAjAXMRUw
+        EwYDVQQDEwxuYXJ1LWhvc3QtY2EwHhcNMjYxMTI0MTA0NzAzWhcNMzYxMTIxMTE0
+        NzAzWjAXMRUwEwYDVQQDEwxuYXJ1LWhvc3QtY2EwWTATBgcqhkjOPQIBBggqhkjO
+        PQMBBwNCAASQlyo5FiJRCZjyF4Gf3EpOaCXLE6bGY062qsMZUFZwH3fwF8aHqXo2
+        O40kE356H33mmAUCiNwV2uoBp9Cv6VSbo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYD
+        VR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUi+PJCwZr7rv0uYPAzXTHAdJ3v28wCgYI
+        KoZIzj0EAwIDSAAwRQIhANBJcRwiG2dwwb8tb8fiBYKZCmB+WgAlDP+hj1sVz9/G
+        AiBAVk5VacZnhGwe9C8BciPpPgntepI6f5UMTvvlEoTGcg==
+        -----END CERTIFICATE-----
+    - path: /run/naru-hostd/host.json
+      mode: '0644'
+      content: |
+        {"region":"eu-1","labels":{}}
+    pki:
+      authorities: []
+      certificates: []
+    host:
+      region: eu-1

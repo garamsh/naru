@@ -33,7 +33,7 @@ group "upgrade" {
 
 group "default" {
   targets = ["builder", "toolchain", "util-linux", "e2fsprogs", "liburcu", "libinih", "xfsprogs", "libmnl", "libnftnl", "jansson", "nftables", "cacert",
-    "naru", "extension", "etcd", "ecr-login", "gaon", "rolesanywhere",
+    "naru", "extension", "ecr-login", "rolesanywhere",
     "mvmd", "guest-initrds",
     "kernel-host", "kernel-node", "kernel-guest-naru",
     "initramfs-node", "initramfs-host", "bzImage"]
@@ -184,22 +184,10 @@ target "extension-refuse" {
   output   = ["type=oci,dest=${OUT}/extension-refuse.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
-target "etcd" {
-  inherits = ["_package"]
-  context  = "etcd"
-  output   = ["type=oci,dest=${OUT}/etcd.tar,rewrite-timestamp=true,compression=uncompressed"]
-}
-
 target "ecr-login" {
   inherits = ["_package"]
   context  = "ecr-login"
   output   = ["type=oci,dest=${OUT}/ecr-login.tar,rewrite-timestamp=true,compression=uncompressed"]
-}
-
-target "gaon" {
-  inherits = ["_package"]
-  context  = "gaon"
-  output   = ["type=oci,dest=${OUT}/gaon.tar,rewrite-timestamp=true,compression=uncompressed"]
 }
 
 target "rolesanywhere" {
@@ -283,7 +271,6 @@ target "_initramfs" {
     xfsprogs               = "target:xfsprogs"
     nftables               = "target:nftables"
     util-linux             = "target:util-linux"
-    etcd                   = "target:etcd"
     ecr-login              = "target:ecr-login"
     rolesanywhere          = "target:rolesanywhere"
     cacert                 = "target:cacert"
@@ -300,7 +287,6 @@ target "_initramfs-host" {
   context  = "initramfs-host"
   contexts = {
     mvmd              = "target:mvmd"
-    gaon              = "target:gaon"
     kernel-node       = "target:kernel-node"
     kernel-guest-naru = "target:kernel-guest-naru"
     guest-initrds     = "target:guest-initrds"

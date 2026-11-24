@@ -45,8 +45,8 @@ It prints `naructl: wrote the key <dir>/root.key (0600) and the certificate requ
 
 ```
 naructl gen node --ca-dir <dir> --name <name> --address <cidr> --mac <mac> --gateway <ip> --nameserver <ip> \
-  --api-server <ip> --machine-prefix <cidr> --firecracker-sha256 <hex> \
-  --control-plane --extension naru-orch=<sha256 of naru-orch-ext-TAG.json> \
+  --machine-prefix <cidr> --firecracker-sha256 <hex> \
+  --extension naru-orch=<sha256 of naru-orch-ext-TAG.json> \
   --signer --signer-recovery-public <dir>/recovery.pub --signer-root-csr <dir>/root.csr \
   --signer-peer-listen <address>:<port> --signer-peer-name <address> \
   --out <dir>/<name>/naru.yaml --network-config <dir>/<name>/network-config
@@ -80,7 +80,7 @@ Edit the first host's user-data to add orch (`spec.orch` and the file that carri
 
 ### 5. The other two control hosts
 
-Each is a `gen node` with `--control-plane --signer --signer-replica` in place of `--signer-recovery-public` and `--signer-root-csr`, and `--member <name>=<address>` for each of the three, with the virtual address as `--api-server`. A replica signer logs its join key on the console; root authorises it, and the host's user-data takes the authorisation as `spec.signer.replica.join`:
+Each is a `gen node` with `--signer --signer-replica` in place of `--signer-recovery-public` and `--signer-root-csr`. A replica signer logs its join key on the console; root authorises it, and the host's user-data takes the authorisation as `spec.signer.replica.join`:
 
 ```
 naructl signer authorise-replica --admin <dir>/root.person --passphrase-file <passphrase file> \

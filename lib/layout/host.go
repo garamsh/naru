@@ -110,10 +110,10 @@ func (h Host) check() error {
 			name = k
 		}
 		if !labelNameRE.MatchString(name) || found && (len(prefix) > 253 || !dnsSubdomain.MatchString(prefix)) {
-			return fmt.Errorf("the host label key %q is not a Kubernetes label key", k)
+			return fmt.Errorf("the host label key %q is not a label key", k)
 		}
 		if !labelValueRE.MatchString(v) {
-			return fmt.Errorf("the host label value %q of %q is not a Kubernetes label value", v, k)
+			return fmt.Errorf("the host label value %q of %q is not a label value", v, k)
 		}
 	}
 	return nil
@@ -174,12 +174,19 @@ func (n Node) hostFiles() ([]file, error) {
 	}, nil
 }
 
+// hostPair is the certificate and key naru-hostd serves with: the pair hostFiles writes, or the
+// certificate a joined host was issued and the key it made, which stays in its file.
+func (n Node) hostPair() (cert, key string) {
+	cert, key = path.Join(HostDir, "tls.crt"), path.Join(HostDir, "tls.key")
+	if n.Host.KeyFile != "" {
+		key = n.Host.KeyFile
+	}
+	return cert, key
+}
+
 // hostService is naru-hostd, which dials mvmd's socket and runs nft from the image's /bin.
 func (n Node) hostService() service {
-	keyFile := path.Join(HostDir, "tls.key")
-	if n.Host.KeyFile != "" {
-		keyFile = n.Host.KeyFile
-	}
+	cert, keyFile := n.hostPair()
 	return service{
 		Name: HostService, Binary: HostBinary, Env: map[string]string{"PATH": "/bin"},
 		Args: []string{
@@ -188,7 +195,7 @@ func (n Node) hostService() service {
 			"--host-id", n.Name,
 			// Orch calls the host at the address its enrollment recorded, which is the Node's, not --listen's.
 			"--advertise", net.JoinHostPort(n.Address.Addr().String(), wire.HostAPIPort),
-			"--cert", path.Join(HostDir, "tls.crt"), "--key", keyFile,
+			"--cert", cert, "--key", keyFile,
 			"--client-ca", path.Join(HostDir, "client-ca.crt"),
 			"--host-file", path.Join(HostDir, "host.json"), "--mvmd-socket", MvmdSocket,
 			// The first address of the Machines' prefix, which mvmd gives its Machines as gateway.

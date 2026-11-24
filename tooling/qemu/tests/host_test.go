@@ -5,6 +5,8 @@ package tests_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,10 +14,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
-// The tests of the host API (ADR 0028) boot one Node that runs gaon and naru-hostd, with the
+// The tests of the host API (ADR 0028) boot one Node that runs naru-hostd, with the
 // user-data naructl writes from the host authority of `naructl gen host-ca`, and run the naructl
 // built from the checkout on the host against node-1's host API through the host forward. The
 // Machines mvmd holds are read from the console of node-1, where naru-mvmdlist prints them.
@@ -41,7 +44,7 @@ func machines(nd *node.Node) string {
 
 func hostCluster(t *testing.T) *node.Cluster {
 	t.Helper()
-	c := start(t, node.ClusterSpec{N: 1, Gaon: true, NodeAPI: true, Host: true})
+	c := start(t, node.ClusterSpec{N: 1, GenNode: true, NodeAPI: true, Host: true})
 	require.NotNil(t, c.Host)
 	eventually(t, "the host API answers a reader", func() bool { return hctl(c.Host.Reader, []string{"host"}).Err == nil })
 	return c
@@ -140,15 +143,84 @@ func TestNode_HostAPICreatesAMicroVMThatRunsShowsItAndDeletesItFromMvmdAndKeepsI
 	assert.Contains(t, gone.refusal(), "404")
 }
 
+// rootMounted is the line of the guest's console that says it mounted its root disk, vdb, as ext4.
+const rootMounted = "EXT4-fs (vdb): mounted filesystem"
+
+// TestNode_AMicroVMTheHostAPICreatesRunsTheGuestKernelFromTheNodesRegistryOnAMkfsRootDisk has the
+// host API create a microVM of the registry image by digest. The Node's registry served the image's
+// manifest, the microVM's console (the vmm.log mvmd keeps for it) shows the guest kernel's banner and
+// the guest mounting its root disk as ext4, and that root disk is the ext4 file system, with that
+// UUID, that mvmd made with /bin/mkfs.ext4 (its disk.mkfs).
+func TestNode_AMicroVMTheHostAPICreatesRunsTheGuestKernelFromTheNodesRegistryOnAMkfsRootDisk(t *testing.T) {
+	c := hostCluster(t)
+	nd := c.Nodes[0]
+	ctx := context.Background()
+	work := t.TempDir()
+	made := hctl(c.Host.Provisioner, []string{"microvm", "create"}, "--name", "hello", "--image", inputs.Image.Repository+"@"+inputs.Image.Digest, "--disk", "data=1048576")
+	require.NoError(t, made.Err, made.refusal())
+	eventually(t, "mvmd lists the Machine Running", func() bool { return strings.Contains(machines(nd), "hello=RUNNING") })
+
+	// The image comes from the Node's test registry: its console shows the manifest served.
+	require.NoError(t, nd.WaitFor(ctx, bootTimeout, "served", inputs.Image.Digest), "the registry served the manifest")
+
+	// The microVM's console: mvmd writes the guest's serial output to the Machine's vmm.log, which
+	// the host reads from a copy of the Node's data disk, replaced at each poll.
+	var vmm string
+	var snap *node.DataSnapshot
+	eventually(t, "the microVM's console shows the guest mounting its root disk", func() bool {
+		img := filepath.Join(work, "data.img")
+		_ = os.Remove(img)
+		var err error
+		if snap, err = nd.SnapshotData(img); err != nil {
+			return false
+		}
+		ids, err := snap.List(wire.DataMount + "/mvmd/machines")
+		if err != nil {
+			return false
+		}
+		for _, id := range ids {
+			b, err := snap.Read(wire.DataMount + "/mvmd/machines/" + id + "/run/vmm.log")
+			if err == nil && strings.Contains(string(b), rootMounted) {
+				vmm = string(b)
+				return true
+			}
+		}
+		return false
+	})
+	t.Logf("the microVM's console (vmm.log):\n%s", vmm)
+	mounted := regexp.MustCompile(`EXT4-fs \(vdb\): mounted filesystem ([0-9a-f-]{36})`).FindStringSubmatch(vmm)
+	require.NotNil(t, mounted, "the guest mounted its root disk, vdb, as ext4")
+	vmlinux, err := os.ReadFile(filepath.Join(os.Getenv("NARU_GUEST_DIR"), "kernels", "naru", "vmlinux"))
+	require.NoError(t, err)
+	banner := regexp.MustCompile(`Linux version [^\n\x00]+`).Find(vmlinux)
+	require.NotEmpty(t, banner, "the guest kernel carries its banner")
+	assert.Contains(t, vmm, string(banner), "the microVM booted the image's guest kernel")
+
+	// The root disk is ext4, made by the mkfs mvmd runs.
+	disks, err := snap.List(wire.DataMount + "/mvmd/disks")
+	require.NoError(t, err)
+	var disk string
+	for _, n := range disks {
+		if strings.HasSuffix(n, "-root") {
+			disk = n
+		}
+	}
+	require.NotEmpty(t, disk, "mvmd made the microVM's root disk: %v", disks)
+	img := filepath.Join(work, "root.img")
+	require.NoError(t, snap.Extract(wire.DataMount+"/mvmd/disks/"+disk, img))
+	sb, err := node.Superblock(img)
+	require.NoError(t, err)
+	assert.Contains(t, sb, "Filesystem magic number:  0xEF53", "the root disk is an ext4 file system")
+	assert.Contains(t, sb, "Filesystem UUID:          "+mounted[1], "it is the file system the guest mounted, which mvmd made with -U")
+}
+
 func TestNode_ANodeWithoutSpecHostRunsNoNaruHostd(t *testing.T) {
 	c := nodeAPI(t)
 	nd := c.Nodes[0]
-	top, err := tool.Topology()
-	require.NoError(t, err)
 	eventually(t, "every service of node-1 is listed running", func() bool {
 		running := pids(t, c.API.Reader)
-		for _, s := range top.Running(true) {
-			if running[s.Name] == "" {
+		for _, s := range servicesOf(t, nd) {
+			if running[s] == "" {
 				return false
 			}
 		}

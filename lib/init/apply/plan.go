@@ -49,14 +49,8 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 	if mode != NoReboot {
 		return nil
 	}
-	if next.Spec.ControlPlane != running.Spec.ControlPlane {
-		reboot = append(reboot, "spec.controlPlane")
-	}
 	if !slices.Equal(next.Spec.Network.Forwarding, running.Spec.Network.Forwarding) {
 		reboot = append(reboot, "spec.network.forwarding")
-	}
-	if !slices.Equal(next.Spec.PKI.Authorities, running.Spec.PKI.Authorities) {
-		reboot = append(reboot, "spec.pki.authorities")
 	}
 	switch na, ra := next.Spec.API, running.Spec.API; {
 	case (na == nil) != (ra == nil):
@@ -80,12 +74,10 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 }
 
 // plan returns the live steps that take the running configuration to next, in
-// the order they run: the clock's servers change first, since the certificates
-// issued next depend on the clock; routes are deleted and added; files and
-// certificates are written, then the listener reloads, then services stop,
-// start or restart, and last the services a written file or certificate names
-// restart, each once and only if the apply did not start or restart it
-// already.
+// the order they run: the clock's servers change first; routes are deleted and
+// added; files are written, then the listener reloads, then services stop,
+// start or restart, and last the services a written file names restart, each
+// once and only if the apply did not start or restart it already.
 func (e *Engine) plan(next config.NodeConfig) []step {
 	running := e.running
 	var steps []step
@@ -126,47 +118,22 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 	if !registryFilesEqual(running.Spec, next.Spec) {
 		steps = append(steps, step{Action{"write-registries", "spec.registries"}, func() error { return e.deps.Registries.WriteRegistries(next.Spec) }})
 	}
-	for _, c := range next.Spec.PKI.Certificates {
-		if old, ok := certificateAt(running.Spec.PKI.Certificates, c.Name); ok && old.Equal(c) {
-			continue
-		}
-		steps = append(steps, step{Action{"issue-certificate", c.Name}, func() error {
-			return e.deps.Certificates.Reissue(next.Spec.PKI, []string{c.Name})
-		}})
-		name(c.Restart)
-	}
-	for _, old := range running.Spec.PKI.Certificates {
-		if _, ok := certificateAt(next.Spec.PKI.Certificates, old.Name); ok {
-			continue
-		}
-		// The issuer renews what its spec holds, so it is given the spec
-		// without the deleted certificate; it signs nothing.
-		steps = append(steps, step{Action{"forget-certificate", old.Name}, func() error {
-			return e.deps.Certificates.Reissue(next.Spec.PKI, nil)
-		}})
-	}
 	if na, ra := next.Spec.API, running.Spec.API; na != nil && ra != nil && *na != *ra {
 		steps = append(steps, step{Action{"reload-api", "spec.api"}, func() error { return e.deps.API.Reload(*na) }})
 	}
 
 	touched := map[string]bool{}
 	for _, old := range running.Spec.Services {
-		if !running.Spec.Runs(old) {
-			continue
-		}
-		if _, ok := serviceAt(next.Spec.Services, old.Name); ok && next.Spec.Runs(old) {
+		if _, ok := serviceAt(next.Spec.Services, old.Name); ok {
 			continue
 		}
 		steps = append(steps, step{Action{"stop", old.Name}, func() error { e.deps.Services.Stop(old.Name); return nil }})
 		touched[old.Name] = true
 	}
 	for _, svc := range next.Spec.Services {
-		if !next.Spec.Runs(svc) {
-			continue
-		}
 		old, ok := serviceAt(running.Spec.Services, svc.Name)
 		switch {
-		case !ok || !running.Spec.Runs(old):
+		case !ok:
 			steps = append(steps, step{Action{"start", svc.Name}, func() error { return e.deps.Services.Start(svc) }})
 		case !old.Equal(svc):
 			steps = append(steps, step{Action{"restart", svc.Name}, func() error {
@@ -179,8 +146,7 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 		touched[svc.Name] = true
 	}
 	for _, n := range named {
-		svc, ok := serviceAt(next.Spec.Services, n)
-		if touched[n] || !ok || !next.Spec.Runs(svc) {
+		if _, ok := serviceAt(next.Spec.Services, n); touched[n] || !ok {
 			continue
 		}
 		steps = append(steps, step{Action{"restart", n}, func() error { e.deps.Services.Restart(n); return nil }})
@@ -221,14 +187,6 @@ func fileAt(files []config.File, path string) (config.File, bool) {
 		return config.File{}, false
 	}
 	return files[i], true
-}
-
-func certificateAt(certs []config.Certificate, name string) (config.Certificate, bool) {
-	i := slices.IndexFunc(certs, func(c config.Certificate) bool { return c.Name == name })
-	if i < 0 {
-		return config.Certificate{}, false
-	}
-	return certs[i], true
 }
 
 func serviceAt(services []config.Service, name string) (config.Service, bool) {

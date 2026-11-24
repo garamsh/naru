@@ -1,5 +1,5 @@
 // Command naru-mvmroute is the service of a QEMU Node that gives the test host a route to the
-// addresses of the microVMs on the Node's Machine prefix (docs/architecture/harness.md). It listens on
+// addresses of the microVMs on the Node's Machine prefix (docs/architecture/image.md). It listens on
 // the address of the Node's second NIC and dials only inside the prefix it is given.
 package main
 

@@ -108,23 +108,11 @@ func TestBuildDataDisk_CarriesTheInputsTree(t *testing.T) {
 	assert.True(t, diskHolds(t, data, "marker-inputs-9f3a")["marker-inputs-9f3a"])
 }
 
-func TestBuildDataDiskWith_CarriesAKeptAgentPairWhereTheAgentKeepsIt(t *testing.T) {
-	pair := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(pair, "node-agent.pem"), []byte("marker-pair-4c1e"), 0o600))
-
-	data, err := BuildDataDiskWith(t.TempDir(), "", pair, "")
-
-	require.NoError(t, err)
-	held := diskHolds(t, data, "marker-pair-4c1e", "gaon-node-agent")
-	assert.True(t, held["marker-pair-4c1e"])
-	assert.True(t, held["gaon-node-agent"])
-}
-
 func TestBuildDataDiskWith_CarriesTheExtensionStoreWhereInitKeepsItsExtensions(t *testing.T) {
 	store := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(store, strings.Repeat("a", 64)+".sqfs"), []byte("marker-image-77d0"), 0o600))
 
-	data, err := BuildDataDiskWith(t.TempDir(), "", "", store)
+	data, err := BuildDataDiskWith(t.TempDir(), "", store)
 
 	require.NoError(t, err)
 	held := diskHolds(t, data, "marker-image-77d0", strings.Repeat("a", 64)+".sqfs")

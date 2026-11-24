@@ -127,7 +127,7 @@ func TestReadComponents_EveryPinOfTheRepositoryStatesALicense(t *testing.T) {
 		names[c.Name] = true
 		assert.NotEmpty(t, c.License, c.Name)
 	}
-	for _, want := range []string{"kernel", "util-linux", "e2fsprogs", "gaon", "mvmd", "cacert", "musl"} {
+	for _, want := range []string{"kernel", "util-linux", "e2fsprogs", "mvmd", "cacert", "musl"} {
 		assert.True(t, names[want], "%s is a component", want)
 	}
 }
@@ -334,7 +334,7 @@ func TestBuild_RefusesAReleaseWhosePinHasNoLicense(t *testing.T) {
 	o.Components = nil
 	o.Root = writeTree(t, map[string]string{
 		"image/pkgs/foo/pin.env":              "FOO_URL=https://example.test/foo.tar.xz\nFOO_SHA256=ab\n",
-		"image/host/initramfs/initramfs.list": "file /bin/mvmd x\nfile /bin/etcd x\nfile /bin/gaon-apiserver x\nfile /bin/gaon-scheduler x\nfile /bin/gaon-controllers x\nfile /bin/gaon-node-agent x\n",
+		"image/host/initramfs/initramfs.list": "file /bin/mvmd x\n",
 	})
 
 	_, err := release.Build(o)

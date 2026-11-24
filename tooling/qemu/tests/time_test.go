@@ -82,21 +82,20 @@ func getTime(t *testing.T, file string) timeBody {
 	return body
 }
 
-// TestNode_ANodeWithAWrongClockStepsItFromSpecTimeServersBeforeItIssuesCertificates boots a Node
+// TestNode_ANodeWithAWrongClockStepsItFromSpecTimeServersBeforeAnyServiceStarts boots a Node
 // whose real-time clock starts years in the past, with spec.time naming an SNTP server that runs on
-// the test host, and a spec.pki that has init issue certificates. The console must show the clock
-// stepped from that server before init wrote the authority, and the Node API must report the step.
-func TestNode_ANodeWithAWrongClockStepsItFromSpecTimeServersBeforeItIssuesCertificates(t *testing.T) {
+// the test host. The console must show the clock stepped from that server before init started the
+// first service, and the Node API must report the step.
+func TestNode_ANodeWithAWrongClockStepsItFromSpecTimeServersBeforeAnyServiceStarts(t *testing.T) {
 	port, requests := sntpServer(t)
 	server := "10.0.2.2:" + port
 	c := start(t, node.ClusterSpec{
-		N: 1, Gaon: true, BootPKI: true, NodeAPI: true,
+		N: 1, GenNode: true, NodeAPI: true,
 		TimeServers: []string{server}, RTCBase: "2021-03-04T05:06:07",
 	})
 	n := c.Nodes[0]
 
 	expectAll(t, n, judge.TimeSynced(server))
-	expectAll(t, n, judge.Issuance(judge.GaonIssued...))
 	eventually(t, "the Node API answers an admin", func() bool { return ctl(c.API.Admin, "version").Err == nil })
 
 	assert.Positive(t, requests.Load(), "the server on the host was asked")

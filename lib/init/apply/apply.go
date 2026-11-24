@@ -40,12 +40,11 @@ type Request struct {
 }
 
 // Action is one thing an apply does: store, start, stop, restart,
-// write-file, write-registries, issue-certificate, forget-certificate, reload-api, sync-time,
-// stop-time-sync or reboot.
+// write-file, write-registries, reload-api, sync-time, stop-time-sync or reboot.
 type Action struct {
 	Action string
-	// Target is the service, the path, the certificate name, spec.api, or
-	// config for the store, node for the reboot.
+	// Target is the service, the path, spec.api, or config for the store, node
+	// for the reboot.
 	Target string
 }
 
@@ -96,12 +95,6 @@ type Registries interface {
 	WriteRegistries(config.Spec) error
 }
 
-// Certificates issues the named certificates of spec again and keeps renewing
-// the certificates of spec.
-type Certificates interface {
-	Reissue(spec config.PKI, names []string) error
-}
-
 // API is the Node API's listener.
 type API interface {
 	// Reload makes the listener use the pair and the client CA of a.
@@ -110,14 +103,13 @@ type API interface {
 
 // Deps is what the engine acts through.
 type Deps struct {
-	Store        Store
-	Services     Services
-	Files        Files
-	Time         Time
-	Routes       Routes
-	Registries   Registries
-	Certificates Certificates
-	API          API
+	Store      Store
+	Services   Services
+	Files      Files
+	Time       Time
+	Routes     Routes
+	Registries Registries
+	API        API
 }
 
 // Engine applies changes to one Node. Its methods are safe to call from

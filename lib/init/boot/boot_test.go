@@ -7,7 +7,6 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +14,6 @@ import (
 	"github.com/garamsh/naru/lib/init/boot"
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/netcfg"
-	"github.com/garamsh/naru/lib/init/pkitest"
 	"github.com/garamsh/naru/lib/init/store"
 	"github.com/garamsh/naru/lib/init/timesync"
 )
@@ -48,9 +46,6 @@ spec:
   services:
     - name: mvmd
       binary: /usr/bin/mvmd
-    - name: gaon
-      binary: /usr/bin/gaon
-      controlPlane: true
 `
 
 // recorder is both Host and Services and records the order of their calls.
@@ -65,7 +60,6 @@ type recorder struct {
 	forwardErr error
 	prepareErr error
 	sealErr    error
-	issueErr   error
 	timeErr    error
 	routeErr   error
 	storageErr error
@@ -95,14 +89,10 @@ type recorder struct {
 	leased    *netcfg.Applied
 	formatted config.DataDisk
 	written   []config.File
-	issuedPKI config.PKI
-	issuedTo  []netip.Addr
 
 	timeServers   []string
 	routes        []config.Route
 	registries    config.Spec
-	setAside      bool
-	setAsideErr   error
 	registriesErr error
 	storage       []config.Storage
 	extensions    []config.Extension
@@ -183,13 +173,7 @@ func (r *recorder) ApplyNetwork(c netcfg.Config, _ *slog.Logger) (netcfg.Applied
 	if r.leased != nil {
 		return *r.leased, r.networkErr
 	}
-	var got netcfg.Applied
-	for _, iface := range c.Interfaces {
-		for _, p := range iface.Addresses {
-			got.Addresses = append(got.Addresses, p.Addr())
-		}
-	}
-	return got, r.networkErr
+	return netcfg.Applied{}, r.networkErr
 }
 
 func (r *recorder) WriteFiles(f []config.File) error {
@@ -230,11 +214,6 @@ func (r *recorder) WriteRegistries(spec config.Spec) error {
 	return r.registriesErr
 }
 
-func (r *recorder) SetAsidePair(p config.KeptPair) (bool, error) {
-	r.calls = append(r.calls, "pair "+p.File)
-	return r.setAside, r.setAsideErr
-}
-
 func (r *recorder) PrepareStorage(s config.Storage, _ *slog.Logger) error {
 	r.calls = append(r.calls, "storage "+s.Name)
 	r.storage = append(r.storage, s)
@@ -250,13 +229,6 @@ func (r *recorder) SyncTime(servers []string) (timesync.Result, error) {
 func (r *recorder) SealRoot() error {
 	r.calls = append(r.calls, "seal")
 	return r.sealErr
-}
-
-func (r *recorder) Issue(spec config.PKI, addrs []netip.Addr) error {
-	r.calls = append(r.calls, "issue")
-	r.issuedPKI = spec
-	r.issuedTo = addrs
-	return r.issueErr
 }
 
 func (r *recorder) Prepare() error {
@@ -315,7 +287,7 @@ func runStored(r *recorder) (store.Stored, error) {
 	if r.network == "" {
 		r.network = validNetwork
 	}
-	return boot.Run(r, r, r, r, apiProbe{r}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return boot.Run(r, r, r, apiProbe{r}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestRun_StartsServicesAfterTheMachineIsReady(t *testing.T) {
@@ -331,69 +303,28 @@ func TestRun_StartsServicesAfterTheMachineIsReady(t *testing.T) {
 	assert.Equal(t, "/run/mvmd/config.json", r.written[0].Path)
 }
 
-func TestRun_StartsAControlPlaneServiceOnlyOnAControlPlaneNode(t *testing.T) {
-	r := &recorder{raw: replace(t, validConfig, "controlPlane: false", "controlPlane: true")}
-
-	require.NoError(t, run(r))
-
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "prepare", "seal", "start mvmd", "start gaon"}, r.calls)
-}
-
-// withPKI adds a spec.pki that asks for one certificate to validConfig.
-func withPKI(t *testing.T) string {
-	t.Helper()
-	ca := pkitest.NewCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
-	return replace(t, validConfig, "  services:\n", `  pki:
-    authorities:
-      - name: ca
-        certificate: |
-`+pkitest.Indent(ca.Cert, 10)+`        key: |
-`+pkitest.Indent(ca.Key, 10)+`        certificatePath: /run/pki/ca.pem
-    certificates:
-      - name: server
-        authority: ca
-        certificatePath: /run/pki/server.pem
-        keyPath: /run/pki/server.key
-        commonName: server
-        usage: server
-        nodeAddresses: true
-  services:
-`)
-}
-
-func TestRun_IssuesCertificatesAfterTheNetworkAndBeforeAnyServiceStarts(t *testing.T) {
-	r := &recorder{raw: withPKI(t)}
-
-	require.NoError(t, run(r))
-
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "issue", "prepare", "seal", "start mvmd"}, r.calls)
-	require.Len(t, r.issuedPKI.Certificates, 1)
-	assert.Equal(t, "server", r.issuedPKI.Certificates[0].Name)
-	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.78.0.1")}, r.issuedTo, "the Node's addresses come from the network-config")
-}
-
 // withTime adds a spec.time to doc, which holds the spec.services line.
 func withTime(t *testing.T, doc string) string {
 	t.Helper()
 	return replace(t, doc, "  services:\n", "  time:\n    servers: [ntp.example, '192.0.2.1:1123']\n  services:\n")
 }
 
-func TestRun_SynchronisesTheClockAfterTheNetworkAndBeforeCertificatesAreIssued(t *testing.T) {
-	r := &recorder{raw: withTime(t, withPKI(t))}
+func TestRun_SynchronisesTheClockAfterTheNetworkAndBeforeAnyServiceStarts(t *testing.T) {
+	r := &recorder{raw: withTime(t, validConfig)}
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "time", "issue", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "time", "prepare", "seal", "start mvmd"}, r.calls)
 	assert.Equal(t, []string{"ntp.example:123", "192.0.2.1:1123"}, r.timeServers, "each server is given with its port")
 }
 
 func TestRun_GoesOnWhenNoTimeServerAnswers(t *testing.T) {
 	// The control is the test above: with the same configuration, the clock is set.
-	r := &recorder{raw: withTime(t, withPKI(t)), timeErr: errors.New("no server answered")}
+	r := &recorder{raw: withTime(t, validConfig), timeErr: errors.New("no server answered")}
 
 	require.NoError(t, run(r))
 
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "time", "issue", "prepare", "seal", "start mvmd"}, r.calls)
+	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "time", "prepare", "seal", "start mvmd"}, r.calls)
 }
 
 func withRoutes(t *testing.T, doc string) string {
@@ -438,7 +369,7 @@ func TestRun_GoesOnWhenAStorageDiskCannotBePrepared(t *testing.T) {
 	var out strings.Builder
 	r := &recorder{raw: withStorage(t, validConfig), network: validNetwork, storageErr: errors.New("no disk with that label")}
 
-	_, err := boot.Run(r, r, r, r, apiProbe{r}, slog.New(slog.NewTextHandler(&out, nil)))
+	_, err := boot.Run(r, r, r, apiProbe{r}, slog.New(slog.NewTextHandler(&out, nil)))
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "storage vmdisks", "storage scratch", "prepare", "seal", "start mvmd"}, r.calls, "the second disk is tried and the services start")
@@ -450,21 +381,11 @@ func TestRun_SetsNoClockWithoutSpecTime(t *testing.T) {
 	var out strings.Builder
 	r := &recorder{raw: validConfig, network: validNetwork}
 
-	_, err := boot.Run(r, r, r, r, apiProbe{r}, slog.New(slog.NewTextHandler(&out, nil)))
+	_, err := boot.Run(r, r, r, apiProbe{r}, slog.New(slog.NewTextHandler(&out, nil)))
 
 	require.NoError(t, err)
 	assert.NotContains(t, r.calls, "time")
 	assert.Contains(t, out.String(), "time is not synchronised")
-}
-
-func TestRun_StartsNothingWhenACertificateCannotBeIssued(t *testing.T) {
-	// The control is the test above: with the same configuration, a service starts.
-	r := &recorder{raw: withPKI(t), issueErr: errors.New("boom")}
-
-	err := run(r)
-
-	assert.ErrorIs(t, err, r.issueErr)
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "issue"}, r.calls)
 }
 
 func TestRun_RefusesAnInvalidConfigurationAndStartsNothing(t *testing.T) {
@@ -562,28 +483,6 @@ func TestRun_WritesTheRegistryFilesBeforeAnyServiceStarts(t *testing.T) {
 	assert.Equal(t, "registry.example", r.registries.Registries[0].Host)
 }
 
-// withKeptPair gives the mvmd service of validConfig a kept pair.
-func withKeptPair(t *testing.T) string {
-	t.Helper()
-	return replace(t, validConfig, "      binary: /usr/bin/mvmd\n", "      binary: /usr/bin/mvmd\n      keptPair: {file: /var/lib/mvmd/agent/node-agent.pem, organization: gaon:nodes}\n")
-}
-
-func TestRun_ChecksAServicesKeptPairJustBeforeItStarts(t *testing.T) {
-	r := &recorder{raw: withKeptPair(t), setAside: true}
-
-	require.NoError(t, run(r))
-
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "prepare", "seal", "pair /var/lib/mvmd/agent/node-agent.pem", "start mvmd"}, r.calls)
-}
-
-func TestRun_StartsTheServiceWhenItsKeptPairCannotBeSetAside(t *testing.T) {
-	r := &recorder{raw: withKeptPair(t), setAsideErr: errors.New("read-only")}
-
-	require.NoError(t, run(r))
-
-	assert.Equal(t, []string{"mvmd"}, r.started)
-}
-
 func TestRun_RefusesWhenTheRegistryFilesCannotBeWritten(t *testing.T) {
 	r := &recorder{raw: validConfig, registriesErr: errors.New("disk full")}
 
@@ -632,17 +531,6 @@ func TestRun_StartsNothingWhenAnExtensionCannotBeMounted(t *testing.T) {
 
 	require.ErrorContains(t, err, "mount the system extensions: no image is stored")
 	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "extensions"}, r.calls, "the API has started, so the image can still be delivered")
-}
-
-func TestRun_TakesTheNodesAddressesFromWhatTheNetworkGave(t *testing.T) {
-	// The control is TestRun_IssuesCertificatesAfterTheNetworkAndBeforeAnyServiceStarts: with a
-	// static network-config the addresses are the configured ones.
-	leased := netcfg.Applied{Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.7")}}
-	r := &recorder{raw: withPKI(t), network: "\n", leased: &leased}
-
-	require.NoError(t, run(r))
-
-	assert.Equal(t, leased.Addresses, r.issuedTo, "a leased address is the Node's address for spec.pki")
 }
 
 func TestRun_SynchronisesTheClockWithTheLeasesTimeServersWhenThereIsNoSpecTime(t *testing.T) {

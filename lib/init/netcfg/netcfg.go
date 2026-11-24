@@ -63,11 +63,9 @@ type subnet struct {
 	Gateway string `yaml:"gateway"`
 }
 
-// Applied is what the network gave this boot: the one place any reader of the Node's addresses,
-// resolvers and time servers looks, whether they were configured or leased.
+// Applied is what the network gave this boot: the one place any reader of the Node's resolvers
+// and time servers looks, whether they were configured or leased.
 type Applied struct {
-	// Addresses are the IPv4 addresses of the Node, in the order of the interfaces.
-	Addresses []netip.Addr
 	// Nameservers are the resolvers in effect.
 	Nameservers []netip.Addr
 	// NTP are the time servers a DHCP lease named, which are used when spec.time is absent.

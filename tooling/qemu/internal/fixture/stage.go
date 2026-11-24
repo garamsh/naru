@@ -49,15 +49,14 @@ type Sources struct {
 //	bin/naru-registry bin/naru-probe   services the tests configure
 //	bin/naru-bootnext                  (ADR 0020)
 //	bin/naru-netecho                   sends, receives and reports routes
-//	bin/naru-etcdprobe                 (ADR 0024)
 //	bin/naru-mvmdlist                  prints the Machines mvmd holds (ADR 0028)
-//	bin/naru-mvmroute                  the test host's route to the microVMs' addresses (harness.md)
+//	bin/naru-mvmroute                  the test host's route to the microVMs' addresses (image.md)
 //	bin/naru-credstub                  the interpreter of a stand-in credential helper (ADR 0026)
 //	bin/naru-storageprobe              reports on a storage disk (ADR 0027)
 //	bin/naru-loginprobe                reports a Node's listeners, shells and terminal readers (ADR 0047)
-//	bin/naru-nftprobe                  prints the host's nftables counters (harness.md)
-//	bin/naru-lanclient                 connects to a leased LAN address and prints the answers (harness.md)
-//	bin/naru-keyprobe                  scans for the private keys of given authorities (harness.md)
+//	bin/naru-nftprobe                  prints the host's nftables counters (image.md)
+//	bin/naru-lanclient                 connects to a leased LAN address and prints the answers (image.md)
+//	bin/naru-keyprobe                  scans for the private keys of given authorities (image.md)
 //	registry/                          see WriteRegistry
 //
 // The extension make image built (extensions/naru-orch.sqfs) is stored beside
@@ -96,7 +95,6 @@ func Stage(src Sources, out string) (Inputs, error) {
 		{"tooling/qemu", "./cmd/naru-netecho", filepath.Join(bin, "naru-netecho")},
 		{"tooling/qemu", "./cmd/naru-credstub", filepath.Join(bin, "naru-credstub")},
 		{"tooling/qemu", "./cmd/naru-entry", filepath.Join(entryDir, "entry")},
-		{"tooling/qemu", "./cmd/naru-etcdprobe", filepath.Join(bin, "naru-etcdprobe")},
 		{"tooling/qemu", "./cmd/naru-storageprobe", filepath.Join(bin, "naru-storageprobe")},
 		{"tooling/qemu", "./cmd/naru-loginprobe", filepath.Join(bin, "naru-loginprobe")},
 		{"tooling/qemu", "./cmd/naru-nftprobe", filepath.Join(bin, "naru-nftprobe")},

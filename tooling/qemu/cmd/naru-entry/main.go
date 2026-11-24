@@ -1,6 +1,6 @@
 // Command naru-entry is the entrypoint of the test image a Machine runs. With no arguments it prints
 // one line, serves probe on defaultProbe and stays running: hostd refuses a command for a microVM,
-// so a microVM of the network tests (docs/architecture/harness.md) runs probe by default.
+// so a microVM of the network tests (docs/architecture/image.md) runs probe by default.
 //
 //	naru-entry probe <address>       serve, and act from inside the microVM for the network tests (probe.go)
 package main

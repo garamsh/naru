@@ -16,8 +16,8 @@ const awsBlock = `  aws:
     trustAnchorArn: arn:aws:rolesanywhere:ap-northeast-2:1:trust-anchor/a
     profileArn: arn:aws:rolesanywhere:ap-northeast-2:1:profile/b
     roleArn: arn:aws:iam::1:role/r
-    certificate: /var/lib/naru/gaon-node-agent/node-agent.pem
-    key: /var/lib/naru/gaon-node-agent/node-agent.pem
+    certificate: /run/naru-hostd/tls.crt
+    key: /run/naru-hostd/tls.key
 `
 
 func TestParse_AcceptsRegistriesAndAWS(t *testing.T) {
@@ -62,28 +62,6 @@ func TestParse_RefusesARegistryOrAWSAndNamesTheField(t *testing.T) {
 			assert.Contains(t, fields(t, err), tt.field)
 		})
 	}
-}
-
-func TestParse_ServiceKeptPair(t *testing.T) {
-	tests := []struct {
-		name, kept, field string
-	}{
-		{"a relative file", "{file: x.pem, organization: o}", "spec.services[0].keptPair.file"},
-		{"no organization", "{file: /x.pem}", "spec.services[0].keptPair.organization"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			doc := replaceFirst(valid, "      binary: /usr/bin/mvmd\n", "      binary: /usr/bin/mvmd\n      keptPair: "+tt.kept+"\n")
-
-			_, err := config.Parse([]byte(doc))
-
-			require.Error(t, err)
-			assert.Contains(t, fields(t, err), tt.field)
-		})
-	}
-	cfg, err := config.Parse([]byte(replaceFirst(valid, "      binary: /usr/bin/mvmd\n", "      binary: /usr/bin/mvmd\n      keptPair: {file: /x.pem, organization: o}\n")))
-	require.NoError(t, err)
-	assert.Equal(t, &config.KeptPair{File: "/x.pem", Organization: "o"}, cfg.Spec.Services[0].KeptPair)
 }
 
 func TestParse_ServiceWatchedFiles(t *testing.T) {

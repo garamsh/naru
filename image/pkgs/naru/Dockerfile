@@ -1,8 +1,8 @@
 # naru's own programs (ADR 0075), static, built by the builder's Go from the repository (the `src`
-# context, which /.dockerignore narrows to the Go workspace): the host's naru-hostd, the Node's naru-vip
-# and naru-fence, the stand-in service the tests configure, the programs of the naru-orch extension
-# (naru-signer, naru-orchd). naru-init is not here: it carries the image's version, so the initramfs
-# packages build it. The release tools naructl and naru-cluster are built by make release.
+# context, which /.dockerignore narrows to the Go workspace): the host's naru-hostd, the stand-in
+# service the tests configure, the programs of the naru-orch extension (naru-signer, naru-orchd).
+# naru-init is not here: it carries the image's version, so the initramfs packages build it. The
+# release tool naructl is built by make release.
 FROM builder AS build
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG SOURCE_DATE_EPOCH
@@ -12,8 +12,7 @@ ENV TZ=UTC LC_ALL=C SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
 COPY --from=lib install-go.sh /usr/local/bin/
 COPY --from=src / /src
 WORKDIR /src
-RUN for p in host:naru-hostd:cmd/naru-hostd node:naru-vip:cmd/naru-vip node:naru-fence:cmd/naru-fence \
-             tooling/qemu:naru-standin:cmd/naru-standin \
+RUN for p in host:naru-hostd:cmd/naru-hostd tooling/qemu:naru-standin:cmd/naru-standin \
              host:naru-signer:cmd/naru-signer orch:naru-orchd:cmd/naru-orchd; do \
       IFS=: read -r dir name pkg <<<"$p"; \
       (cd "$dir" && go build -trimpath -buildvcs=false -ldflags='-s -w' -o "/build/$name" "./$pkg"); \

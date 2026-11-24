@@ -22,11 +22,9 @@ func TestUserData_IsWhatInitsConfigParses(t *testing.T) {
 	require.NoError(t, err)
 
 	for name, n := range map[string]layout.Node{
-		"a worker":                 node(t, func(*layout.Node) {}),
-		"a control plane":          node(t, func(n *layout.Node) { n.Mode, n.Tokens = layout.ControlPlaneToken, []string{tokenA} }),
-		"a control plane of files": node(t, func(n *layout.Node) { n.Mode, n.Token = layout.ControlPlaneFiles, "" }),
-		"a host":                   hostCfg,
-		"the host orch builds":     orchHost,
+		"a Node":               node(t, func(*layout.Node) {}),
+		"a host":               hostCfg,
+		"the host orch builds": orchHost,
 	} {
 		t.Run(name, func(t *testing.T) {
 			data, err := n.UserData()
@@ -69,8 +67,8 @@ func render(t *testing.T, f config.File, guest string) map[string]any {
 // manifest changes what mvmd is given with no edit of the configuration (ADR 0106).
 func TestUserData_MvmdsGuestDigestsAreTheBootedImagesAndNeverStored(t *testing.T) {
 	for name, n := range map[string]layout.Node{
-		"a worker": node(t, func(*layout.Node) {}),
-		"a host":   func() layout.Node { h, _ := hostNode(t); return h }(),
+		"a Node": node(t, func(*layout.Node) {}),
+		"a host": func() layout.Node { h, _ := hostNode(t); return h }(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := mvmdFile(t, n)

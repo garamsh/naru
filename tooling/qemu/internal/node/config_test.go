@@ -26,9 +26,9 @@ var guestFiles = guest.Manifest{
 	ConverterInitrd: guest.File{Path: "/usr/lib/naru/guest/converter-initrd.cpio", SHA256: sum("c")},
 }
 
-func cfg(index, total int, control, probe bool) Config {
+func cfg(index, total int, probe bool) Config {
 	return Config{
-		Name: "node-" + string(rune('0'+index)), Index: index, Total: total, ControlPlane: control, Probe: probe,
+		Name: "node-" + string(rune('0'+index)), Index: index, Total: total, Probe: probe,
 		Inputs: fixture.Inputs{
 			Image:             fixture.Image{Repository: "127.0.0.1:5000/test/entry", Digest: "sha256:img"},
 			FirecrackerSHA256: "fc", Guest: guestFiles,
@@ -53,27 +53,10 @@ func names(n nodeConfig) []string {
 	return out
 }
 
-func TestNaruYAML_DeclaresTheControlServiceOnEveryNodeAndTheFlagOnOne(t *testing.T) {
-	first, second := parse(t, cfg(1, 2, true, false)), parse(t, cfg(2, 2, false, false))
-
-	assert.True(t, first.Spec.ControlPlane)
-	assert.False(t, second.Spec.ControlPlane)
-	for _, n := range []nodeConfig{first, second} {
-		var control *service
-		for i := range n.Spec.Services {
-			if n.Spec.Services[i].Name == "control" {
-				control = &n.Spec.Services[i]
-			}
-		}
-		require.NotNil(t, control, "every Node's file lists the control-plane service; init leaves it out")
-		assert.True(t, control.ControlPlane)
-	}
-}
-
 func TestNaruYAML_StandinsFormARing(t *testing.T) {
 	var addrs []string
 	for i := 1; i <= 3; i++ {
-		n := parse(t, cfg(i, 3, i == 1, false))
+		n := parse(t, cfg(i, 3, false))
 		for _, s := range n.Spec.Services {
 			if s.Name == "standin" {
 				addrs = append(addrs, s.Args[5]+" -> "+s.Args[7])
@@ -87,12 +70,12 @@ func TestNaruYAML_StandinsFormARing(t *testing.T) {
 }
 
 func TestNaruYAML_ProbeRunsOnlyWhereAsked(t *testing.T) {
-	assert.Equal(t, []string{"mvmd", "registry", "standin", "control", "probe"}, names(parse(t, cfg(1, 2, true, true))))
-	assert.Equal(t, []string{"mvmd", "registry", "standin", "control"}, names(parse(t, cfg(2, 2, false, false))))
+	assert.Equal(t, []string{"mvmd", "registry", "standin", "probe"}, names(parse(t, cfg(1, 2, true))))
+	assert.Equal(t, []string{"mvmd", "registry", "standin"}, names(parse(t, cfg(2, 2, false))))
 }
 
 func TestNaruYAML_MvmdTrustsTheRegistryAuthorityThroughSpecRegistriesAndForwardsIPv4(t *testing.T) {
-	c := cfg(1, 2, true, false)
+	c := cfg(1, 2, false)
 	c.RegistryCA = "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n"
 	n := parse(t, c)
 
@@ -121,7 +104,7 @@ func mvmd(t *testing.T, c Config) map[string]any {
 }
 
 func TestMvmdJSON_UsesTheFirecrackerDriverAndKeepsSupervisionOffTmpfs(t *testing.T) {
-	m := mvmd(t, cfg(1, 2, true, false))
+	m := mvmd(t, cfg(1, 2, false))
 
 	assert.Equal(t, "firecracker", m["driver"])
 	sup := m["supervision"].(map[string]any)
@@ -133,7 +116,7 @@ func TestMvmdJSON_UsesTheFirecrackerDriverAndKeepsSupervisionOffTmpfs(t *testing
 }
 
 func TestMvmdJSON_NamesTheImagesGuestFilesByTheirPathsAndDigestsInGuestJSON(t *testing.T) {
-	m := mvmd(t, cfg(1, 2, true, false))
+	m := mvmd(t, cfg(1, 2, false))
 
 	fc := m["firecracker"].(map[string]any)
 	assert.Equal(t, map[string]any{"naru": map[string]any{
@@ -152,7 +135,7 @@ func TestMvmdJSON_NamesTheImagesGuestFilesByTheirPathsAndDigestsInGuestJSON(t *t
 }
 
 func TestMvmdJSON_NamesTheMkfsExt4TheInitramfsInstallsAndNotOneOnTheDataDisk(t *testing.T) {
-	m := mvmd(t, cfg(1, 2, true, false))
+	m := mvmd(t, cfg(1, 2, false))
 
 	mkfs := m["disk"].(map[string]any)["mkfs"].(string)
 	assert.Equal(t, "/bin/mkfs.ext4", mkfs)
@@ -163,7 +146,7 @@ func TestMvmdJSON_NamesTheMkfsExt4TheInitramfsInstallsAndNotOneOnTheDataDisk(t *
 }
 
 func TestMvmdJSON_WritesEveryDeclaredKernelAndTheDefaultToTheDriverAndTheDefaultToTheConverter(t *testing.T) {
-	c := cfg(1, 2, true, false)
+	c := cfg(1, 2, false)
 	c.Inputs.Guest = guest.Manifest{
 		Kernels: map[string]guest.File{
 			"naru":  {Path: "/a", SHA256: sum("a")},
@@ -186,8 +169,8 @@ func TestMvmdJSON_WritesEveryDeclaredKernelAndTheDefaultToTheDriverAndTheDefault
 }
 
 func TestMvmdJSON_GivesEachNodeItsOwnMachineNetwork(t *testing.T) {
-	one := mvmd(t, cfg(1, 2, true, false))["network"].(map[string]any)
-	two := mvmd(t, cfg(2, 2, false, false))["network"].(map[string]any)
+	one := mvmd(t, cfg(1, 2, false))["network"].(map[string]any)
+	two := mvmd(t, cfg(2, 2, false))["network"].(map[string]any)
 
 	assert.Equal(t, "10.77.1.0/24", one["ipv4_prefix"])
 	assert.Equal(t, "10.77.1.1", one["ipv4_gateway"])
@@ -195,7 +178,7 @@ func TestMvmdJSON_GivesEachNodeItsOwnMachineNetwork(t *testing.T) {
 }
 
 func TestConfig_AddressesAndMACsDifferPerNode(t *testing.T) {
-	a, b := cfg(1, 2, true, false), cfg(2, 2, false, false)
+	a, b := cfg(1, 2, false), cfg(2, 2, false)
 
 	assert.NotEqual(t, a.IP(), b.IP())
 	assert.NotEqual(t, a.MAC(), b.MAC())
@@ -204,7 +187,7 @@ func TestConfig_AddressesAndMACsDifferPerNode(t *testing.T) {
 }
 
 func TestNaruYAML_CarriesMvmdsConfigurationAsAFileUnderRun(t *testing.T) {
-	c := cfg(2, 2, false, false)
+	c := cfg(2, 2, false)
 	n := parse(t, c)
 
 	require.Len(t, n.Spec.Files, 1)
@@ -231,7 +214,7 @@ func TestNetworkConfig_IsTheProxmoxFormForTheNodesAddress(t *testing.T) {
 			} `yaml:"subnets"`
 		} `yaml:"config"`
 	}
-	c := cfg(2, 3, false, false)
+	c := cfg(2, 3, false)
 
 	require.NoError(t, yaml.Unmarshal(c.NetworkConfig(), &got))
 
@@ -250,6 +233,6 @@ func TestNetworkConfig_IsTheProxmoxFormForTheNodesAddress(t *testing.T) {
 }
 
 func TestConfig_TheMACIsLocallyAdministeredAndLowerCase(t *testing.T) {
-	assert.Equal(t, "02:00:00:00:00:01", cfg(1, 2, true, false).MAC())
+	assert.Equal(t, "02:00:00:00:00:01", cfg(1, 2, false).MAC())
 	assert.Equal(t, "02:00:00:00:01:00", Config{Index: 256}.MAC())
 }

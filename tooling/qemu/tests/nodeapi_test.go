@@ -26,17 +26,17 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
 )
 
-// The tests of the Node API (ADR 0017, ADR 0018) boot one Node that runs gaon, with the user-data
+// The tests of the Node API (ADR 0017, ADR 0018) boot one Node with the user-data
 // naructl writes from an authority made by `naructl gen api-ca`, and run the naructl built from the
 // checkout on the host against node-1's API through the host forward. Each waits on a condition: the
 // API answering, a service listed, a line on the console.
 
 var uuid = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// nodeAPI boots a one-Node gaon cluster with the Node API and waits for the Node to serve it.
+// nodeAPI boots one Node with the Node API and waits for the Node to serve it.
 func nodeAPI(t *testing.T) *node.Cluster {
 	t.Helper()
-	c := start(t, node.ClusterSpec{N: 1, Gaon: true, NodeAPI: true})
+	c := start(t, node.ClusterSpec{N: 1, GenNode: true, NodeAPI: true})
 	require.NotNil(t, c.API)
 	eventually(t, "the Node API answers an admin", func() bool { return ctl(c.API.Admin, "version").Err == nil })
 	return c
@@ -107,6 +107,25 @@ func revisionOf(t *testing.T, file string) int {
 	return documentOf(t, file).Status.Revision
 }
 
+// servicesOf is the names of the services the Node's user-data lists, every one of which init starts.
+func servicesOf(t *testing.T, nd *node.Node) []string {
+	t.Helper()
+	b, err := os.ReadFile(userDataOf(nd))
+	require.NoError(t, err)
+	var doc struct {
+		Spec struct {
+			Services []struct{ Name string }
+		}
+	}
+	require.NoError(t, yaml.Unmarshal(b, &doc))
+	var out []string
+	for _, s := range doc.Spec.Services {
+		out = append(out, s.Name)
+	}
+	require.NotEmpty(t, out, "the user-data lists services")
+	return out
+}
+
 // patchFile writes a merge patch the way an operator keeps one.
 func patchFile(t *testing.T, patch string) string {
 	t.Helper()
@@ -126,8 +145,6 @@ func TestNode_NodeAPIAnswersVersionServicesAndLogsAndRefusesAForeignClientAndARe
 	n := c.Nodes[0]
 	want := os.Getenv("NARU_VERSION")
 	require.NotEmpty(t, want, "make test-qemu sets NARU_VERSION, the version the image was built with")
-	top, err := tool.Topology()
-	require.NoError(t, err)
 
 	// The console says the API serves, and not that it is off (what make judge-serial -node-api checks).
 	expectAll(t, n, judge.NodeAPI(true))
@@ -143,8 +160,8 @@ func TestNode_NodeAPIAnswersVersionServicesAndLogsAndRefusesAForeignClientAndARe
 
 	eventually(t, "every service of node-1 is listed running", func() bool {
 		running := pids(t, c.API.Reader)
-		for _, s := range top.Running(true) {
-			if running[s.Name] == "" {
+		for _, s := range servicesOf(t, n) {
+			if running[s] == "" {
 				return false
 			}
 		}
@@ -152,9 +169,9 @@ func TestNode_NodeAPIAnswersVersionServicesAndLogsAndRefusesAForeignClientAndARe
 	})
 
 	assert.NotContains(t, pids(t, c.API.Reader), "aws-credentials", "a Node without spec.aws runs no aws-credentials")
-	logs := ctl(c.API.Reader, "logs", "etcd")
+	logs := ctl(c.API.Reader, "logs", "mvmd")
 	require.NoError(t, logs.Err, logs.refusal())
-	assert.NotEmpty(t, strings.TrimSpace(logs.Stdout), "etcd has logged by the time it is running")
+	assert.NotEmpty(t, strings.TrimSpace(logs.Stdout), "mvmd has logged by the time it is running")
 	assert.Equal(t, 0, revisionOf(t, c.API.Reader), "the user-data is revision 0")
 
 	// A client whose certificate is from another authority is refused, where the same file with the
@@ -253,10 +270,8 @@ func TestNode_AStagedApplyTakesEffectAfterTheRebootAtTheStoredRevision(t *testin
 }
 
 func TestNode_UserDataOfV030FormWithNoSpecAPIBootsWithItsServicesAndLogsThatTheAPIIsOff(t *testing.T) {
-	c := start(t, node.ClusterSpec{N: 1, Gaon: true})
+	c := start(t, node.ClusterSpec{N: 1, GenNode: true})
 	n := c.Nodes[0]
-	top, err := tool.Topology()
-	require.NoError(t, err)
 
 	userData, err := os.ReadFile(filepath.Join(filepath.Dir(n.ConsolePath()), "naru.yaml"))
 	require.NoError(t, err)
@@ -268,8 +283,8 @@ func TestNode_UserDataOfV030FormWithNoSpecAPIBootsWithItsServicesAndLogsThatTheA
 	assert.NotContains(t, parsed.Spec, "api", "the form v0.3.0 wrote: no spec.api")
 
 	expectAll(t, n, judge.NodeAPI(false))
-	for _, s := range top.Running(true) {
-		require.NoError(t, n.WaitFor(context.Background(), bootTimeout, "started", "service="+s.Name), s.Name)
+	for _, s := range servicesOf(t, n) {
+		require.NoError(t, n.WaitFor(context.Background(), bootTimeout, "started", "service="+s), s)
 	}
 }
 

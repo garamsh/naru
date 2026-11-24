@@ -105,6 +105,7 @@ func TestParse_JoinFormRefusesEveryOtherFieldOfSpecAndNamesIt(t *testing.T) {
 		"dataDisk":     "  dataDisk:\n    label: OTHER\n    mountPoint: /var/lib/other\n",
 		"network":      "  network:\n    forwarding: [ipv4]\n",
 		"files":        "  files:\n    - path: /run/x\n      content: y\n",
+		"pki":          "  pki:\n    authorities:\n      - name: ca\n",
 		"time":         "  time:\n    servers: [10.0.0.1]\n",
 		"host":         "  host:\n    region: eu-1\n",
 		"orch":         "  orch:\n    peerURL: https://a:1\n",

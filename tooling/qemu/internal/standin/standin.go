@@ -1,5 +1,4 @@
-// Package standin is the service naru's QEMU tests configure in place of
-// gaon's Node Agent and control plane. It reports, on the console, the facts
+// Package standin is the service naru's QEMU tests configure on a Node. It reports, on the console, the facts
 // the tests read of a Node: that the data disk is mounted, that mvmd's socket
 // accepts connections, and that a peer Node's stand-in accepts connections
 // over the network. It then runs until it is stopped.

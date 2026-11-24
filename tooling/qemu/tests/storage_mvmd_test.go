@@ -42,7 +42,7 @@ func onStorage(nd *node.Node) (disks, snapshots, machines int) {
 // the snapshots and the run directories are on the XFS (ADR 0073). Before that layout mvmd
 // refused to start, so no host API call that needs it was answered.
 func TestNode_AStorageDiskHoldsMvmdsDisksSnapshotsAndRunDirectoriesWhileAMicroVMIsCreatedSnapshotAndResumed(t *testing.T) {
-	c := start(t, node.ClusterSpec{N: 1, Gaon: true, NodeAPI: true, Host: true, Configure: withStorageDisk})
+	c := start(t, node.ClusterSpec{N: 1, GenNode: true, NodeAPI: true, Host: true, Configure: withStorageDisk})
 	require.NotNil(t, c.Host)
 	nd := c.Nodes[0]
 	prov := c.Host.Provisioner

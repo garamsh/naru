@@ -14,7 +14,7 @@ func virtioDevices(t *testing.T, mutate func(*Spec)) []string {
 	dir := t.TempDir()
 	boot := dir + "/naru.img"
 	require.NoError(t, os.WriteFile(boot, nil, 0o644))
-	spec := Spec{Config: cfg(1, 2, true, false), Disk: boot, Dir: dir, Mcast: "230.78.0.1:5000"}
+	spec := Spec{Config: cfg(1, 2, false), Disk: boot, Dir: dir, Mcast: "230.78.0.1:5000"}
 	spec.Config.ExtraDisk = 512 << 20
 	mutate(&spec)
 	args, err := qemuArgs(spec, "naru15-node-1", "cidata.img", "data.img", "console.log")
@@ -54,7 +54,7 @@ func TestQemuArgs_TheExtraDiskCarriesItsSerialNumberAndTheDataDiskDoesNot(t *tes
 			dir := t.TempDir()
 			boot := dir + "/naru.img"
 			require.NoError(t, os.WriteFile(boot, nil, 0o644))
-			spec := Spec{Config: cfg(1, 2, true, false), Disk: boot, Dir: dir, Mcast: "230.78.0.1:5000"}
+			spec := Spec{Config: cfg(1, 2, false), Disk: boot, Dir: dir, Mcast: "230.78.0.1:5000"}
 			spec.Config.ExtraDisk, spec.Config.VirtioDisks, spec.Config.ExtraDiskSerial = 512<<20, tt.virtio, "S3RIAL-01"
 
 			args, err := qemuArgs(spec, "naru15-node-1", "cidata.img", "data.img", "console.log")

@@ -18,7 +18,6 @@ import (
 	"github.com/garamsh/naru/lib/init/dhcp4"
 	"github.com/garamsh/naru/lib/init/ext4"
 	"github.com/garamsh/naru/lib/init/iso9660"
-	"github.com/garamsh/naru/lib/init/keptpair"
 	"github.com/garamsh/naru/lib/init/netcfg"
 	"github.com/garamsh/naru/lib/init/registry"
 	"github.com/garamsh/naru/lib/init/timesync"
@@ -237,9 +236,6 @@ func (h *Host) checkVerity(dev string) error {
 func (h *Host) WriteRegistries(spec config.Spec) error {
 	return registry.Writer{Dir: registry.Dir}.Write(spec)
 }
-
-// SetAsidePair sets the pair file of p aside when its certificate lacks the Organization p names.
-func (h *Host) SetAsidePair(p config.KeptPair) (bool, error) { return keptpair.SetAside(p) }
 
 // EnableForwarding turns forwarding on for each family named.
 func (h *Host) EnableForwarding(families []config.Family) error {

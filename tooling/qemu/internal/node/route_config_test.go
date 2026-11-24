@@ -9,7 +9,7 @@ import (
 )
 
 func TestConfig_RoutesNoMasqueradeAndNetEchoAreInTheUserData(t *testing.T) {
-	c := cfg(1, 2, true, false)
+	c := cfg(1, 2, false)
 	c.Routes = []Route{{To: "10.77.2.0/24", Via: "10.78.0.2"}}
 	c.NoMasquerade = []string{"10.77.2.0/24"}
 	c.NetEcho = []string{"-listen", "10.77.1.2:9000"}
@@ -24,7 +24,7 @@ func TestConfig_RoutesNoMasqueradeAndNetEchoAreInTheUserData(t *testing.T) {
 }
 
 func TestConfig_WithoutThemTheUserDataHasNone(t *testing.T) {
-	n := parse(t, cfg(1, 2, true, false))
+	n := parse(t, cfg(1, 2, false))
 
 	assert.Empty(t, n.Spec.Network.Routes)
 	assert.NotContains(t, names(n), "netecho")

@@ -17,7 +17,7 @@ import (
 // udpPort is where probe records the datagrams it receives, and where /send and /spoof send them.
 const udpPort = 9999
 
-// probe is the microVM of the network tests (docs/architecture/harness.md): the test host reaches
+// probe is the microVM of the network tests (docs/architecture/image.md): the test host reaches
 // its HTTP API through the harness route and has it act from inside the microVM.
 //
 //	/probe?target=ip:port    dial the TCP address from the microVM: "ok" or "fail: <why>"

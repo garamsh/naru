@@ -1,4 +1,4 @@
-// Package command is naructl's command line: the gen commands, topology, and the Node API's client commands.
+// Package command is naructl's command line: the gen commands, and the clients of the Node API, the host API, the signer and orch.
 package command
 
 import (
@@ -55,19 +55,14 @@ type authority struct {
 }
 
 var (
-	clusterAuthority = authority{cn: "naru-ca", noun: "an authority"}
-	apiAuthority     = authority{subdir: pki.APIDir, cn: "naru-api-ca", noun: "a Node API authority"}
-	hostAuthority    = authority{subdir: pki.HostDir, cn: "naru-host-ca", noun: "a host authority"}
+	apiAuthority  = authority{subdir: pki.APIDir, cn: "naru-api-ca", noun: "a Node API authority"}
+	hostAuthority = authority{subdir: pki.HostDir, cn: "naru-host-ca", noun: "a host authority"}
 )
 
-// genAuthority is gen ca, gen api-ca and gen host-ca: they differ in where the authority goes.
+// genAuthority is gen api-ca and gen host-ca: they differ in where the authority goes.
 func genAuthority(a authority) binder {
 	return func(fs *pflag.FlagSet) runner {
-		where := "directory that receives ca.pem and ca.key (0600)"
-		if a.subdir != "" {
-			where = "the cluster's directory, which receives " + a.subdir + "/ca.pem and " + a.subdir + "/ca.key"
-		}
-		caDir := fs.String("ca-dir", "", where)
+		caDir := fs.String("ca-dir", "", "the authorities' directory, which receives "+a.subdir+"/ca.pem and "+a.subdir+"/ca.key (0600)")
 		return func(_ []string, stdout, _ io.Writer) error {
 			if err := require(fs, "ca-dir"); err != nil {
 				return err
@@ -88,87 +83,6 @@ func genAuthority(a authority) binder {
 			_, _ = fmt.Fprintf(stdout, "naructl: wrote %s and %s; keep %s in your secret store\n", filepath.Join(dir, pki.CertFile), filepath.Join(dir, pki.KeyFile), pki.KeyFile)
 			return nil
 		}
-	}
-}
-
-func genClient(fs *pflag.FlagSet) runner {
-	caDir := fs.String("ca-dir", "", "directory of ca.pem and ca.key")
-	cn := fs.String("cn", "", "the certificate's CN, the caller's identity to gaon")
-	out := fs.String("out", "", "directory that receives client.pem and client.key (0600)")
-	return func(args []string, stdout, stderr io.Writer) error {
-		if err := require(fs, "ca-dir", "cn", "out"); err != nil {
-			return err
-		}
-		ca, err := pki.Load(*caDir)
-		if err != nil {
-			return err
-		}
-		pair, err := ca.Client(*cn)
-		if err != nil {
-			return err
-		}
-		if err := pki.WritePair(*out, "client", pair); err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintf(stdout, "naructl: wrote %s and %s for CN %s\n", filepath.Join(*out, "client.pem"), filepath.Join(*out, "client.key"), *cn)
-		return nil
-	}
-}
-
-// EtcdClientCN is the subject CN of the pair gen etcd-client issues: the caller of etcd's client
-// port that is gaon's snapshot writer (ADR 0024). etcd authorizes no CN, any pair the CA signed is
-// accepted, so the name is for whoever reads etcd's logs.
-const EtcdClientCN = "gaon-etcd-snapshot"
-
-func genEtcdClient(fs *pflag.FlagSet) runner {
-	caDir := fs.String("ca-dir", "", "directory of ca.pem and ca.key")
-	out := fs.String("out", "", "directory that receives ca.crt, tls.crt and tls.key (0600), the keys of gaon's Secret etcd-snapshot-etcd-client")
-	return func(args []string, stdout, stderr io.Writer) error {
-		if err := require(fs, "ca-dir", "out"); err != nil {
-			return err
-		}
-		ca, err := pki.Load(*caDir)
-		if err != nil {
-			return err
-		}
-		pair, err := ca.Client(EtcdClientCN)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(*out, 0o755); err != nil {
-			return err
-		}
-		if err := pki.WriteFile(filepath.Join(*out, "tls.crt"), pair.CertPEM, 0o644); err != nil {
-			return err
-		}
-		if err := pki.WriteFile(filepath.Join(*out, "tls.key"), pair.KeyPEM, 0o600); err != nil {
-			return err
-		}
-		// etcd's members trust the CA and serve with certificates it signed: the one file is both the
-		// CA that signs their server certificates and the CA their client certificates are checked against.
-		if err := pki.WriteFile(filepath.Join(*out, "ca.crt"), ca.CertPEM, 0o644); err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintf(stdout, "naructl: wrote %s, %s and %s for CN %s\n", filepath.Join(*out, "ca.crt"), filepath.Join(*out, "tls.crt"), filepath.Join(*out, "tls.key"), EtcdClientCN)
-		return nil
-	}
-}
-
-func genToken(fs *pflag.FlagSet) runner {
-	caDir := fs.String("ca-dir", "", "directory of the cluster's authority, which holds tokens/")
-	name := fs.String("name", "", "the Node's name, such as node-2")
-	return func(args []string, stdout, stderr io.Writer) error {
-		if err := require(fs, "ca-dir", "name"); err != nil {
-			return err
-		}
-		if _, err := pki.Load(*caDir); err != nil {
-			return err
-		}
-		if _, err := pki.EnsureToken(*caDir, *name); err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintf(stdout, "naructl: %s holds the token of %s\n", filepath.Join(*caDir, pki.TokensDir, *name), *name)
-		return nil
 	}
 }
 

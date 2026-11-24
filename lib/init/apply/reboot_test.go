@@ -30,11 +30,11 @@ func TestApply_RebootRefusesWhatStagedRefusesAndAsksForNoReboot(t *testing.T) {
 		req  apply.Request
 	}{
 		{"a never field", apply.Request{Patch: patch(obj{"dataDisk": obj{"mountPoint": "/mnt"}}), Mode: apply.Reboot}},
-		{"a stale revision", apply.Request{Revision: 2, Patch: patch(obj{"controlPlane": true}), Mode: apply.Reboot}},
+		{"a stale revision", apply.Request{Revision: 2, Patch: patch(obj{"network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.Reboot}},
 		{"a result that does not validate", apply.Request{Patch: patch(obj{"services": []any{obj{"name": "a", "binary": "relative"}}}), Mode: apply.Reboot}},
 	}
 	control := newRig(t)
-	_, err := control.engine.Apply(apply.Request{Patch: patch(obj{"controlPlane": true}), Mode: apply.Reboot})
+	_, err := control.engine.Apply(apply.Request{Patch: patch(obj{"network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.Reboot})
 	require.NoError(t, err, "the control: a valid change is accepted in the same mode")
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -52,7 +52,7 @@ func TestApply_RebootRefusesWhatStagedRefusesAndAsksForNoReboot(t *testing.T) {
 func TestApply_ARebootModeDryRunListsTheRebootAndDoesNotAskForOne(t *testing.T) {
 	r := newRig(t)
 
-	res, err := r.engine.Apply(apply.Request{Patch: patch(obj{"controlPlane": true}), Mode: apply.Reboot, DryRun: true})
+	res, err := r.engine.Apply(apply.Request{Patch: patch(obj{"network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.Reboot, DryRun: true})
 
 	require.NoError(t, err)
 	assert.Equal(t, apply.Result{Revision: 0, Mode: apply.Reboot, DryRun: true,
@@ -64,7 +64,7 @@ func TestApply_AFailedStoreInRebootModeAsksForNoReboot(t *testing.T) {
 	r := newRig(t)
 	r.failOn = "store"
 
-	res, err := r.engine.Apply(apply.Request{Patch: patch(obj{"controlPlane": true}), Mode: apply.Reboot})
+	res, err := r.engine.Apply(apply.Request{Patch: patch(obj{"network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.Reboot})
 
 	var stored *apply.StoreError
 	require.ErrorAs(t, err, &stored)

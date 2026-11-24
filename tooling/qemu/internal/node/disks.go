@@ -29,21 +29,16 @@ const (
 // both are on one file system). It has nothing of the Node in it: what differs
 // between Nodes is on the NoCloud drive.
 func BuildDataDisk(dir, inputsDir string) (string, error) {
-	return BuildDataDiskWith(dir, inputsDir, "", "")
+	return BuildDataDiskWith(dir, inputsDir, "")
 }
 
-// BuildDataDiskWith is BuildDataDisk with the directory agentPair, when it is not empty, at
-// gaon-node-agent: a Node's data disk that already keeps an agent pair; and the directory
-// extensions, when it is not empty, at extensions: a Node that already stores system extensions
-// (ADR 0055).
-func BuildDataDiskWith(dir, inputsDir, agentPair, extensions string) (string, error) {
+// BuildDataDiskWith is BuildDataDisk with the directory extensions, when it is not empty, at
+// extensions: a Node that already stores system extensions (ADR 0055).
+func BuildDataDiskWith(dir, inputsDir, extensions string) (string, error) {
 	data := filepath.Join(dir, "data.img")
 	trees := map[string]string{}
 	if inputsDir != "" {
 		trees["inputs"] = inputsDir
-	}
-	if agentPair != "" {
-		trees["gaon-node-agent"] = agentPair
 	}
 	if extensions != "" {
 		trees["extensions"] = extensions

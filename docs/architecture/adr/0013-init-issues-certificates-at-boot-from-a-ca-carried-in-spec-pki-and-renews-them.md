@@ -1,6 +1,6 @@
 # ADR 0013: init issues certificates at boot from a CA carried in spec.pki and renews them
 
-> Status: accepted
+> Status: superseded by [ADR 0115](./0115-init-issues-no-certificates-and-spec-pki-is-removed.md)
 > Date: 2026-11-12
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

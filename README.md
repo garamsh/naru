@@ -10,13 +10,11 @@ naru is the node OS of the garamsh microVM platform. It installs on a machine, r
 - **Installer**: the tool that installs naru on a machine.
 - **Kernels**: naru builds and manages the host kernel and the guest kernel.
 
-naru starts and watches the services its config names (mvmd, the gaon Node Agent and the gaon control plane), which run as host services and not inside microVMs. It has no control plane, API server or store of its own.
+naru starts and watches the services its config names (mvmd and `naru-hostd` among them), which run as host services and not inside microVMs. It has no control plane, API server or store of its own.
 
 ## Neighbouring projects
 
-- **gaon** is the orchestration project. It calls naru's node API, and naru does not know gaon's resource API. Machine and cluster management are gaon's resources and controllers.
 - **mvmd** is the node-local microVM runtime that naru starts as a host service.
-- Dependencies are one-way: gaon to naru.
 - Containers are not an execution unit anywhere in the project, development and CI included. The OS image is not a container image.
 
 ## Status

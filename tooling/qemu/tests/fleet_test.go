@@ -25,7 +25,7 @@ import (
 	"github.com/garamsh/naru/tooling/qemu/internal/seed"
 )
 
-// The fleet is the control hosts and the hosts of the multi-host scenarios (docs/architecture/harness.md,
+// The fleet is the control hosts and the hosts of the multi-host scenarios (docs/architecture/image.md,
 // "Fleets"): control Nodes 1..controls run the signer and orchd, the Nodes after them run naru-hostd,
 // and every Node is on the QEMU multicast network at 10.78.0.<n>. The scenarios drive the product the
 // way an operator does: the keys are throwaway ones the test makes with naructl, the root certificate
@@ -189,8 +189,7 @@ func newFleet(t *testing.T, o fleetOpts) *fleet {
 
 	forward := append(append([]string{orchPort}, metricsPorts...), o.forward...)
 	c := start(t, node.ClusterSpec{
-		N: o.controls + o.hosts, Gaon: true, NodeAPI: true, Host: true, Hosts: f.hosts(), Capture: o.capture,
-		Disable: []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"},
+		N: o.controls + o.hosts, GenNode: true, NodeAPI: true, Host: true, Hosts: f.hosts(), Capture: o.capture,
 		Forward: forward, HostMemoryMiB: defaultNodeMiB + o.vmMiB, HostCPUs: o.vmCPUs, GenFlags: f.genFlags, ExtraServices: o.services, EditUserData: o.userData,
 		WritableDisk: o.upgradable,
 	})

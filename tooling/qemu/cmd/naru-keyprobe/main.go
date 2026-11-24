@@ -4,7 +4,7 @@
 //
 //	naru96-keyprobe: scanned=<files> found=<comma-separated paths, or none>
 //
-// The harness gives it the public halves of the authorities (docs/architecture/harness.md).
+// The harness gives it the public halves of the authorities (docs/architecture/image.md).
 package main
 
 import (

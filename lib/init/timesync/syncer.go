@@ -103,7 +103,6 @@ type Syncer struct {
 	status  Status        // Servers is left out; Status adds it
 	wake    chan struct{} // Configure signals Run
 	synced  bool          // a synchronisation has succeeded since New
-	onStep  []func(Result)
 }
 
 // New returns a Syncer that asks through query and corrects clock. It asks no server until
@@ -124,14 +123,6 @@ func (s *Syncer) Configure(servers []string) {
 	case s.wake <- struct{}{}:
 	default:
 	}
-}
-
-// OnStep has fn called after each synchronisation that stepped the clock, with its result, on
-// the goroutine that synchronised.
-func (s *Syncer) OnStep(fn func(Result)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.onStep = append(s.onStep, fn)
 }
 
 // Status returns the state now.
@@ -161,15 +152,11 @@ func (s *Syncer) SyncNow(ctx context.Context) (Result, error) {
 
 	res, err := s.sync(ctx, servers)
 	s.mu.Lock()
-	var notify []func(Result)
 	if err != nil {
 		s.status.Failed, s.status.Err = s.clock.Now(), err.Error()
 	} else {
 		s.status.Last, s.status.Failed, s.status.Err = &res, time.Time{}, ""
 		s.synced = true
-		if res.Correction == Step {
-			notify = append(notify, s.onStep...)
-		}
 	}
 	// A Configure during the attempt asked for another at once, which this one must not defer.
 	if gen == s.gen {
@@ -180,9 +167,6 @@ func (s *Syncer) SyncNow(ctx context.Context) (Result, error) {
 		s.due = s.clock.Now().Add(interval)
 	}
 	s.mu.Unlock()
-	for _, fn := range notify {
-		fn(res)
-	}
 	return res, err
 }
 

@@ -104,7 +104,6 @@ func (h *Host) ApplyNetwork(cfg netcfg.Config, log *slog.Logger) (netcfg.Applied
 			if err != nil {
 				return applied, err
 			}
-			applied.Addresses = append(applied.Addresses, lease.Address.Addr())
 			applied.NTP = append(applied.NTP, lease.NTP...)
 			leased = lease.DNS
 			continue
@@ -113,7 +112,6 @@ func (h *Host) ApplyNetwork(cfg netcfg.Config, log *slog.Logger) (netcfg.Applied
 			if err := h.links.AddAddr(l, a); err != nil {
 				return applied, fmt.Errorf("add %s to %s: %w", a, l.Name, err)
 			}
-			applied.Addresses = append(applied.Addresses, a.Addr())
 		}
 		if want.Gateway.IsValid() {
 			if err := h.links.SetDefaultRoute(l, want.Gateway); err != nil {

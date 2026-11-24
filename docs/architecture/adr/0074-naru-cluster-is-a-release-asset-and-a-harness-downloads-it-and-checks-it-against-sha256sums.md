@@ -1,6 +1,6 @@
 # ADR 0074: naru-cluster is a release asset, and a harness downloads it and checks it against SHA256SUMS
 
-> Status: accepted
+> Status: superseded by [ADR 0114](./0114-naru-runs-no-kubernetes-or-gaon-and-their-layouts-programs-images-tests-and-documents-are-removed.md)
 > Date: 2026-11-15
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

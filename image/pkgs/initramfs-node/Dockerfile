@@ -23,18 +23,17 @@ RUN : "${NARU_VERSION:?initramfs: NARU_VERSION is the version the image is built
       -ldflags="-s -w -X github.com/garamsh/naru/lib/init/run.buildVersion=$NARU_VERSION $EXTRA_LDFLAGS" \
       -o /tmp/naru-init ./cmd/naru-init \
  && install-go.sh "$NARU_GO_VERSION" /tmp/naru-init /stage/naru-init
-COPY --from=naru /usr/bin/naru-standin /usr/bin/naru-vip /usr/bin/naru-fence /stage/
+COPY --from=naru /usr/bin/naru-standin /stage/
 COPY --from=e2fsprogs /usr/sbin/mke2fs /stage/mkfs.ext4
 COPY --from=xfsprogs /usr/sbin/mkfs.xfs /stage/
 COPY --from=nftables /usr/sbin/nft /stage/
-COPY --from=etcd /usr/bin/etcd /stage/
 COPY --from=ecr-login /usr/bin/docker-credential-ecr-login /stage/
 COPY --from=rolesanywhere /usr/bin/aws_signing_helper /stage/
 COPY --from=cacert /etc/ssl/certs/ca-certificates.crt /cacert.crt
 COPY --from=testroot / /testroot/
 COPY initramfs.list /initramfs.list
 RUN { cat /cacert.crt; if [ -f /testroot/ca.pem ]; then cat /testroot/ca.pem; fi; } >/stage/ca-certificates.crt \
- && for f in naru-init mkfs.ext4 mkfs.xfs naru-standin naru-vip naru-fence etcd docker-credential-ecr-login aws_signing_helper; do \
+ && for f in naru-init mkfs.ext4 mkfs.xfs naru-standin docker-credential-ecr-login aws_signing_helper; do \
       file "/stage/$f" | grep -Eq 'statically linked|static-pie linked' || { echo "initramfs: $f is not a static executable" >&2; exit 1; }; \
     done \
  && sed "s#@OUT@#/stage#" /initramfs.list >/node.raw.list \

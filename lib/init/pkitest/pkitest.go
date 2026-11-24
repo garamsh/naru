@@ -1,5 +1,5 @@
-// Package pkitest makes certificate authorities for the tests of the packages
-// that read spec.pki.
+// Package pkitest makes certificate authorities and pairs for the tests of the
+// packages that read the PEM of spec.api and spec.registries.
 package pkitest
 
 import (

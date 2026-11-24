@@ -1,17 +1,15 @@
-// Package layout is the one owner of how a gaon Node is laid out: the services it runs and their
+// Package layout is the one owner of how a Node is laid out: the services it runs and their
 // arguments, the certificates it carries and where, mvmd's configuration, and the paths on the
-// data disk (ADR 0015). It writes a Node's NoCloud user-data (naru.yaml) and network-config.
+// data disk (ADR 0015, ADR 0060). It writes a Node's NoCloud user-data (naru.yaml) and
+// network-config.
 package layout
 
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"path"
 	"regexp"
-	"slices"
-	"strings"
 
 	"go.yaml.in/yaml/v3"
 
@@ -34,16 +32,6 @@ const (
 	// SupervisorCgroup holds the supervisors of Machines, outside mvmd's cgroup.
 	SupervisorCgroup = "/sys/fs/cgroup/naru/detached"
 
-	// GaonCertDir holds the certificate files init writes; the services name them.
-	GaonCertDir = "/run/gaon"
-	// AgentCertDir is where the Node Agent keeps the pair it was issued, on the data disk so that it
-	// survives a reboot; BootstrapTokenFile is the Node's own token, and BootstrapTokensFile the
-	// control-plane Node's list of every Node's token.
-	AgentCertDir = wire.DataMount + "/gaon-node-agent"
-	// AgentPair is the file of AgentCertDir that holds the Node Agent's certificate and key, and
-	// AgentOrganization the Organization its signer requires of the certificate's subject.
-	AgentPair         = "node-agent.pem"
-	AgentOrganization = "gaon:nodes"
 	// RegistryFilesDir is where init writes what mvmd reads for spec.registries.
 	RegistryFilesDir = "/run/naru"
 	// MvmdHome is mvmd's HOME, which init makes with mode 0700 under RegistryFilesDir: the
@@ -58,11 +46,7 @@ const (
 	AWSCredentialsEndpoint = "http://127.0.0.1:" + AWSCredentialsPort
 	// HelperPath is mvmd's PATH: the image's programs and /run/bin, where a file in spec.files may
 	// add a credential helper.
-	HelperPath          = "/bin:/run/bin"
-	BootstrapTokenFile  = GaonCertDir + "/bootstrap-token"
-	BootstrapTokensFile = GaonCertDir + "/bootstrap-tokens"
-	// EtcdDir is etcd's data directory, on the data disk beside mvmd's state directory.
-	EtcdDir = wire.DataMount + "/etcd"
+	HelperPath = "/bin:/run/bin"
 )
 
 // NIC is a network card besides the first, with a static address and no gateway.
@@ -71,7 +55,7 @@ type NIC struct {
 	Address netip.Prefix
 }
 
-// Peer is another Node of the cluster: its address, which is the next hop to its Machines, and
+// Peer is another Node on the Node's network: its address, which is the next hop to its Machines, and
 // the IPv4 prefix its mvmd gives them.
 type Peer struct {
 	Address       netip.Addr
@@ -82,9 +66,13 @@ type Peer struct {
 type Node struct {
 	// Name is the Node's name, such as "node-1".
 	Name string
-	// Mode is the Node's role and how it comes by its certificates. A control-plane Mode sets
-	// spec.controlPlane: the Node runs etcd and gaon's control plane.
-	Mode Mode
+	// Joined is set for a host orch admitted (ADR 0059): it is named by its ID, has no inputs tree and
+	// so no registry service of its own, and serves the host API from the certificate orch's signer
+	// issued to the key the host made.
+	Joined bool
+	// NoRegistry leaves the registry service out of a Node that has an inputs tree, for an operator
+	// whose Nodes pull from elsewhere (gen node --disable registry).
+	NoRegistry bool
 
 	// Address is the Node's address and its network's prefix, MAC its card's, and Gateway,
 	// Nameservers and Search what its network-config names. Search may be empty.
@@ -96,25 +84,14 @@ type Node struct {
 	// ExtraNIC, when set, is a second card.
 	ExtraNIC *NIC
 
-	// APIServer is the address of the control-plane Node, which every agent dials; the API server's
-	// serving certificate names it. ServingAddresses are more addresses it names.
-	APIServer        netip.Addr
+	// ServingAddresses are addresses the Node's serving certificates name besides its own and the
+	// loopback.
 	ServingAddresses []netip.Addr
-	// Members are the control-plane Nodes of a control plane of several, in the priority order the
-	// holder of APIServer, then the virtual address, takes them in; the Node is one. Empty is a
-	// control plane of the Node alone (ADR 0024).
-	Members []Member
-
-	// Binaries maps a service's name to the executable that runs it, in place of the image's
-	// /bin/<name>.
-	Binaries map[string]string
-	// Disable names services left out of the Node's configuration.
-	Disable []string
 
 	// MachinePrefix is the IPv4 prefix mvmd gives its Machines; the first host address of it is the
 	// Machines' gateway and resolver.
 	MachinePrefix netip.Prefix
-	// Peers are the other Nodes of the cluster. The Node routes to each one's MachinePrefix via its
+	// Peers are the other Nodes on its network. The Node routes to each one's MachinePrefix via its
 	// Address (spec.network.routes), and mvmd keeps a Machine's source address for traffic to it
 	// (network.no_masquerade).
 	Peers []Peer
@@ -126,15 +103,8 @@ type Node struct {
 	// field: the booted image's guest.json names them (ADR 0106).
 	FirecrackerSHA256 string
 
-	// Token is the Node's bootstrap token, which its agent presents for a certificate signing
-	// request. Tokens, on a control-plane Node, is every Node's token, its own included: the API
-	// server's token file. Neither is set when Mode has the pairs as files.
-	Token  string
-	Tokens []string
-	// CA is the cluster's authority. Only a control-plane Node that issues carries its key.
-	CA *pki.CA
-	// API is the Node API authority, separate from CA. When set, spec.api carries its certificate
-	// and a serving pair it issued, and never its key.
+	// API is the Node API authority. When set, spec.api carries its certificate and a serving pair
+	// it issued, and never its key.
 	API *pki.CA
 	// Host, when set, makes the Node serve the host API: naru-hostd runs, with a serving pair
 	// issued from Host's authority, and spec.host carries its region and labels.
@@ -156,10 +126,10 @@ type Node struct {
 
 	// Registries are the registries mvmd pulls from besides what the image trusts: spec.registries.
 	// Each one's CA is the PEM, not a path. The registry service of the Node is one of them, by
-	// the host RegistryAddr, when the Node is given its CA; a HostOnly Node runs none.
+	// the host RegistryAddr, when the Node is given its CA; a Joined Node runs none.
 	Registries []Registry
-	// AWS is the IAM Roles Anywhere profile the credential helpers use, spec.aws. The Node's
-	// certificate and key are the Node Agent's pair, AgentCertDir/AgentPair.
+	// AWS is the IAM Roles Anywhere profile the credential helpers use, spec.aws. The certificate
+	// and key are naru-hostd's, so a Node with AWS serves the host API.
 	AWS *AWS
 	// Storage are the extra disks the Node offers as XFS, found by file system or partition label.
 	// The first is mounted at wire.MvmdStorageMount, where mvmd's disks, snapshots and run
@@ -194,24 +164,15 @@ type StorageDisk struct {
 }
 
 type service struct {
-	Name         string            `yaml:"name"`
-	Binary       string            `yaml:"binary"`
-	Args         []string          `yaml:"args,omitempty"`
-	Env          map[string]string `yaml:"env,omitempty"`
-	ControlPlane bool              `yaml:"controlPlane,omitempty"`
+	Name   string            `yaml:"name"`
+	Binary string            `yaml:"binary"`
+	Args   []string          `yaml:"args,omitempty"`
+	Env    map[string]string `yaml:"env,omitempty"`
 	// RestartPolicy is "on-failure" for a service that runs until it succeeds, and empty for one init keeps running.
-	RestartPolicy string    `yaml:"restartPolicy,omitempty"`
-	KeptPair      *keptPair `yaml:"keptPair,omitempty"`
+	RestartPolicy string `yaml:"restartPolicy,omitempty"`
 	// RestartOnChange and LogFiles are files init watches or follows for the service.
 	RestartOnChange []string `yaml:"restartOnChange,omitempty"`
 	LogFiles        []string `yaml:"logFiles,omitempty"`
-}
-
-// keptPair is the pair a service keeps on the data disk, which init sets aside when its
-// certificate's subject lacks the Organization the service's signer requires.
-type keptPair struct {
-	File         string `yaml:"file"`
-	Organization string `yaml:"organization"`
 }
 
 type registryEntry struct {
@@ -256,34 +217,6 @@ type file struct {
 	Restart []string `yaml:"restart,omitempty"`
 }
 
-// pkiSpec, pkiAuthority and pkiCertificate are spec.pki as docs/architecture/config.md names it.
-type pkiSpec struct {
-	Authorities  []pkiAuthority   `yaml:"authorities"`
-	Certificates []pkiCertificate `yaml:"certificates"`
-}
-
-type pkiAuthority struct {
-	Name            string `yaml:"name"`
-	Certificate     string `yaml:"certificate"`
-	Key             string `yaml:"key,omitempty"`
-	CertificatePath string `yaml:"certificatePath"`
-	KeyPath         string `yaml:"keyPath,omitempty"`
-}
-
-type pkiCertificate struct {
-	Name            string   `yaml:"name"`
-	Authority       string   `yaml:"authority"`
-	CertificatePath string   `yaml:"certificatePath"`
-	KeyPath         string   `yaml:"keyPath"`
-	CommonName      string   `yaml:"commonName"`
-	Organization    string   `yaml:"organization,omitempty"`
-	Usage           string   `yaml:"usage"`
-	DNSNames        []string `yaml:"dnsNames,omitempty"`
-	IPAddresses     []string `yaml:"ipAddresses,omitempty"`
-	NodeAddresses   bool     `yaml:"nodeAddresses,omitempty"`
-	Restart         []string `yaml:"restart,omitempty"`
-}
-
 // timeSpec is spec.time.
 type timeSpec struct {
 	Servers []string `yaml:"servers"`
@@ -302,8 +235,7 @@ type nodeConfig struct {
 		Name string `yaml:"name"`
 	} `yaml:"metadata"`
 	Spec struct {
-		ControlPlane bool `yaml:"controlPlane"`
-		DataDisk     struct {
+		DataDisk struct {
 			Label       string `yaml:"label"`
 			MountPoint  string `yaml:"mountPoint"`
 			FormatBlank bool   `yaml:"formatBlank,omitempty"`
@@ -314,7 +246,6 @@ type nodeConfig struct {
 		} `yaml:"network"`
 		Services []service `yaml:"services"`
 		Files    []file    `yaml:"files"`
-		PKI      *pkiSpec  `yaml:"pki,omitempty"`
 		API      *apiSpec  `yaml:"api,omitempty"`
 		Time     *timeSpec `yaml:"time,omitempty"`
 		// Registries and AWS are spec.registries and spec.aws.
@@ -335,13 +266,15 @@ func (n Node) Check() error {
 	case n.Name == "":
 		return errors.New("a Node needs a name")
 	case !dnsLabel.MatchString(n.Name):
-		return fmt.Errorf("the name %q is not a DNS label (lower-case letters, digits and '-', at most 63, starting and ending with a letter or digit); it is the Node's CN, its etcd name and its metadata name", n.Name)
+		return fmt.Errorf("the name %q is not a DNS label (lower-case letters, digits and '-', at most 63, starting and ending with a letter or digit); it is the Node's CN and its metadata name", n.Name)
 	case !n.Address.IsValid() || !n.Address.Addr().Is4():
 		return errors.New("the address is not an IPv4 address with a prefix length")
 	case !n.MachinePrefix.IsValid() || !n.MachinePrefix.Addr().Is4():
 		return errors.New("the Machine prefix is not an IPv4 prefix")
+	case n.AWS != nil && n.Host == nil:
+		return errors.New("spec.aws takes naru-hostd's certificate and key: a Node with an IAM Roles Anywhere profile serves the host API")
 	}
-	if err := n.checkGaon(); err != nil {
+	if err := n.checkJoined(); err != nil {
 		return err
 	}
 	if err := n.checkPeers(); err != nil {
@@ -350,53 +283,24 @@ func (n Node) Check() error {
 	if err := n.checkStorage(); err != nil {
 		return err
 	}
-	if err := n.Mode.check(n.Token, n.Tokens, n.Disable); err != nil {
-		return err
-	}
-	if err := n.checkMembers(); err != nil {
-		return err
-	}
 	if n.Host != nil {
 		if err := n.Host.check(); err != nil {
 			return err
 		}
 	}
-	if err := n.checkDaemons(); err != nil {
-		return err
-	}
-	for _, name := range n.Disable {
-		if !Gaon.Has(name) {
-			return fmt.Errorf("cannot disable %q: the services that can be left out are %s", name, strings.Join(Gaon.Names(), ", "))
-		}
-	}
-	for name, bin := range n.Binaries {
-		if !Gaon.Has(name) {
-			return fmt.Errorf("cannot give %q a binary: the services that can have one are %s", name, strings.Join(Gaon.Names(), ", "))
-		}
-		if !path.IsAbs(bin) {
-			return fmt.Errorf("the binary of %s, %q, is not an absolute path", name, bin)
-		}
-	}
-	return nil
+	return n.checkDaemons()
 }
 
-// checkGaon reports what a Node that runs gaon lacks, or a Node that runs none carries: a HostOnly
-// Node has no API server, authority or token, and serves the host API from a certificate it was issued.
-func (n Node) checkGaon() error {
-	if n.Mode != HostOnly {
-		switch {
-		case !n.APIServer.IsValid():
-			return errors.New("the API server's address is not set")
-		case n.CA == nil:
-			return errors.New("the cluster's authority is not set")
-		}
-		return nil
-	}
+// checkJoined reports what a Joined Node lacks or carries: it serves the host API from the
+// certificate it was issued, and has no peers, whose routes it is not given.
+func (n Node) checkJoined() error {
 	switch {
+	case !n.Joined:
+		return nil
 	case n.Host == nil || n.Host.Certificate == "":
-		return errors.New("a Node that runs no gaon serves the host API from the certificate it was issued")
-	case n.CA != nil || n.APIServer.IsValid() || len(n.Members) > 0 || len(n.Peers) > 0 || len(n.Disable) > 0:
-		return errors.New("a Node that runs no gaon has no cluster authority, API server, members, peers or disabled services")
+		return errors.New("a joined host serves the host API from the certificate it was issued")
+	case len(n.Peers) > 0:
+		return errors.New("a joined host has no peers")
 	}
 	return nil
 }
@@ -456,24 +360,10 @@ func (n Node) checkPeers() error {
 	return nil
 }
 
-func gaonPath(name string) string { return path.Join(GaonCertDir, name) }
-
-// binary is the executable of a service: the one Binaries names, or fallback.
-func (n Node) binary(name, fallback string) string {
-	if b, ok := n.Binaries[name]; ok {
-		return b
-	}
-	return fallback
-}
-
-func (n Node) apiRoot() string {
-	return "https://" + net.JoinHostPort(n.APIServer.String(), wire.KubeAPIPort) + "/apis/compute.gaon.garam.sh/v1alpha1"
-}
-
 // UserData is the Node's naru.yaml, its NoCloud user-data. It carries mvmd's configuration as a
-// file for init to write under /run; its services, in the order init starts them, are mvmd, the
-// registry (the scheduler may bind a Machine to any Node, and mvmd pulls from the registry on its
-// own Node), then gaon's. A HostOnly Node runs mvmd alone of these: its registries are its profile's.
+// file for init to write under /run; its services, in the order init starts them, are mvmd,
+// naru-hostd when the Node serves the host API, the registry mvmd pulls from on its own Node (a
+// Joined Node runs none: its registries are its profile's), and aws-credentials with spec.aws.
 func (n Node) UserData() ([]byte, error) {
 	if err := n.Check(); err != nil {
 		return nil, err
@@ -486,11 +376,10 @@ func (n Node) UserData() ([]byte, error) {
 	c.APIVersion = "naru.garam.sh/v1alpha1"
 	c.Kind = "NodeConfig"
 	c.Metadata.Name = "naru-" + n.Name
-	if n.Mode == HostOnly {
+	if n.Joined {
 		// A joined host is named by its ID: the join form had no name for it (ADR 0059).
 		c.Metadata.Name = n.Name
 	}
-	c.Spec.ControlPlane = n.Mode.ControlPlane()
 	c.Spec.DataDisk.Label = wire.DataLabel
 	c.Spec.DataDisk.MountPoint = wire.DataMount
 	c.Spec.Network.Forwarding = []string{"ipv4"}
@@ -498,12 +387,6 @@ func (n Node) UserData() ([]byte, error) {
 		c.Spec.Network.Routes = append(c.Spec.Network.Routes, route{To: p.MachinePrefix, Via: p.Address})
 	}
 	c.Spec.Files = []file{{Path: MvmdConfig, Mode: "0600", Content: string(mvmdJSON) + "\n", Template: "guest"}}
-	certFiles, err := n.certFiles()
-	if err != nil {
-		return nil, err
-	}
-	c.Spec.Files = append(c.Spec.Files, certFiles...)
-	c.Spec.Files = append(c.Spec.Files, n.tokenFiles()...)
 	if n.Host != nil {
 		hostFiles, err := n.hostFiles()
 		if err != nil {
@@ -515,9 +398,6 @@ func (n Node) UserData() ([]byte, error) {
 			RevocationPublicKey: n.revocationKey(), RevocationList: n.Host.RevocationList,
 		}
 	}
-	if n.Mode.plan(n.Name).specPKI {
-		c.Spec.PKI = n.pkiSpec()
-	}
 	if c.Spec.API, err = n.specAPI(); err != nil {
 		return nil, fmt.Errorf("issue the Node API's serving pair: %w", err)
 	}
@@ -526,7 +406,7 @@ func (n Node) UserData() ([]byte, error) {
 	}
 	c.Spec.Registries = n.registryEntries()
 	if a := n.AWS; a != nil {
-		cert, key := n.awsPair()
+		cert, key := n.hostPair()
 		c.Spec.AWS = &awsSpec{Region: a.Region, TrustAnchorArn: a.TrustAnchorArn, ProfileArn: a.ProfileArn, RoleArn: a.RoleArn, Certificate: cert, Key: key}
 	}
 	for i, d := range n.Storage {
@@ -538,205 +418,39 @@ func (n Node) UserData() ([]byte, error) {
 	}
 	n.daemonSpecs(&c)
 	c.Spec.Services = n.services()
-	if n.Host != nil {
-		// After mvmd, which it dials; it is no service of the topology, so no Node leaves it out by
-		// --disable and only a Node given a host authority runs it.
-		c.Spec.Services = slices.Insert(c.Spec.Services, 1, n.hostService())
-	}
-	n.withoutDisabled(&c)
 	return yaml.Marshal(c)
 }
 
-// withoutDisabled drops the disabled services from the Node's list, and from the restart lists of
-// spec.pki and spec.files, which init refuses to resolve for a service the Node does not run.
-func (n Node) withoutDisabled(c *nodeConfig) {
-	if len(n.Disable) == 0 {
-		return
-	}
-	c.Spec.Services = slices.DeleteFunc(c.Spec.Services, func(s service) bool { return slices.Contains(n.Disable, s.Name) })
-	for i := range c.Spec.Files {
-		r := &c.Spec.Files[i].Restart
-		*r = slices.DeleteFunc(*r, func(s string) bool { return slices.Contains(n.Disable, s) })
-	}
-	if c.Spec.PKI != nil {
-		for i := range c.Spec.PKI.Certificates {
-			r := &c.Spec.PKI.Certificates[i].Restart
-			*r = slices.DeleteFunc(*r, func(s string) bool { return slices.Contains(n.Disable, s) })
-		}
-	}
-}
-
-// tokenFiles are the Node's token, and the list of every token on a control-plane Node, 0600. The
-// list restarts the API server, so a patch to its content takes effect (ADR 0081).
-func (n Node) tokenFiles() []file {
-	p := n.Mode.plan(n.Name)
-	if !p.token {
-		return nil
-	}
-	files := []file{{Path: BootstrapTokenFile, Mode: "0600", Content: n.Token + "\n"}}
-	if p.tokenList {
-		files = append(files, file{Path: BootstrapTokensFile, Mode: "0600", Content: TokensContent(n.Tokens), Restart: []string{Gaon.APIServer}})
-	}
-	return files
-}
-
-// certFiles are the certificate files of the Node: the CA's certificate on every Node, the agent's
-// pair when the pairs are files, and, on a control-plane Node that does not issue, the pairs of the
-// API server, the scheduler and the controllers. The keys are 0600 and the certificates 0644. None
-// carries the CA's key.
-func (n Node) certFiles() ([]file, error) {
-	p := n.Mode.plan(n.Name)
-	if !p.caFile {
-		return nil, nil // init writes the CA and every pair from spec.pki
-	}
-	pair := func(name, cn string) (pki.Pair, error) {
-		switch name {
-		case etcdServer.name:
-			return n.CA.Server(cn, n.etcdServerIPs()...)
-		case etcdPeer.name:
-			return n.CA.ClientAt(cn, net.IP(n.Address.Addr().AsSlice()))
-		}
-		if name == "apiserver" {
-			ips := []net.IP{net.IP(n.APIServer.AsSlice())}
-			for _, a := range n.ServingAddresses {
-				ips = append(ips, net.IP(a.AsSlice()))
-			}
-			return n.CA.Server(cn, ips...)
-		}
-		return n.CA.Client(cn)
-	}
-	files := []file{{Path: gaonPath("ca.pem"), Mode: "0644", Content: string(n.CA.CertPEM)}}
-	for _, ps := range p.pairs {
-		pr, err := pair(ps.name, ps.cn)
-		if err != nil {
-			return nil, fmt.Errorf("issue %s: %w", ps.name, err)
-		}
-		files = append(files,
-			file{Path: gaonPath(ps.name + ".pem"), Mode: "0644", Content: string(pr.CertPEM)},
-			file{Path: gaonPath(ps.name + ".key"), Mode: "0600", Content: string(pr.KeyPEM)},
-		)
-	}
-	return files, nil
-}
-
-// pkiSpec is the control-plane Node's spec.pki: the cluster's CA with its key, written where the
-// services name it (the controllers sign agents' requests with it), and the three pairs the Node's
-// services take, each restarting its service when init renews it. The agent's pair is not among
-// them: the agent is issued its own through the API server. The paths are those the files take otherwise, so services() is the same either way.
-// The serving certificate names the Node's addresses and the loopback (nodeAddresses), APIServer and
-// ServingAddresses.
-func (n Node) pkiSpec() *pkiSpec {
-	cert := func(name, cn, usage, service string) pkiCertificate {
-		return pkiCertificate{
-			Name: name, Authority: "gaon", CertificatePath: gaonPath(name + ".pem"), KeyPath: gaonPath(name + ".key"),
-			CommonName: cn, Usage: usage, Restart: []string{service},
-		}
-	}
-	apiserver := cert("apiserver", "gaon-apiserver", "server", "gaon-apiserver")
-	apiserver.NodeAddresses = true
-	// The API server's address is named whether or not it is one of the Node's own: an operator's
-	// network-config, or an address behind a forward, would otherwise leave every agent unable to verify it.
-	apiserver.IPAddresses = []string{n.APIServer.String()}
-	for _, a := range n.ServingAddresses {
-		if a != n.APIServer {
-			apiserver.IPAddresses = append(apiserver.IPAddresses, a.String())
-		}
-	}
-	etcdSrv := cert(etcdServer.name, etcdServer.cn, "server", "etcd")
-	etcdSrv.NodeAddresses = true
-	etcdPeerCert := cert(etcdPeer.name, etcdPeer.cn, "client", "etcd")
-	etcdPeerCert.NodeAddresses = true
-	return &pkiSpec{
-		Authorities: []pkiAuthority{{
-			Name: "gaon", Certificate: string(n.CA.CertPEM), Key: string(n.CA.KeyPEM), CertificatePath: gaonPath("ca.pem"), KeyPath: gaonPath("ca.key"),
-		}},
-		Certificates: []pkiCertificate{
-			apiserver,
-			cert("scheduler", "gaon-scheduler", "client", "gaon-scheduler"),
-			cert("controllers", "gaon-controllers", "client", "gaon-controllers"),
-			etcdSrv, etcdPeerCert,
-			cert(apiserverTo.name, apiserverTo.cn, "client", "gaon-apiserver"),
-		},
-	}
-}
-
-// services are the Node's, in the order init starts them: mvmd; the registry; etcd, then the API
-// server that dials it, then the scheduler and the controllers that dial the API server, on the
-// control-plane Node (init leaves them out elsewhere); the Node Agent, which dials mvmd's socket and
-// the API server, last. Each dials what is before it and retries or is restarted by init, so the
-// order is a courtesy and no service depends on it for correctness (docs/architecture/image.md).
+// services are the Node's, in the order init starts them: mvmd; naru-hostd, which dials it, when
+// the Node serves the host API; the registry, on a Node that has an inputs tree; aws-credentials,
+// whose session mvmd's credential helper reads.
 func (n Node) services() []service {
-	creds := n.Mode.plan(n.Name)
-	list := []service{
-		{
-			Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", MvmdConfig},
-			Env: n.mvmdEnv(), LogFiles: []string{EcrLoginLog},
-		},
+	list := []service{{
+		Name: "mvmd", Binary: "/bin/mvmd", Args: []string{"-config", MvmdConfig},
+		Env: n.mvmdEnv(), LogFiles: []string{EcrLoginLog},
+	}}
+	if n.Host != nil {
+		list = append(list, n.hostService())
 	}
-	if n.Mode != HostOnly {
+	if !n.Joined && !n.NoRegistry {
 		// A host that joined has no inputs tree, so no registry binary: it pulls from the registries
 		// of its profile.
 		list = append(list, service{
-			Name: "registry", Binary: n.binary("registry", path.Join(InputsDir, "bin/naru-registry")),
+			Name: "registry", Binary: path.Join(InputsDir, "bin/naru-registry"),
 			Args: []string{"-listen", RegistryAddr, "-dir", path.Join(InputsDir, "registry")},
 		})
-		list = append(list, n.gaonServices(creds)...)
 	}
 	if a := n.AWS; a != nil {
-		// After the Node Agent, whose keptPair init checks before the agent starts: the helper reads
-		// the pair at start, and init starts it again when the agent replaces the file.
 		list = append(list, n.awsCredentials(*a))
-	}
-	if n.HA() {
-		fence, vip := n.haServices()
-		// The rules are in place before etcd listens; the holder starts once the API server it watches has.
-		list = slices.Insert(list, slices.IndexFunc(list, func(s service) bool { return s.Name == "etcd" }), fence)
-		list = slices.Insert(list, slices.IndexFunc(list, func(s service) bool { return s.Name == "gaon-scheduler" }), vip)
-	}
-	// Which services only the control-plane Node runs is the topology's.
-	for i := range list {
-		list[i].ControlPlane = Gaon.OnlyControlPlane(list[i].Name)
 	}
 	return list
 }
 
-// gaonServices are the services of gaon: etcd, then the API server that dials it, then the scheduler
-// and the controllers that dial the API server, on the control-plane Node (init leaves them out
-// elsewhere); the Node Agent, which dials mvmd's socket and the API server, last.
-func (n Node) gaonServices(creds plan) []service {
-	return []service{
-		{Name: "etcd", Binary: n.binary("etcd", "/bin/etcd"), Args: n.etcdArgs()},
-		{
-			Name: "gaon-apiserver", Binary: n.binary("gaon-apiserver", "/bin/gaon-apiserver"),
-			Args: append([]string{
-				"--listen", "0.0.0.0:" + wire.KubeAPIPort, "--etcd-endpoints", n.etcdEndpoints(),
-				"--etcd-ca-file", gaonPath("ca.pem"), "--etcd-cert-file", gaonPath(apiserverTo.name + ".pem"), "--etcd-key-file", gaonPath(apiserverTo.name + ".key"),
-				"--tls-client-ca", gaonPath("ca.pem"), "--tls-cert", gaonPath("apiserver.pem"), "--tls-key", gaonPath("apiserver.key"),
-			}, creds.apiserverTokens...),
-		},
-		{
-			Name: "gaon-scheduler", Binary: n.binary("gaon-scheduler", "/bin/gaon-scheduler"),
-			Args: append([]string{"--api", n.apiRoot()}, tlsClient("scheduler")...),
-		},
-		{
-			Name: "gaon-controllers", Binary: n.binary("gaon-controllers", "/bin/gaon-controllers"),
-			Args: append(append([]string{"--api", n.apiRoot()}, tlsClient("controllers")...), creds.signer...),
-		},
-		{
-			Name: "gaon-node-agent", Binary: n.binary("gaon-node-agent", "/bin/gaon-node-agent"),
-			Args: append([]string{"--api-server", n.apiRoot(), "--node-name", n.Name, "--mvmd-socket", MvmdSocket}, creds.agent...),
-			// A pair issued without the Organization the signer requires is set aside, and the
-			// agent asks again (ADR 0026).
-			KeptPair: &keptPair{File: path.Join(AgentCertDir, AgentPair), Organization: AgentOrganization},
-		},
-	}
-}
-
 // awsCredentials is the service that serves the Node's IAM Roles Anywhere session on the
-// loopback, as the instance metadata endpoint the AWS SDK reads (ADR 0029). The Node Agent's pair
-// is its certificate and key; a new pair restarts it.
+// loopback, as the instance metadata endpoint the AWS SDK reads (ADR 0029). naru-hostd's pair is
+// its certificate and key; a new certificate restarts it.
 func (n Node) awsCredentials(a AWS) service {
-	cert, key := n.awsPair()
+	cert, key := n.hostPair()
 	return service{
 		Name: "aws-credentials", Binary: "/bin/aws_signing_helper",
 		Args: []string{
@@ -746,16 +460,6 @@ func (n Node) awsCredentials(a AWS) service {
 		},
 		RestartOnChange: []string{cert},
 	}
-}
-
-// awsPair is the certificate and key of the IAM Roles Anywhere session: the Node Agent's pair, one
-// file, or, on a Node that runs no gaon, the certificate the host was issued and the key it made.
-func (n Node) awsPair() (cert, key string) {
-	if n.Mode == HostOnly {
-		return path.Join(HostDir, "tls.crt"), n.Host.KeyFile
-	}
-	pair := path.Join(AgentCertDir, AgentPair)
-	return pair, pair
 }
 
 // mvmdEnv is mvmd's environment: PATH, for the credential helpers it runs; HOME, where they write

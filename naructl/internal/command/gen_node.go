@@ -21,11 +21,9 @@ type nodeFlags struct {
 	daemonFlags
 	n layout.Node
 
-	caDir, address, gateway, apiServer, machinePrefix, extraNIC, out, networkConfig          string
-	awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion, hostClientCA, hostRevocation string
-	nameservers, serving, binaries, disable, timeServers, peers, members, registries         list
-	storage, noMasquerade, hostLabels                                                        list
-	controlPlane, pairsAsFiles                                                               bool
+	caDir, address, gateway, machinePrefix, extraNIC, out, networkConfig                             string
+	awsRegion, awsTrustAnchor, awsProfile, awsRole, hostRegion, hostClientCA, hostRevocation         string
+	nameservers, serving, timeServers, peers, registries, storage, noMasquerade, hostLabels, disable list
 }
 
 // genNode is gen node: it writes the user data (and with --network-config the NoCloud network
@@ -45,26 +43,22 @@ func genNode(fs *pflag.FlagSet) runner {
 }
 
 func (f *nodeFlags) declare(fs *pflag.FlagSet) {
-	fs.StringVar(&f.caDir, "ca-dir", "", "directory of ca.pem and ca.key (the key is read here and never carried by a worker)")
+	fs.StringVar(&f.caDir, "ca-dir", "", "the authorities' directory: the Node serves the Node API from api/ when gen api-ca wrote it, and the host API from host/ with --host-region (the keys are read here and never carried)")
 	fs.StringVar(&f.n.Name, "name", "", "the Node's name, such as node-1")
-	fs.BoolVar(&f.controlPlane, "control-plane", false, "the Node runs etcd and gaon's control plane, issues its certificates at boot and signs its agents' requests")
 	fs.StringVar(&f.address, "address", "", "the Node's address and prefix, such as 192.168.0.40/24")
 	fs.StringVar(&f.n.MAC, "mac", "", "the MAC address of the Node's card (with --network-config)")
 	fs.StringVar(&f.gateway, "gateway", "", "the default gateway (with --network-config)")
 	fs.Var(&f.nameservers, "nameserver", "a nameserver, repeatable (with --network-config)")
 	fs.StringVar(&f.n.Search, "search", "", "the search domain (with --network-config)")
 	fs.StringVar(&f.extraNIC, "extra-nic", "", "a second card, <mac>=<cidr>, with no gateway (with --network-config)")
-	fs.StringVar(&f.apiServer, "api-server", "", "the address every agent and naructl dial: the control-plane Node's, or the virtual address of several (--member)")
-	fs.Var(&f.members, "member", "<name>=<address>, a control-plane Node of a control plane of several, repeatable, in priority order and the same on every member, this Node among them (with --control-plane)")
-	fs.Var(&f.serving, "serving-address", "another address the API server's certificate and the Node API's certificate name, repeatable")
-	fs.Var(&f.binaries, "binary", "<service>=<absolute path>, the executable of a service in place of the image's, repeatable")
-	fs.Var(&f.disable, "disable", "a service to leave out ("+strings.Join(layout.Gaon.Names(), ", ")+"), repeatable")
+	fs.Var(&f.serving, "serving-address", "another address the Node API's and the host API's certificates name, repeatable")
 	fs.Var(&f.timeServers, "time-server", "an SNTP server init sets the clock from, host or host:port, repeatable and asked in order (none: the clock is not set)")
+	fs.Var(&f.disable, "disable", "a service to leave out: registry, the only one a Node runs that it can do without, for Nodes that pull from elsewhere")
 	fs.Var(&f.registries, "registry", "a registry mvmd pulls from, host=<host[:port]> then any of ca=<PEM file>, username=<name> with password-file=<file>, or helper=<name> (a username with a helper is refused), comma-separated, repeatable")
 	fs.StringVar(&f.awsRegion, "aws-region", "", "the AWS region of the IAM Roles Anywhere profile the credential helpers use (with the other --aws flags: all four or none)")
 	fs.StringVar(&f.awsTrustAnchor, "aws-trust-anchor", "", "the ARN of the IAM Roles Anywhere trust anchor")
 	fs.StringVar(&f.awsProfile, "aws-profile", "", "the ARN of the IAM Roles Anywhere profile")
-	fs.StringVar(&f.awsRole, "aws-role", "", "the ARN of the IAM role; the certificate and key are the Node Agent's pair")
+	fs.StringVar(&f.awsRole, "aws-role", "", "the ARN of the IAM role; the certificate and key are naru-hostd's, so the --aws flags need --host-region")
 	fs.StringVar(&f.hostRegion, "host-region", "", "the Node serves the host API (naru-hostd) and reports this region, a DNS label; needs the host authority, gen host-ca")
 	fs.Var(&f.hostLabels, "host-label", "a label of the host, <key>=<value>, repeatable (with --host-region)")
 	fs.StringVar(&f.hostMgmt, "host-management-prefix", "", "spec.host.network: the prefix of the management plane, which no virtual network may reach, such as 192.168.0.0/24 (with --host-region)")
@@ -101,18 +95,17 @@ func (f *nodeFlags) declare(fs *pflag.FlagSet) {
 	fs.Var(&f.extensions, "extension", "spec.extensions: <name> or <name>=<SHA-256 of the image>, a system extension init mounts before any service starts, repeatable; <name> alone takes the stored image of that name built for the running naru version, which an upgrade bundle carries, and the form with a SHA-256 pins one image; the signer and orch need naru-orch")
 	fs.StringVar(&f.metricsListen, "metrics-listen", "", "spec.metrics: the IP address init and the daemons serve /metrics on, each on its own port")
 	fs.StringVar(&f.machinePrefix, "machine-prefix", "", "the IPv4 prefix mvmd gives its Machines, such as 10.200.1.0/24")
-	fs.Var(&f.peers, "peer", "another Node of the cluster, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
+	fs.Var(&f.peers, "peer", "another Node on the Node's network, <address>=<machine-prefix> such as 192.168.0.61=10.200.2.0/24, repeatable: the Node routes to the prefix via the address, and its Machines keep their source address to it")
 	fs.Var(&f.noMasquerade, "no-masquerade", "an IPv4 prefix in canonical form, repeatable: a Machine's traffic to it keeps its source address (mvmd's network.no_masquerade) and the Node gets no route to it, such as the Machine prefixes of the hosts a WireGuard tunnel reaches")
 	fs.Var(&f.storage, "storage", "<name>=<label, /dev/path or serial:NUMBER>, an extra disk the Node offers as XFS, found by its partition or file system label, by its device when the value starts with /dev/, or by its disk serial number when it starts with serial: (a blank disk has no label, and the kernel's device names change between boots, so a blank disk is best named by serial; init formats it at the first boot and finds it by the XFS label after), repeatable: the first holds mvmd's disks, snapshots and Machine run directories, on XFS with reflinks, and the others are mounted under /var/lib/naru/storage")
 	fs.StringVar(&f.n.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
-	fs.BoolVar(&f.pairsAsFiles, "pairs-as-files", false, "the Node carries operator-issued pairs as files, with no bootstrap token: on a control-plane Node every pair, and no signing key")
 	fs.StringVar(&f.out, "out", "", "the user-data file to write (0600: it carries keys; a file already there is replaced)")
 	fs.StringVar(&f.networkConfig, "network-config", "", "also write the NoCloud network-config to this file")
 }
 
 // check refuses what the flags given say nothing of, or say twice.
 func (f *nodeFlags) check(fs *pflag.FlagSet) error {
-	if err := require(fs, "ca-dir", "name", "address", "api-server", "machine-prefix", "firecracker-sha256", "out"); err != nil {
+	if err := require(fs, "ca-dir", "name", "address", "machine-prefix", "firecracker-sha256", "out"); err != nil {
 		return err
 	}
 	if err := awsTogether(fs); err != nil {
@@ -120,7 +113,6 @@ func (f *nodeFlags) check(fs *pflag.FlagSet) error {
 	}
 	for _, g := range [][]string{
 		{"network-config", "mac", "gateway", "nameserver", "search", "extra-nic"},
-		{"control-plane", "serving-address", "member"},
 		{"host-region", "host-label", "host-client-ca", "host-revocation-public-key"},
 		{"host-management-prefix", "host-egress-interface", "host-tunnel-port"},
 		{"host-orch-url", "host-orch-ca-sha256", "host-orch-enroll-key"},
@@ -135,23 +127,13 @@ func (f *nodeFlags) check(fs *pflag.FlagSet) error {
 	return nil
 }
 
-// build fills the Node from the flags, reading the authorities, tokens and files they name.
+// build fills the Node from the flags, reading the authorities and files they name.
 func (f *nodeFlags) build() error {
 	n := &f.n
-	var err error
-	if n.CA, err = pki.Load(f.caDir); err != nil {
-		return err
-	}
 	if err := genNodeDaemons(n, f.daemonFlags); err != nil {
 		return err
 	}
 	if err := f.authorities(); err != nil {
-		return err
-	}
-	n.Mode = layout.ModeOf(f.controlPlane, f.pairsAsFiles)
-	// The Node's own token is made if there is none. A control-plane Node's API server lists the
-	// token of every Node whose file is in the directory now: run gen token for the others first.
-	if n.Token, n.Tokens, err = n.Mode.LoadTokens(f.caDir, n.Name); err != nil {
 		return err
 	}
 	if err := f.network(); err != nil {
@@ -199,9 +181,6 @@ func (f *nodeFlags) network() error {
 	if n.Address, err = netip.ParsePrefix(f.address); err != nil {
 		return fmt.Errorf("--address: %w", err)
 	}
-	if n.APIServer, err = netip.ParseAddr(f.apiServer); err != nil {
-		return fmt.Errorf("--api-server: %w", err)
-	}
 	if n.MachinePrefix, err = netip.ParsePrefix(f.machinePrefix); err != nil {
 		return fmt.Errorf("--machine-prefix: %w", err)
 	}
@@ -246,14 +225,6 @@ func (f *nodeFlags) network() error {
 		}
 		n.NoMasquerade = append(n.NoMasquerade, p)
 	}
-	for _, m := range f.members {
-		name, addr, ok := strings.Cut(m, "=")
-		a, err := netip.ParseAddr(addr)
-		if !ok || err != nil {
-			return fmt.Errorf("--member %q is not <name>=<address>", m)
-		}
-		n.Members = append(n.Members, layout.Member{Name: name, Address: a})
-	}
 	if f.extraNIC != "" {
 		mac, cidr, ok := strings.Cut(f.extraNIC, "=")
 		if !ok {
@@ -268,7 +239,7 @@ func (f *nodeFlags) network() error {
 	return nil
 }
 
-// services reads the disks, the executables, the registries and the AWS profile.
+// services reads the disks, the time servers, the registries and the AWS profile.
 func (f *nodeFlags) services() error {
 	n := &f.n
 	for _, s := range f.storage {
@@ -278,16 +249,13 @@ func (f *nodeFlags) services() error {
 		}
 		n.Storage = append(n.Storage, d)
 	}
-	n.Binaries = map[string]string{}
-	for _, b := range f.binaries {
-		name, bin, ok := strings.Cut(b, "=")
-		if !ok {
-			return fmt.Errorf("--binary %q is not <service>=<path>", b)
-		}
-		n.Binaries[name] = bin
-	}
-	n.Disable = f.disable
 	n.TimeServers = f.timeServers
+	for _, s := range f.disable {
+		if s != "registry" {
+			return fmt.Errorf("--disable %q: registry is the only service gen node leaves out", s)
+		}
+		n.NoRegistry = true
+	}
 	for _, r := range f.registries {
 		reg, err := parseRegistry(r)
 		if err != nil {

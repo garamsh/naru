@@ -221,10 +221,9 @@ func TestHost_ApplyNetwork(t *testing.T) {
 		h, _ := testHost(t, nil)
 		h.links = &fakeLinks{all: kernel}
 
-		applied, err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{nic("10.78.0.254")}}, discard)
+		_, err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{nic("10.78.0.254")}}, discard)
 
 		require.NoError(t, err)
-		assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.78.0.7")}, applied.Addresses)
 		assert.Equal(t, []string{"up lo", "up ens19", "addr 10.78.0.7/24 ens19", "route 10.78.0.254 ens19"}, h.links.(*fakeLinks).calls)
 	})
 

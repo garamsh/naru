@@ -1,7 +1,7 @@
 // Command naru-lanclient is the client outside the networks of the exposure test (#275): every two
 // seconds it connects to each address:port it is given, reads the line the backend answers, and
 // prints "naru94-lan: <address:port>=<answer>" for each, with "fail" when it got none
-// (docs/architecture/harness.md).
+// (docs/architecture/image.md).
 package main
 
 import (

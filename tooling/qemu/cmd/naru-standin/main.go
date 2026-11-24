@@ -1,5 +1,4 @@
-// Command naru-standin is the service naru's QEMU tests configure in place of
-// gaon's Node Agent and control plane: it reports that the data disk is mounted,
+// Command naru-standin is the service naru's QEMU tests configure on a Node: it reports that the data disk is mounted,
 // that mvmd's socket accepts connections and that a peer Node's stand-in does,
 // then runs until stopped.
 package main

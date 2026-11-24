@@ -3,7 +3,7 @@
 // and each ingress chain of mvmd's netdev table as "naru94-nft-ingress: <chain>=<policy>:<source>,..."
 // where each source is an IPv4 address the chain accepts IPv4 packets from: the network tests read how
 // many packets each drop rule counted, and which tap's ingress drops all but its own address
-// (docs/architecture/harness.md).
+// (docs/architecture/image.md).
 package main
 
 import (

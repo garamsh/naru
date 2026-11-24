@@ -25,14 +25,14 @@ import (
 
 // Criterion "host: the boot set added through naructl host boot-set add, and a Node microVM from it
 // that answers the Node API's version". The test host reaches the microVM's address
-// through the harness's route (docs/architecture/harness.md): node-1's naru-mvmroute, which dials the
+// through the harness's route (docs/architecture/image.md): node-1's naru-mvmroute, which dials the
 // microVM from inside node-1's network.
 //
 // mvmd gives a microVM its address, so the seed's address is known only after a microVM exists. The
 // test creates the microVM with a plain seed, reads the address mvmd gave it, deletes it, and creates
 // it again with the seed written for that address, until the second creation is given the same one.
 func TestNode_HostBootSetMicroVMAnswersTheNodeAPIVersionThroughTheHarnessRoute(t *testing.T) {
-	c := start(t, node.ClusterSpec{N: 1, Gaon: true, NodeAPI: true, Host: true, MemoryMiB: 3072 + 2048})
+	c := start(t, node.ClusterSpec{N: 1, GenNode: true, NodeAPI: true, Host: true, MemoryMiB: 3072 + 2048})
 	require.NotNil(t, c.Host)
 	eventually(t, "the host API answers a reader", func() bool { return hctl(c.Host.Reader, []string{"host"}).Err == nil })
 	nd := c.Nodes[0]
@@ -67,7 +67,6 @@ func TestNode_HostBootSetMicroVMAnswersTheNodeAPIVersionThroughTheHarnessRoute(t
 		}
 	})
 	ca := filepath.Join(dir, "ca")
-	require.NoError(t, tool.GenCA(ca))
 	require.NoError(t, tool.GenAPICA(ca))
 	client, err := hostcli.New(prov)
 	require.NoError(t, err)

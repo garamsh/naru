@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/garamsh/naru/lib/init/pki"
 	"github.com/garamsh/naru/lib/init/store"
 	"github.com/garamsh/naru/lib/init/timesync"
 )
@@ -38,18 +37,16 @@ type statusAPI struct {
 
 func (a *statusAPI) UseTime(status func() timesync.Status) { a.status = status }
 
-func TestBootAndRenew_KeepsTheClockForAsLongAsTheNodeRunsAndGivesTheAPIItsStatus(t *testing.T) {
+func TestBootAndKeep_KeepsTheClockForAsLongAsTheNodeRunsAndGivesTheAPIItsStatus(t *testing.T) {
 	n := &timedNode{
-		node:   &node{restarts: make(chan string, 4), userData: "apiVersion: naru.garam.sh/v1alpha1\nkind: NodeConfig\nmetadata:\n  name: node-1\nspec:\n  dataDisk:\n    label: NARUDATA\n    mountPoint: /var/lib/mvmd\n  time:\n    servers: [ntp.example]\n"},
+		node:   &node{userData: "apiVersion: naru.garam.sh/v1alpha1\nkind: NodeConfig\nmetadata:\n  name: node-1\nspec:\n  dataDisk:\n    label: NARUDATA\n    mountPoint: /var/lib/mvmd\n  time:\n    servers: [ntp.example]\n"},
 		ran:    make(chan struct{}),
 		ended:  make(chan struct{}),
 		status: timesync.Status{Servers: []string{"ntp.example:123"}},
 	}
-	clk := &clock{now: epoch, timers: make(chan chan time.Time, 4)}
-	issuer := pki.New(t.TempDir(), clk, n, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	api := &statusAPI{}
 
-	stop, booted, _ := bootAndRenew(n, issuer, n, store.New(t.TempDir()), api, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	stop, booted, _ := bootAndKeep(n, n, store.New(t.TempDir()), api, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	require.NotNil(t, booted)
 	select {
@@ -71,5 +68,24 @@ func TestBootAndRenew_KeepsTheClockForAsLongAsTheNodeRunsAndGivesTheAPIItsStatus
 	case <-n.ended:
 	default:
 		t.Fatal("stop returned before the clock ended")
+	}
+}
+
+func TestBootAndKeep_KeepsTheClockAfterABootRefusal(t *testing.T) {
+	n := &timedNode{
+		node:  &node{userData: "apiVersion: naru.garam.sh/v1alpha1\nkind: NodeConfig\nmetadata:\n  name: node-1\nspec:\n  services:\n    - name: a\n      binary: /usr/bin/a\n    - name: b\n      binary: /usr/bin/b\n  dataDisk:\n    label: NARUDATA\n    mountPoint: /var/lib/mvmd\n  time:\n    servers: [ntp.example]\n"},
+		ran:   make(chan struct{}),
+		ended: make(chan struct{}),
+	}
+
+	stop, booted, refusal := bootAndKeep(n, n, store.New(t.TempDir()), &statusAPI{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(stop)
+
+	require.Error(t, refusal, "b cannot start, so the boot is refused")
+	assert.Nil(t, booted, "the boot was refused, so there is no effective configuration")
+	select {
+	case <-n.ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the boot was refused and the clock does not run")
 	}
 }

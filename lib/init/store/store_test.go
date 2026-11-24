@@ -234,3 +234,26 @@ func TestAnchor_RoundTripsAndIsNotFoundBeforeItIsSaved(t *testing.T) {
 func TestResetFileName_IsTheBaseOfThePathHostdWrites(t *testing.T) {
 	assert.Equal(t, wire.ResetMarker, filepath.Join(store.Dir, store.ResetFileName))
 }
+
+// A host's store as init wrote it before ADR 0114 (testdata, saved by the store of the commit before,
+// d32ddc7b, from the user-data naructl wrote then for a host; its keys are left out) names
+// controlPlane false on the Node and on every service, and an empty spec.pki: every field init wrote
+// whole. An upgraded host reads it, and writes it again without them.
+func TestStore_AHostsStoreWrittenBeforeADR0114LoadsAndIsWrittenAgainWithoutItsRetiredFields(t *testing.T) {
+	old, err := os.ReadFile(filepath.Join("testdata", "host-store-before-0114.yaml"))
+	require.NoError(t, err)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, store.FileName), old, 0o600))
+	s := store.New(dir)
+
+	got, err := s.Load()
+
+	require.NoError(t, err, "an upgraded host keeps its stored configuration")
+	assert.Equal(t, 1, got.Revision)
+	assert.NotEmpty(t, got.Config.Spec.Services)
+	require.NoError(t, s.Save(got))
+	again, err := os.ReadFile(filepath.Join(dir, store.FileName))
+	require.NoError(t, err)
+	assert.NotContains(t, string(again), "controlPlane")
+	assert.NotContains(t, string(again), "pki")
+}
