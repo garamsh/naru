@@ -439,4 +439,10 @@ func TestCallerRevocation_TheRecordsAndTheEntryTravelWithTheBundleTheSyncAndLate
 	_, err = b.RegisterCaller(identity.CallerRegistration{Token: tok.Token, CSR: csrFor(t, newKey(t))})
 	require.NoError(t, err)
 	assert.Contains(t, listOf(t, e, b).Callers, "ws-provider", "a later list, which spent the token, keeps the entry")
+
+	c.advance(time.Hour)
+	later, err := b.RevokeCaller(signedAt(t, e.rootID, &c, identity.ActionRevokeCaller, identity.CallerRevokeRequest{Name: "ws-provider"}))
+	require.NoError(t, err)
+	pushList(t, a, b)
+	assert.True(t, later.RevokedAt.Equal(listOf(t, e, a).Callers["ws-provider"]), "the sync keeps the later of two revocations of a name")
 }
