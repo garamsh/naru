@@ -128,6 +128,46 @@ func TestTheRecorderGivesAHostAdmittedBeforeTheMeshPoolItsMeshAddress(t *testing
 	assert.Equal(t, "node-1", o.meshAllocations(t)["10.99.0.1/32"].HostID, "and records it")
 }
 
+func TestAHostAFullMeshPoolHasNoAddressForIsAnEventAndHoldsUpNoPrefix(t *testing.T) {
+	reported := &reportedPrefixes{by: map[string][]string{}}
+	o := startOne(t, orchtest.Options{NewPrefixHosts: func(inventory.Service) inventory.PrefixHosts { return reported }})
+	for _, id := range []string{"node-1", "node-2"} {
+		h := newHost(t, id)
+		_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+		require.NoError(t, err)
+		o.admit(t, h)
+	}
+	require.NoError(t, o.op.SetProfile(t.Context(), meshProfileYAML(t, "10.200.0.0/16", "10.99.0.7/32")), "a pool of one address, for two hosts")
+	require.Eventually(t, func() bool { return len(o.meshAllocations(t)) == 1 }, 10*time.Second, 50*time.Millisecond, "one host takes the address")
+	given := o.meshAllocations(t)["10.99.0.7/32"].HostID
+	other := map[string]string{"node-1": "node-2", "node-2": "node-1"}[given]
+
+	require.Eventually(t, func() bool {
+		events, err := o.op.Events(t.Context())
+		require.NoError(t, err)
+		for _, e := range events {
+			if e.Type == inventory.EventMeshAddressUnavailable && e.Subject == other {
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 50*time.Millisecond, "the host the pool has no address for is an event")
+
+	reported.set(other, "10.200.7.0/24")
+	require.Eventually(t, func() bool { return o.allocations(t)["10.200.7.0/24"].HostID == other }, 10*time.Second, 50*time.Millisecond,
+		"the prefix it reports is still recorded")
+	time.Sleep(300 * time.Millisecond)
+	events, err := o.op.Events(t.Context())
+	require.NoError(t, err)
+	n := 0
+	for _, e := range events {
+		if e.Type == inventory.EventMeshAddressUnavailable {
+			n++
+		}
+	}
+	assert.Equal(t, 1, n, "told once, not every pass")
+}
+
 func TestTheMeshPoolIsKeptApartFromEveryNetworkAndAddressPool(t *testing.T) {
 	eh := &exposureHosts{leaseds: map[string]exposures.Lease{}}
 	o := startOne(t, orchtest.Options{

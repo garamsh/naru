@@ -57,11 +57,12 @@ type Store interface {
 	// ListAllocations returns the allocations of space, each with its Space set.
 	ListAllocations(ctx context.Context, space Space) ([]Allocation, error)
 	// GetProfile returns the host profile's YAML, ErrNotFound when none is set. PutProfile replaces
-	// it and appends ev in one step. A non-nil check runs after the store noted the address-space
-	// guard the networks and the address pools share and the mesh addresses, and the profile is
-	// written only while the guard is unchanged and no mesh address was written since.
+	// it and appends ev in one step. check is given the profile it replaces (nil for none) after the
+	// store read it with the address-space guard the networks and the address pools share and the
+	// mesh addresses, and the profile is written only while none of the three changed since; a write
+	// that raced one is ErrConflict.
 	GetProfile(ctx context.Context) ([]byte, error)
-	PutProfile(ctx context.Context, yaml []byte, ev orchapi.Event, check func() error) error
+	PutProfile(ctx context.Context, yaml []byte, ev orchapi.Event, check func(current []byte) error) error
 	GetHost(ctx context.Context, id string) (Host, error)
 	ListHosts(ctx context.Context) ([]Host, error)
 	// UpdateHost applies change to the stored host as one step and appends ev when it is not nil.

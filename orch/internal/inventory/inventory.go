@@ -52,6 +52,9 @@ const (
 	EventProfileSet  = "host-profile.set"
 	// EventPrefixConflict is a Machine prefix a host reports that another host holds.
 	EventPrefixConflict = "host.prefix-conflict"
+	// EventMeshAddressUnavailable is a host the recorder could not give a mesh address, such as one
+	// a full pool has none for.
+	EventMeshAddressUnavailable = "host.mesh-address-unavailable"
 )
 
 // Key is an enrollment key as orch stores it: the SHA-256 of the secret, never the secret.

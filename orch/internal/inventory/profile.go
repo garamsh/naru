@@ -66,17 +66,17 @@ func (s *service) SetProfile(ctx context.Context, by string, yaml []byte) error 
 		}
 		return invalid("%v", err)
 	}
-	old, err := MeshPool(ctx, s.store)
-	if err != nil && !errors.Is(err, ErrConflict) {
-		return err
-	}
 	var pool netip.Prefix
 	if p.MeshPool != nil {
 		pool = *p.MeshPool
 	}
-	var check func() error
-	if pool != old {
-		check = func() error { return s.meshPoolClear(ctx, pool) }
+	// The pool is checked against the profile the write replaces, which the store reads and holds
+	// unchanged to the write. A stored profile that no longer parses is checked as a change.
+	check := func(current []byte) error {
+		if old, err := meshPoolOf(current); err == nil && old == pool {
+			return nil
+		}
+		return s.meshPoolClear(ctx, pool)
 	}
 	ev := orchapi.Event{Time: s.clock.Now(), Type: EventProfileSet, Subject: "host-profile", Detail: map[string]string{"by": by}}
 	return s.store.PutProfile(ctx, yaml, ev, check)
@@ -144,6 +144,14 @@ func MeshPool(ctx context.Context, r ProfileReader) (netip.Prefix, error) {
 	}
 	if err != nil {
 		return netip.Prefix{}, err
+	}
+	return meshPoolOf(raw)
+}
+
+// meshPoolOf returns the mesh pool of a stored profile, the zero prefix for none (nil raw included).
+func meshPoolOf(raw []byte) (netip.Prefix, error) {
+	if raw == nil {
+		return netip.Prefix{}, nil
 	}
 	p, err := layout.ParseHostProfile(raw)
 	if err != nil {

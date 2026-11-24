@@ -81,6 +81,7 @@ What `naru-hostd` is: the service that creates, shows and destroys microVMs on a
 
 - **Exposures (decided, not built).** [ADR 0085](./adr/0085-a-service-of-type-loadbalancer-is-fulfilled-by-a-naru-cloud-controller-manager-that-asks-orch-for-an-address-from-a-pool-one-host-announces-it-on-the-lan-and-forwards-it-to-the-nodes-nodeports.md) (accepted) gives the host API a leased exposure endpoint: hostd holds the address on a LAN interface, announces it and forwards it by DNAT to the backends' ports, any port of a member such as its API server ([ADR 0102](./adr/0102-the-operator-declares-an-exposure-of-a-networks-members-at-any-backend-port-so-the-leased-lan-address-reaches-a-members-api-server-and-an-owner-table-holds-the-exposer-to-the-nodeport-range-amending-adr-0085-items-4-6-and-7.md)).
 
+- **A mesh address a host is configured with.** `PUT /v1/peers` without `meshAddress` clears the host's address, which is right while orch sends it on every pass. ADR 0113 item 4 gives a host outside the site its address in the admission configuration; when that is built, orch must still send it on every pass, or an absent field must stop meaning cleared.
 - **The tap prefix.** The tap name prefix is not reported by mvmd.
 - **Inspecting one snapshot.** mvmd has no such call; hostd lists them all and picks one.
 
