@@ -199,11 +199,10 @@ func microvmCreate(fs *pflag.FlagSet) runner {
 		network = c.fs.String("network", "", "the declared network the microVM is created on")
 		fenced  = c.fs.Bool("fenced", false, "give the microVM a fence of its own: it is created and not started, and microvm fence renew arms it")
 
-		bootSet   = c.fs.String("boot-set", "", "the OS form: the boot set the Node offers, in place of --image")
-		cmdline   = c.fs.String("cmdline", "", "the OS form: kernel command line added to the boot set's")
-		seed      = c.fs.String("seed", "", "the OS form: a file of the NoCloud user-data")
-		dataDisk  = c.fs.Uint64("data-disk", 0, "the OS form: the data disk in bytes")
-		podPrefix = c.fs.String("pod-prefix", "", "the OS form: an IPv4 prefix of /16 to /32 routed to the microVM")
+		bootSet  = c.fs.String("boot-set", "", "the OS form: the boot set the Node offers, in place of --image")
+		cmdline  = c.fs.String("cmdline", "", "the OS form: kernel command line added to the boot set's")
+		seed     = c.fs.String("seed", "", "the OS form: a file of the NoCloud user-data")
+		dataDisk = c.fs.Uint64("data-disk", 0, "the OS form: the data disk in bytes")
 	)
 	c.fs.Var(&disks, "disk", "<name>=<bytes>, with ,ro for a read-only disk, repeatable")
 	return func(args []string, stdout, stderr io.Writer) error {
@@ -214,7 +213,7 @@ func microvmCreate(fs *pflag.FlagSet) runner {
 		if *file != "" {
 			set := map[string]bool{}
 			c.fs.Visit(func(f *pflag.Flag) { set[f.Name] = true })
-			for _, f := range []string{"name", "image", "cpu", "memory", "root-disk", "disk", "boot-set", "cmdline", "seed", "data-disk", "pod-prefix", "network", "fenced"} {
+			for _, f := range []string{"name", "image", "cpu", "memory", "root-disk", "disk", "boot-set", "cmdline", "seed", "data-disk", "network", "fenced"} {
 				if set[f] {
 					return fmt.Errorf("-f carries the whole request, so --%s has no effect with it", f)
 				}
@@ -228,7 +227,7 @@ func microvmCreate(fs *pflag.FlagSet) runner {
 			if err := dec.Decode(&spec); err != nil {
 				return errors.New(*file + " is not a microVM request: " + err.Error())
 			}
-		} else if osForm := *bootSet != "" || *cmdline != "" || *seed != "" || *dataDisk != 0 || *podPrefix != ""; osForm {
+		} else if osForm := *bootSet != "" || *cmdline != "" || *seed != "" || *dataDisk != 0; osForm {
 			set := map[string]bool{}
 			c.fs.Visit(func(f *pflag.Flag) { set[f.Name] = true })
 			for _, f := range []string{"image", "root-disk", "disk"} {
@@ -245,7 +244,7 @@ func microvmCreate(fs *pflag.FlagSet) runner {
 			}
 			spec = hostapi.CreateRequest{
 				Name: *name, CPU: uint32(*cpu), Memory: *memory, BootSet: *bootSet, Cmdline: *cmdline,
-				Seed: userData, DataDisk: *dataDisk, PodPrefix: *podPrefix,
+				Seed: userData, DataDisk: *dataDisk,
 			}
 		} else {
 			if err := require(c.fs, "name", "image"); err != nil {

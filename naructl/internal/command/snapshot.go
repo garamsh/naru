@@ -154,7 +154,6 @@ func snapshotResume(fs *pflag.FlagSet) runner {
 	c := newHostCall(fs)
 	name := c.fs.String("name", "", "the new microVM's name, a DNS label")
 	network := c.fs.String("network", "", "the declared network the microVM is created on")
-	podPrefix := c.fs.String("pod-prefix", "", "an IPv4 prefix of /16 to /32 routed to the microVM")
 	return func(args []string, stdout, stderr io.Writer) error {
 		if err := c.check(args, 1); err != nil {
 			return err
@@ -168,7 +167,7 @@ func snapshotResume(fs *pflag.FlagSet) runner {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), hostCallTimeout)
 		defer cancel()
-		m, err := cl.ResumeSnapshot(ctx, args[0], hostapi.ResumeRequest{Name: *name, Network: *network, PodPrefix: *podPrefix})
+		m, err := cl.ResumeSnapshot(ctx, args[0], hostapi.ResumeRequest{Name: *name, Network: *network})
 		if err != nil {
 			return err
 		}

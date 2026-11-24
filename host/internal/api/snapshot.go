@@ -171,14 +171,6 @@ func (s *Server) resumeSnapshot(w http.ResponseWriter, r *http.Request) {
 	if !dnsLabel.MatchString(req.Name) {
 		fields = append(fields, "name")
 	}
-	var routed []string
-	if req.PodPrefix != "" {
-		if validRoutedPrefix(req.PodPrefix) {
-			routed = []string{req.PodPrefix}
-		} else {
-			fields = append(fields, "podPrefix")
-		}
-	}
 	if req.Network != "" && !dnsLabel.MatchString(req.Network) {
 		fields = append(fields, "network")
 	}
@@ -188,19 +180,19 @@ func (s *Server) resumeSnapshot(w http.ResponseWriter, r *http.Request) {
 		invalid(w, fields...)
 		return
 	}
-	if req.Network != "" && !s.checkNetwork(w, req.Network, req.PodPrefix) {
+	if req.Network != "" && !s.checkNetwork(w, req.Network) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), callTimeout)
 	defer cancel()
 	m, err := s.deps.Runtime.RestoreMachine(ctx, mvmd.Restore{
-		ID: req.Name, SnapshotID: r.PathValue("name"), Policy: req.NetworkPolicy, RoutedPrefixes: routed,
+		ID: req.Name, SnapshotID: r.PathValue("name"), Policy: req.NetworkPolicy,
 	})
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	if err := s.attach(ctx, req.Network, req.PodPrefix, m); err != nil {
+	if err := s.attach(ctx, req.Network, m); err != nil {
 		// The microVM runs; delete it and keep its disks, which are the snapshot's.
 		undo, cancelUndo := cleanupContext(ctx)
 		defer cancelUndo()

@@ -23,7 +23,7 @@ table inet naru {
 	set members {
 		type ipv4_addr
 		flags interval
-		elements = { 10.0.0.3, 10.0.0.4, 10.8.1.0/24, 10.9.1.0/24 }
+		elements = { 10.0.0.3, 10.0.0.4 }
 	}
 	chain input {
 		type filter hook input priority 0; policy accept;

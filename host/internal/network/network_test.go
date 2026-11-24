@@ -45,8 +45,8 @@ func twoNetworks() network.Config {
 			{Name: "a", Prefix: pfx("10.8.0.0/16"), Endpoint: addr("10.8.0.2"), Remote: []netip.Prefix{pfx("10.0.2.7/32"), pfx("10.8.2.0/24"), pfx("10.8.2.5/32")}},
 		},
 		Members: []network.Member{
-			{Network: "a", Address: addr("10.0.0.3"), Routed: pfx("10.8.1.0/24")},
-			{Network: "b", Address: addr("10.0.0.4"), Routed: pfx("10.9.1.0/24")},
+			{Network: "a", Address: addr("10.0.0.3")},
+			{Network: "b", Address: addr("10.0.0.4")},
 		},
 		Management: pfx("172.16.0.0/24"),
 		TapPrefix:  "tap",
@@ -83,9 +83,6 @@ func TestRuleset_NetworksAreSetsNotPrefixes(t *testing.T) {
 		// Both microVMs' addresses are in 10.0.0.0/24, which no prefix of a network holds: only the sets tell them apart.
 		{"a to b by address", packet{in: "tap1", out: "tap2", src: "10.0.0.3", dst: "10.0.0.4"}, false, "a to another network"},
 		{"b to a by address", packet{in: "tap2", out: "tap1", src: "10.0.0.4", dst: "10.0.0.3"}, false, "b to another network"},
-		{"a pod to b pod", packet{in: "tap1", out: "tap2", src: "10.8.1.7", dst: "10.9.1.7"}, false, "a to another network"},
-		{"a address to its own pod prefix", packet{in: "tap1", out: "tap1", src: "10.0.0.3", dst: "10.8.1.7"}, true, "a inside its set"},
-		{"a pod to its own address", packet{in: "tap1", out: "tap1", src: "10.8.1.7", dst: "10.0.0.3"}, true, "a inside its set"},
 		{"a to the egress", packet{in: "tap1", out: "eth0", src: "10.0.0.3", dst: "198.51.100.1"}, true, "a egress"},
 		{"a to management", packet{in: "tap1", out: "eth1", src: "10.0.0.3", dst: "172.16.0.9"}, false, "a to management"},
 		{"an address of no member", packet{in: "tap1", out: "tap2", src: "10.0.0.3", dst: "10.0.0.9"}, false, "policy drop"},
@@ -111,9 +108,7 @@ func TestRuleset_RemoteMembers(t *testing.T) {
 		rule   string
 	}{
 		{"to a remote address of a", packet{in: "tap1", out: "wg-naru", src: "10.0.0.3", dst: "10.0.2.7"}, true, "a inside its set"},
-		{"to a remote pod prefix of a", packet{in: "tap1", out: "wg-naru", src: "10.8.1.7", dst: "10.8.2.77"}, true, "a inside its set"},
 		{"from a remote address of a", packet{in: "wg-naru", out: "tap1", src: "10.0.2.7", dst: "10.0.0.3"}, true, "a inside its set"},
-		{"from a remote pod prefix of a", packet{in: "wg-naru", out: "tap1", src: "10.8.2.77", dst: "10.8.1.7"}, true, "a inside its set"},
 		{"b to a remote member of a", packet{in: "tap2", out: "wg-naru", src: "10.0.0.4", dst: "10.0.2.7"}, false, "b to another network"},
 		{"a remote member of a to b", packet{in: "wg-naru", out: "tap2", src: "10.0.2.7", dst: "10.0.0.4"}, false, "a to another network"},
 		{"a to an address that is nobody's", packet{in: "tap1", out: "wg-naru", src: "10.0.0.3", dst: "10.0.2.99"}, false, "policy drop"},
@@ -132,11 +127,10 @@ func TestRuleset_ForgedSource(t *testing.T) {
 		accept bool
 	}{
 		{"a's own address", "10.0.0.3", true},
-		{"a's own pod prefix", "10.8.1.200", true},
 		{"an address no member holds", "10.0.0.77", false},
 		{"a free address in the network's prefix", "10.8.200.1", false},
 		{"a remote member's address", "10.0.2.7", false},
-		{"a remote member's pod prefix", "10.8.2.5", false},
+		{"an address of a remote prefix", "10.8.2.5", false},
 		{"the management plane", "172.16.0.9", false},
 	} {
 		got := tb.judge("forward", packet{in: "tap1", out: "tap1", src: tc.src, dst: "10.0.0.3"})
@@ -258,7 +252,7 @@ func TestManager_AppliesTheWholeStateOnEveryChange(t *testing.T) {
 	m := newManager(f, tun, "")
 	ctx := context.Background()
 	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16"), Remote: []netip.Prefix{pfx("10.0.2.7/32")}}))
-	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3"), Routed: pfx("10.8.1.0/24")}))
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
 	peers := []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}}}
 	require.NoError(t, m.SetPeers(ctx, peers))
 
@@ -281,18 +275,11 @@ func TestManager_Refusals(t *testing.T) {
 
 	assert.ErrorIs(t, m.Declare(ctx, network.Network{Name: "b", Prefix: pfx("10.8.5.0/24")}), network.ErrOverlap)
 	assert.ErrorIs(t, m.Attach(ctx, network.Member{Network: "z", Address: addr("10.0.0.3")}), network.ErrUnknownNetwork)
-	assert.ErrorIs(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3"), Routed: pfx("10.0.0.0/24")}), network.ErrOutside)
-	assert.ErrorIs(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3"), Routed: pfx("10.0.0.0/8")}), network.ErrOutside)
 	_, ok := m.Network("b")
 	assert.False(t, ok, "a refused network is not kept")
 
 	// An address outside the prefix is the normal case: mvmd chose it from the Machine prefix.
-	assert.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3"), Routed: pfx("10.8.1.0/24")}))
-
-	// A prefix that would leave a member's pod prefix outside is refused, and the network stays as it was.
-	assert.ErrorIs(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.8.0/24")}), network.ErrOutside)
-	n, _ := m.Network("a")
-	assert.Equal(t, pfx("10.8.0.0/16"), n.Prefix)
+	assert.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
 }
 
 func TestManager_AFailedApplyChangesNothing(t *testing.T) {
@@ -337,7 +324,7 @@ func TestManager_StateSurvivesARestart(t *testing.T) {
 	m := newManager(f1, tun1, state)
 	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16"), Endpoint: addr("10.8.0.2"), Remote: []netip.Prefix{pfx("10.0.2.7/32")}}))
 	require.NoError(t, m.Declare(ctx, network.Network{Name: "b", Prefix: pfx("10.9.0.0/16")}))
-	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3"), Routed: pfx("10.8.1.0/24")}))
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
 	require.NoError(t, m.Attach(ctx, network.Member{Network: "b", Address: addr("10.0.0.4")}))
 	peers := []network.Peer{{Name: "h2", PublicKey: "KEYTWO", Endpoint: netip.MustParseAddrPort("192.0.2.2:51820"), Prefixes: []netip.Prefix{pfx("10.0.2.0/24"), pfx("10.8.2.0/24")}}}
 	require.NoError(t, m.SetPeers(ctx, peers))

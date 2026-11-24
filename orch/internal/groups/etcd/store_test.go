@@ -2,8 +2,6 @@ package etcd_test
 
 import (
 	"errors"
-	"fmt"
-	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,7 +32,7 @@ func spec(name string) groups.GroupSpec {
 		Template: groups.Template{
 			Form: groups.FormImage, CPUs: 2, MemoryMiB: 256, Version: "r@sha256:" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			Disks:   []groups.Disk{{Name: "data", SizeBytes: 1 << 30}},
-			Network: "lab", PodPrefixBits: 26, RootDiskBytes: 8 << 30,
+			Network: "lab", RootDiskBytes: 8 << 30,
 			Policy: groups.NetworkPolicy{Egress: []groups.Rule{{Prefix: "10.0.0.0/8", Protocol: "tcp", Ports: []int{443}}}},
 		},
 		Rollout: groups.Rollout{MaxUnavailable: 1, MaxSurge: 1}, MinAvailable: 2, Stateful: true, FenceTTL: 30 * time.Second,
@@ -188,71 +186,30 @@ func TestABootSetFailureOfOneClassWordedDifferentlyIsWrittenOnce(t *testing.T) {
 	require.Len(t, evs, 3, "the second is a repeat of the first; another class and a repeat after ten minutes are written")
 }
 
-func podMember(id, network, prefix string) groups.Member {
-	return groups.Member{ID: id, Group: "web", Network: network, PodPrefix: prefix, Phase: groups.PhasePending}
-}
-
-func TestAPodPrefixIsHeldByOneMemberOfANetworkUntilItIsGone(t *testing.T) {
-	s, _ := newStore(t)
+// A member record written before ADR 0114 carries the Pod prefix it held. It is read as any other
+// record, and a write over it keeps no prefix.
+func TestAMemberRecordThatHeldAPodPrefixIsReadAndRewrittenWithoutIt(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	kv := c.Members[0].Etcd()
+	s := groupsetcd.New(kv)
 	ctx := t.Context()
-
-	a, err := s.PutMember(ctx, podMember("web-1", "lab", "10.9.0.0/26"))
+	_, err := kv.Put(ctx, "/naru/orch/group-members/web-1",
+		`{"id":"web-1","group":"web","host":"h1","machineId":"web-1","templateHash":"abc","network":"lab","podPrefix":"10.9.0.0/26","phase":"pending"}`)
 	require.NoError(t, err)
+
 	got, err := s.ListMembers(ctx)
 	require.NoError(t, err)
+	require.Len(t, got, 1)
 	require.Equal(t, "lab", got[0].Network)
-	require.Equal(t, "10.9.0.0/26", got[0].PodPrefix)
 
-	_, err = s.PutMember(ctx, podMember("web-2", "lab", "10.9.0.0/26"))
-	require.ErrorIs(t, err, groups.ErrConflict, "the prefix is taken")
-	_, err = s.PutMember(ctx, podMember("web-2", "lab", "10.9.0.64/26"))
-	require.NoError(t, err, "control: another prefix of the network is free")
-	_, err = s.PutMember(ctx, podMember("web-3", "other", "10.9.0.0/26"))
-	require.NoError(t, err, "control: the same prefix on another network is free")
-
-	// A write that keeps the member does not release the claim.
-	a.LastSeen = time.Unix(200, 0).UTC()
-	a, err = s.PutMember(ctx, a)
+	m := got[0]
+	m.Phase = groups.PhaseGone
+	_, err = s.PutMember(ctx, m)
 	require.NoError(t, err)
-	_, err = s.PutMember(ctx, podMember("web-4", "lab", "10.9.0.0/26"))
-	require.ErrorIs(t, err, groups.ErrConflict)
-
-	a.Phase = groups.PhaseGone
-	gone, err := s.PutMember(ctx, a)
+	raw, err := kv.Get(ctx, "/naru/orch/group-members/web-1")
 	require.NoError(t, err)
-	_, err = s.PutMember(ctx, podMember("web-4", "lab", "10.9.0.0/26"))
-	require.NoError(t, err, "a gone member's prefix is free")
-
-	// The gone member written again does not end the claim of the member that holds it now.
-	gone.LastSeen = time.Unix(300, 0).UTC()
-	_, err = s.PutMember(ctx, gone)
-	require.NoError(t, err)
-	_, err = s.PutMember(ctx, podMember("web-5", "lab", "10.9.0.0/26"))
-	require.ErrorIs(t, err, groups.ErrConflict)
-}
-
-func TestOnlyOneOfManyMembersRacingForAPodPrefixGetsIt(t *testing.T) {
-	s, _ := newStore(t)
-	var wins, conflicts int
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for i := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := s.PutMember(t.Context(), podMember(fmt.Sprintf("web-%d", i), "lab", "10.9.0.0/26"))
-			mu.Lock()
-			defer mu.Unlock()
-			if err == nil {
-				wins++
-			} else if errors.Is(err, groups.ErrConflict) {
-				conflicts++
-			}
-		}()
-	}
-	wg.Wait()
-	require.Equal(t, 1, wins)
-	require.Equal(t, 7, conflicts)
+	require.NotContains(t, string(raw.Kvs[0].Value), "podPrefix")
+	require.Contains(t, string(raw.Kvs[0].Value), `"phase":"gone"`, "control: the write took")
 }
 
 func TestListNetworksReadsTheNetworksOrchKeeps(t *testing.T) {
@@ -267,49 +224,7 @@ func TestListNetworksReadsTheNetworksOrchKeeps(t *testing.T) {
 	require.NoError(t, nets.Put(t.Context(), orchapi.Network{Name: "a", Prefix: "10.8.0.0/24", APIEndpoint: "10.8.0.2"}, nil, nil))
 	got, err := s.ListNetworks(t.Context())
 	require.NoError(t, err)
-	require.Equal(t, []groups.Network{{Name: "a", Prefix: "10.8.0.0/24"}, {Name: "lab", Prefix: "10.9.0.0/24"}}, got)
-}
-
-func TestAPodPrefixOverlappingAnotherOfTheNetworkIsRefused(t *testing.T) {
-	s, _ := newStore(t)
-	ctx := t.Context()
-	_, err := s.PutMember(ctx, podMember("web-1", "lab", "10.9.0.0/24"))
-	require.NoError(t, err)
-
-	_, err = s.PutMember(ctx, podMember("web-2", "lab", "10.9.0.64/26"))
-	require.ErrorIs(t, err, groups.ErrConflict, "a /26 inside a claimed /24")
-	_, err = s.PutMember(ctx, podMember("web-3", "lab", "10.9.0.0/16"))
-	require.ErrorIs(t, err, groups.ErrConflict, "a /16 over a claimed /24")
-	_, err = s.PutMember(ctx, podMember("web-4", "lab", "10.9.1.0/26"))
-	require.NoError(t, err, "control: a prefix that overlaps no claim")
-}
-
-func TestOnlyOneOfTwoOverlappingPrefixesRacingGetsIt(t *testing.T) {
-	s, _ := newStore(t)
-	var wins atomic.Int32
-	var wg sync.WaitGroup
-	for i, p := range []string{"10.9.0.0/24", "10.9.0.0/26", "10.9.0.128/25", "10.9.0.64/27"} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if _, err := s.PutMember(t.Context(), podMember(fmt.Sprintf("web-%d", i), "lab", p)); err == nil {
-				wins.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	got, err := s.ListMembers(t.Context())
-	require.NoError(t, err)
-	var held []netip.Prefix
-	for _, m := range got {
-		held = append(held, netip.MustParsePrefix(m.PodPrefix))
-	}
-	require.Len(t, held, int(wins.Load()))
-	for i, a := range held {
-		for _, b := range held[i+1:] {
-			require.False(t, a.Overlaps(b), "%s and %s are both held", a, b)
-		}
-	}
+	require.Equal(t, []groups.Network{{Name: "a"}, {Name: "lab"}}, got)
 }
 
 func TestOnlyOneOfManyCreatesOfAGroupWins(t *testing.T) {

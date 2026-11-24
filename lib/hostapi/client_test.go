@@ -127,11 +127,10 @@ func TestClient_DecodesTheTunnelAndTheMembership(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, hostapi.Tunnel{PublicKey: "K", ListenPort: 51820, MachinePrefixes: []string{"10.0.0.0/24"}}, tun)
 
-	c, _, _ = serve(t, http.StatusOK, hostapi.MicroVM{Name: "web", Network: "a", PodPrefix: "10.8.1.0/24"})
+	c, _, _ = serve(t, http.StatusOK, hostapi.MicroVM{Name: "web", Network: "a"})
 	m, err := c.MicroVM(t.Context(), "web")
 	require.NoError(t, err)
 	assert.Equal(t, "a", m.Network)
-	assert.Equal(t, "10.8.1.0/24", m.PodPrefix)
 
 	c, _, _ = serve(t, http.StatusOK, hostapi.Network{Name: "a", Prefix: "10.8.0.0/16", RemoteMembers: []string{"10.0.2.7/32"}})
 	n, err := c.Network(t.Context(), "a")

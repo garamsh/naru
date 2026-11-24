@@ -95,7 +95,7 @@ func New(store Store, groups Groups, pools Pools, log Log, clock Clock) *Service
 }
 
 // Apply creates the network or replaces its spec; by is the caller, for the event log. A network
-// that a group uses keeps its prefix, since the members' Pod prefixes were cut from it. A prefix
+// that a group uses keeps its prefix. A prefix
 // never overlaps an address pool: the exposures' addresses are on the LAN, outside every network.
 // The overlap check runs inside the store's write, which holds only while the address-space guard
 // that a pool write also moves is unchanged, so a network and a pool that overlap are never both kept.

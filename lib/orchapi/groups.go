@@ -31,8 +31,7 @@ type GroupPolicy struct {
 // Version names what boots: for the image form an image as repository@sha256:digest. NodeVersion
 // is the naru-node version an OS-form microVM boots.
 //
-// Network names the virtual network the members join, or is empty for none. PodPrefixBits above
-// zero gives each member a Pod prefix of that length out of the network's prefix. RootDiskBytes
+// Network names the virtual network the members join, or is empty for none. RootDiskBytes
 // sizes the root disk of an image-form microVM and is required for it. UserData is the user-data
 // of an OS-form microVM, used as written; empty gives "#cloud-config\n".
 //
@@ -48,7 +47,6 @@ type GroupTemplate struct {
 	Policy        GroupPolicy `json:"policy,omitzero"`
 	NodeVersion   string      `json:"nodeVersion,omitempty"`
 	Network       string      `json:"network,omitempty"`
-	PodPrefixBits int         `json:"podPrefixBits,omitempty"`
 	RootDiskBytes int64       `json:"rootDiskBytes,omitempty"`
 	UserData      string      `json:"userData,omitempty"`
 	Addresses     []string    `json:"addresses,omitempty"`
@@ -100,8 +98,6 @@ type GroupMember struct {
 	// phase (pending or gone) when it is false.
 	Phase    string    `json:"phase"`
 	LastSeen time.Time `json:"lastSeen,omitzero"`
-	// PodPrefix is the Pod prefix of the member's network that the member holds, or empty.
-	PodPrefix string `json:"podPrefix,omitempty"`
 }
 
 // GroupHold is the latest reason the engine recorded for placing nothing.

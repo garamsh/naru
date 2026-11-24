@@ -93,7 +93,7 @@ func (f *FakeHosts) List(context.Context) ([]groups.Host, error) {
 		if !h.down {
 			for m, st := range h.machines {
 				t := h.specs[m].Template
-				mc := groups.Machine{ID: m, State: st, Network: t.Network, PodPrefix: h.specs[m].PodPrefix}
+				mc := groups.Machine{ID: m, State: st, Network: t.Network}
 				if t.Form == groups.FormImage {
 					mc.Image = t.Version
 				} else {

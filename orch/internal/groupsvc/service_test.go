@@ -119,20 +119,14 @@ func TestApplyRefusesAnInvalidSpecAndStoresAndLogsAValidOne(t *testing.T) {
 func TestApplyChecksTheNetworkTheTemplateJoins(t *testing.T) {
 	svc, st, _ := newSvc(nil)
 	joined := spec()
-	joined.Template.Network, joined.Template.PodPrefixBits = "lab", 26
+	joined.Template.Network = "lab"
 
 	_, err := svc.Apply(t.Context(), "alice", joined)
 	require.ErrorIs(t, err, inventory.ErrInvalid, "a network orch does not keep")
 	require.ErrorContains(t, err, `network "lab" is not declared`)
 	require.Empty(t, st.groups)
 
-	st.networks = []groups.Network{{Name: "lab", Prefix: "10.9.0.0/24"}}
-	joined.Template.PodPrefixBits = 24
-	_, err = svc.Apply(t.Context(), "alice", joined)
-	require.ErrorIs(t, err, inventory.ErrInvalid, "a Pod prefix as large as the network")
-	require.Empty(t, st.groups)
-
-	joined.Template.PodPrefixBits = 26
+	st.networks = []groups.Network{{Name: "lab"}}
 	_, err = svc.Apply(t.Context(), "alice", joined)
 	require.NoError(t, err)
 	require.Contains(t, st.groups, "web")
@@ -173,7 +167,7 @@ func TestMicroVMsListWhatTheHostsReportAndNameTheGroupOfAMembersMicroVM(t *testi
 	fh := orchtest.NewFakeHosts("h1", "h2")
 	svc, st, _ := newSvc(fh)
 	st.members["web-1"] = groups.Member{ID: "web-1", Group: "web", Host: "h1", MachineID: "web-1", Phase: groups.PhaseRunning}
-	require.NoError(t, fh.Create(t.Context(), "h1", groups.MachineSpec{ID: "web-1", PodPrefix: "10.9.0.0/26", Template: groups.Template{Form: groups.FormImage, Version: "r@sha256:abc", Network: "lab"}}))
+	require.NoError(t, fh.Create(t.Context(), "h1", groups.MachineSpec{ID: "web-1", Template: groups.Template{Form: groups.FormImage, Version: "r@sha256:abc", Network: "lab"}}))
 	require.NoError(t, fh.Create(t.Context(), "h2", groups.MachineSpec{ID: "adhoc", BootSet: "node-2", Template: groups.Template{Form: groups.FormOS, NodeVersion: "v2.0.0"}}))
 
 	got, err := svc.MicroVMs(t.Context())

@@ -22,18 +22,17 @@ type CreateRequest struct {
 	// renews the fence (POST /v1/microvms/{name}/fence), then starts it.
 	Fenced bool `json:"fenced,omitempty"`
 	// Network is the name of a declared network (PUT /v1/networks/{name}) the microVM is created on:
-	// its address, which mvmd gives it, and PodPrefix must be inside the network's prefix. Absent,
+	// its address, which mvmd gives it. Absent,
 	// the microVM is on no network and the host forwards nothing for it.
 	Network string `json:"network,omitempty"`
 
 	// The OS form, in place of Image, RootDiskBytes, Disks, Env and Command: a microVM that boots
 	// BootSet, with Cmdline added to the kernel's command line, a data disk of DataDisk bytes, a
-	// NoCloud seed whose user-data is Seed, and PodPrefix routed to it.
-	BootSet   string `json:"bootSet,omitempty"`
-	Cmdline   string `json:"cmdline,omitempty"`
-	Seed      []byte `json:"seed,omitempty"`
-	DataDisk  uint64 `json:"dataDisk,omitempty"`
-	PodPrefix string `json:"podPrefix,omitempty"`
+	// NoCloud seed whose user-data is Seed.
+	BootSet  string `json:"bootSet,omitempty"`
+	Cmdline  string `json:"cmdline,omitempty"`
+	Seed     []byte `json:"seed,omitempty"`
+	DataDisk uint64 `json:"dataDisk,omitempty"`
 	// Address is the IPv4 address the OS-form microVM is to have, inside the host's Machine prefix
 	// (`mvmd.machinePrefixes` of GET /v1/host). Absent, mvmd chooses. An address outside the prefix or
 	// that is not a host address is 422 on address; one another microVM, the gateway or a resolver
@@ -60,10 +59,9 @@ type MicroVM struct {
 	// BootSet and Cmdline are an OS-form microVM's.
 	BootSet string `json:"bootSet,omitempty"`
 	Cmdline string `json:"cmdline,omitempty"`
-	// Network and PodPrefix are the microVM's membership, as the host keeps it: the network it is
-	// attached to and the prefix routed to it. They are absent for a microVM on no network.
-	Network   string `json:"network,omitempty"`
-	PodPrefix string `json:"podPrefix,omitempty"`
+	// Network is the network the microVM is attached to, as the host keeps it. It is absent for a
+	// microVM on no network.
+	Network string `json:"network,omitempty"`
 	// RestartOnBoot is whether mvmd starts the microVM again after the host reboots.
 	RestartOnBoot bool `json:"restartOnBoot"`
 	// Fenced is whether the microVM has a fence of its own; FenceLapsedAt is when it last lapsed

@@ -19,7 +19,6 @@ import (
 // Errors a Manager answers; the API maps them to statuses.
 var (
 	ErrUnknownNetwork = errors.New("no such network")
-	ErrOutside        = errors.New("outside the network's prefix")
 	ErrOverlap        = errors.New("overlaps another network's prefix")
 )
 
@@ -202,8 +201,7 @@ func (m *Manager) Members() []Member {
 }
 
 // Declare adds the network or replaces the one of its name, keeping the members attached to it, and
-// applies. A prefix that overlaps another network's is refused, and so is one that leaves a member's
-// pod prefix outside it.
+// applies. A prefix that overlaps another network's is refused.
 func (m *Manager) Declare(ctx context.Context, n Network) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -217,11 +215,6 @@ func (m *Manager) Declare(ctx context.Context, n Network) error {
 			return fmt.Errorf("%w: %s", ErrOverlap, o.Name)
 		}
 		next.Networks = append(next.Networks, o)
-	}
-	for _, x := range m.c.Members {
-		if x.Network == n.Name && !inside(n.Prefix, x.Routed) {
-			return fmt.Errorf("%w: the pod prefix %s of %s", ErrOutside, x.Routed, x.Address)
-		}
 	}
 	next.Networks = append(next.Networks, n)
 	return m.apply(ctx, next)
@@ -251,14 +244,8 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	return m.apply(ctx, next)
 }
 
-// inside reports whether the pod prefix p, when there is one, is inside the network prefix n.
-func inside(n, p netip.Prefix) bool {
-	return !p.IsValid() || (n.Contains(p.Addr()) && p.Bits() >= n.Bits())
-}
-
-// Attach adds a member and applies. The member's address is whatever its host gave it; only its pod
-// prefix must be inside its network's prefix. A microVM is attached once: a second Attach of the
-// same address replaces the first.
+// Attach adds a member and applies. The member's address is whatever its host gave it. A microVM is
+// attached once: a second Attach of the same address replaces the first.
 func (m *Manager) Attach(ctx context.Context, x Member) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -270,9 +257,6 @@ func (m *Manager) Attach(ctx context.Context, x Member) error {
 	}
 	if n == nil {
 		return ErrUnknownNetwork
-	}
-	if !inside(n.Prefix, x.Routed) {
-		return ErrOutside
 	}
 	next := m.c
 	next.Members = nil

@@ -25,8 +25,8 @@ const callTimeout = 5 * time.Minute
 // seed volume may be as large as mvmd takes (1 MiB), which is more than a quarter larger here.
 const maxBody = 4 << 20
 
-// view is the API's form of a Machine. The network and pod prefix are those of hostd's persisted
-// membership, which a microVM attached to a network has whoever made it.
+// view is the API's form of a Machine. The network is that of hostd's persisted membership, which a
+// microVM attached to a network has whoever made it.
 func (s *Server) view(m mvmd.Machine, sizes map[string]uint64) hostapi.MicroVM {
 	v := hostapi.MicroVM{
 		Name: m.ID, MachineID: m.ID, State: m.State, Failure: m.Failure, Addresses: m.Addresses,
@@ -34,17 +34,11 @@ func (s *Server) view(m mvmd.Machine, sizes map[string]uint64) hostapi.MicroVM {
 		Disks: []hostapi.DiskSpec{}, NetworkPolicy: m.Policy, BootSet: m.BootSet, Cmdline: m.Cmdline,
 		RestartOnBoot: m.RestartOnBoot, Fenced: m.Fenced, FenceLapsedAt: m.FenceLapsedAt,
 	}
-	if len(m.RoutedPrefixes) > 0 {
-		v.PodPrefix = m.RoutedPrefixes[0]
-	}
 	if v.Addresses == nil {
 		v.Addresses = []string{}
 	}
 	if x, ok := s.memberOf(m); ok {
 		v.Network = x.Network
-		if x.Routed.IsValid() {
-			v.PodPrefix = x.Routed.String()
-		}
 	}
 	for _, d := range m.Disks {
 		v.Disks = append(v.Disks, hostapi.DiskSpec{Name: diskName(m.ID, d.ID), SizeBytes: sizes[d.ID], ReadOnly: d.ReadOnly})
@@ -102,7 +96,7 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotImplemented, hostapi.ErrorBody{Error: "this host was started with no --machine-gateway, so it cannot write the network-config of an OS-form microVM"})
 		return
 	}
-	if req.Network != "" && !s.checkNetwork(w, req.Network, req.PodPrefix) {
+	if req.Network != "" && !s.checkNetwork(w, req.Network) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), callTimeout)
@@ -130,7 +124,7 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		// A repeat attaches again, which a host that restarted since needs.
-		if err := s.attach(ctx, req.Network, req.PodPrefix, existing); err != nil {
+		if err := s.attach(ctx, req.Network, existing); err != nil {
 			s.networkFail(w, err)
 			return
 		}
@@ -146,7 +140,7 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if err := s.attach(ctx, req.Network, req.PodPrefix, m); err != nil {
+	if err := s.attach(ctx, req.Network, m); err != nil {
 		ids := make([]string, 0, len(sizes))
 		for id := range sizes {
 			ids = append(ids, id)
@@ -247,7 +241,7 @@ func (s *Server) makeSeed(ctx context.Context, p plan, m mvmd.Machine, made *[]s
 	if !prefix.IsValid() {
 		return "", 0, errors.New("the Machine's address is in none of the prefixes mvmd reports")
 	}
-	vol, err := seedVolume(m.ID, p.userData, firstOf(p.create.RoutedPrefixes), prefix, s.deps.MachineGateway)
+	vol, err := seedVolume(m.ID, p.userData, prefix, s.deps.MachineGateway)
 	if err != nil {
 		return "", 0, err
 	}
@@ -505,12 +499,4 @@ func (s *Server) removeOrphans(ctx context.Context, name string) {
 			}
 		}
 	}
-}
-
-// firstOf is the first of the prefixes, or empty for none.
-func firstOf(prefixes []string) string {
-	if len(prefixes) == 0 {
-		return ""
-	}
-	return prefixes[0]
 }

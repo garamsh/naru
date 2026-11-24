@@ -6,9 +6,9 @@ import (
 	"net/url"
 )
 
-// NetworkSpec is what an operator declares for a network: Prefix is its Pod space, the range the
-// Pod prefixes of its members come from, and APIEndpoint is the address of the API its members
-// reach orch's services at, when it has one.
+// NetworkSpec is what an operator declares for a network: Prefix is its routed space, which no
+// other network's prefix and no address pool overlaps, and APIEndpoint is the address of the API
+// its members reach orch's services at, when it has one.
 type NetworkSpec struct {
 	Prefix      string `json:"prefix"`
 	APIEndpoint string `json:"apiEndpoint,omitempty"`

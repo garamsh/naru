@@ -60,7 +60,7 @@ func TestNetwork_RemoteMembers(t *testing.T) {
 	var got hostapi.Network
 	require.NoError(t, json.Unmarshal(b, &got))
 	assert.Equal(t, []string{"10.0.2.7/32", "10.8.2.0/24"}, got.RemoteMembers)
-	assert.Contains(t, e.nft.ruleset(), "elements = { 10.0.2.7, 10.8.0.0/16 }", "the remote member is in the network's set; the pod prefix inside the prefix is not written twice")
+	assert.Contains(t, e.nft.ruleset(), "elements = { 10.0.2.7, 10.8.0.0/16 }", "the remote member is in the network's set; a remote prefix inside the prefix is not written twice")
 
 	for name, bad := range map[string][]string{
 		"not a prefix": {"ten"},
@@ -78,7 +78,7 @@ func TestNetwork_RemoteMembers(t *testing.T) {
 	assert.Equal(t, 200, code, "control: a valid member is accepted")
 }
 
-func TestMicroVM_ReportsItsNetworkAndPodPrefix(t *testing.T) {
+func TestMicroVM_ReportsItsNetwork(t *testing.T) {
 	e := start(t)
 	p := e.as(t, ProvisionerOrganization)
 	r := e.as(t, ReaderOrganization)
@@ -87,7 +87,6 @@ func TestMicroVM_ReportsItsNetworkAndPodPrefix(t *testing.T) {
 
 	body := osBody()
 	body["network"] = "a"
-	body["podPrefix"] = "10.1.7.0/24"
 	code, b := e.do(t, p, "POST", "/v1/microvms", body)
 	require.Equal(t, 201, code, string(b))
 
@@ -95,7 +94,6 @@ func TestMicroVM_ReportsItsNetworkAndPodPrefix(t *testing.T) {
 	require.Equal(t, 200, code, string(b))
 	got := microVMOf(t, b)
 	assert.Equal(t, "a", got.Network)
-	assert.Equal(t, "10.1.7.0/24", got.PodPrefix)
 
 	code, b = e.do(t, r, "GET", "/v1/microvms", nil)
 	require.Equal(t, 200, code, string(b))
@@ -103,7 +101,6 @@ func TestMicroVM_ReportsItsNetworkAndPodPrefix(t *testing.T) {
 	require.NoError(t, json.Unmarshal(b, &list))
 	require.Len(t, list.MicroVMs, 1)
 	assert.Equal(t, "a", list.MicroVMs[0].Network)
-	assert.Equal(t, "10.1.7.0/24", list.MicroVMs[0].PodPrefix)
 
 	// A microVM that hostd did not attach reports no network.
 	e.rt.machines["bare"] = mvmd.Machine{ID: "bare", State: mvmd.StateRunning, Addresses: []string{"10.1.0.9"}}
@@ -124,11 +121,10 @@ func TestResume_AttachesToANetworkAndRollsBackWhenItCannot(t *testing.T) {
 	code, _ = e.do(t, c, "DELETE", "/v1/microvms/web", nil)
 	require.Equal(t, 204, code)
 
-	// Refused before mvmd is called: an unknown network, a bad name, a pod prefix outside the prefix.
+	// Refused before mvmd is called: an unknown network and a bad name.
 	for name, req := range map[string]hostapi.ResumeRequest{
 		"unknown network": {Name: "w2", Network: "nowhere"},
 		"bad network":     {Name: "w2", Network: "Bad_"},
-		"pod outside":     {Name: "w2", Network: "a", PodPrefix: "10.7.0.0/24"},
 	} {
 		code, b := e.do(t, c, "POST", "/v1/snapshots/s/resume", req)
 		assert.Equal(t, 422, code, "%s: %s", name, b)
@@ -144,12 +140,11 @@ func TestResume_AttachesToANetworkAndRollsBackWhenItCannot(t *testing.T) {
 	assert.Empty(t, e.nets.Members())
 
 	e.tunnel.fail = false
-	code, b = e.do(t, c, "POST", "/v1/snapshots/s/resume", hostapi.ResumeRequest{Name: "w2", Network: "a", PodPrefix: "10.1.8.0/24"})
+	code, b = e.do(t, c, "POST", "/v1/snapshots/s/resume", hostapi.ResumeRequest{Name: "w2", Network: "a"})
 	require.Equal(t, 201, code, string(b))
 	got := microVMOf(t, b)
 	assert.Equal(t, "a", got.Network)
-	assert.Equal(t, "10.1.8.0/24", got.PodPrefix)
-	assert.Equal(t, []network.Member{{Network: "a", Address: netip.MustParseAddr("10.1.0.6"), Routed: netip.MustParsePrefix("10.1.8.0/24")}}, e.nets.Members())
+	assert.Equal(t, []network.Member{{Network: "a", Address: netip.MustParseAddr("10.1.0.6")}}, e.nets.Members())
 }
 
 func TestMicroVMDelete_KeepsTheDisksASnapshotNeeds(t *testing.T) {

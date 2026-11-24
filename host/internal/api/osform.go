@@ -28,14 +28,7 @@ const (
 
 // isOSForm reports whether the request carries a field only the OS form has.
 func isOSForm(r hostapi.CreateRequest) bool {
-	return r.BootSet != "" || r.Cmdline != "" || len(r.Seed) > 0 || r.DataDisk > 0 || r.PodPrefix != "" || r.Address != ""
-}
-
-// validRoutedPrefix reports whether mvmd would route the prefix to a Machine: an IPv4 prefix of /16
-// to /32, with no host bits.
-func validRoutedPrefix(s string) bool {
-	p, err := netip.ParsePrefix(s)
-	return err == nil && p == p.Masked() && p.Addr().Is4() && p.Bits() >= 16
+	return r.BootSet != "" || r.Cmdline != "" || len(r.Seed) > 0 || r.DataDisk > 0 || r.Address != ""
 }
 
 // validateOS returns the plan for an OS-form request, or every field that is wrong with it.
@@ -59,7 +52,7 @@ func validateOS(r hostapi.CreateRequest) (plan, []string, string) {
 		bad("command")
 	}
 	if len(fields) > 0 {
-		return plan{}, fields, "a microVM has an image or a boot set, not both: bootSet, cmdline, seed, dataDisk and podPrefix are the OS form's, image, rootDiskBytes, disks, env and command the image form's"
+		return plan{}, fields, "a microVM has an image or a boot set, not both: bootSet, cmdline, seed and dataDisk are the OS form's, image, rootDiskBytes, disks, env and command the image form's"
 	}
 	if !dnsLabel.MatchString(r.Name) {
 		bad("name")
@@ -79,14 +72,6 @@ func validateOS(r hostapi.CreateRequest) (plan, []string, string) {
 	if r.DataDisk == 0 {
 		bad("dataDisk")
 	}
-	var routed []string
-	if r.PodPrefix != "" {
-		if !validRoutedPrefix(r.PodPrefix) {
-			bad("podPrefix")
-		} else {
-			routed = []string{r.PodPrefix}
-		}
-	}
 	var requested string
 	if r.Address != "" {
 		if a, err := netip.ParseAddr(r.Address); err != nil || !a.Is4() || a.String() != r.Address {
@@ -101,7 +86,7 @@ func validateOS(r hostapi.CreateRequest) (plan, []string, string) {
 	// address and gateway are not known until mvmd has made the Machine, so the longest stand in.
 	if len(r.Seed) == 0 {
 		bad("seed")
-	} else if v, err := seedVolume(r.Name, r.Seed, r.PodPrefix, netip.MustParsePrefix("255.255.255.255/32"), netip.MustParseAddr("255.255.255.255")); err != nil || len(v) > maxSeedBytes {
+	} else if v, err := seedVolume(r.Name, r.Seed, netip.MustParsePrefix("255.255.255.255/32"), netip.MustParseAddr("255.255.255.255")); err != nil || len(v) > maxSeedBytes {
 		bad("seed")
 	}
 	if len(fields) > 0 {
@@ -112,7 +97,7 @@ func validateOS(r hostapi.CreateRequest) (plan, []string, string) {
 		userData: r.Seed,
 		create: mvmd.Create{
 			ID: r.Name, CPU: r.CPU, MemoryBytes: r.Memory, Policy: r.NetworkPolicy,
-			BootSet: r.BootSet, Cmdline: r.Cmdline, RoutedPrefixes: routed, RequestedIPv4: requested, RestartOnBoot: restartOnBoot(r.RestartOnBoot, true), Fenced: r.Fenced,
+			BootSet: r.BootSet, Cmdline: r.Cmdline, RequestedIPv4: requested, RestartOnBoot: restartOnBoot(r.RestartOnBoot, true), Fenced: r.Fenced,
 			Disks: []mvmd.Attachment{{ID: diskID(r.Name, dataDiskName)}},
 		},
 	}
@@ -134,23 +119,17 @@ config:
 `, address.Addr(), net.IP(net.CIDRMask(address.Bits(), 32)), gateway)
 }
 
-// metaData is the seed's meta-data: the instance's name and, for a member with a Pod prefix, the
-// prefix the host routed to it (naru-pod-prefix), which init reads in place of the user-data's.
-// The user-data is the same for every member of a group; what is the member's own goes here.
-func metaData(name, podPrefix string) []byte {
-	b := "instance-id: " + name + "\nlocal-hostname: " + name + "\n"
-	if podPrefix != "" {
-		b += "naru-pod-prefix: " + podPrefix + "\n"
-	}
-	return []byte(b)
+// metaData is the seed's meta-data: the instance's name.
+func metaData(name string) []byte {
+	return []byte("instance-id: " + name + "\nlocal-hostname: " + name + "\n")
 }
 
 // seedVolume is the NoCloud volume of a microVM: the user-data the request carried, a meta-data
-// that names the instance and carries its Pod prefix, and the network-config.
-func seedVolume(name string, userData []byte, podPrefix string, address netip.Prefix, gateway netip.Addr) ([]byte, error) {
+// that names the instance, and the network-config.
+func seedVolume(name string, userData []byte, address netip.Prefix, gateway netip.Addr) ([]byte, error) {
 	return iso9660.Write(seedLabel, []iso9660.File{
 		{Name: "user-data", Data: userData},
-		{Name: "meta-data", Data: metaData(name, podPrefix)},
+		{Name: "meta-data", Data: metaData(name)},
 		{Name: "network-config", Data: networkConfig(address, gateway)},
 	})
 }

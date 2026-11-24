@@ -173,7 +173,7 @@ func (n hostNet) MicroVMs(ctx context.Context) ([]netrec.MicroVM, error) {
 	}
 	out := make([]netrec.MicroVM, len(vms))
 	for i, m := range vms {
-		out[i] = netrec.MicroVM{Name: m.Name, Network: m.Network, PodPrefix: m.PodPrefix, Addresses: m.Addresses}
+		out[i] = netrec.MicroVM{Name: m.Name, Network: m.Network, Addresses: m.Addresses}
 	}
 	return out, nil
 }

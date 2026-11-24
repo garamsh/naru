@@ -52,10 +52,8 @@ type Template struct {
 	// NodeVersion is the naru-node version an OS-form microVM boots; a host places it only
 	// when the version is in the host's NodeVersions.
 	NodeVersion string `json:"nodeVersion"`
-	// Network is the virtual network the members join, or empty. PodPrefixBits above zero gives
-	// each member a Pod prefix of that length out of the network's prefix.
-	Network       string `json:"network"`
-	PodPrefixBits int    `json:"podPrefixBits"`
+	// Network is the virtual network the members join, or empty.
+	Network string `json:"network"`
 	// RootDiskBytes sizes the root disk of an image-form microVM.
 	RootDiskBytes int64 `json:"rootDiskBytes"`
 	// UserData is the user-data of an OS-form microVM, used as written; empty gives
@@ -134,10 +132,6 @@ func (g GroupSpec) Validate() error {
 		return bad("template form %q is neither image nor os", g.Template.Form)
 	case g.Template.Form == FormImage && g.Template.RootDiskBytes <= 0:
 		return bad("an image-form template needs rootDiskBytes above zero")
-	case g.Template.PodPrefixBits < 0 || g.Template.PodPrefixBits > 32:
-		return bad("podPrefixBits %d is outside 0..32", g.Template.PodPrefixBits)
-	case g.Template.PodPrefixBits > 0 && g.Template.Network == "":
-		return bad("podPrefixBits needs a network to cut the prefixes from")
 	case len(g.Template.Addresses) > 0 && g.Template.Form != FormOS:
 		return bad("addresses are for an OS-form template")
 	case !validAddresses(g.Template.Addresses):
@@ -176,11 +170,9 @@ type Member struct {
 	Host         string
 	MachineID    string
 	TemplateHash string
-	// Network and PodPrefix are the network the member joined and the Pod prefix it holds out
-	// of it, when its template asks for one. A prefix is held until the member is gone.
-	Network   string
-	PodPrefix string
-	Phase     Phase
+	// Network is the network the member joined.
+	Network string
+	Phase   Phase
 	// LastSeen is when the record was last written because the member was seen on its host.
 	LastSeen time.Time
 	// FenceDeadline is the last deadline orch renewed for a stateful member.
@@ -247,18 +239,16 @@ type Machine struct {
 	ID    string
 	State MachineState
 	// Image is the digest of the image an image-form microVM runs and BootSet the boot set an
-	// OS-form one boots. Network and PodPrefix are what the host holds for it, whoever made it.
+	// OS-form one boots. Network is what the host holds for it, whoever made it.
 	Image     string
 	BootSet   string
 	Network   string
-	PodPrefix string
 	Addresses []string
 }
 
-// Network is a virtual network as orch keeps it; its prefix is the space Pod prefixes are cut from.
+// Network is a virtual network as orch keeps it.
 type Network struct {
-	Name   string
-	Prefix string
+	Name string
 }
 
 // Host is a host as orch sees it.

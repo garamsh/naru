@@ -19,7 +19,7 @@ const userData = "#cloud-config\nhostname: web\n"
 func osBody() map[string]any {
 	return map[string]any{
 		"name": "web", "cpu": 2, "memory": 1 << 28, "bootSet": "naru", "cmdline": "naru.role=worker",
-		"seed": []byte(userData), "dataDisk": 1 << 30, "podPrefix": "10.200.1.0/24",
+		"seed": []byte(userData), "dataDisk": 1 << 30,
 	}
 }
 
@@ -38,7 +38,7 @@ func TestOSForm_CreatesTheDataDiskThenTheMachineThenTheSeedAttachedBeforeTheStar
 	m := e.rt.machines["web"]
 	assert.Equal(t, "naru", m.BootSet)
 	assert.Equal(t, "naru.role=worker", m.Cmdline)
-	assert.Equal(t, []string{"10.200.1.0/24"}, m.RoutedPrefixes, "the Pod prefix reaches the Machine")
+	assert.Empty(t, m.RoutedPrefixes, "the host routes no prefix to the Machine")
 	assert.Empty(t, m.ImageDigest)
 	assert.Zero(t, m.RootDiskBytes)
 	assert.Equal(t, []mvmd.Attachment{{ID: "web.data"}, {ID: "web.seed", ReadOnly: true}}, m.Disks, "the seed is attached read-only")
@@ -49,7 +49,7 @@ func TestOSForm_CreatesTheDataDiskThenTheMachineThenTheSeedAttachedBeforeTheStar
 	assert.Equal(t, "CD001", string(vol[16*2048+1:16*2048+6]))
 	assert.Equal(t, "cidata          ", string(vol[16*2048+40:16*2048+56]), "the volume label")
 	for _, want := range []string{
-		userData, "instance-id: web", "local-hostname: web", "naru-pod-prefix: 10.200.1.0/24", "version: 1", "name: eth0", "address: '10.1.0.5'", "netmask: '255.255.255.0'", "gateway: '10.1.0.1'",
+		userData, "instance-id: web", "local-hostname: web", "version: 1", "name: eth0", "address: '10.1.0.5'", "netmask: '255.255.255.0'", "gateway: '10.1.0.1'",
 	} {
 		assert.True(t, bytes.Contains(vol, []byte(want)), "the seed has no %q", want)
 	}
@@ -58,7 +58,6 @@ func TestOSForm_CreatesTheDataDiskThenTheMachineThenTheSeedAttachedBeforeTheStar
 	require.NoError(t, json.Unmarshal(b, &v))
 	assert.Equal(t, "running", v.State)
 	assert.Equal(t, "naru", v.BootSet)
-	assert.Equal(t, "10.200.1.0/24", v.PodPrefix)
 	assert.Equal(t, uint64(1<<30), v.Disks[0].SizeBytes)
 	assert.True(t, v.Disks[1].ReadOnly)
 }
@@ -136,7 +135,7 @@ func TestOSForm_IsIdempotentAndAnotherBodyConflicts(t *testing.T) {
 	assert.Len(t, e.rt.machines, 1)
 
 	for field, value := range map[string]any{
-		"podPrefix": "10.200.2.0/24", "bootSet": "other", "cmdline": "x", "dataDisk": 1 << 31, "cpu": 4,
+		"bootSet": "other", "cmdline": "x", "dataDisk": 1 << 31, "cpu": 4,
 	} {
 		other := osBody()
 		other[field] = value
@@ -149,15 +148,14 @@ func TestOSForm_Validation(t *testing.T) {
 	e := start(t)
 	c := e.as(t, ProvisionerOrganization)
 	cases := map[string]func(map[string]any){
-		"bootSet":   func(b map[string]any) { delete(b, "bootSet") },
-		"seed":      func(b map[string]any) { delete(b, "seed") },
-		"dataDisk":  func(b map[string]any) { delete(b, "dataDisk") },
-		"cpu":       func(b map[string]any) { b["cpu"] = 0 },
-		"name":      func(b map[string]any) { b["name"] = "Bad.Name" },
-		"podPrefix": func(b map[string]any) { b["podPrefix"] = "10.200.1.1/24" },
-		"cmdline":   func(b map[string]any) { b["cmdline"] = "a\nb" },
-		"image":     func(b map[string]any) { b["image"] = "registry.example/app@" + digest },
-		"disks":     func(b map[string]any) { b["disks"] = []map[string]any{{"name": "a", "sizeBytes": 1}} },
+		"bootSet":  func(b map[string]any) { delete(b, "bootSet") },
+		"seed":     func(b map[string]any) { delete(b, "seed") },
+		"dataDisk": func(b map[string]any) { delete(b, "dataDisk") },
+		"cpu":      func(b map[string]any) { b["cpu"] = 0 },
+		"name":     func(b map[string]any) { b["name"] = "Bad.Name" },
+		"cmdline":  func(b map[string]any) { b["cmdline"] = "a\nb" },
+		"image":    func(b map[string]any) { b["image"] = "registry.example/app@" + digest },
+		"disks":    func(b map[string]any) { b["disks"] = []map[string]any{{"name": "a", "sizeBytes": 1}} },
 	}
 	for field, mutate := range cases {
 		t.Run(field, func(t *testing.T) {
@@ -167,12 +165,6 @@ func TestOSForm_Validation(t *testing.T) {
 			assert.Equal(t, 422, code, string(body))
 			assert.Contains(t, string(body), field)
 		})
-	}
-	for _, prefix := range []string{"10.0.0.0/15", "fd00::/64"} {
-		b := osBody()
-		b["podPrefix"] = prefix
-		code, _ := e.do(t, c, "POST", "/v1/microvms", b)
-		assert.Equal(t, 422, code, "mvmd routes an IPv4 prefix of /16 to /32: "+prefix)
 	}
 	assert.Empty(t, e.rt.calls, "a refused request reached mvmd")
 
@@ -222,19 +214,16 @@ func TestOSForm_DeleteRemovesTheMachineAndBothDisks(t *testing.T) {
 	assert.Empty(t, e.rt.disks)
 }
 
-func TestOSForm_TheSeedsMetaDataCarriesAPodPrefixOnlyForAMicroVMThatHasOne(t *testing.T) {
+func TestOSForm_TheSeedsMetaDataNamesTheInstanceAndCarriesNoPodPrefix(t *testing.T) {
 	e := start(t)
 	c := e.as(t, ProvisionerOrganization)
-	body := osBody()
-	delete(body, "podPrefix")
-	code, b := e.do(t, c, "POST", "/v1/microvms", body)
+	code, b := e.do(t, c, "POST", "/v1/microvms", osBody())
 	require.Equal(t, 201, code, string(b))
 
 	vol := e.rt.contents["web.seed"]
 	assert.True(t, bytes.Contains(vol, []byte("local-hostname: web")), "the control: the meta-data is there")
 	assert.False(t, bytes.Contains(vol, []byte("naru-pod-prefix")))
 }
-
 func TestOSForm_AnAddressTheRequestNamesIsTheMachinesAndItsSeedsAndIsRepeatableByName(t *testing.T) {
 	e := start(t)
 	c := e.as(t, ProvisionerOrganization)
