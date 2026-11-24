@@ -238,3 +238,66 @@ func TestProxy_RefusesAConnectionOverTheLimitOfItsAddressOrOfTheProxy(t *testing
 	assert.Eventually(t, func() bool { _, ok := holds(t, f, "127.0.0.3"); return ok }, 5*time.Second, 50*time.Millisecond,
 		"a closed connection gives back its slot")
 }
+
+// silent is a Machine's tcp service that reads its connection and writes nothing, leaving it
+// open; ended receives when its reads end, at the proxy's close or the end of the client's stream.
+func silent(t *testing.T) (int, <-chan time.Time) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	ended := make(chan time.Time, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close() }()
+		_, _ = io.Copy(io.Discard, c)
+		ended <- time.Now()
+		<-time.After(time.Minute)
+	}()
+	return l.Addr().(*net.TCPAddr).Port, ended
+}
+
+func TestProxy_ClosesATCPServiceTheClientHalfClosedOnceTheMachineIsSilentForTheIdleTime(t *testing.T) {
+	port, _ := silent(t)
+	r := httpRoute(nameA, machineA, port)
+	r.Protocol = hostapi.RouteTCP
+	f := newFixtureWith(t, func(c *proxy.Config) { c.Idle = idle }, time.Hour, "", r)
+
+	c, err := f.dialTLS(&tls.Config{ServerName: nameA})
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+	_, err = io.WriteString(c, "ping")
+	require.NoError(t, err)
+	require.NoError(t, c.CloseWrite())
+	start := time.Now()
+	_ = c.SetReadDeadline(start.Add(10 * time.Second))
+	_, _ = io.ReadAll(c)
+	assert.Less(t, time.Since(start), 3*idle, "the Machine's silence after the client's end of stream closes it")
+}
+
+func TestProxy_ClosesTheMachinesSideOfATCPServiceWhenTheClientsConnectionFails(t *testing.T) {
+	port, ended := silent(t)
+	r := httpRoute(nameA, machineA, port)
+	r.Protocol = hostapi.RouteTCP
+	f := newFixtureWith(t, func(c *proxy.Config) { c.Idle = time.Minute }, time.Hour, "", r)
+
+	raw, err := net.Dial("tcp", f.addr)
+	require.NoError(t, err)
+	c := tls.Client(raw, &tls.Config{ServerName: nameA, RootCAs: f.pki.pool})
+	require.NoError(t, c.Handshake())
+	_, err = io.WriteString(c, "ping")
+	require.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, raw.(*net.TCPConn).SetLinger(0))
+	start := time.Now()
+	require.NoError(t, raw.Close())
+	select {
+	case at := <-ended:
+		assert.Less(t, at.Sub(start), 5*time.Second, "a reset closes the Machine's side long before the idle time")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Machine's side stayed open after the client's connection failed")
+	}
+}
