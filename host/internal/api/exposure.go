@@ -61,6 +61,7 @@ func exposureView(e network.Exposure) hostapi.Exposure {
 	if e.Proxy {
 		v.ProxyProtocol = proxyV2
 	}
+	v.ToProxy = e.ToProxy
 	return v
 }
 
@@ -115,6 +116,9 @@ func parseExposure(address string, req hostapi.ExposureRequest) (network.Exposur
 	if err != nil || !a.Is4() || !a.IsGlobalUnicast() {
 		fields = append(fields, "address")
 	}
+	if req.ToProxy {
+		return parseToProxy(a, req, fields)
+	}
 	e := network.Exposure{Address: a, Network: req.Network}
 	if !dnsLabel.MatchString(req.Network) {
 		fields = append(fields, "network")
@@ -163,6 +167,37 @@ func parseExposure(address string, req hostapi.ExposureRequest) (network.Exposur
 	return e, fields
 }
 
+// parseToProxy reads a proxy exposure's lease (ADR 0112 item 8): no network, no backends and no
+// PROXY protocol, and TCP 443, with 80 optional, each to the same port.
+func parseToProxy(a netip.Addr, req hostapi.ExposureRequest, fields []string) (network.Exposure, []string) {
+	e := network.Exposure{Address: a, ToProxy: true}
+	if req.Network != "" {
+		fields = append(fields, "network")
+	}
+	if len(req.Backends) > 0 {
+		fields = append(fields, "backends")
+	}
+	if req.ProxyProtocol != "" {
+		fields = append(fields, "proxyProtocol")
+	}
+	seen := map[int]bool{}
+	for i, p := range req.Ports {
+		if p.Protocol != wire.ProtocolTCP || p.Port != 443 && p.Port != 80 || p.BackendPort != p.Port || seen[p.Port] {
+			fields = append(fields, fmt.Sprintf("ports[%d]", i))
+			continue
+		}
+		seen[p.Port] = true
+		e.Ports = append(e.Ports, network.ExposurePort{Protocol: p.Protocol, Port: p.Port, BackendPort: p.BackendPort})
+	}
+	if !seen[443] {
+		fields = append(fields, "ports")
+	}
+	if req.LeaseSeconds < 0 || req.LeaseSeconds > maxLeaseSeconds {
+		fields = append(fields, "leaseSeconds")
+	}
+	return e, fields
+}
+
 // exposureFail maps a refusal of the exposures to a status.
 func (s *Server) exposureFail(w http.ResponseWriter, err error) {
 	switch {
@@ -176,7 +211,7 @@ func (s *Server) exposureFail(w http.ResponseWriter, err error) {
 		invalid(w, "address")
 	case errors.Is(err, network.ErrOutsideLAN):
 		invalid(w, "address")
-	case errors.Is(err, network.ErrTaken):
+	case errors.Is(err, network.ErrTaken), errors.Is(err, network.ErrNoProxy):
 		writeJSON(w, http.StatusConflict, hostapi.ErrorBody{Error: err.Error()})
 	case errors.Is(err, network.ErrInvalid):
 		invalid(w, "exposure")

@@ -50,7 +50,7 @@ type Manager struct {
 	Run Runner
 	// Tunnel is the host's end of the tunnel; nil leaves the host with no tunnel.
 	Tunnel Tunnel
-	Base   Config // Management, TapPrefix and Egress, which do not change
+	Base   Config // Management, TapPrefix, Egress, LAN and Proxy, which do not change
 	// State is the file the state is kept in; empty keeps it in memory only.
 	State string
 	// Now is the clock the leases' deadlines are read against; nil is time.Now.
@@ -351,7 +351,7 @@ func (m *Manager) run(ctx context.Context, next Config) error {
 }
 
 func (m *Manager) withBase(c Config) Config {
-	c.Management, c.TapPrefix, c.Egress, c.LAN = m.Base.Management, m.Base.TapPrefix, m.Base.Egress, m.Base.LAN
+	c.Management, c.TapPrefix, c.Egress, c.LAN, c.Proxy = m.Base.Management, m.Base.TapPrefix, m.Base.Egress, m.Base.LAN, m.Base.Proxy
 	return c
 }
 

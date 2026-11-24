@@ -48,6 +48,9 @@ type Deps struct {
 	Exposures Exposures
 	// LANInterface is the interface the host announces exposed addresses on, as /v1/host reports it.
 	LANInterface string
+	// ProxyHealthy asks the host's naru-proxy whether it answers its health check, which /v1/host
+	// reports for a proxy exposure's candidacy (ADR 0112 item 8). Nil means the host runs no proxy.
+	ProxyHealthy func(ctx context.Context) bool
 	// Virtualization is the value of hostapi.LabelVirtualization /v1/host reports, read once at
 	// start; empty reports no such label.
 	Virtualization string

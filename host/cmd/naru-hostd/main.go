@@ -68,6 +68,9 @@ func main() {
 		netState   = flag.String("networks-state", "/var/lib/naru/hostd/networks.json", "file the networks, members and peers are kept in across restarts, mode 0600")
 		lan        = flag.String("lan-interface", "", "interface the host announces exposed LAN addresses on (ADR 0085); empty exposes none; needs --management-prefix")
 		tunnelPort = flag.Int("tunnel-port", 51820, "UDP port the tunnel listens on")
+
+		proxyHealth = flag.String("proxy-health-addr", "", "the health endpoint of the host's naru-proxy, which makes the host a candidate for a proxy exposure (ADR 0112); empty means the host runs none")
+		proxyTLS    = flag.Int("proxy-tls-port", 0, "the port of the proxy's TLS listener, which a proxy exposure's 443 is redirected to; needs --proxy-health-addr")
 	)
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -90,6 +93,16 @@ func main() {
 		return
 	}
 
+	if (*proxyHealth == "") != (*proxyTLS == 0) || *proxyTLS < 0 || *proxyTLS > 65535 {
+		log.Error("--proxy-health-addr and --proxy-tls-port go together, and the port is 1 to 65535")
+		os.Exit(1)
+	}
+	var proxyPorts network.ProxyPorts
+	var proxyHealthy func(context.Context) bool
+	if *proxyHealth != "" {
+		proxyPorts = network.ProxyPorts{TLS: uint16(*proxyTLS), Redirect: wire.ProxyRedirectPort}
+		proxyHealthy = probeProxy(*proxyHealth)
+	}
 	if *lan != "" && *management == "" {
 		log.Error("--lan-interface needs --management-prefix: the exposed addresses are forwarded to a network's members")
 		os.Exit(1)
@@ -99,7 +112,7 @@ func main() {
 	if *management != "" {
 		m, err := networkManager(context.Background(), networkConfig{
 			management: *management, tapPrefix: *tapPrefix, egress: *egress,
-			tunnel: *tunnel, tunnelKey: *tunnelKey, tunnelPort: *tunnelPort, state: *netState, lan: *lan,
+			tunnel: *tunnel, tunnelKey: *tunnelKey, tunnelPort: *tunnelPort, state: *netState, lan: *lan, proxy: proxyPorts,
 		})
 		if err != nil {
 			log.Error("cannot set up the virtual networks", "err", err.Error())
@@ -199,7 +212,7 @@ func main() {
 		log.Error("cannot tell whether the host runs nested; it reports no virtualization label", "err", err.Error())
 	}
 	// A reset of the data disk deletes serving.pem, so the pair that serves after it is the configuration's.
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, Virtualization: virt, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, ProxyHealthy: proxyHealthy, Virtualization: virt, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
 		HostID: resetID, ResetMarker: *resetMarker, Reboot: rebootInit, CheckPair: pairAfterReset(revocations, *cert)})
 	if *metricsAddr != "" {
 		go func() {

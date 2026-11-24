@@ -161,13 +161,16 @@ func exposureRules(c Config, line func(string, ...any)) {
 	if c.LAN == "" {
 		return
 	}
-	var forwarded []Exposure
+	var forwarded, toProxy []Exposure
 	for _, e := range sortedExposures(c.Exposures) {
-		if len(e.forwarded()) > 0 {
+		switch {
+		case e.ToProxy:
+			toProxy = append(toProxy, e)
+		case len(e.forwarded()) > 0:
 			forwarded = append(forwarded, e)
 		}
 	}
-	if len(forwarded) == 0 {
+	if len(forwarded) == 0 && len(toProxy) == 0 {
 		return
 	}
 	line("\tchain exposure_dnat {")
@@ -178,7 +181,18 @@ func exposureRules(c Config, line func(string, ...any)) {
 				c.LAN, e.Address, nftProtocol(p.Protocol), p.Port, len(e.Backends), backendMap(e.Backends, p.BackendPort), e.Network)
 		}
 	}
+	// A proxy exposure's address is the host's own, so its ports go to the host's naru-proxy by a
+	// redirect, delivered locally and forwarded nowhere (ADR 0112 item 8).
+	for _, e := range toProxy {
+		for _, p := range e.Ports {
+			line("\t\tiifname \"%s\" ip daddr %s ip daddr @leased tcp dport %d redirect to :%d comment \"proxy exposure\"",
+				c.LAN, e.Address, p.Port, c.Proxy.target(p.Port))
+		}
+	}
 	line("\t}")
+	if len(forwarded) == 0 {
+		return
+	}
 	line("\tchain exposure_snat {")
 	line("\t\ttype nat hook postrouting priority srcnat; policy accept;")
 	// Only a flow to a leased address is source-NATed, not every flow the DNAT of this table made.
@@ -214,9 +228,10 @@ func backendMap(backends []netip.Addr, backendPort int) string {
 	return strings.Join(s, ", ")
 }
 
-// leasedSet writes the set of the leased addresses that DNAT forwards. Each element has the time its
-// lease has left as its timeout, so the host stops forwarding an address whose lease is not renewed
-// even when hostd has stopped. With no LAN interface there is no set.
+// leasedSet writes the set of the leased addresses that DNAT forwards or redirects to the proxy.
+// Each element has the time its lease has left as its timeout, so the host stops forwarding an
+// address whose lease is not renewed even when hostd has stopped. With no LAN interface there is
+// no set.
 func leasedSet(c Config, line func(string, ...any)) {
 	if c.LAN == "" {
 		return
@@ -229,12 +244,12 @@ func leasedSet(c Config, line func(string, ...any)) {
 	line("\t}")
 }
 
-// leasedElements lists the leased addresses that DNAT forwards, each with the whole seconds its lease
-// has left, at least one.
+// leasedElements lists the leased addresses that DNAT forwards or redirects, each with the whole
+// seconds its lease has left, at least one.
 func leasedElements(c Config) string {
 	var s []string
 	for _, e := range sortedExposures(c.Exposures) {
-		if len(e.forwarded()) == 0 {
+		if len(e.forwarded()) == 0 && !e.ToProxy {
 			continue
 		}
 		left := int((e.Deadline.Sub(c.At) + time.Second - 1) / time.Second)

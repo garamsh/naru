@@ -18,6 +18,7 @@ type networkConfig struct {
 	tunnelPort                    int
 	state                         string
 	lan                           string
+	proxy                         network.ProxyPorts
 }
 
 // networkManager builds the manager of the virtual networks from the flags, makes the tunnel
@@ -30,7 +31,7 @@ func networkManager(ctx context.Context, c networkConfig) (*network.Manager, err
 	}
 	m := &network.Manager{
 		Run: network.ExecRunner{}, State: c.state,
-		Base: network.Config{Management: mgmt, TapPrefix: c.tapPrefix, Egress: c.egress, LAN: c.lan},
+		Base: network.Config{Management: mgmt, TapPrefix: c.tapPrefix, Egress: c.egress, LAN: c.lan, Proxy: c.proxy},
 	}
 	if c.tunnel != "" {
 		if m.Tunnel, err = network.NewWireGuard(c.tunnel, c.tunnelKey, c.tunnelPort); err != nil {
