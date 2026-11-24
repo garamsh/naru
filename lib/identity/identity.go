@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"regexp"
 )
 
 // Role is what a certificate lets its holder do. It is carried in the
@@ -15,7 +16,7 @@ import (
 type Role string
 
 // The roles. Root, Operator, Reader and Automation are held by people and
-// their tools; Host and Orch by the services.
+// their tools; Host and Orch by the services; Caller by a use of the Machine API.
 const (
 	RoleRoot       Role = "root"
 	RoleOperator   Role = "operator"
@@ -23,6 +24,9 @@ const (
 	RoleAutomation Role = "automation"
 	RoleHost       Role = "host"
 	RoleOrch       Role = "orch"
+	// RoleCaller is a use of the Machine API, such as garam; its Subject is the caller's name, a DNS
+	// label (ADR 0108 item 4).
+	RoleCaller Role = "caller"
 )
 
 var (
@@ -45,7 +49,7 @@ type Identity struct {
 // Valid reports whether r is one of the roles.
 func (r Role) Valid() bool {
 	switch r {
-	case RoleRoot, RoleOperator, RoleReader, RoleAutomation, RoleHost, RoleOrch:
+	case RoleRoot, RoleOperator, RoleReader, RoleAutomation, RoleHost, RoleOrch, RoleCaller:
 		return true
 	}
 	return false
@@ -86,4 +90,21 @@ func Authenticate(chains [][]*x509.Certificate, crl *CRL) (Identity, error) {
 		return Identity{}, err
 	}
 	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf)}, nil
+}
+
+// callerName is what a caller is called: a DNS label.
+var callerName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// IsCallerName reports whether name may name a caller: a DNS label.
+func IsCallerName(name string) bool {
+	return callerName.MatchString(name)
+}
+
+// CallerName returns the name of a caller identity. ok is false for any other role, or for a
+// Subject that is not a DNS label.
+func CallerName(who Identity) (name string, ok bool) {
+	if who.Role != RoleCaller || !IsCallerName(who.Subject) {
+		return "", false
+	}
+	return who.Subject, true
 }

@@ -379,6 +379,37 @@ func TestRoleOf_RefusesTheExposerRoleThatNaruNoLongerIssues(t *testing.T) {
 	assert.False(t, identity.Role("exposer").Valid())
 }
 
+func TestCallerName_ReadsTheNameOfACallerCertificateAndOfNoOtherRole(t *testing.T) {
+	cert, _ := newCA(t).issue(t, "garam", 10, now.Add(time.Hour), "caller")
+	id, err := identity.Authenticate([][]*x509.Certificate{{cert}}, &identity.CRL{})
+	require.NoError(t, err)
+	assert.Equal(t, identity.RoleCaller, id.Role)
+	name, ok := identity.CallerName(id)
+	require.True(t, ok, "the control: a caller certificate names its caller")
+	assert.Equal(t, "garam", name)
+	for _, who := range []identity.Identity{
+		{Role: identity.RoleOperator, Subject: "garam"},
+		{Role: identity.RoleOrch, Subject: "garam"},
+		{Role: identity.RoleCaller, Subject: ""},
+		{Role: identity.RoleCaller, Subject: "Garam"},
+		{Role: identity.RoleCaller, Subject: "a.b"},
+		{Role: identity.RoleCaller, Subject: "-garam"},
+	} {
+		_, ok := identity.CallerName(who)
+		assert.False(t, ok, "%+v", who)
+	}
+	assert.Equal(t, identity.AccessNone, identity.PersonAccess(cert), "a caller has no access on an API that trusts the operator authority")
+}
+
+func TestIsCallerName_AcceptsADNSLabelOnly(t *testing.T) {
+	for _, n := range []string{"garam", "use-1", "a", "0"} {
+		assert.True(t, identity.IsCallerName(n), "the control: %q", n)
+	}
+	for _, n := range []string{"", "Garam", "a.b", "-a", "a-", "a/b", "a_b", "root@x", strings.Repeat("a", 64)} {
+		assert.False(t, identity.IsCallerName(n), "%q", n)
+	}
+}
+
 func TestPersonAccess(t *testing.T) {
 	c := newCA(t)
 	tests := []struct {

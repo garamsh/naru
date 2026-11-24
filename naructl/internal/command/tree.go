@@ -107,6 +107,8 @@ func newRoot() *cobra.Command {
 			leaf("restore", "open a sealed snapshot, and write or push the plain one", orchRestore),
 			leaf("csr", "make orch's key and certificate request", orchCSR),
 			leaf("issue", "issue orch's certificate through the signer", orchIssue)),
+		parent("caller", "issue the credential of a use of the Machine API",
+			leaf("credential", "issue a caller's certificate and key through the signer, as root", callerCredential)),
 		parent("enroll-key", "create and revoke the keys that enroll hosts",
 			leaf("create", "create an enrollment key", enrollKeyCreate),
 			leaf("revoke <id>", "revoke an enrollment key", enrollKeyRevoke)),
