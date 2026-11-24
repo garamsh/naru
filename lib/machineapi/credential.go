@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/machineapi/signedrequest"
 )
 
 // RegisterRequest is the body of POST register: a one-time registration token root gave the
@@ -18,7 +18,7 @@ type RegisterRequest struct {
 }
 
 // RenewRequest is the body of POST renew: a request the caller signed with its current
-// certificate, for the certificate request of its new key (identity.ActionRenewCaller).
+// certificate, for the certificate request of its new key (signedrequest.ActionRenewCaller).
 type RenewRequest struct {
 	Signed []byte `json:"signed"`
 }
@@ -42,7 +42,7 @@ func (c *Client) Register(ctx context.Context, token string, csr []byte) (Creden
 // key and cert, the caller's current pair. It is taken in the last 30 days of cert's life; the
 // Client presents the caller's certificate as for any other operation.
 func (c *Client) Renew(ctx context.Context, key crypto.Signer, cert *x509.Certificate, csr []byte) (Credential, error) {
-	signed, err := identity.SignRequest(identity.ActionRenewCaller, identity.CallerRenewal{CSR: csr}, time.Now().Add(time.Minute), key, cert)
+	signed, err := signedrequest.Sign(signedrequest.ActionRenewCaller, signedrequest.CallerRenewal{CSR: csr}, time.Now().Add(time.Minute), key, cert)
 	if err != nil {
 		return Credential{}, err
 	}

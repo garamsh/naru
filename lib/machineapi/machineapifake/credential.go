@@ -1,14 +1,24 @@
 package machineapifake
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"time"
 
-	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/machineapi"
+	"github.com/garamsh/naru/lib/machineapi/signedrequest"
+)
+
+// The caller certificate's life and the window before its end in which it renews, as naru's
+// signer has them (ADR 0116).
+const (
+	callerLife  = 90 * 24 * time.Hour
+	renewWindow = 30 * 24 * time.Hour
+	callerOU    = "caller"
 )
 
 // issuer is the authority the Fake signs callers' certificates with: the Server's. A Fake without
@@ -55,18 +65,22 @@ func (f *Fake) renew(r *http.Request) (machineapi.Credential, error) {
 	if f.issuer == nil {
 		return machineapi.Credential{}, refuse(http.StatusNotImplemented, machineapi.CodeUnimplemented, "this Fake issues no certificates")
 	}
-	who, raw, err := identity.VerifyRequest(req.Signed, identity.ActionRenewCaller, f.issuer.roots, nil, time.Now())
-	if err != nil || who.Role != identity.RoleCaller {
+	chains, raw, err := signedrequest.Open(req.Signed, signedrequest.ActionRenewCaller, f.issuer.roots, time.Now())
+	if err != nil || !slices.Equal(chains[0][0].Subject.OrganizationalUnit, []string{callerOU}) {
 		return machineapi.Credential{}, refuse(http.StatusForbidden, machineapi.CodeForbidden, "the renewal is not signed by a caller's certificate")
 	}
-	if time.Now().Before(who.NotAfter.Add(-identity.CallerRenewWindow)) {
-		return machineapi.Credential{}, refuse(http.StatusConflict, machineapi.CodeNotDue, "%v", identity.ErrCallerNotDue)
+	current := chains[0][0]
+	if time.Now().Before(current.NotAfter.Add(-renewWindow)) {
+		return machineapi.Credential{}, refuse(http.StatusConflict, machineapi.CodeNotDue, "the certificate is not yet due for renewal")
 	}
-	var body identity.CallerRenewal
+	var body signedrequest.CallerRenewal
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return machineapi.Credential{}, refuse(http.StatusBadRequest, machineapi.CodeInvalid, "the renewal's body: %v", err)
 	}
-	return f.issueCaller(who.Subject, body.CSR)
+	if csr, err := x509.ParseCertificateRequest(body.CSR); err == nil && sameKey(csr.PublicKey, current.PublicKey) {
+		return machineapi.Credential{}, refuse(http.StatusBadRequest, machineapi.CodeInvalid, "a renewal is for a new key")
+	}
+	return f.issueCaller(current.Subject.CommonName, body.CSR)
 }
 
 func (f *Fake) issueCaller(name string, csrDER []byte) (machineapi.Credential, error) {
@@ -74,9 +88,15 @@ func (f *Fake) issueCaller(name string, csrDER []byte) (machineapi.Credential, e
 	if err != nil || csr.CheckSignature() != nil {
 		return machineapi.Credential{}, refuse(http.StatusBadRequest, machineapi.CodeInvalid, "the certificate request does not parse")
 	}
-	cert, err := f.issuer.sign(name, csr.PublicKey, time.Now().AddDate(0, 0, identity.MaxCallerDays))
+	cert, err := f.issuer.sign(name, csr.PublicKey, time.Now().Add(callerLife))
 	if err != nil {
 		return machineapi.Credential{}, err
 	}
 	return machineapi.Credential{Certificate: cert.Raw, NotAfter: cert.NotAfter}, nil
+}
+
+// sameKey reports whether two public keys are one.
+func sameKey(a, b any) bool {
+	k, ok := a.(interface{ Equal(crypto.PublicKey) bool })
+	return ok && k.Equal(b)
 }

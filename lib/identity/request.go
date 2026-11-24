@@ -2,22 +2,23 @@ package identity
 
 import (
 	"crypto"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
+
+	"github.com/garamsh/naru/lib/machineapi/signedrequest"
 )
 
+// The form of a signed request is lib/machineapi/signedrequest's, which a Machine API caller
+// signs its renewal with and which needs no module of naru.
 var (
 	// ErrRequestAction is returned when a request was signed for another action.
-	ErrRequestAction = errors.New("request was signed for another action")
+	ErrRequestAction = signedrequest.ErrAction
 	// ErrRequestExpired is returned when a request is past its expiry.
-	ErrRequestExpired = errors.New("request has expired")
+	ErrRequestExpired = signedrequest.ErrExpired
 	// ErrRequestSignature is returned when a request's signature does not verify.
-	ErrRequestSignature = errors.New("request signature does not verify")
+	ErrRequestSignature = signedrequest.ErrSignature
 )
 
 // The actions a signer's requests are signed for.
@@ -28,7 +29,7 @@ const (
 	// ActionIssueCallerToken asks for a caller registration token.
 	ActionIssueCallerToken = "issue-caller-token"
 	// ActionRenewCaller is signed by a caller's current certificate to renew it.
-	ActionRenewCaller  = "renew-caller"
+	ActionRenewCaller  = signedrequest.ActionRenewCaller
 	ActionRevoke       = "revoke"
 	ActionReissueHost  = "reissue-host"
 	ActionRegisterHost = "register-host"
@@ -91,9 +92,7 @@ type CallerRegistration struct {
 
 // CallerRenewal is the body of ActionRenewCaller: the certificate request of the caller's new
 // key, DER.
-type CallerRenewal struct {
-	CSR []byte `json:"csr"`
-}
+type CallerRenewal = signedrequest.CallerRenewal
 
 const (
 	// DefaultCallerTokenTTL is how long a caller registration token lives when none is asked.
@@ -199,68 +198,24 @@ type request struct {
 	Body      json.RawMessage `json:"body"`
 }
 
-type signedRequest struct {
-	Request     json.RawMessage `json:"request"`
-	Signature   []byte          `json:"signature"`
-	Certificate []byte          `json:"certificate"`
-}
-
 // SignRequest signs body for action with the caller's ECDSA key and attaches the caller's
 // certificate. The signature is over the request JSON, which binds the action, the expiry and
 // the body.
 func SignRequest(action string, body any, expiresAt time.Time, key crypto.Signer, cert *x509.Certificate) ([]byte, error) {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request body: %w", err)
-	}
-	req, err := json.Marshal(request{Action: action, ExpiresAt: expiresAt, Body: raw})
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-	sum := sha256.Sum256(req)
-	sig, err := key.Sign(rand.Reader, sum[:], crypto.SHA256)
-	if err != nil {
-		return nil, fmt.Errorf("sign request: %w", err)
-	}
-	return json.Marshal(signedRequest{Request: req, Signature: sig, Certificate: cert.Raw})
+	return signedrequest.Sign(action, body, expiresAt, key, cert)
 }
 
 // VerifyRequest checks that the attached certificate chains to roots for client authentication,
 // is not on crl, and signed a request for action that has not expired at now. It returns the
 // signer's Identity and the body, which the caller decodes and whose role it checks.
 func VerifyRequest(data []byte, action string, roots *x509.CertPool, crl *CRL, now time.Time) (Identity, json.RawMessage, error) {
-	var s signedRequest
-	if err := json.Unmarshal(data, &s); err != nil {
-		return Identity{}, nil, fmt.Errorf("parse signed request: %w", err)
-	}
-	cert, err := x509.ParseCertificate(s.Certificate)
+	chains, body, err := signedrequest.Open(data, action, roots, now)
 	if err != nil {
-		return Identity{}, nil, fmt.Errorf("parse request certificate: %w", err)
-	}
-	chains, err := cert.Verify(x509.VerifyOptions{
-		Roots:       roots,
-		CurrentTime: now,
-		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	})
-	if err != nil {
-		return Identity{}, nil, fmt.Errorf("verify request certificate: %w", err)
+		return Identity{}, nil, err
 	}
 	id, err := Authenticate(chains, crl)
 	if err != nil {
 		return Identity{}, nil, err
 	}
-	if cert.CheckSignature(x509.ECDSAWithSHA256, s.Request, s.Signature) != nil {
-		return Identity{}, nil, ErrRequestSignature
-	}
-	var req request
-	if err := json.Unmarshal(s.Request, &req); err != nil {
-		return Identity{}, nil, fmt.Errorf("parse request: %w", err)
-	}
-	if req.Action != action {
-		return Identity{}, nil, fmt.Errorf("%w: %q, not %q", ErrRequestAction, req.Action, action)
-	}
-	if !now.Before(req.ExpiresAt) {
-		return Identity{}, nil, ErrRequestExpired
-	}
-	return id, req.Body, nil
+	return id, body, nil
 }
