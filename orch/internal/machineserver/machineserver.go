@@ -46,32 +46,66 @@ type ctxKey struct{}
 // of a success.
 type caller func(r *http.Request, name string) (int, any, error)
 
-// New returns the Machine API's handler. Every path outside machines/v1alpha1 is 404.
-func New(d Deps) http.Handler {
-	h := &handler{d}
-	m := http.NewServeMux()
+// route is one operation of the Machine API: its method and path pattern, and its handler.
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// anonymous is the one operation a request without a client certificate reaches: register, whose
+// token is the authentication. Every other route, a path the API does not serve among them, is
+// refused before its handler runs.
+var anonymous = "POST " + machineapi.PathPrefix + "register"
+
+// routes are the API's operations. Every path outside machines/v1alpha1 is 404.
+func (h *handler) routes() []route {
 	p := machineapi.PathPrefix
-	m.HandleFunc("PUT "+p+"machines/{name}", h.serve(h.create))
-	m.HandleFunc("GET "+p+"machines", h.serve(h.list))
-	m.HandleFunc("GET "+p+"machines/{name}", h.serve(h.get))
-	m.HandleFunc("POST "+p+"machines/{name}/start", h.serve(h.start))
-	m.HandleFunc("POST "+p+"machines/{name}/stop", h.serve(h.stop))
-	m.HandleFunc("DELETE "+p+"machines/{name}", h.serve(h.delete))
-	m.HandleFunc("PUT "+p+"snapshots/{name}", h.serve(h.putSnapshot))
-	m.HandleFunc("GET "+p+"snapshots", h.serve(h.snapshots))
-	m.HandleFunc("GET "+p+"snapshots/{name}", h.serve(h.snapshot))
-	m.HandleFunc("DELETE "+p+"snapshots/{name}", h.serve(h.deleteSnapshot))
-	m.HandleFunc("GET "+p+"events", h.serve(h.events))
-	m.HandleFunc("POST "+p+"register", h.register)
-	m.HandleFunc("POST "+p+"renew", h.serve(h.renew))
-	for _, route := range []string{
+	rs := []route{
+		{"PUT " + p + "machines/{name}", h.serve(h.create)},
+		{"GET " + p + "machines", h.serve(h.list)},
+		{"GET " + p + "machines/{name}", h.serve(h.get)},
+		{"POST " + p + "machines/{name}/start", h.serve(h.start)},
+		{"POST " + p + "machines/{name}/stop", h.serve(h.stop)},
+		{"DELETE " + p + "machines/{name}", h.serve(h.delete)},
+		{"PUT " + p + "snapshots/{name}", h.serve(h.putSnapshot)},
+		{"GET " + p + "snapshots", h.serve(h.snapshots)},
+		{"GET " + p + "snapshots/{name}", h.serve(h.snapshot)},
+		{"DELETE " + p + "snapshots/{name}", h.serve(h.deleteSnapshot)},
+		{"GET " + p + "events", h.serve(h.events)},
+		{anonymous, h.register},
+		{"POST " + p + "renew", h.serve(h.renew)},
+	}
+	for _, pattern := range []string{
 		"POST " + p + "machines/{name}/exec", "GET " + p + "machines/{name}/files", "PUT " + p + "machines/{name}/files",
 		"PUT " + p + "aliases/{hostname}", "GET " + p + "aliases/{hostname}", "DELETE " + p + "aliases/{hostname}",
 	} {
-		m.HandleFunc(route, h.serve(unimplemented))
+		rs = append(rs, route{pattern, h.serve(unimplemented)})
 	}
-	m.HandleFunc("/", h.serve(func(r *http.Request, _ string) (int, any, error) { return 0, nil, errNoRoute }))
-	return h.middleware(m)
+	return append(rs, route{"/", h.serve(func(r *http.Request, _ string) (int, any, error) { return 0, nil, errNoRoute })})
+}
+
+// New returns the Machine API's handler.
+func New(d Deps) http.Handler {
+	h := &handler{d}
+	m := http.NewServeMux()
+	for _, rt := range h.routes() {
+		m.HandleFunc(rt.pattern, rt.handler)
+	}
+	return h.middleware(h.certified(m))
+}
+
+// certified refuses, as 403, a request without a verified client chain, unless it is register's:
+// the listener asks for a certificate without requiring one, so this is where every operation but
+// register requires it, whatever its handler does.
+func (h *handler) certified(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path == anonymous || (r.TLS != nil && len(r.TLS.VerifiedChains) > 0) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		logger(r).Warn("refused: no client certificate")
+		writeError(w, r, identity.ErrNoChain)
+	})
 }
 
 // Unavailable is the handler of a member that cannot serve the API, such as one that waits for a
@@ -83,7 +117,8 @@ func Unavailable(why string) http.Handler {
 }
 
 // TLSConfig is the listener's configuration: TLS 1.3, and a client certificate, when one is sent,
-// that verifies against clientCA. Every operation but register refuses a request without one.
+// that verifies against clientCA. certified refuses a request without one to every operation but
+// register.
 func TLSConfig(cert tls.Certificate, clientCA *x509.CertPool) *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, ClientAuth: tls.VerifyClientCertIfGiven, ClientCAs: clientCA}
 }

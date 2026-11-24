@@ -35,7 +35,8 @@ var (
 )
 
 // register spends a registration token for a caller certificate. It is the one operation that takes
-// no client certificate: the token is the authentication.
+// no client certificate, the route anonymous that certified lets through: the token is the
+// authentication.
 func (h *handler) register(w http.ResponseWriter, r *http.Request) {
 	src, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
