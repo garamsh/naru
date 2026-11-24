@@ -18,7 +18,7 @@ import (
 	"github.com/garamsh/naru/lib/identity"
 )
 
-// caller asks /v1/caller, as by, for name and days, with a fresh key.
+// caller asks /v1/caller-issue, as by, for name and days, with a fresh key.
 func (e *env) caller(by person, name string, days int) (int, []byte) {
 	return e.do(http.MethodPost, "/v1/caller-issue", e.signed(by, identity.ActionIssueCaller,
 		identity.CallerRequest{Name: name, Days: days, CSR: csrFor(e.t, newKey(e.t))}))
