@@ -84,22 +84,31 @@ func TestProxyExposure_Refusals(t *testing.T) {
 	var healthy atomic.Bool
 	e := startProxyHost(t, true, &healthy)
 	p := e.as(t, ProvisionerOrganization)
-	for name, change := range map[string]func(*hostapi.ExposureRequest){
-		"a network":          func(r *hostapi.ExposureRequest) { r.Network = "a" },
-		"a backend":          func(r *hostapi.ExposureRequest) { r.Backends = []string{"10.8.0.5"} },
-		"the PROXY protocol": func(r *hostapi.ExposureRequest) { r.ProxyProtocol = "v2" },
-		"another port":       func(r *hostapi.ExposureRequest) { r.Ports[1].Port, r.Ports[1].BackendPort = 8080, 8080 },
-		"a UDP port":         func(r *hostapi.ExposureRequest) { r.Ports[1].Protocol = wire.ProtocolUDP },
-		"a port elsewhere":   func(r *hostapi.ExposureRequest) { r.Ports[0].BackendPort = 30443 },
-		"no 443":             func(r *hostapi.ExposureRequest) { r.Ports = r.Ports[1:] },
-		"a long lease":       func(r *hostapi.ExposureRequest) { r.LeaseSeconds = 121 },
+	for name, tc := range map[string]struct {
+		change func(*hostapi.ExposureRequest)
+		fields []string
+	}{
+		"a network":          {func(r *hostapi.ExposureRequest) { r.Network = "a" }, []string{"network"}},
+		"a backend":          {func(r *hostapi.ExposureRequest) { r.Backends = []string{"10.8.0.5"} }, []string{"backends"}},
+		"the PROXY protocol": {func(r *hostapi.ExposureRequest) { r.ProxyProtocol = "v2" }, []string{"proxyProtocol"}},
+		"another port":       {func(r *hostapi.ExposureRequest) { r.Ports[1].Port, r.Ports[1].BackendPort = 8080, 8080 }, []string{"ports[1]"}},
+		"a UDP port":         {func(r *hostapi.ExposureRequest) { r.Ports[1].Protocol = wire.ProtocolUDP }, []string{"ports[1]"}},
+		"a port elsewhere":   {func(r *hostapi.ExposureRequest) { r.Ports[0].BackendPort = 30443 }, []string{"ports[0]", "ports"}},
+		"a port twice":       {func(r *hostapi.ExposureRequest) { r.Ports[1] = r.Ports[0] }, []string{"ports[1]"}},
+		"no 443":             {func(r *hostapi.ExposureRequest) { r.Ports = r.Ports[1:] }, []string{"ports"}},
+		"a long lease":       {func(r *hostapi.ExposureRequest) { r.LeaseSeconds = 121 }, []string{"leaseSeconds"}},
 	} {
 		req := proxyLease()
-		change(&req)
+		tc.change(&req)
 		code, b := e.do(t, p, "PUT", "/v1/exposures/192.168.0.90", req)
-		assert.Equal(t, 422, code, "%s: %s", name, b)
+		require.Equal(t, 422, code, "%s: %s", name, b)
+		var body hostapi.ErrorBody
+		require.NoError(t, json.Unmarshal(b, &body))
+		assert.Equal(t, tc.fields, body.Fields, "%s: the fields named are the ones that are wrong", name)
 	}
 	assert.False(t, e.link.has("192.168.0.90"))
+	code, b := e.do(t, p, "PUT", "/v1/exposures/192.168.0.90", proxyLease())
+	require.Equal(t, 200, code, "control: the lease the cases vary is taken: %s", b)
 }
 
 func TestProxyExposure_HostReportsItsProxysHealth(t *testing.T) {
