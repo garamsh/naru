@@ -27,7 +27,7 @@ const udpPort = 9999
 //
 // Every other path answers like serve, so the microVM is also a TCP target for the others.
 //
-// The exposure test (#275) reaches the microVM from the LAN through two NodePorts: plainPort answers
+// The exposure test (#275) reaches the microVM from the LAN through two backend ports: plainPort answers
 // "src=<address>" with the source address it saw, and proxyPort reads a PROXY protocol v2 header first
 // and answers "proxy-src=<address>:<port>" with the client address the header names.
 func probe(addr string) {
@@ -77,12 +77,11 @@ func probe(addr string) {
 	}()
 }
 
-// The NodePorts the exposure test forwards to, in the range of a Service's nodePort.
+// The backend ports the exposure test forwards to.
 const (
 	plainPort = 30080
 	proxyPort = 30443
-	// apiPort is outside a Service's range: the operator's exposure of ADR 0102 forwards to it, as it
-	// does to a member's API server.
+	// apiPort is the port the operator's exposure of a member's API server forwards to.
 	apiPort = 6443
 )
 

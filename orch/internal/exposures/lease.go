@@ -292,23 +292,19 @@ func (r *Reconciler) vacated(ctx context.Context, hosts []Host, rec Record, now 
 	return !now.Before(rec.LeaseUntil.Add(Skew))
 }
 
-// EventExposureRefused is the event of a stored exposure the reconciler does not lease because a port
-// falls outside its owner's row of BackendPorts, or its owner has none: one stored before ADR 0102.
+// EventExposureRefused is the event of a stored exposure the reconciler does not lease because the
+// operator does not own it: an exposer's, stored before ADR 0114, or one with no owner, stored
+// before ADR 0102.
 const EventExposureRefused = "exposure.refused"
 
 // refuse returns the error that keeps rec from being leased, nil when it may be. It logs the refusal
 // at error level on every pass and records the event once.
 func (r *Reconciler) refuse(ctx context.Context, rec Record) error {
-	var err error
-	for _, p := range rec.Ports {
-		if err = checkBackendPort(rec.Owner, p.BackendPort); err != nil {
-			break
-		}
-	}
-	if err == nil {
+	if rec.Owner == orchapi.OwnerOperator {
 		return nil
 	}
-	reason := "stored before ADR 0102: delete it and let its owner re-apply (" + err.Error() + ")"
+	err := forbidden("owner %q is not the operator", rec.Owner)
+	reason := "stored before ADR 0114 or ADR 0102: delete it, and apply it again as the operator's (" + err.Error() + ")"
 	r.log.Error("exposure not leased", "exposure", rec.ID, "network", rec.Network, "reason", reason)
 	key := rec.Network + "/" + rec.ID
 	r.mu.Lock()

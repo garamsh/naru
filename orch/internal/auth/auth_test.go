@@ -153,19 +153,9 @@ func TestAllowedByRole(t *testing.T) {
 	require.False(t, auth.Allowed(identity.Identity{}, auth.Any), "no role")
 }
 
-func TestOnlyTheExposerExposesAndNoRoleOfItsOwnReadsAnythingElse(t *testing.T) {
-	exposer := identity.Identity{Role: identity.RoleExposer, Subject: "exposer.a"}
-	require.True(t, auth.Allowed(exposer, auth.Expose))
-	require.True(t, auth.Allowed(exposer, auth.ReadExposures))
-	for _, a := range []auth.Action{auth.Read, auth.Operate, auth.Administer, auth.Report} {
+func TestTheExposerRoleThatNaruNoLongerIssuesMayDoNothing(t *testing.T) {
+	exposer := identity.Identity{Role: identity.Role("exposer"), Subject: "exposer.a"}
+	for _, a := range []auth.Action{auth.Read, auth.Operate, auth.Administer, auth.Report, auth.Any} {
 		require.False(t, auth.Allowed(exposer, a), "exposer, action %d", a)
 	}
-	for _, r := range []identity.Role{identity.RoleRoot, identity.RoleOperator, identity.RoleAutomation, identity.RoleReader, identity.RoleHost, identity.RoleOrch} {
-		require.False(t, auth.Allowed(identity.Identity{Role: r}, auth.Expose), "%s exposes", r)
-	}
-	require.True(t, auth.Allowed(identity.Identity{Role: identity.RoleReader}, auth.ReadExposures))
-	require.False(t, auth.Allowed(identity.Identity{Role: identity.RoleHost}, auth.ReadExposures))
-	require.True(t, auth.Allowed(exposer, auth.ReadNetworkMembers))
-	require.True(t, auth.Allowed(identity.Identity{Role: identity.RoleReader}, auth.ReadNetworkMembers))
-	require.False(t, auth.Allowed(identity.Identity{Role: identity.RoleHost}, auth.ReadNetworkMembers))
 }

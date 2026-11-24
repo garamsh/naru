@@ -22,14 +22,6 @@ const (
 	Administer
 	// Report is a host's heartbeat.
 	Report
-	// Expose is a cloud-controller-manager's calls for the one network its certificate names. Only
-	// the exposer role may do it, so no other role can write an exposure as a controller.
-	Expose
-	// ReadExposures lists exposures: the readers, and an exposer for its own network.
-	ReadExposures
-	// ReadNetworkMembers lists the members of a network: the readers, and an exposer for its own
-	// network, whose node controller names the Nodes after them.
-	ReadNetworkMembers
 	// Any is open to every authenticated identity.
 	Any
 )
@@ -48,12 +40,6 @@ func Allowed(who identity.Identity, a Action) bool {
 		return r == identity.RoleRoot
 	case Report:
 		return r == identity.RoleHost
-	case Expose:
-		return r == identity.RoleExposer
-	case ReadNetworkMembers:
-		return Allowed(who, Read) || r == identity.RoleExposer
-	case ReadExposures:
-		return Allowed(who, Read) || r == identity.RoleExposer
 	}
 	return false
 }

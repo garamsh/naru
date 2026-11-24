@@ -176,7 +176,7 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /v1/exposures", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode([]orchapi.Exposure{{ID: "d.web.0a1b2c3d", Network: "lab", Owner: orchapi.OwnerExposer, Address: "192.168.0.80", Host: "h1", Phase: orchapi.ExposureAnnounced}})
+		_ = json.NewEncoder(w).Encode([]orchapi.Exposure{{ID: "d.web.0a1b2c3d", Network: "lab", Owner: orchapi.OwnerOperator, Address: "192.168.0.80", Host: "h1", Phase: orchapi.ExposureAnnounced}})
 	})
 	mux.HandleFunc("PUT /v1/networks/{name}/exposures/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var spec orchapi.ExposureSpec

@@ -129,43 +129,6 @@ func (s *Signer) IssueOperator(signed []byte) (identity.Issued, error) {
 	return s.issueFor(a, who, a.operator, req, req.Role, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
 }
 
-// IssueExposer issues the certificate of the cloud-controller-manager of one network, for a request
-// root or an operator signed. The CN is made here from the network, and the certificate is valid at most
-// identity.MaxExposerDays, client authentication only.
-func (s *Signer) IssueExposer(signed []byte) (identity.Issued, error) {
-	var req identity.ExposerRequest
-	who, a, err := s.authorise(signed, identity.ActionIssueExposer, &req, identity.RoleRoot, identity.RoleOperator)
-	if err != nil {
-		return identity.Issued{}, err
-	}
-	subject, ok := identity.ExposerSubject(req.Network)
-	if !ok {
-		return identity.Issued{}, fmt.Errorf("%w: network %q is not a name", ErrBadRequest, req.Network)
-	}
-	days := req.Days
-	if days == 0 {
-		days = identity.MaxExposerDays
-	}
-	if days < 0 || days > identity.MaxExposerDays {
-		return identity.Issued{}, fmt.Errorf("%w: %d days; an exposer certificate is valid at most %d", ErrBadRequest, days, identity.MaxExposerDays)
-	}
-	csr, err := parseCSR(req.CSR)
-	if err != nil {
-		return identity.Issued{}, err
-	}
-	now := s.now()
-	issued, err := issueLeafUntil(a.operator, now, now.AddDate(0, 0, days), subject, identity.RoleExposer, csr.PublicKey, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil)
-	if err != nil {
-		return identity.Issued{}, err
-	}
-	if err := s.record(issued.Serial, identity.RoleExposer); err != nil {
-		return identity.Issued{}, err
-	}
-	s.log.Info("issued a certificate", "role", string(identity.RoleExposer), "subject", subject, "serial", issued.Serial,
-		"valid_days", days, "authorised_by", who.Subject, "authorised_by_serial", who.Serial)
-	return issued, nil
-}
-
 func (s *Signer) issueFor(a *authorities, who identity.Identity, ca authority, req identity.IssueRequest, role identity.Role, usages []x509.ExtKeyUsage) (identity.Issued, error) {
 	if !namePattern.MatchString(req.Name) {
 		return identity.Issued{}, fmt.Errorf("%w: name %q", ErrBadRequest, req.Name)
@@ -258,11 +221,7 @@ var serverAndClient = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKey
 // issueLeaf signs a certificate of role for pub under ca, valid for certificateYears. A non-nil
 // names gives the certificate its DNS names and IP addresses.
 func issueLeaf(ca authority, now time.Time, cn string, role identity.Role, pub any, usages []x509.ExtKeyUsage, names *x509.CertificateRequest) (identity.Issued, error) {
-	return issueLeafUntil(ca, now, now.AddDate(certificateYears, 0, 0), cn, role, pub, usages, names)
-}
-
-// issueLeafUntil is issueLeaf with the certificate valid until notAfter.
-func issueLeafUntil(ca authority, now, notAfter time.Time, cn string, role identity.Role, pub any, usages []x509.ExtKeyUsage, names *x509.CertificateRequest) (identity.Issued, error) {
+	notAfter := now.AddDate(certificateYears, 0, 0)
 	serial, err := randomSerial()
 	if err != nil {
 		return identity.Issued{}, err

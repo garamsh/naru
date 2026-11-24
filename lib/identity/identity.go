@@ -8,8 +8,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"regexp"
-	"strings"
 )
 
 // Role is what a certificate lets its holder do. It is carried in the
@@ -25,9 +23,6 @@ const (
 	RoleAutomation Role = "automation"
 	RoleHost       Role = "host"
 	RoleOrch       Role = "orch"
-	// RoleExposer is the cloud-controller-manager of one network; its Subject is ExposerPrefix and
-	// the network's name (ADR 0085 item 7).
-	RoleExposer Role = "exposer"
 )
 
 var (
@@ -50,7 +45,7 @@ type Identity struct {
 // Valid reports whether r is one of the roles.
 func (r Role) Valid() bool {
 	switch r {
-	case RoleRoot, RoleOperator, RoleReader, RoleAutomation, RoleHost, RoleOrch, RoleExposer:
+	case RoleRoot, RoleOperator, RoleReader, RoleAutomation, RoleHost, RoleOrch:
 		return true
 	}
 	return false
@@ -91,29 +86,4 @@ func Authenticate(chains [][]*x509.Certificate, crl *CRL) (Identity, error) {
 		return Identity{}, err
 	}
 	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf)}, nil
-}
-
-// ExposerPrefix starts the Subject of a RoleExposer certificate; the rest is the network it serves.
-const ExposerPrefix = "exposer."
-
-// networkName is what a network is called: a DNS label.
-var networkName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
-
-// ExposerSubject returns the Subject of the RoleExposer certificate of network. ok is false when
-// network is not a DNS label.
-func ExposerSubject(network string) (subject string, ok bool) {
-	if !networkName.MatchString(network) {
-		return "", false
-	}
-	return ExposerPrefix + network, true
-}
-
-// ExposerNetwork returns the network an exposer identity serves. ok is false for any other role,
-// or for a Subject that does not name a network by a DNS label.
-func ExposerNetwork(who Identity) (network string, ok bool) {
-	n, found := strings.CutPrefix(who.Subject, ExposerPrefix)
-	if who.Role != RoleExposer || !found || !networkName.MatchString(n) {
-		return "", false
-	}
-	return n, true
 }

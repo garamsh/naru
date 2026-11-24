@@ -24,7 +24,6 @@ var (
 const (
 	ActionIssueOrch     = "issue-orch"
 	ActionIssueOperator = "issue-operator"
-	ActionIssueExposer  = "issue-exposer"
 	ActionRevoke        = "revoke"
 	ActionReissueHost   = "reissue-host"
 	ActionRegisterHost  = "register-host"
@@ -51,18 +50,6 @@ type IssueRequest struct {
 	Role Role   `json:"role,omitempty"`
 	CSR  []byte `json:"csr"`
 }
-
-// ExposerRequest is the body of ActionIssueExposer: the network the cloud-controller-manager serves,
-// the certificate request, DER, and the days the certificate is valid (MaxExposerDays when 0). The
-// signer makes the CN from the network; the request names no other.
-type ExposerRequest struct {
-	Network string `json:"network"`
-	Days    int    `json:"days,omitempty"`
-	CSR     []byte `json:"csr"`
-}
-
-// MaxExposerDays is the longest an exposer certificate is valid, and its default.
-const MaxExposerDays = 90
 
 // RevokeRequest is the body of ActionRevoke.
 type RevokeRequest struct {
