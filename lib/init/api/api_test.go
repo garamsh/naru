@@ -125,7 +125,6 @@ func newRig(t *testing.T) *rig {
 				{Path: "/run/public", Mode: "0644", Content: "public-content"},
 				{Path: "/run/empty", Mode: "0600"},
 			},
-			PKI: config.PKI{Authorities: []config.Authority{{Name: "ca", Certificate: "ca-certificate", Key: "ca-private-key"}}},
 			API: &config.API{Listen: "127.0.0.1:0", ClientCA: r.clientCA.Cert, Certificate: cert, Key: key},
 		},
 	}}
@@ -501,13 +500,11 @@ func TestServer_ConfigReportsTheRevisionAndRedactsPrivateMaterial(t *testing.T) 
 	assert.Equal(t, float64(3), got["revision"])
 	spec := got["config"].(map[string]any)["spec"].(map[string]any)
 	assert.Equal(t, "REDACTED", spec["api"].(map[string]any)["key"], "spec.api.key")
-	assert.Equal(t, "REDACTED", spec["pki"].(map[string]any)["authorities"].([]any)[0].(map[string]any)["key"], "spec.pki.authorities[].key")
 	files := spec["files"].([]any)
 	assert.Equal(t, "REDACTED", files[0].(map[string]any)["content"], "a file no group or other can read")
 	assert.Equal(t, "public-content", files[1].(map[string]any)["content"], "the control: a file group and other can read keeps its content")
 	assert.Equal(t, "", files[2].(map[string]any)["content"], "an empty file holds nothing to hide")
-	assert.Equal(t, "ca-certificate", spec["pki"].(map[string]any)["authorities"].([]any)[0].(map[string]any)["certificate"], "a certificate is not private")
-	assert.NotContains(t, string(body), "ca-private-key")
+	assert.Equal(t, r.chosen.Config.Spec.API.Certificate, spec["api"].(map[string]any)["certificate"], "a certificate is not private")
 	assert.NotContains(t, string(body), "private-content")
 	assert.Equal(t, "node-1", got["config"].(map[string]any)["metadata"].(map[string]any)["name"])
 }
@@ -555,7 +552,6 @@ func TestServer_ConfigRedactionLeavesTheEnginesConfigurationAlone(t *testing.T) 
 
 	_, held := r.engine.Config()
 	assert.Equal(t, "private-content", held.Spec.Files[0].Content)
-	assert.Equal(t, "ca-private-key", held.Spec.PKI.Authorities[0].Key)
 	assert.Equal(t, r.chosen.Config.Spec.API.Key, held.Spec.API.Key)
 }
 

@@ -22,8 +22,7 @@ import (
 const (
 	// CAValidity is how long the authority's certificate is valid.
 	CAValidity = 10 * 365 * 24 * time.Hour
-	// LeafValidity is how long a certificate the CA signs here is valid. A certificate that init
-	// issues from spec.pki has its own validity and is renewed.
+	// LeafValidity is how long a certificate the CA signs here is valid.
 	LeafValidity = 365 * 24 * time.Hour
 	// skew is how far before the moment of issue a certificate is valid, so that a clock a little
 	// behind the issuer's accepts it.

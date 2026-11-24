@@ -419,8 +419,6 @@ func TestSyncNow_StepsAnyOffsetAtTheFirstSynchronisationAndRefusesALargeOneAfter
 	clk, srv := newClock(), newServers()
 	s := timesync.New(clk, srv)
 	s.Configure([]string{"ntp:123"})
-	var steps []timesync.Result
-	s.OnStep(func(r timesync.Result) { steps = append(steps, r) })
 
 	years := 20 * 365 * 24 * time.Hour
 	srv.answers["ntp:123"] = timesync.Sample{Offset: years}
@@ -440,25 +438,20 @@ func TestSyncNow_StepsAnyOffsetAtTheFirstSynchronisationAndRefusesALargeOneAfter
 
 	stepped, _ := clk.moves()
 	assert.Equal(t, []time.Duration{years, timesync.StepBound - time.Second}, stepped, "a refused step leaves the clock alone")
-	require.Len(t, steps, 2)
-	assert.Equal(t, years, steps[0].Offset)
 }
 
-func TestSyncNow_ShowsARefusedStepInTheStatusAndReportsNoStepToTheObserver(t *testing.T) {
+func TestSyncNow_ShowsARefusedStepInTheStatus(t *testing.T) {
 	clk, srv := newClock(), newServers()
 	s := timesync.New(clk, srv)
 	s.Configure([]string{"ntp:123"})
 	srv.answers["ntp:123"] = timesync.Sample{Offset: time.Millisecond}
 	_, err := s.SyncNow(context.Background())
 	require.NoError(t, err)
-	called := false
-	s.OnStep(func(timesync.Result) { called = true })
 
 	srv.answers["ntp:123"] = timesync.Sample{Offset: 3 * timesync.StepBound}
 	_, err = s.SyncNow(context.Background())
 
 	require.Error(t, err)
-	assert.False(t, called)
 	assert.Contains(t, s.Status().Err, timesync.ErrStepTooLarge.Error())
 	assert.False(t, s.Status().Failed.IsZero())
 }

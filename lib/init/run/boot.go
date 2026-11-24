@@ -9,7 +9,6 @@ import (
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/extension"
 	"github.com/garamsh/naru/lib/init/linux"
-	"github.com/garamsh/naru/lib/init/pki"
 	"github.com/garamsh/naru/lib/init/store"
 	"github.com/garamsh/naru/lib/init/timesync"
 )
@@ -27,8 +26,6 @@ type timedHost interface {
 	boot.Host
 	// RunTime keeps the clock in step with spec.time until ctx ends.
 	RunTime(ctx context.Context, log *slog.Logger)
-	// OnTimeStep has fn called after each synchronisation that stepped the clock.
-	OnTimeStep(fn func(timesync.Result))
 	// TimeStatus returns what the clock's last synchronisation did.
 	TimeStatus() timesync.Status
 	// RunNetwork keeps the DHCPv4 lease, when the network has one, until ctx ends.
@@ -42,20 +39,14 @@ type timeAPI interface {
 	UseTime(status func() timesync.Status)
 }
 
-// bootAndRenew runs the boot sequence, and then renews the certificates it
-// issued and keeps the clock in step for as long as the Node runs, whether the
-// sequence finished or refused: a service that started before the refusal keeps
-// running and keeps reading its certificate. It returns the function that stops
-// the renewal and the clock and waits for a renewal in flight to end, and the
-// effective configuration when the sequence finished, or else the refusal.
-func bootAndRenew(host timedHost, issuer *pki.Issuer, services boot.Services, configs boot.Configs, api timeAPI, log *slog.Logger) (stop func(), booted *store.Stored, refusal error) {
+// bootAndKeep runs the boot sequence, and then keeps the clock in step and the
+// DHCPv4 lease for as long as the Node runs, whether the sequence finished or
+// refused: a service that started before the refusal keeps running. It returns
+// the function that stops the clock and the lease and waits for both to end, and
+// the effective configuration when the sequence finished, or else the refusal.
+func bootAndKeep(host timedHost, services boot.Services, configs boot.Configs, api timeAPI, log *slog.Logger) (stop func(), booted *store.Stored, refusal error) {
 	api.UseTime(host.TimeStatus)
-	// A certificate issued on a clock that is later stepped is judged against the new time.
-	host.OnTimeStep(func(res timesync.Result) {
-		log.Info("the clock was stepped; the certificates are checked against the new time", "sync", res)
-		issuer.ClockStepped()
-	})
-	stored, err := boot.Run(host, issuer, services, configs, api, log)
+	stored, err := boot.Run(host, services, configs, api, log)
 	if err != nil {
 		refusal = err
 		// Stay up so the reason stays on the console, and start nothing more.
@@ -63,27 +54,21 @@ func bootAndRenew(host timedHost, issuer *pki.Issuer, services boot.Services, co
 	} else {
 		booted = &stored
 	}
-	renewing, cancel := context.WithCancel(context.Background())
-	renewed := make(chan struct{})
-	go func() {
-		defer close(renewed)
-		issuer.Run(renewing)
-	}()
+	running, cancel := context.WithCancel(context.Background())
 	ticked := make(chan struct{})
 	go func() {
 		defer close(ticked)
-		host.RunTime(renewing, log)
+		host.RunTime(running, log)
 	}()
 	leased := make(chan struct{})
 	go func() {
 		defer close(leased)
-		if err := host.RunNetwork(renewing); err != nil {
+		if err := host.RunNetwork(running); err != nil {
 			log.Error("the DHCPv4 lease is no longer kept", "err", err)
 		}
 	}()
 	return func() {
 		cancel()
-		<-renewed
 		<-ticked
 		<-leased
 	}, booted, refusal
@@ -99,6 +84,6 @@ type hostParts interface {
 
 // newEngine returns the engine that applies changes to the Node that booted
 // stored, acting through the Node's own parts.
-func newEngine(stored store.Stored, configs apply.Store, services apply.Services, host hostParts, certificates apply.Certificates, api apply.API) *apply.Engine {
-	return apply.New(apply.Deps{Store: configs, Services: services, Files: host, Time: host, Routes: host, Registries: host, Certificates: certificates, API: api}, stored)
+func newEngine(stored store.Stored, configs apply.Store, services apply.Services, host hostParts, api apply.API) *apply.Engine {
+	return apply.New(apply.Deps{Store: configs, Services: services, Files: host, Time: host, Routes: host, Registries: host, API: api}, stored)
 }

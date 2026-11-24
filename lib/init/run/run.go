@@ -24,7 +24,6 @@ import (
 	"github.com/garamsh/naru/lib/init/console"
 	"github.com/garamsh/naru/lib/init/extension"
 	"github.com/garamsh/naru/lib/init/linux"
-	"github.com/garamsh/naru/lib/init/pki"
 	"github.com/garamsh/naru/lib/init/service"
 	"github.com/garamsh/naru/lib/init/store"
 	"github.com/garamsh/naru/lib/init/upgrade"
@@ -90,7 +89,6 @@ func Main() {
 	cgroups := linux.NewCgroupTree(cgroupRoot)
 	services := service.NewManager(cgroups, linux.NewLauncher(reaper, con), service.SystemClock{}, log)
 
-	issuer := pki.New("", service.SystemClock{}, services, log)
 	configs := store.New(store.Dir)
 	started := time.Now()
 	// A reboot asked for through the API, and a trial boot that gives up, stop the Node the way
@@ -131,12 +129,12 @@ func Main() {
 	})
 	metricsCtx, stopMetrics := context.WithCancel(context.Background())
 	var engine *apply.Engine
-	stopRenewing, booted, refusal := bootAndRenew(bootHost{host, extensions}, issuer, services, configs, server, log)
+	stopKeeping, booted, refusal := bootAndKeep(bootHost{host, extensions}, services, configs, server, log)
 	// The status is written once the data disk is mounted, where an upgrade that ended in an earlier
 	// boot left its outcome; an upgrade that ends later writes it again through Changed.
 	publish()
 	if booted != nil {
-		engine = newEngine(*booted, configs, services, host, issuer, server)
+		engine = newEngine(*booted, configs, services, host, server)
 		applied.Store(engine)
 		server.Attach(engine)
 		log.Info("the apply engine is ready", "revision", booted.Revision)
@@ -162,8 +160,7 @@ func Main() {
 	stopJudging()
 	stopHandoff()
 	stopMetrics()
-	// A renewal in flight must not restart a service after it is stopped.
-	stopRenewing()
+	stopKeeping()
 	log.Info("stopping services", "signal", sig.String())
 	services.StopAll()
 	if err := server.Close(); err != nil {

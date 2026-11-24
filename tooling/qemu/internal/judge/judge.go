@@ -68,20 +68,6 @@ func Released(name string) []Expect {
 	return append(boot(name, 1), Expect{What: "init started the registry", Fragments: []string{"started", "service=registry"}})
 }
 
-// Issuance is what the console of a Node whose spec.pki carries a CA shows of init's issuing
-// (ADR 0013): the authority written and each named certificate issued, all before init starts
-// the first service, and no renewal that failed.
-func Issuance(certificates ...string) []Expect {
-	firstStart := []string{"started", "service="}
-	out := []Expect{{What: "init wrote the authority", Fragments: []string{"authority written"}, Before: firstStart}}
-	for _, name := range certificates {
-		out = append(out, Expect{
-			What: "init issued " + name, Fragments: []string{"certificate issued", "name=" + name}, Before: firstStart,
-		})
-	}
-	return append(out, Expect{What: "no renewal failed", Fragments: []string{"certificate renewal failed"}, Absent: true})
-}
-
 // Probe is what the console of the Node that runs the probe shows: every check ok, no check
 // failed, the probe finished, and init restarted mvmd.
 func Probe() []Expect {

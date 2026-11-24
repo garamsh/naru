@@ -10,14 +10,12 @@ const deleteKey = "$patch"
 
 // keyed names the lists a patch merges by key, and the key of each.
 var keyed = map[string]string{
-	"spec.services":         "name",
-	"spec.files":            "path",
-	"spec.pki.authorities":  "name",
-	"spec.pki.certificates": "name",
-	"spec.network.routes":   "to",
-	"spec.registries":       "host",
-	"spec.storage":          "name",
-	"spec.extensions":       "sha256",
+	"spec.services":       "name",
+	"spec.files":          "path",
+	"spec.network.routes": "to",
+	"spec.registries":     "host",
+	"spec.storage":        "name",
+	"spec.extensions":     "sha256",
 }
 
 // keyedFallback names, for a list, the key of an element that lacks its first key: an entry of

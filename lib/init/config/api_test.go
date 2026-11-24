@@ -3,6 +3,7 @@ package config_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -10,6 +11,11 @@ import (
 	"github.com/garamsh/naru/lib/init/config"
 	"github.com/garamsh/naru/lib/init/pkitest"
 )
+
+func newCA(t *testing.T) pkitest.CA {
+	t.Helper()
+	return pkitest.NewCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+}
 
 // apiDoc is the valid document with spec.api appended. The serving pair is a
 // certificate authority's, which is a certificate and key that match.

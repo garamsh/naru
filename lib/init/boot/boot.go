@@ -63,13 +63,6 @@ type Host interface {
 	WipeDataDisk(config.DataDisk) error
 }
 
-// Issuer issues the certificates of spec.pki.
-type Issuer interface {
-	// Issue writes the authorities' certificates and issues the certificates,
-	// with addrs as the Node's addresses.
-	Issue(spec config.PKI, addrs []netip.Addr) error
-}
-
 // Configs is the store of the Node's configuration revisions, on the data disk.
 type Configs interface {
 	// Load returns the stored configuration, store.ErrNotFound when there is
@@ -110,15 +103,15 @@ type API interface {
 // and the user-data's otherwise. The steps before the data disk mounts use the
 // user-data. It starts none, and returns the reason, when the configuration or
 // the network-config is invalid, the network cannot be brought up, the data
-// disk is refused, a system extension cannot be mounted, the Node API cannot listen, the kernel cannot be set up or
-// a certificate cannot be issued: a refusal is the same whichever service it would have kept from
+// disk is refused, a system extension cannot be mounted, the Node API cannot listen or the kernel
+// cannot be set up: a refusal is the same whichever service it would have kept from
 // starting. A clock that no time server could set is not one: it is logged, and the boot goes on.
 // Nor is a route the kernel refuses, nor a storage disk that is missing or cannot be prepared: each is logged too.
 // On success it returns the effective configuration and its revision.
-func Run(host Host, issuer Issuer, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
+func Run(host Host, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
 	h := &watchedHost{Host: host}
 	svc := &watchedServices{Services: services}
-	stored, err := run(h, issuer, svc, configs, api, log)
+	stored, err := run(h, svc, configs, api, log)
 	if err != nil {
 		maintain(h, svc, configs, err, log)
 	}
@@ -126,7 +119,7 @@ func Run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 }
 
 // run is the sequence itself; Run enters maintenance mode when it refuses.
-func run(host Host, issuer Issuer, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
+func run(host Host, services Services, configs Configs, api API, log *slog.Logger) (store.Stored, error) {
 	var (
 		effective store.Stored
 		applied   netcfg.Applied
@@ -167,11 +160,6 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	}
 	prepareStorage(host, cfg.Spec.Storage, log)
 	syncTime(host, cfg.Spec.Time, applied.NTP, log)
-	if pki := cfg.Spec.PKI; len(pki.Authorities) > 0 || len(pki.Certificates) > 0 {
-		if err := issuer.Issue(pki, applied.Addresses); err != nil {
-			return store.Stored{}, fmt.Errorf("issue certificates: %w", err)
-		}
-	}
 	if err := services.Prepare(); err != nil {
 		return store.Stored{}, fmt.Errorf("prepare cgroups: %w", err)
 	}
@@ -282,7 +270,7 @@ func prepareStorage(host Host, storage []config.Storage, log *slog.Logger) {
 	}
 }
 
-// syncTime sets the clock from spec.time once, before certificates are issued. It never refuses
+// syncTime sets the clock from spec.time once, before the services start. It never refuses
 // the boot: a clock that no server could set is logged and the boot goes on, and the Node keeps
 // trying (timesync.Syncer.Run). Without spec.time it uses the time servers the DHCPv4 lease named.
 func syncTime(host Host, spec *config.Time, leased []netip.Addr, log *slog.Logger) {

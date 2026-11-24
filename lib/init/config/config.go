@@ -48,6 +48,13 @@ type Metadata struct {
 	Name string `yaml:"name"`
 }
 
+// RetiredPKI is what a configuration written before spec.pki was removed carries there: two lists,
+// which must be empty.
+type RetiredPKI struct {
+	Authorities  []any `yaml:"authorities,omitempty"`
+	Certificates []any `yaml:"certificates,omitempty"`
+}
+
 // Spec is what the Node is configured to run.
 type Spec struct {
 	Services []Service `yaml:"services"`
@@ -57,7 +64,9 @@ type Spec struct {
 	DataDisk     DataDisk `yaml:"dataDisk"`
 	Network      Network  `yaml:"network"`
 	Files        []File   `yaml:"files"`
-	PKI          PKI      `yaml:"pki"`
+	// PKI is retired: init issues no certificate (docs/architecture/adr/0115-init-issues-no-certificates-and-spec-pki-is-removed.md).
+	// A configuration written before then carries two empty lists, which are read as no field; an entry is refused.
+	PKI RetiredPKI `yaml:"pki,omitempty"`
 	// Time is how the Node keeps its clock. It is nil when init keeps none.
 	Time *Time `yaml:"time,omitempty"`
 	// API is the Node API's listener. It is nil when the Node serves none.
@@ -185,10 +194,13 @@ func (f File) Perm() os.FileMode {
 
 // Service is an opaque binary init starts and supervises.
 type Service struct {
-	Name   string            `yaml:"name"`
-	Binary string            `yaml:"binary"`
-	Args   []string          `yaml:"args"`
-	Env    map[string]string `yaml:"env"`
+	Name string `yaml:"name"`
+	// ControlPlane is retired: naru runs no control plane (docs/architecture/adr/0114-naru-runs-no-kubernetes-or-gaon-and-their-layouts-programs-images-tests-and-documents-are-removed.md).
+	// A configuration written before then carries false, which is read as no field; true is refused.
+	ControlPlane bool              `yaml:"controlPlane,omitempty"`
+	Binary       string            `yaml:"binary"`
+	Args         []string          `yaml:"args"`
+	Env          map[string]string `yaml:"env"`
 	// RestartOnChange lists files, each a clean absolute path, that something other than init
 	// writes and the service reads once at start. init restarts the service when the content of
 	// one changes, or the file appears or goes missing (docs/architecture/adr/0029-aws-credentials-is-a-service-serving-the-instance-metadata-endpoint-to-mvmd.md).

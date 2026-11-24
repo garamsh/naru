@@ -3,15 +3,8 @@
 package tests_test
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/json"
-	"encoding/pem"
-	"math/big"
 	"net"
 	"net/http"
 	"strconv"
@@ -24,7 +17,6 @@ import (
 
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
 	"github.com/garamsh/naru/tooling/qemu/internal/node"
-	"github.com/garamsh/naru/tooling/qemu/internal/seed"
 )
 
 // ntpEpoch is the seconds between 1900, which NTP counts from, and 1970.
@@ -90,51 +82,20 @@ func getTime(t *testing.T, file string) timeBody {
 	return body
 }
 
-// withPKI gives the Node a spec.pki of the test's own: a throwaway authority, made now and so not yet
-// valid on a clock years behind, and one serving certificate init issues from it at boot.
-func withPKI(t *testing.T) func(node.Config, string) error {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "naru time test"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	require.NoError(t, err)
-	sec1, err := x509.MarshalECPrivateKey(key)
-	require.NoError(t, err)
-	authority := map[string]any{
-		"name": "time-test", "certificatePath": "/run/naru-time-test/ca.pem",
-		"certificate": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
-		"key":         string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: sec1})),
-	}
-	certificate := map[string]any{
-		"name": "time-test", "authority": "time-test", "commonName": "node-1", "usage": "server", "nodeAddresses": true,
-		"certificatePath": "/run/naru-time-test/tls.crt", "keyPath": "/run/naru-time-test/tls.key",
-	}
-	return func(_ node.Config, file string) error {
-		return seed.Set(file, map[string]any{"authorities": []any{authority}, "certificates": []any{certificate}}, "spec", "pki")
-	}
-}
-
-// TestNode_ANodeWithAWrongClockStepsItFromSpecTimeServersBeforeItIssuesCertificates boots a Node
+// TestNode_ANodeWithAWrongClockStepsItFromSpecTimeServersBeforeAnyServiceStarts boots a Node
 // whose real-time clock starts years in the past, with spec.time naming an SNTP server that runs on
-// the test host, and a spec.pki that has init issue certificates. The console must show the clock
-// stepped from that server before init wrote the authority, and the Node API must report the step.
-func TestNode_ANodeWithAWrongClockStepsItFromSpecTimeServersBeforeItIssuesCertificates(t *testing.T) {
+// the test host. The console must show the clock stepped from that server before init started the
+// first service, and the Node API must report the step.
+func TestNode_ANodeWithAWrongClockStepsItFromSpecTimeServersBeforeAnyServiceStarts(t *testing.T) {
 	port, requests := sntpServer(t)
 	server := "10.0.2.2:" + port
 	c := start(t, node.ClusterSpec{
 		N: 1, GenNode: true, NodeAPI: true,
 		TimeServers: []string{server}, RTCBase: "2021-03-04T05:06:07",
-		EditUserData: withPKI(t),
 	})
 	n := c.Nodes[0]
 
 	expectAll(t, n, judge.TimeSynced(server))
-	expectAll(t, n, judge.Issuance("time-test"))
 	eventually(t, "the Node API answers an admin", func() bool { return ctl(c.API.Admin, "version").Err == nil })
 
 	assert.Positive(t, requests.Load(), "the server on the host was asked")

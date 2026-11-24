@@ -76,12 +76,14 @@ func TestParse_Valid(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o644), cfg.Spec.Files[1].Perm(), "a file without a mode is 0644")
 }
 
-// A host's layout wrote spec.controlPlane: false before naru ran no control plane (ADR 0114), so
-// a stored configuration with it still boots; true, and a service's controlPlane, are refused.
+// A host's layout wrote spec.controlPlane: false, and controlPlane: false on each service, before
+// naru ran no control plane (ADR 0114), so a stored configuration with them still boots; true is
+// refused.
 func TestParse_ARetiredControlPlaneOfFalseIsReadAsNoFieldAndTrueIsRefused(t *testing.T) {
 	without, err := config.Parse([]byte(valid))
 	require.NoError(t, err)
-	with, err := config.Parse([]byte(replaceFirst(valid, "spec:\n", "spec:\n  controlPlane: false\n")))
+	with, err := config.Parse([]byte(replaceFirst(replaceFirst(valid, "spec:\n", "spec:\n  controlPlane: false\n"),
+		"      binary: /usr/bin/etcd\n", "      binary: /usr/bin/etcd\n      controlPlane: false\n")))
 	require.NoError(t, err)
 	assert.Equal(t, without, with)
 
@@ -89,6 +91,21 @@ func TestParse_ARetiredControlPlaneOfFalseIsReadAsNoFieldAndTrueIsRefused(t *tes
 	assert.Equal(t, []string{"spec.controlPlane"}, fields(t, err))
 	_, err = config.Parse([]byte(replaceFirst(valid, "      binary: /usr/bin/etcd\n", "      binary: /usr/bin/etcd\n      controlPlane: true\n")))
 	assert.Equal(t, []string{"spec.services[1].controlPlane"}, fields(t, err))
+}
+
+// A host's layout wrote spec.pki with two empty lists before init issued no certificate
+// (ADR 0115), so a stored configuration with them still boots; an entry is refused.
+func TestParse_ARetiredPKIWithEmptyListsIsReadAsNoFieldAndAnEntryIsRefused(t *testing.T) {
+	without, err := config.Parse([]byte(valid))
+	require.NoError(t, err)
+	with, err := config.Parse([]byte(replaceFirst(valid, "spec:\n", "spec:\n  pki:\n    authorities: []\n    certificates: []\n")))
+	require.NoError(t, err)
+	assert.Equal(t, without, with)
+
+	for _, list := range []string{"authorities", "certificates"} {
+		_, err = config.Parse([]byte(replaceFirst(valid, "spec:\n", "spec:\n  pki:\n    "+list+":\n      - name: ca\n")))
+		assert.Equal(t, []string{"spec.pki"}, fields(t, err), list)
+	}
 }
 
 func TestParse_RefusesAndNamesTheField(t *testing.T) {

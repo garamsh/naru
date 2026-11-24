@@ -23,8 +23,7 @@ type rig struct {
 	mu      sync.Mutex
 	journal []string
 	saved   []store.Stored
-	specs   []config.PKI // the spec each Reissue was given
-	failOn  string       // a journal entry that fails
+	failOn  string // a journal entry that fails
 }
 
 func (r *rig) note(entry string) error {
@@ -47,14 +46,10 @@ func (r *rig) Save(st store.Stored) error {
 	r.saved = append(r.saved, st)
 	return r.note("store")
 }
-func (r *rig) Start(s config.Service) error    { return r.note("start " + s.Name) }
-func (r *rig) Stop(name string)                { _ = r.note("stop " + name) }
-func (r *rig) Restart(name string)             { _ = r.note("restart " + name) }
-func (r *rig) ReplaceFile(f config.File) error { return r.note("file " + f.Path) }
-func (r *rig) Reissue(spec config.PKI, names []string) error {
-	r.specs = append(r.specs, spec)
-	return r.note(fmt.Sprintf("issue %v", names))
-}
+func (r *rig) Start(s config.Service) error      { return r.note("start " + s.Name) }
+func (r *rig) Stop(name string)                  { _ = r.note("stop " + name) }
+func (r *rig) Restart(name string)               { _ = r.note("restart " + name) }
+func (r *rig) ReplaceFile(f config.File) error   { return r.note("file " + f.Path) }
 func (r *rig) WriteRegistries(config.Spec) error { return r.note("write-registries") }
 func (r *rig) Reload(config.API) error           { return r.note("reload") }
 func (r *rig) AddRoute(rt config.Route) error {
@@ -72,7 +67,7 @@ func newRig(t *testing.T) *rig {
 	r := &rig{}
 	cfg, err := config.Parse([]byte(baseDoc(t)))
 	require.NoError(t, err)
-	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Certificates: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
+	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
 	return r
 }
 
@@ -106,20 +101,6 @@ spec:
     - path: /run/f2
       mode: "0600"
       content: two
-  pki:
-    authorities:
-      - name: ca
-        certificatePath: /run/ca.pem
-        certificate: |
-` + pkitest.Indent(ca.Cert, 10) + `        key: |
-` + pkitest.Indent(ca.Key, 10) + `    certificates:
-      - name: c1
-        authority: ca
-        certificatePath: /run/c1.pem
-        keyPath: /run/c1.key
-        commonName: c1
-        usage: client
-        restart: [b]
   api:
     clientCA: |
 ` + pkitest.Indent(ca.Cert, 6) + `    certificate: |
@@ -172,15 +153,13 @@ func TestMerge(t *testing.T) {
 		require.Len(t, cfg.Spec.Services, 2)
 		assert.Equal(t, []string{"a", "b"}, []string{cfg.Spec.Services[0].Name, cfg.Spec.Services[1].Name})
 	})
-	t.Run("files merge by path and certificates by name", func(t *testing.T) {
+	t.Run("files merge by path", func(t *testing.T) {
 		cfg := newRig(t).staged(t, patch(obj{
 			"files": []any{obj{"path": "/run/f2", "content": "changed"}},
-			"pki":   obj{"certificates": []any{obj{"name": "c1", "commonName": "renamed"}}},
 		}))
 
 		assert.Equal(t, "changed", cfg.Spec.Files[1].Content)
 		assert.Equal(t, "0600", cfg.Spec.Files[1].Mode)
-		assert.Equal(t, "renamed", cfg.Spec.PKI.Certificates[0].CommonName)
 	})
 	t.Run("a delete of a key that does not exist is refused naming the element", func(t *testing.T) {
 		r := newRig(t)
@@ -221,7 +200,6 @@ func TestApply_RefusesWithoutChangingTheNode(t *testing.T) {
 		{"a never field in no-reboot", apply.Request{Patch: obj{"metadata": obj{"name": "other"}}, Mode: apply.NoReboot}, invalidAt("metadata.name")},
 		{"a never field in staged", apply.Request{Patch: patch(obj{"dataDisk": obj{"mountPoint": "/mnt"}}), Mode: apply.Staged}, invalidAt("spec.dataDisk")},
 		{"a reboot-only field in no-reboot", apply.Request{Patch: patch(obj{"network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.NoReboot}, invalidAt("spec.network.forwarding")},
-		{"a changed authority in no-reboot", apply.Request{Patch: patch(obj{"pki": obj{"authorities": []any{obj{"name": "ca", "certificatePath": "/run/other.pem"}}}}), Mode: apply.NoReboot}, invalidAt("spec.pki.authorities")},
 		{"a new listen address in no-reboot", apply.Request{Patch: patch(obj{"api": obj{"listen": "127.0.0.1:50001"}}), Mode: apply.NoReboot}, invalidAt("spec.api.listen")},
 		{"turning spec.api off in no-reboot", apply.Request{Patch: patch(obj{"api": nil}), Mode: apply.NoReboot}, invalidAt("spec.api")},
 		{"REDACTED for a key", apply.Request{Patch: patch(obj{"api": obj{"key": "REDACTED"}}), Mode: apply.Staged}, invalidAt("spec.api.key")},
@@ -328,26 +306,6 @@ func TestApply_AServiceThatTheApplyRestartedIsNotRestartedAgainForAFile(t *testi
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"store", "file /run/f1", "stop a", "start a"}, r.calls(), "the file is written before the service starts again, and the service restarts once")
-}
-
-func TestApply_ACertificateThatChangedIsIssuedAgainAndItsServicesRestart(t *testing.T) {
-	r := newRig(t)
-
-	_, err := r.engine.Apply(apply.Request{Patch: patch(obj{"pki": obj{"certificates": []any{obj{"name": "c1", "commonName": "renamed"}}}}), Mode: apply.NoReboot})
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"store", "issue [c1]", "restart b"}, r.calls())
-}
-
-func TestApply_ADeletedCertificateIsHandedToTheIssuerSoItIsNotRenewed(t *testing.T) {
-	r := newRig(t)
-
-	_, err := r.engine.Apply(apply.Request{Patch: patch(obj{"pki": obj{"certificates": []any{obj{"name": "c1", "$patch": "delete"}}}}), Mode: apply.NoReboot})
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"store", "issue []"}, r.calls(), "no certificate is signed and no service restarts")
-	require.Len(t, r.specs, 1)
-	assert.Empty(t, r.specs[0].Certificates, "the issuer is given a spec without the deleted certificate")
 }
 
 func TestApply_ANewAPIPairReloadsTheListener(t *testing.T) {

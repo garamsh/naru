@@ -21,7 +21,7 @@ func hostRig(t *testing.T) *rig {
 	r := &rig{}
 	cfg, err := config.Parse([]byte(baseDoc(t) + "\n  host:\n    region: eu-1\n    labels:\n      disk: ssd\n"))
 	require.NoError(t, err)
-	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Certificates: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
+	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
 	return r
 }
 
@@ -71,7 +71,7 @@ spec:
       enrollKey: ` + wire.EnrollKeyPrefix + strings.Repeat("cd", 32) + `
 `))
 	require.NoError(t, err)
-	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Certificates: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
+	r.engine = apply.New(apply.Deps{Store: r, Services: r, Files: r, Time: r, Routes: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
 	_, held := r.engine.Config()
 	data, err := yaml.Dump(apply.Redact(held))
 	require.NoError(t, err)
@@ -95,7 +95,7 @@ func TestApply_IsRefusedWhileTheStoreCannotBeReadAndNothingIsDone(t *testing.T) 
 	require.NoError(t, err)
 	dir := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(dir, store.FileName), 0o700), "a read of store.yaml fails with an error other than not-exist")
-	r.engine = apply.New(apply.Deps{Store: store.New(dir), Services: r, Files: r, Time: r, Routes: r, Certificates: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
+	r.engine = apply.New(apply.Deps{Store: store.New(dir), Services: r, Files: r, Time: r, Routes: r, Registries: r, API: r}, store.Stored{Revision: 0, BaseSha256: "base", Config: cfg})
 
 	_, err = r.engine.Apply(apply.Request{Patch: patch(obj{"files": []any{obj{"path": "/run/f1", "content": "changed"}}}), Mode: apply.NoReboot})
 

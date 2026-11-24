@@ -98,7 +98,6 @@ func TestHost_ApplyNetworkLeasesAnAddressOnTheFirstLinkWithACarrier(t *testing.T
 	applied, err := h.ApplyNetwork(netcfg.Automatic(), discard)
 
 	require.NoError(t, err)
-	assert.Equal(t, []netip.Addr{leaseIP}, applied.Addresses, "the lease's address is the Node's")
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.2.3")}, applied.Nameservers)
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.2.4")}, applied.NTP)
 	assert.Equal(t, []string{"up lo", "up ens18", "up ens19", "up ens19", "addr 10.0.2.15/24 ens19", "route 10.0.2.2 ens19"}, l.calls)
@@ -110,10 +109,9 @@ func TestHost_ApplyNetworkSkipsLoopbackByItsFlagWhenItHasACarrier(t *testing.T) 
 	l := &fakeLinks{all: ethernet(), carrier: map[string]bool{"lo": true, "ens19": true}}
 	h := dhcpHost(t, newDHCPServer(), l)
 
-	applied, err := h.ApplyNetwork(netcfg.Automatic(), discard)
+	_, err := h.ApplyNetwork(netcfg.Automatic(), discard)
 
 	require.NoError(t, err)
-	assert.Equal(t, []netip.Addr{leaseIP}, applied.Addresses)
 	assert.Equal(t, []string{"up lo", "up ens18", "up ens19", "up ens19", "addr 10.0.2.15/24 ens19", "route 10.0.2.2 ens19"}, l.calls, "lo is brought up once, for the services, and is not leased on")
 }
 
@@ -122,10 +120,10 @@ func TestHost_ApplyNetworkLeasesOnANamedLink(t *testing.T) {
 	l := &fakeLinks{all: ethernet()}
 	h := dhcpHost(t, newDHCPServer(), l)
 
-	applied, err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{{Name: "ens19", DHCP: true}}}, discard)
+	_, err := h.ApplyNetwork(netcfg.Config{Interfaces: []netcfg.Interface{{Name: "ens19", DHCP: true}}}, discard)
 
 	require.NoError(t, err)
-	assert.Equal(t, []netip.Addr{leaseIP}, applied.Addresses)
+	assert.Contains(t, l.calls, "addr 10.0.2.15/24 ens19", "the lease's address is added to the named link")
 }
 
 func TestHost_ApplyNetworkKeepsTheConfiguredResolversOverTheLeases(t *testing.T) {

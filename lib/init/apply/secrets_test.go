@@ -18,10 +18,10 @@ import (
 func everySecret() config.NodeConfig {
 	return config.NodeConfig{Spec: config.Spec{
 		API:   &config.API{Key: "api-key"},
-		PKI:   config.PKI{Authorities: []config.Authority{{Name: "ca", Key: "ca-key"}, {Name: "other", Key: "other-key"}}},
 		Files: []config.File{{Path: "/run/public", Content: "public"}, {Path: "/run/private", Mode: "0600", Content: "private"}},
 		Registries: []config.Registry{
 			{Host: "r.example", Credential: &config.Credential{Username: "alice", Password: "registry-password"}},
+			{Host: "other.example", Credential: &config.Credential{Username: "bob", Password: "other-password"}},
 		},
 		Host: &config.Host{Orch: &config.HostOrch{EnrollKey: "host-enroll-key"}},
 		Join: &config.Join{EnrollKey: "join-enroll-key"},
@@ -44,8 +44,8 @@ func TestSecrets_TheFixtureHoldsAValueInEveryPlaceTheDenyListNamedBefore(t *test
 	got := fieldsOf(cfg)
 
 	assert.ElementsMatch(t, []string{
-		"spec.api.key", "spec.pki.authorities[0].key", "spec.pki.authorities[1].key", "spec.files[1].content",
-		"spec.registries[0].credential.password", "spec.host.orch.enrollKey", "spec.join.enrollKey",
+		"spec.api.key", "spec.files[1].content", "spec.registries[0].credential.password",
+		"spec.registries[1].credential.password", "spec.host.orch.enrollKey", "spec.join.enrollKey",
 	}, got)
 }
 
@@ -100,17 +100,17 @@ func TestRefuse_AcceptsTheSamePlaceholdersWhereTheyWereStored(t *testing.T) {
 
 func TestRefuse_MatchesAListElementByItsKeyAndNotItsIndex(t *testing.T) {
 	cfg := everySecret()
-	cfg.Spec.PKI.Authorities[0].Key = Redacted // "ca" was stored redacted, "other" was not
+	cfg.Spec.Registries[0].Credential.Password = Redacted // r.example was stored redacted, other.example was not
 	e := &Engine{stored: storedOf(cfg), running: cfg}
 	next := Redact(everySecret())
-	next.Spec.PKI.Authorities = []config.Authority{next.Spec.PKI.Authorities[1], next.Spec.PKI.Authorities[0]}
+	next.Spec.Registries = []config.Registry{next.Spec.Registries[1], next.Spec.Registries[0]}
 
 	err := e.refuse(next, Staged)
 
 	var invalid *InvalidError
 	require.ErrorAs(t, err, &invalid)
-	assert.Contains(t, invalid.Fields, "spec.pki.authorities[0].key", "other moved to index 0 and was not redacted in the store")
-	assert.NotContains(t, invalid.Fields, "spec.pki.authorities[1].key", "ca moved to index 1 and was redacted in the store")
+	assert.Contains(t, invalid.Fields, "spec.registries[0].credential.password", "other.example moved to index 0 and was not redacted in the store")
+	assert.NotContains(t, invalid.Fields, "spec.registries[1].credential.password", "r.example moved to index 1 and was redacted in the store")
 }
 
 // fill sets every string of v, whatever its place, to marker, making each pointer, slice and map.

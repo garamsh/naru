@@ -66,8 +66,3 @@ func (h *Host) RunTime(ctx context.Context, log *slog.Logger) {
 func (h *Host) TimeStatus() timesync.Status {
 	return h.time.Status()
 }
-
-// OnTimeStep has fn called after each synchronisation that stepped the clock.
-func (h *Host) OnTimeStep(fn func(timesync.Result)) {
-	h.time.OnStep(fn)
-}
