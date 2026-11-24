@@ -1,5 +1,5 @@
-// Package hostclient is the groups engine's view of the hosts: it drives each admitted host through
-// that host's API at the address the inventory recorded, with lib/hostapi.
+// Package hostclient is orch's view of the hosts, for the groups engine and the Machine reconciler: it
+// drives each admitted host through that host's API at the address the inventory recorded, with lib/hostapi.
 //
 // A stateful member's fence is the host API's per-microVM fence: RenewFence sets its length from
 // the deadline orch asked for, and InspectFence reads the time it has left and when it lapsed.

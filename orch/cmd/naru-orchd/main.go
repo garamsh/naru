@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,6 +24,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/groups/release"
 	"github.com/garamsh/naru/orch/internal/hostclient"
 	"github.com/garamsh/naru/orch/internal/inventory"
+	"github.com/garamsh/naru/orch/internal/machines"
 	"github.com/garamsh/naru/orch/internal/member"
 	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/orchd"
@@ -63,6 +65,9 @@ func main() {
 		hostCA      = flag.String("host-ca", "", "the authority that issued the hosts' API certificates; defaults to --ca")
 		groupEach   = flag.Duration("group-interval", groups.DefaultInterval, "the pause between the groups engine's passes")
 		netEach     = flag.Duration("network-interval", netrec.DefaultInterval, "the pause between the network reconciler's passes")
+		machineEach = flag.Duration("machine-interval", machines.DefaultInterval, "the pause between the Machine reconciler's passes")
+		reserveCPU  = flag.Uint("host-reserve-cpu", uint(machines.DefaultReserve.CPU), "the CPUs each host keeps for itself, apart from the Machines placed on it")
+		reserveMem  = flag.Uint64("host-reserve-memory", machines.DefaultReserve.Memory, "the memory in bytes each host keeps for itself, apart from the Machines placed on it")
 		departAfter = flag.Duration("depart-after", member.DepartAfter, "how long the leader sees a member unreachable before it removes the member so that it rejoins empty")
 		houseEvery  = flag.Duration("housekeeping-interval", housekeepEvery, "the pause between the leader's etcd housekeeping passes")
 		etcdQuota   = flag.Int64("etcd-quota-bytes", 0, "the etcd backend quota; 0 derives it from the size of the data disk")
@@ -81,7 +86,8 @@ func main() {
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
 		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, departAfter: *departAfter, houseEvery: *houseEvery, quota: *etcdQuota, keep: *etcdKeep, metricsAddr: *metricsAddr,
-		machineAddr: *machineAddr, machineZone: *machineZone,
+		machineAddr: *machineAddr, machineZone: *machineZone, machineEach: *machineEach,
+		reserve:  machines.Reserve{CPU: uint32(min(*reserveCPU, math.MaxUint32)), Memory: *reserveMem},
 		bootSets: release.Config{Location: *bsStore, TrustRoot: *bsRoot, Identity: *bsIdentity, Issuer: *bsIssuer},
 	}); err != nil {
 		log.Error("naru-orchd stopped", "err", err.Error())
@@ -90,19 +96,20 @@ func main() {
 }
 
 type runFlags struct {
-	name, dataDir, peerURL, clientURL, initial, state, listen string
-	cert, key, ca, sock, snapDir, revoke, recovery            string
-	snapEvery, maxAge, crlEvery, groupEach, netEach           time.Duration
-	departAfter, houseEvery                                   time.Duration
-	quota                                                     int64
-	keep                                                      string
-	hostCert, hostKey, hostCA                                 string
-	snapKeep                                                  int
-	metricsAddr                                               string
-	machineAddr, machineZone                                  string
-	join                                                      string
-	restore                                                   bool
-	bootSets                                                  release.Config
+	name, dataDir, peerURL, clientURL, initial, state, listen    string
+	cert, key, ca, sock, snapDir, revoke, recovery               string
+	snapEvery, maxAge, crlEvery, groupEach, netEach, machineEach time.Duration
+	reserve                                                      machines.Reserve
+	departAfter, houseEvery                                      time.Duration
+	quota                                                        int64
+	keep                                                         string
+	hostCert, hostKey, hostCA                                    string
+	snapKeep                                                     int
+	metricsAddr                                                  string
+	machineAddr, machineZone                                     string
+	join                                                         string
+	restore                                                      bool
+	bootSets                                                     release.Config
 }
 
 func run(log *slog.Logger, f runFlags) error {
@@ -155,11 +162,14 @@ func run(log *slog.Logger, f runFlags) error {
 	o, err := orchd.Start(ctx, orchd.Config{
 		Config: mcfg,
 		Listen: f.listen, MachineAPIListen: f.machineAddr, MachineZone: f.machineZone, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
-		GroupInterval: f.groupEach, NetworkInterval: f.netEach, Restore: f.restore,
+		GroupInterval: f.groupEach, NetworkInterval: f.netEach, MachineInterval: f.machineEach, HostReserve: f.reserve, Restore: f.restore,
 	}, orchd.Deps{
 		Signer: sg, Credentials: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
-		NewHosts:        func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP, revocations) },
-		NewPrefixHosts:  func(inv inventory.Service) inventory.PrefixHosts { return hostclient.New(inv, hostHTTP, revocations) },
+		NewHosts:       func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP, revocations) },
+		NewPrefixHosts: func(inv inventory.Service) inventory.PrefixHosts { return hostclient.New(inv, hostHTTP, revocations) },
+		NewMachineHosts: func(inv inventory.Service) machines.Hosts {
+			return hostclient.NewMachineHosts(inv, hostHTTP, revocations)
+		},
 		BootSets:        bootSets,
 		NewBootSetHosts: func(inv inventory.Service) groups.BootSetHosts { return hostclient.New(inv, hostHTTP, revocations) },
 		NewNetworkHosts: func(inv inventory.Service) netrec.Hosts {

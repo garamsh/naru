@@ -62,6 +62,8 @@ func StartStop(t *testing.T, c Config) {
 	create(t, c.Caller, name, c.Spec)
 	waitPhase(t, c, c.Caller, name, machineapi.PhaseRunning)
 
+	_, err := c.Caller.StopMachine(ctx, name, machineapi.StopRequest{GraceSeconds: machineapi.MaxGraceSeconds + 1})
+	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeInvalid, "a grace above the most a stop takes")
 	m, err := c.Caller.StopMachine(ctx, name, machineapi.StopRequest{GraceSeconds: 5})
 	require.NoError(t, err)
 	assert.Equal(t, machineapi.StateStopped, m.Spec.State)

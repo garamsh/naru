@@ -189,10 +189,13 @@ type Address struct {
 }
 
 // StopRequest is the body of POST .../machines/{name}/stop: how long the guest has to stop before
-// it is ended.
+// it is ended, at most MaxGraceSeconds.
 type StopRequest struct {
 	GraceSeconds uint32 `json:"graceSeconds,omitempty"`
 }
+
+// MaxGraceSeconds is the most a stop's grace may be: the host ends a stop within its own call.
+const MaxGraceSeconds = 240
 
 // MachineList is the body of GET .../machines: the caller's Machines, ordered by name, and the
 // cursor of the event log the list is current at, from which GET .../events misses nothing.

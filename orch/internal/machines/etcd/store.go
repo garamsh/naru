@@ -2,7 +2,10 @@
 //
 //   - a Machine under /naru/orch/machines/<caller>/<name>, its id claimed under
 //     /naru/orch/machine-ids/<id> in the transaction that creates it, so no two Machines share one;
-//   - a snapshot under /naru/orch/snapshots/<caller>/<name>;
+//   - a snapshot under /naru/orch/snapshots/<caller>/<name>, and a deleted one whose disk snapshots
+//     are still on its host under /naru/orch/snapshot-deletions/<id>;
+//   - each host's allocation, the sum of what its bound Machines take, under
+//     /naru/orch/host-allocations/<host>;
 //   - the zone of the stable names, which every member is started with, under /naru/orch/machine-zone;
 //   - each caller's event log under /naru/orch/machine-events/<caller>/, apart from the fleet's,
 //     with the revision of the newest event it dropped under /naru/orch/machine-event-floors/<caller>.
@@ -35,6 +38,9 @@ const (
 	EventPrefix    = "/naru/orch/machine-events/"
 	FloorPrefix    = "/naru/orch/machine-event-floors/"
 	ZoneKey        = "/naru/orch/machine-zone"
+	DeletionPrefix = "/naru/orch/snapshot-deletions/"
+	// AllocationPrefix is where each host's allocation is kept.
+	AllocationPrefix = "/naru/orch/host-allocations/"
 )
 
 // maxEvents and maxEventAge bound each caller's log: its newest 20000 events, none older than 7
@@ -90,7 +96,11 @@ func (s *Store) Machine(ctx context.Context, caller, name string) (machines.Reco
 		return machines.Record{}, 0, machines.ErrNotFound
 	}
 	var r machines.Record
-	return r, resp.Kvs[0].ModRevision, json.Unmarshal(resp.Kvs[0].Value, &r)
+	// Decoded first: the operands of one return have no order against the call among them.
+	if err := json.Unmarshal(resp.Kvs[0].Value, &r); err != nil {
+		return machines.Record{}, 0, err
+	}
+	return r, resp.Kvs[0].ModRevision, nil
 }
 
 func (s *Store) Machines(ctx context.Context, caller string) ([]machines.Record, int64, error) {
@@ -102,12 +112,20 @@ func (s *Store) Machines(ctx context.Context, caller string) ([]machines.Record,
 	return out, resp.Header.Revision, err
 }
 
-func (s *Store) All(ctx context.Context) ([]machines.Record, error) {
+func (s *Store) All(ctx context.Context) ([]machines.Entry, error) {
 	resp, err := s.kv.Get(ctx, MachinePrefix, clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
-	return decode[machines.Record](resp)
+	rs, err := decode[machines.Record](resp)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]machines.Entry, len(rs))
+	for i, r := range rs {
+		out[i] = machines.Entry{Record: r, Rev: resp.Kvs[i].ModRevision}
+	}
+	return out, nil
 }
 
 // decode reads every value of resp, which etcd orders by key.
@@ -143,20 +161,20 @@ func (s *Store) Create(ctx context.Context, r machines.Record, from int64, ev ma
 	return nil
 }
 
-func (s *Store) Update(ctx context.Context, r machines.Record, rev int64, ev machineapi.Event) error {
+func (s *Store) Update(ctx context.Context, r machines.Record, rev int64, ev *machineapi.Event) (int64, error) {
 	key := machineKey(r.Caller, r.Name)
-	resp, err := s.kv.Txn(ctx).
-		If(clientv3.Compare(clientv3.ModRevision(key), "=", rev)).
-		Then(clientv3.OpPut(key, encode(r)), eventOp(r.Caller, ev)).
-		Commit()
+	ops := []clientv3.Op{clientv3.OpPut(key, encode(r))}
+	if ev != nil {
+		ops = append(ops, eventOp(r.Caller, *ev))
+	}
+	at, err := s.guarded(ctx, []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", rev)}, ops...)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if !resp.Succeeded {
-		return machines.ErrRaced
+	if ev != nil {
+		s.trim(ctx, r.Caller)
 	}
-	s.trim(ctx, r.Caller)
-	return nil
+	return at, nil
 }
 
 func (s *Store) Snapshot(ctx context.Context, caller, name string) (machines.Snapshot, int64, error) {
@@ -168,7 +186,11 @@ func (s *Store) Snapshot(ctx context.Context, caller, name string) (machines.Sna
 		return machines.Snapshot{}, 0, machines.ErrNotFound
 	}
 	var snap machines.Snapshot
-	return snap, resp.Kvs[0].ModRevision, json.Unmarshal(resp.Kvs[0].Value, &snap)
+	// Decoded first: the operands of one return have no order against the call among them.
+	if err := json.Unmarshal(resp.Kvs[0].Value, &snap); err != nil {
+		return machines.Snapshot{}, 0, err
+	}
+	return snap, resp.Kvs[0].ModRevision, nil
 }
 
 func (s *Store) Snapshots(ctx context.Context, caller string) ([]machines.Snapshot, error) {
@@ -194,13 +216,18 @@ func (s *Store) CreateSnapshot(ctx context.Context, snap machines.Snapshot, mach
 	return nil
 }
 
-func (s *Store) DeleteSnapshot(ctx context.Context, caller, name string) error {
-	resp, err := s.kv.Delete(ctx, snapshotKey(caller, name))
+func (s *Store) DeleteSnapshot(ctx context.Context, snap machines.Snapshot, rev int64) error {
+	key := snapshotKey(snap.Caller, snap.Snapshot.Name)
+	ops := []clientv3.Op{clientv3.OpDelete(key)}
+	if snap.Host != "" {
+		ops = append(ops, clientv3.OpPut(DeletionPrefix+snap.ID, encode(machines.Deletion{ID: snap.ID, Host: snap.Host, Disks: snap.DiskSnapshots()})))
+	}
+	resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", rev)).Then(ops...).Commit()
 	if err != nil {
 		return err
 	}
-	if resp.Deleted == 0 {
-		return machines.ErrNotFound
+	if !resp.Succeeded {
+		return machines.ErrRaced
 	}
 	return nil
 }

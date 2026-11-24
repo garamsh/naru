@@ -1,6 +1,7 @@
 package orchtest
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/crlsync"
 	"github.com/garamsh/naru/orch/internal/groups"
 	"github.com/garamsh/naru/orch/internal/inventory"
+	"github.com/garamsh/naru/orch/internal/machines"
 	"github.com/garamsh/naru/orch/internal/member"
 	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/orchd"
@@ -82,6 +84,12 @@ type Options struct {
 	// MachineZone, when set, makes every member serve the Machine API on a port of its own, with
 	// stable names under the zone.
 	MachineZone string
+	// NewMachineHosts gives the Machine reconciler its hosts; without it every Machine stays
+	// pending. MachineInterval is the pause between its passes; it defaults to 100 ms. HostReserve
+	// is what each host keeps for itself, none unless set.
+	NewMachineHosts func(inv inventory.Service) machines.Hosts
+	MachineInterval time.Duration
+	HostReserve     machines.Reserve
 }
 
 // pickPorts is how a cluster chooses its ports; a test replaces it to make a port taken.
@@ -220,8 +228,9 @@ func (c *Cluster) member(t testing.TB, i, peerPort, clientPort int) (orchd.Confi
 		Listen: "127.0.0.1:0", ClientCA: files.CA, SnapshotDir: filepath.Join(dir, "snapshots"),
 		MachineAPIListen: "127.0.0.1:0", MachineZone: o.MachineZone,
 		LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval, GroupInterval: o.GroupInterval, NetworkInterval: o.NetworkInterval,
+		MachineInterval: cmp.Or(o.MachineInterval, 100*time.Millisecond), HostReserve: o.HostReserve,
 	}
-	deps := orchd.Deps{Signer: c.Signer, Credentials: c.Signer, Auth: auth.Revocations{List: &identity.RevocationList{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, NewPrefixHosts: o.NewPrefixHosts, NewExposureHosts: o.NewExposureHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name), RevocationKey: c.CA.RevocationKey()}
+	deps := orchd.Deps{Signer: c.Signer, Credentials: c.Signer, Auth: auth.Revocations{List: &identity.RevocationList{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, NewPrefixHosts: o.NewPrefixHosts, NewExposureHosts: o.NewExposureHosts, NewMachineHosts: o.NewMachineHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name), RevocationKey: c.CA.RevocationKey()}
 	if i < len(o.CRLPeers) {
 		deps.CRLPeer = o.CRLPeers[i]
 	}

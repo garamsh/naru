@@ -46,6 +46,9 @@ func (f *Fake) routes() {
 		if err := decode(r, &s); err != nil {
 			return 0, nil, err
 		}
+		if err := s.Check(); err != nil {
+			return 0, nil, refuse(http.StatusUnprocessableEntity, machineapi.CodeInvalid, "%v", err)
+		}
 		mc, err := f.setState(c, r.PathValue("name"), machineapi.StateStopped)
 		return http.StatusOK, mc, err
 	}))

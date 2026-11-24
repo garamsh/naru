@@ -1,6 +1,7 @@
 package etcd_test
 
 import (
+	"context"
 	"strconv"
 	"testing"
 	"time"
@@ -20,6 +21,13 @@ func record(caller, name, id string) machines.Record {
 
 func event(r machines.Record, at time.Time) machineapi.Event {
 	return machineapi.Event{Type: machineapi.EventStatus, Machine: r.Name, ID: r.ID, Status: r.Status, Time: at}
+}
+
+// update writes r through Update with its event, and keeps the error alone.
+func update(ctx context.Context, s *machinesetcd.Store, r machines.Record, rev int64, at time.Time) error {
+	ev := event(r, at)
+	_, err := s.Update(ctx, r, rev, &ev)
+	return err
 }
 
 func newStore(t *testing.T) *machinesetcd.Store {
@@ -46,8 +54,8 @@ func TestUpdate_RefusesARecordThatChangedSinceItWasRead(t *testing.T) {
 	require.NoError(t, s.Create(ctx, r, 0, event(r, time.Now())))
 	_, rev, err := s.Machine(ctx, "garam", "web")
 	require.NoError(t, err)
-	require.NoError(t, s.Update(ctx, r, rev, event(r, time.Now())), "the record as read")
-	assert.ErrorIs(t, s.Update(ctx, r, rev, event(r, time.Now())), machines.ErrRaced, "the same revision again")
+	require.NoError(t, update(ctx, s, r, rev, time.Now()), "the record as read")
+	assert.ErrorIs(t, update(ctx, s, r, rev, time.Now()), machines.ErrRaced, "the same revision again")
 }
 
 func TestEvents_ACursorOlderThanTheLogKeepsIsExpired(t *testing.T) {
@@ -61,7 +69,7 @@ func TestEvents_ACursorOlderThanTheLogKeepsIsExpired(t *testing.T) {
 	for range 3 {
 		_, rev, err := s.Machine(ctx, "garam", "web")
 		require.NoError(t, err)
-		require.NoError(t, s.Update(ctx, r, rev, event(r, time.Now())))
+		require.NoError(t, update(ctx, s, r, rev, time.Now()))
 	}
 	all, _, err := s.Events(ctx, "garam", nil)
 	require.NoError(t, err)
@@ -91,7 +99,7 @@ func TestEvents_DropsEventsOlderThanTheAgeBound(t *testing.T) {
 	require.NoError(t, s.Create(ctx, r, 0, event(r, now.Add(-machinesetcd.MaxEventAge-time.Hour))))
 	_, rev, err := s.Machine(ctx, "garam", "web")
 	require.NoError(t, err)
-	require.NoError(t, s.Update(ctx, r, rev, event(r, now)))
+	require.NoError(t, update(ctx, s, r, rev, now))
 
 	all, _, err := s.Events(ctx, "garam", nil)
 	require.NoError(t, err)
@@ -126,7 +134,9 @@ func TestCreate_RefusesARestoreFromASnapshotThatChangedSinceItWasRead(t *testing
 
 	restore := record("garam", "restored", "fedcba9876543210")
 	restore.Spec.FromSnapshot = &machineapi.SnapshotSource{Snapshot: "before"}
-	require.NoError(t, s.DeleteSnapshot(ctx, "garam", "before"))
+	stored, srev, err := s.Snapshot(ctx, "garam", "before")
+	require.NoError(t, err)
+	require.NoError(t, s.DeleteSnapshot(ctx, stored, srev))
 	assert.ErrorIs(t, s.Create(ctx, restore, srev, event(restore, time.Now())), machines.ErrRaced, "the snapshot deleted since it was read")
 	_, _, err = s.Machine(ctx, "garam", "restored")
 	assert.ErrorIs(t, err, machines.ErrNotFound, "nothing was written")
@@ -145,7 +155,7 @@ func TestCreateSnapshot_RefusesAMachineThatChangedSinceItWasRead(t *testing.T) {
 	_, rev, err := s.Machine(ctx, "garam", "web")
 	require.NoError(t, err)
 	r.Status.Phase = machineapi.PhaseDeleting
-	require.NoError(t, s.Update(ctx, r, rev, event(r, time.Now())))
+	require.NoError(t, update(ctx, s, r, rev, time.Now()))
 
 	snap := machines.Snapshot{Caller: "garam", Snapshot: machineapi.Snapshot{Name: "before", Machine: "web", MachineID: r.ID}}
 	assert.ErrorIs(t, s.CreateSnapshot(ctx, snap, rev), machines.ErrRaced, "the Machine marked deleting since it was read")
