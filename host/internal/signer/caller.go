@@ -111,11 +111,7 @@ func (s *Signer) RenewCaller(signed []byte) (identity.Issued, error) {
 	if err != nil {
 		return identity.Issued{}, err
 	}
-	name, ok := identity.CallerName(who)
-	if !ok {
-		return identity.Issued{}, fmt.Errorf("%w: %q is not a caller's name", ErrForbidden, who.Subject)
-	}
-	now := s.now()
+	name, now := who.Subject, s.now()
 	if due := who.NotAfter.Add(-identity.CallerRenewWindow); now.Before(due) {
 		return identity.Issued{}, fmt.Errorf("%w: renew from %s", ErrNotDue, due.Format(time.RFC3339))
 	}

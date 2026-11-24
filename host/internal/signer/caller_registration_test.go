@@ -187,7 +187,7 @@ func TestCallerRenewal_OnlyInTheLastThirtyDaysForANewKeyWithTheOldOneStillValid(
 	e := newEnv(t)
 	var c clock
 	s := openClocked(t, e.dir, &c)
-	p := e.registered("garam-bot")
+	p := e.registered("ws-provider")
 
 	_, err := s.RenewCaller(renewal(t, p, newKey(t), &c))
 	assert.ErrorIs(t, err, signer.ErrNotDue, "61 days before it expires")
@@ -201,7 +201,7 @@ func TestCallerRenewal_OnlyInTheLastThirtyDaysForANewKeyWithTheOldOneStillValid(
 	issued, err := s.RenewCaller(renewal(t, p, key, &c))
 	require.NoError(t, err, "29 days before it expires")
 	next := parseCert(t, issued.Certificate)
-	assert.Equal(t, "garam-bot", next.Subject.CommonName, "the name is the current certificate's")
+	assert.Equal(t, "ws-provider", next.Subject.CommonName, "the name is the current certificate's")
 	assert.Equal(t, identity.RoleCaller, roleOf(t, next))
 	assert.True(t, next.PublicKey.(*ecdsa.PublicKey).Equal(&key.PublicKey))
 	assert.WithinDuration(t, c.now().AddDate(0, 0, identity.MaxCallerDays), next.NotAfter, time.Minute)
@@ -215,7 +215,7 @@ func TestCallerRenewal_OnlyInTheLastThirtyDaysForANewKeyWithTheOldOneStillValid(
 func TestCallerRenewal_ARevokedOrExpiredCertificateOrAnotherRoleIsRefused(t *testing.T) {
 	e := newEnv(t)
 	var c clock
-	p, revoked := e.registered("garam-bot"), e.registered("other")
+	p, revoked := e.registered("ws-provider"), e.registered("other")
 	op := e.issue(identity.RoleOperator, "alice")
 	status, _ := e.revoke(op, identity.SerialOf(revoked.cert))
 	require.Equal(t, http.StatusOK, status)
