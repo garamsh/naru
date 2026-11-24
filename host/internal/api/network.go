@@ -43,27 +43,20 @@ const (
 // checkNetwork refuses a create or resume on a network that is not declared, and one whose pod
 // prefix is outside the network's prefix. It answers and returns false on a refusal. The
 // microVM's address is not checked: mvmd chose it, from the host's Machine prefix.
-func (s *Server) checkNetwork(w http.ResponseWriter, name, podPrefix string) bool {
+func (s *Server) checkNetwork(w http.ResponseWriter, name string) bool {
 	if s.noNetworks(w) {
 		return false
 	}
-	n, ok := s.deps.Networks.Network(name)
-	if !ok {
+	if _, ok := s.deps.Networks.Network(name); !ok {
 		invalid(w, "network")
 		return false
-	}
-	if podPrefix != "" {
-		if pf, err := netip.ParsePrefix(podPrefix); err != nil || !n.Prefix.Contains(pf.Addr()) || pf.Bits() < n.Prefix.Bits() {
-			invalid(w, "podPrefix")
-			return false
-		}
 	}
 	return true
 }
 
-// attach puts the microVM on the named network, by the address mvmd gave it and the pod prefix
-// routed to it. It does nothing for a request with no network.
-func (s *Server) attach(ctx context.Context, name, podPrefix string, m mvmd.Machine) error {
+// attach puts the microVM on the named network, by the address mvmd gave it. It does nothing for a
+// request with no network.
+func (s *Server) attach(ctx context.Context, name string, m mvmd.Machine) error {
 	if name == "" {
 		return nil
 	}
@@ -74,11 +67,7 @@ func (s *Server) attach(ctx context.Context, name, podPrefix string, m mvmd.Mach
 	if err != nil {
 		return err
 	}
-	member := network.Member{Network: name, Address: a}
-	if podPrefix != "" {
-		member.Routed = netip.MustParsePrefix(podPrefix)
-	}
-	return s.deps.Networks.Attach(ctx, member)
+	return s.deps.Networks.Attach(ctx, network.Member{Network: name, Address: a})
 }
 
 // memberOf returns the membership of the Machine, by any address it has.
@@ -137,8 +126,6 @@ func (s *Server) networkFail(w http.ResponseWriter, err error) {
 		status = http.StatusConflict
 	case errors.Is(err, network.ErrUnknownNetwork):
 		status = http.StatusNotFound
-	case errors.Is(err, network.ErrOutside):
-		status = http.StatusUnprocessableEntity
 	}
 	if status == http.StatusBadGateway {
 		s.deps.Log.Error("cannot apply the networks", "err", err.Error())

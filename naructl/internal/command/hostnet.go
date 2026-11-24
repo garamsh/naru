@@ -16,9 +16,9 @@ import (
 func hostNetworkPut(fs *pflag.FlagSet) runner {
 	c := newHostCall(fs)
 	var members list
-	prefix := c.fs.String("prefix", "", "the prefix of the network's Pod and routed space")
+	prefix := c.fs.String("prefix", "", "the prefix of the network's routed space")
 	endpoint := c.fs.String("api-endpoint", "", "the address of the network's API endpoint, inside the prefix")
-	c.fs.Var(&members, "remote-member", "an address or pod prefix of a microVM of the network on another host, in CIDR form, repeatable; the list replaces the host's")
+	c.fs.Var(&members, "remote-member", "an address of a microVM of the network on another host, in CIDR form (/32), repeatable; the list replaces the host's")
 	return func(args []string, stdout, stderr io.Writer) error {
 		if err := c.check(args, 1); err != nil {
 			return err

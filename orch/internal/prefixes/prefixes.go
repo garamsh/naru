@@ -1,6 +1,5 @@
-// Package prefixes allocates the IPv4 prefixes orch hands out: a host's Machine prefix from the
-// profile's pool and a member's Pod prefix from its network. Both spaces use one allocator, which
-// never returns a prefix that overlaps one already claimed.
+// Package prefixes allocates the IPv4 prefixes orch hands out, a host's Machine prefix from the
+// profile's pool, with an allocator that never returns a prefix that overlaps one already claimed.
 package prefixes
 
 import (

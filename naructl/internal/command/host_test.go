@@ -266,13 +266,13 @@ func TestMicrovmCreate_TheOSFormFlagsSendTheBootSetAndTheSeedAndRefuseTheImageFo
 	require.NoError(t, os.WriteFile(seed, []byte("#cloud-config\n"), 0o600))
 
 	out, err := run(t, "microvm", "create", "--config", cfg, "--name", "vm", "--boot-set", "alpine", "--cmdline", "quiet",
-		"--seed", seed, "--data-disk", "4096", "--pod-prefix", "10.9.0.0/24")
+		"--seed", seed, "--data-disk", "4096")
 	require.NoError(t, err, out)
 	assert.EqualValues(t, "alpine", got["bootSet"])
 	assert.EqualValues(t, "quiet", got["cmdline"])
 	assert.EqualValues(t, "I2Nsb3VkLWNvbmZpZwo=", got["seed"], "the user-data in base64")
 	assert.EqualValues(t, 4096, got["dataDisk"])
-	assert.EqualValues(t, "10.9.0.0/24", got["podPrefix"])
+	assert.NotContains(t, got, "podPrefix")
 	assert.NotContains(t, got, "image")
 
 	_, err = run(t, "microvm", "create", "--config", cfg, "--name", "vm", "--boot-set", "alpine", "--seed", seed, "--data-disk", "4096", "--image", "x")

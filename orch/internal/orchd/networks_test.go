@@ -109,7 +109,7 @@ func TestNetworksAPIAndTheLeaderTellTheHostsTheirNetworks(t *testing.T) {
 
 	// A group that uses the network holds it: it cannot be deleted until the group is.
 	g := webGroup()
-	g.Template.Network, g.Template.PodPrefixBits = "lab", 26
+	g.Template.Network = "lab"
 	_, err = o.op.ApplyGroup(t.Context(), g)
 	require.NoError(t, err)
 	require.Equal(t, 409, status(o.op.DeleteNetwork(t.Context(), "lab")))

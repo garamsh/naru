@@ -103,7 +103,7 @@ func fleet() *fakeHosts {
 			Host:   netrec.Host{ID: "h1", Address: "192.0.2.1:7443"},
 			tunnel: &netrec.Tunnel{PublicKey: "key1", ListenPort: 51820, MachinePrefixes: []string{"10.200.1.0/24"}},
 			microVMs: []netrec.MicroVM{
-				{Name: "a1", Network: "lab", Addresses: []string{"10.9.0.2"}, PodPrefix: "10.9.0.64/26"},
+				{Name: "a1", Network: "lab", Addresses: []string{"10.9.0.2"}},
 				{Name: "b1", Network: "edge", Addresses: []string{"10.8.0.2"}},
 			},
 		},
@@ -112,7 +112,7 @@ func fleet() *fakeHosts {
 			tunnel: &netrec.Tunnel{PublicKey: "key2", ListenPort: 51821, MachinePrefixes: []string{"10.200.2.0/24"}},
 			microVMs: []netrec.MicroVM{
 				{Name: "a2", Network: "lab", Addresses: []string{"10.9.0.3"}},
-				{Name: "b2", Network: "edge", Addresses: []string{"10.8.0.3"}, PodPrefix: "10.8.0.128/26"},
+				{Name: "b2", Network: "edge", Addresses: []string{"10.8.0.3"}},
 				{Name: "loose", Addresses: []string{"10.200.2.9"}},
 			},
 		},
@@ -134,12 +134,12 @@ func TestTwoHostsAndTwoNetworksEachGetTheOthersMembersAndPeers(t *testing.T) {
 
 	h1, h2 := f.hosts["h1"], f.hosts["h2"]
 	assert.Equal(t, netrec.NetworkState{Prefix: "10.9.0.0/24", RemoteMembers: []string{"10.9.0.3/32"}}, h1.networks["lab"])
-	assert.Equal(t, netrec.NetworkState{Prefix: "10.8.0.0/24", APIEndpoint: "10.8.0.2", RemoteMembers: []string{"10.8.0.128/26", "10.8.0.3/32"}}, h1.networks["edge"])
-	assert.Equal(t, netrec.NetworkState{Prefix: "10.9.0.0/24", RemoteMembers: []string{"10.9.0.2/32", "10.9.0.64/26"}}, h2.networks["lab"])
+	assert.Equal(t, netrec.NetworkState{Prefix: "10.8.0.0/24", APIEndpoint: "10.8.0.2", RemoteMembers: []string{"10.8.0.3/32"}}, h1.networks["edge"])
+	assert.Equal(t, netrec.NetworkState{Prefix: "10.9.0.0/24", RemoteMembers: []string{"10.9.0.2/32"}}, h2.networks["lab"])
 	assert.Equal(t, netrec.NetworkState{Prefix: "10.8.0.0/24", APIEndpoint: "10.8.0.2", RemoteMembers: []string{"10.8.0.2/32"}}, h2.networks["edge"])
 
-	assert.Equal(t, []netrec.Peer{{Name: "h2", PublicKey: "key2", Endpoint: "192.0.2.2:51821", Prefixes: []string{"10.200.2.0/24", "10.8.0.128/26"}}}, h1.peers)
-	assert.Equal(t, []netrec.Peer{{Name: "h1", PublicKey: "key1", Endpoint: "192.0.2.1:51820", Prefixes: []string{"10.200.1.0/24", "10.9.0.64/26"}}}, h2.peers)
+	assert.Equal(t, []netrec.Peer{{Name: "h2", PublicKey: "key2", Endpoint: "192.0.2.2:51821", Prefixes: []string{"10.200.2.0/24"}}}, h1.peers)
+	assert.Equal(t, []netrec.Peer{{Name: "h1", PublicKey: "key1", Endpoint: "192.0.2.1:51820", Prefixes: []string{"10.200.1.0/24"}}}, h2.peers)
 }
 
 func TestAMemberThatIsRemovedDisappearsFromTheOtherHosts(t *testing.T) {
@@ -152,7 +152,7 @@ func TestAMemberThatIsRemovedDisappearsFromTheOtherHosts(t *testing.T) {
 	require.NoError(t, r.Reconcile(t.Context()))
 
 	assert.Empty(t, f.hosts["h1"].networks["lab"].RemoteMembers)
-	assert.Equal(t, []string{"10.8.0.3/32"}, f.hosts["h1"].networks["edge"].RemoteMembers, "the pod prefix went with its member")
+	assert.Equal(t, []string{"10.8.0.3/32"}, f.hosts["h1"].networks["edge"].RemoteMembers, "the other network's member stays")
 	assert.Equal(t, []string{"10.200.2.0/24"}, f.hosts["h1"].peers[0].Prefixes)
 }
 

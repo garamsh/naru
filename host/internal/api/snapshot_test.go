@@ -45,16 +45,15 @@ func TestSnapshot_TakeListGetResumeDelete(t *testing.T) {
 	code, _ = e.do(t, reader, "GET", "/v1/snapshots/other", nil)
 	assert.Equal(t, 404, code)
 
-	// Resume makes a new microVM of its own, with the policy and prefix of the request.
+	// Resume makes a new microVM of its own, with the policy of the request.
 	code, b = e.do(t, c, "POST", "/v1/snapshots/snap-1/resume", hostapi.ResumeRequest{
-		Name: "web2", PodPrefix: "10.9.0.0/24",
+		Name:          "web2",
 		NetworkPolicy: hostapi.Policy{Egress: []hostapi.Rule{{Prefix: "10.0.0.0/8", Protocol: "tcp", Ports: []hostapi.PortRange{{First: 443, Last: 443}}}}},
 	})
 	require.Equal(t, 201, code, string(b))
 	m := microVMOf(t, b)
 	assert.Equal(t, "web2", m.Name)
 	assert.Equal(t, "running", m.State)
-	assert.Equal(t, "10.9.0.0/24", m.PodPrefix)
 	assert.Len(t, m.NetworkPolicy.Egress, 1)
 	assert.Contains(t, e.rt.machines, "web2")
 	assert.Equal(t, mvmd.StateRunning, e.rt.machines["web"].State, "the source microVM is left as it was")
@@ -98,7 +97,6 @@ func TestSnapshot_ErrorPaths(t *testing.T) {
 	assert.Equal(t, 404, code)
 	for field, body := range map[string]hostapi.ResumeRequest{
 		"name":                    {Name: "Bad"},
-		"podPrefix":               {Name: "x", PodPrefix: "10.9.0.1/24"},
 		"networkPolicy.egress[0]": {Name: "x", NetworkPolicy: hostapi.Policy{Egress: []hostapi.Rule{{Prefix: "bad", Protocol: "tcp"}}}},
 	} {
 		code, b := e.do(t, c, "POST", "/v1/snapshots/s/resume", body)

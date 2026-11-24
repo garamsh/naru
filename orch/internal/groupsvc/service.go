@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
 	"sort"
 
 	"github.com/garamsh/naru/lib/orchapi"
@@ -70,8 +69,7 @@ func (s *service) Apply(ctx context.Context, by string, a orchapi.GroupSpec) (or
 	return s.one(ctx, spec)
 }
 
-// checkNetwork refuses a template that joins a network orch does not keep, or whose Pod prefixes
-// do not fit in the network's prefix.
+// checkNetwork refuses a template that joins a network orch does not keep.
 func (s *service) checkNetwork(ctx context.Context, t groups.Template) error {
 	if t.Network == "" {
 		return nil
@@ -81,13 +79,9 @@ func (s *service) checkNetwork(ctx context.Context, t groups.Template) error {
 		return err
 	}
 	for _, n := range all {
-		if n.Name != t.Network {
-			continue
+		if n.Name == t.Network {
+			return nil
 		}
-		if p, err := netip.ParsePrefix(n.Prefix); err == nil && t.PodPrefixBits > 0 && t.PodPrefixBits <= p.Bits() {
-			return fmt.Errorf("%w: podPrefixBits %d does not fit inside %s of network %s", inventory.ErrInvalid, t.PodPrefixBits, n.Prefix, n.Name)
-		}
-		return nil
 	}
 	return fmt.Errorf("%w: network %q is not declared; apply it first", inventory.ErrInvalid, t.Network)
 }
@@ -190,7 +184,7 @@ func (s *service) views(ctx context.Context, specs []groups.GroupSpec) ([]orchap
 			if observed {
 				phase = m.Phase
 			}
-			g.Members = append(g.Members, orchapi.GroupMember{ID: m.ID, Host: m.Host, TemplateHash: m.TemplateHash, Phase: string(phase), LastSeen: m.LastSeen, PodPrefix: m.PodPrefix})
+			g.Members = append(g.Members, orchapi.GroupMember{ID: m.ID, Host: m.Host, TemplateHash: m.TemplateHash, Phase: string(phase), LastSeen: m.LastSeen})
 		}
 		out = append(out, g)
 	}

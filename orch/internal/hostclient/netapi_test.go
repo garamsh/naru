@@ -31,7 +31,7 @@ func TestDialNetAPISpeaksTheHostAPI(t *testing.T) {
 		case "GET /v1/tunnel":
 			_, _ = w.Write([]byte(`{"publicKey":"k","listenPort":51820,"machinePrefixes":["10.200.1.0/24"]}`))
 		case "GET /v1/microvms":
-			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","network":"lab","podPrefix":"10.9.0.64/26","addresses":["10.9.0.2"]}]}`))
+			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","network":"lab","addresses":["10.9.0.2"]}]}`))
 		case "GET /v1/networks":
 			_, _ = w.Write([]byte(`{"networks":[{"name":"lab"},{"name":"old"}]}`))
 		default:
@@ -51,7 +51,7 @@ func TestDialNetAPISpeaksTheHostAPI(t *testing.T) {
 
 	vms, err := h.MicroVMs(t.Context(), "h1")
 	require.NoError(t, err)
-	assert.Equal(t, []netrec.MicroVM{{Name: "a", Network: "lab", PodPrefix: "10.9.0.64/26", Addresses: []string{"10.9.0.2"}}}, vms)
+	assert.Equal(t, []netrec.MicroVM{{Name: "a", Network: "lab", Addresses: []string{"10.9.0.2"}}}, vms)
 
 	require.NoError(t, h.PutNetwork(t.Context(), "h1", "lab", netrec.NetworkState{Prefix: "10.9.0.0/24", APIEndpoint: "10.9.0.2", RemoteMembers: []string{"10.9.0.3/32"}}))
 	var nr map[string]any

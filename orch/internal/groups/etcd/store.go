@@ -5,9 +5,7 @@ package etcd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/netip"
 	"reflect"
 	"strings"
 	"time"
@@ -19,22 +17,13 @@ import (
 	"github.com/garamsh/naru/orch/internal/groups/wire"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	netetcd "github.com/garamsh/naru/orch/internal/networks/etcd"
-	"github.com/garamsh/naru/orch/internal/prefixes"
 )
 
 // Prefixes of the records. A group is kept under its name and a member under its ID.
 const (
 	groupPrefix  = "/naru/orch/groups/"
 	memberPrefix = "/naru/orch/group-members/"
-	// A Pod prefix is claimed under its network and its address, so a second claim of the same
-	// prefix finds the key taken. The claim's value is the ID of the member that holds it.
-	claimPrefix = "/naru/orch/pod-prefix-claims/"
 )
-
-// claimRetries bounds the reads of a network's claims that a concurrent claim made stale.
-const claimRetries = 8
-
-var errClaimMoved = errors.New("the claims of the network or the member changed")
 
 // member is a stored member record. Revision is the key's modification revision, so it is not
 // stored.
@@ -45,7 +34,6 @@ type member struct {
 	MachineID      string    `json:"machineId"`
 	TemplateHash   string    `json:"templateHash"`
 	Network        string    `json:"network,omitempty"`
-	PodPrefix      string    `json:"podPrefix,omitempty"`
 	Phase          string    `json:"phase"`
 	LastSeen       time.Time `json:"lastSeen,omitzero"`
 	FenceDeadline  time.Time `json:"fenceDeadline,omitzero"`
@@ -196,7 +184,7 @@ func (s *Store) ListMembers(ctx context.Context) ([]groups.Member, error) {
 		}
 		out = append(out, groups.Member{
 			ID: r.ID, Group: r.Group, Host: r.Host, MachineID: r.MachineID, TemplateHash: r.TemplateHash,
-			Network: r.Network, PodPrefix: r.PodPrefix, Phase: groups.Phase(r.Phase), LastSeen: r.LastSeen, FenceDeadline: r.FenceDeadline,
+			Network: r.Network, Phase: groups.Phase(r.Phase), LastSeen: r.LastSeen, FenceDeadline: r.FenceDeadline,
 			CreateFailures: r.CreateFailures, RetryAt: r.RetryAt, Revision: kv.ModRevision,
 		})
 	}
@@ -211,96 +199,29 @@ func (s *Store) ListNetworks(ctx context.Context) ([]groups.Network, error) {
 	}
 	out := make([]groups.Network, len(all))
 	for i, n := range all {
-		out[i] = groups.Network{Name: n.Name, Prefix: n.Prefix}
+		out[i] = groups.Network{Name: n.Name}
 	}
 	return out, nil
 }
 
-// claimKey is where the claim of a Pod prefix of a network is kept.
-func claimKey(network, podPrefix string) string {
-	return claimPrefix + network + "/" + strings.ReplaceAll(podPrefix, "/", "_")
-}
-
-func networkClaims(network string) string { return claimPrefix + network + "/" }
-
-// claimFree reports whether podPrefix overlaps no claim of the network, and the revision it read at.
-func (s *Store) claimFree(ctx context.Context, network, podPrefix string) (bool, int64, error) {
-	want, err := netip.ParsePrefix(podPrefix)
-	if err != nil {
-		return false, 0, fmt.Errorf("pod prefix %q: %w", podPrefix, err)
-	}
-	resp, err := s.kv.Get(ctx, networkClaims(network), clientv3.WithPrefix())
-	if err != nil {
-		return false, 0, err
-	}
-	var held []netip.Prefix
-	for _, kv := range resp.Kvs {
-		p, err := netip.ParsePrefix(strings.ReplaceAll(strings.TrimPrefix(string(kv.Key), networkClaims(network)), "_", "/"))
-		if err != nil {
-			return false, 0, fmt.Errorf("claim %s: %w", kv.Key, err)
-		}
-		held = append(held, p)
-	}
-	return !prefixes.Overlaps(held, want), resp.Header.Revision, nil
-}
-
 // PutMember writes m when m.Revision is the stored revision, and returns the record with its new
-// one. A Revision of 0 creates the record, and fails with groups.ErrConflict when it exists or when
-// another member holds the Pod prefix m asks for: the record and the claim are written in one
-// step. A claim that overlaps another of the network is a conflict. Writing a member that is gone ends its claim.
+// one. A Revision of 0 creates the record, and fails with groups.ErrConflict when it exists.
 func (s *Store) PutMember(ctx context.Context, m groups.Member) (groups.Member, error) {
-	// A new claim also loses when an unrelated claim of the network was written between its read
-	// and its write; it is then read again.
-	for range claimRetries {
-		out, err := s.putMember(ctx, m)
-		if !errors.Is(err, errClaimMoved) {
-			return out, err
-		}
-	}
-	return groups.Member{}, groups.ErrConflict
-}
-
-func (s *Store) putMember(ctx context.Context, m groups.Member) (groups.Member, error) {
 	if m.ID == "" || strings.Contains(m.ID, "/") {
 		return groups.Member{}, fmt.Errorf("member ID %q cannot be a key", m.ID)
 	}
 	key := memberPrefix + m.ID
 	rec := member{
 		ID: m.ID, Group: m.Group, Host: m.Host, MachineID: m.MachineID, TemplateHash: m.TemplateHash,
-		Network: m.Network, PodPrefix: m.PodPrefix,
-		Phase: string(m.Phase), LastSeen: m.LastSeen, FenceDeadline: m.FenceDeadline,
+		Network: m.Network,
+		Phase:   string(m.Phase), LastSeen: m.LastSeen, FenceDeadline: m.FenceDeadline,
 		CreateFailures: m.CreateFailures, RetryAt: m.RetryAt,
 	}
-	cond := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", m.Revision)}
-	ops := []clientv3.Op{clientv3.OpPut(key, encode(rec))}
-	if m.PodPrefix != "" {
-		claim := claimKey(m.Network, m.PodPrefix)
-		switch {
-		case m.Phase == groups.PhaseGone:
-			// Only the holder ends a claim: the prefix may be another member's by now.
-			ops = append(ops, clientv3.OpTxn([]clientv3.Cmp{clientv3.Compare(clientv3.Value(claim), "=", m.ID)}, []clientv3.Op{clientv3.OpDelete(claim)}, nil))
-		case m.Revision == 0:
-			// The claims are read at one revision and the write compares that none under the
-			// network changed since, so two claims that overlap cannot both be written.
-			free, rev, err := s.claimFree(ctx, m.Network, m.PodPrefix)
-			if err != nil {
-				return groups.Member{}, err
-			}
-			if !free {
-				return groups.Member{}, groups.ErrConflict
-			}
-			cond = append(cond, clientv3.Compare(clientv3.ModRevision(networkClaims(m.Network)), "<", rev+1).WithPrefix())
-			ops = append(ops, clientv3.OpPut(claim, m.ID))
-		}
-	}
-	resp, err := s.kv.Txn(ctx).If(cond...).Then(ops...).Commit()
+	resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", m.Revision)).Then(clientv3.OpPut(key, encode(rec))).Commit()
 	if err != nil {
 		return groups.Member{}, err
 	}
 	if !resp.Succeeded {
-		if m.Revision == 0 && m.PodPrefix != "" && m.Phase != groups.PhaseGone {
-			return groups.Member{}, errClaimMoved
-		}
 		return groups.Member{}, groups.ErrConflict
 	}
 	m.Revision = resp.Header.Revision

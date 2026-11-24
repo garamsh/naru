@@ -10,25 +10,24 @@ import (
 	"time"
 )
 
-// Network is a virtual network: a membership set. Its prefix is the Pod and routed space, which no
-// other network's prefix overlaps; its members are the prefix, the address and pod prefix of each
-// microVM attached on this host, and the Remote members, which are those on other hosts.
+// Network is a virtual network: a membership set. Its prefix is the routed space, which no other
+// network's prefix overlaps; its members are the prefix, the address of each microVM attached on
+// this host, and the Remote members, which are those on other hosts.
 type Network struct {
 	Name   string       `json:"name"`
 	Prefix netip.Prefix `json:"prefix"`
 	// Endpoint is the address of the network's API endpoint, which the management plane reaches one
 	// way. The zero value means the network has none.
 	Endpoint netip.Addr `json:"endpoint"`
-	// Remote are the addresses (/32) and pod prefixes of the network's microVMs on other hosts.
+	// Remote are the addresses (/32) of the network's microVMs on other hosts.
 	Remote []netip.Prefix `json:"remoteMembers"`
 }
 
 // Member is a microVM attached to a network: its own address, which mvmd chose and need not be
-// inside the network's prefix, and the prefix routed to it, which is.
+// inside the network's prefix.
 type Member struct {
-	Network string       `json:"network"`
-	Address netip.Addr   `json:"address"`
-	Routed  netip.Prefix `json:"podPrefix"` // zero when the microVM has none
+	Network string     `json:"network"`
+	Address netip.Addr `json:"address"`
 }
 
 // Peer is another host the tunnel reaches: its public key, where it listens, and the prefixes it

@@ -55,7 +55,7 @@ func newHost(t *testing.T) *fakeHost {
 		case "GET /v1/host":
 			_, _ = w.Write([]byte(`{"free":{"cpu":6,"memory":8589934592},"mvmd":{"machinePrefixes":["10.77.1.0/24"],"kernels":[{"name":"naru"}],"bootSets":[{"name":"node-1","origin":"configured"},{"name":"node-2","origin":"added"}]}}`))
 		case "GET /v1/microvms":
-			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","state":"running","network":"lab","podPrefix":"10.9.0.64/26","addresses":["10.9.0.2"]},{"name":"b","state":"stopped"},{"name":"c","state":"created"}]}`))
+			_, _ = w.Write([]byte(`{"microvms":[{"name":"a","state":"running","network":"lab","addresses":["10.9.0.2"]},{"name":"b","state":"stopped"},{"name":"c","state":"created"}]}`))
 		case "GET /v1/microvms/db-1/fence":
 			_, _ = w.Write([]byte(`{"phase":"armed","remainingSeconds":90}`))
 		case "GET /v1/microvms/db-1":
@@ -121,7 +121,7 @@ func TestListReportsReadinessCapacityBootSetsAndMachines(t *testing.T) {
 	require.Equal(t, []string{"10.77.1.0/24"}, h.MachinePrefixes)
 	require.Equal(t, map[string]string{"rack": "a"}, h.Labels)
 	require.Equal(t, []groups.Machine{
-		{ID: "a", State: groups.MachineRunning, Network: "lab", PodPrefix: "10.9.0.64/26", Addresses: []string{"10.9.0.2"}}, {ID: "b", State: groups.MachineStopped}, {ID: "c", State: groups.MachineCreated},
+		{ID: "a", State: groups.MachineRunning, Network: "lab", Addresses: []string{"10.9.0.2"}}, {ID: "b", State: groups.MachineStopped}, {ID: "c", State: groups.MachineCreated},
 	}, h.Machines)
 }
 
@@ -151,14 +151,14 @@ func TestCreateSendsTheImageForm(t *testing.T) {
 		Form: groups.FormImage, CPUs: 2, MemoryMiB: 256, Version: "r@sha256:abc", RootDiskBytes: 8 << 30, Network: "lab",
 		Disks:  []groups.Disk{{Name: "data", SizeBytes: 1 << 30}},
 		Policy: groups.NetworkPolicy{Egress: []groups.Rule{{Prefix: "10.0.0.0/8", Protocol: "tcp", Ports: []int{443}}}},
-	}, PodPrefix: "10.9.0.0/26"})
+	}})
 	require.NoError(t, err)
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(h.bodies["POST /v1/microvms"], &got))
 	require.Equal(t, "web-1", got["name"])
 	require.Equal(t, "lab", got["network"])
-	require.Equal(t, "10.9.0.0/26", got["podPrefix"])
+	require.NotContains(t, got, "podPrefix", "the host routes no prefix to a microVM")
 	require.Equal(t, "r@sha256:abc", got["image"])
 	require.EqualValues(t, 2, got["cpu"])
 	require.EqualValues(t, 256<<20, got["memory"])

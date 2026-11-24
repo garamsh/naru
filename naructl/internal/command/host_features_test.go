@@ -110,13 +110,13 @@ func TestMicrovm_SnapshotResumeAndFenceSpeakTheHostAPI(t *testing.T) {
 	assert.Contains(t, out, `"name": "snap1"`)
 	assert.Equal(t, "snap1", f.bodies["POST /v1/microvms/src/snapshot"]["name"])
 
-	out, err = run(t, "snapshot", "resume", "--config", f.cfg, "snap1", "--name", "copy1", "--network", "neta", "--pod-prefix", "10.9.0.0/24")
+	out, err = run(t, "snapshot", "resume", "--config", f.cfg, "snap1", "--name", "copy1", "--network", "neta")
 	require.NoError(t, err, out)
 	assert.Contains(t, out, `"name": "copy1"`)
 	resume := f.bodies["POST /v1/snapshots/snap1/resume"]
 	assert.Equal(t, "copy1", resume["name"])
 	assert.Equal(t, "neta", resume["network"])
-	assert.Equal(t, "10.9.0.0/24", resume["podPrefix"])
+	assert.NotContains(t, resume, "podPrefix")
 
 	out, err = run(t, "microvm", "fence", "get", "--config", f.cfg, "src")
 	require.NoError(t, err, out)

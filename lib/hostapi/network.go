@@ -1,10 +1,9 @@
 package hostapi
 
-// NetworkRequest is the body of PUT /v1/networks/{name}: the prefix of the network's Pod and routed
-// space, and the address of its API endpoint, which the management plane reaches one way. The
-// endpoint is optional and, when given, is inside the prefix. RemoteMembers are the addresses and
-// pod prefixes of the network's microVMs on other hosts, each in CIDR form (/32 for an address);
-// the request replaces the list.
+// NetworkRequest is the body of PUT /v1/networks/{name}: the prefix of the network's routed space,
+// and the address of its API endpoint, which the management plane reaches one way. The endpoint is
+// optional and, when given, is inside the prefix. RemoteMembers are the addresses of the network's
+// microVMs on other hosts, each in CIDR form (/32); the request replaces the list.
 type NetworkRequest struct {
 	Prefix        string   `json:"prefix"`
 	APIEndpoint   string   `json:"apiEndpoint,omitempty"`

@@ -128,40 +128,30 @@ func TestNetwork_ACreateThatCannotAttachIsRefusedAndRemoved(t *testing.T) {
 	assert.Equal(t, 422, code, string(b))
 	assert.NotContains(t, e.rt.calls, "create web", "an undeclared network is refused before mvmd is called")
 
-	// The address mvmd gives (10.1.0.5) need not be inside the prefix: only the pod prefix is.
+	// The address mvmd gives (10.1.0.5) need not be inside the prefix.
 	code, _ = e.do(t, p, "PUT", "/v1/networks/far", hostapi.NetworkRequest{Prefix: "10.9.0.0/16"})
 	require.Equal(t, 200, code)
 	body["network"] = "far"
 	code, b = e.do(t, p, "POST", "/v1/microvms", body)
 	assert.Equal(t, 201, code, string(b))
 	assert.Equal(t, []network.Member{{Network: "far", Address: netip.MustParseAddr("10.1.0.5")}}, e.nets.Members())
-
-	// A pod prefix outside it is refused, and no microVM is made.
-	code, _ = e.do(t, p, "DELETE", "/v1/microvms/web", nil)
-	require.Equal(t, 204, code)
-	pod := osBody()
-	pod["network"] = "far"
-	pod["podPrefix"] = "10.7.0.0/24"
-	code, b = e.do(t, p, "POST", "/v1/microvms", pod)
-	assert.Equal(t, 422, code, string(b))
-	code, _ = e.do(t, p, "GET", "/v1/microvms/web", nil)
-	assert.Equal(t, 404, code, "no microVM was made")
 }
 
-func TestNetwork_PodPrefixMustBeInsideTheNetwork(t *testing.T) {
+// The host routes no prefix to a microVM (ADR 0114): a request that names one is refused as any
+// field the request does not have is, before mvmd is called.
+func TestMicroVM_ARequestThatNamesAPodPrefixIsRefusedBeforeMvmdIsCalled(t *testing.T) {
 	e := start(t)
 	p := e.as(t, ProvisionerOrganization)
 	code, _ := e.do(t, p, "PUT", "/v1/networks/a", hostapi.NetworkRequest{Prefix: "10.1.0.0/16"})
 	require.Equal(t, 200, code)
 	body := osBody()
 	body["network"] = "a"
-	body["podPrefix"] = "10.7.0.0/24"
+	body["podPrefix"] = "10.1.7.0/24"
 	code, b := e.do(t, p, "POST", "/v1/microvms", body)
-	assert.Equal(t, 422, code, string(b))
-	assert.Contains(t, string(b), "podPrefix")
+	assert.Equal(t, 400, code, string(b))
 	assert.NotContains(t, e.rt.calls, "createMachine web", "refused before mvmd is called")
 
-	body["podPrefix"] = "10.1.7.0/24"
+	delete(body, "podPrefix")
 	code, b = e.do(t, p, "POST", "/v1/microvms", body)
 	assert.Equal(t, 201, code, string(b))
 }

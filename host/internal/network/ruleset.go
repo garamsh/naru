@@ -75,10 +75,6 @@ func Ruleset(c Config) string {
 			}
 			set = append(set, netip.PrefixFrom(m.Address, 32))
 			members = append(members, netip.PrefixFrom(m.Address, 32))
-			if m.Routed.IsValid() {
-				set = append(set, m.Routed)
-				members = append(members, m.Routed)
-			}
 		}
 		local[n.Name] = set
 		all = append(all, set...)

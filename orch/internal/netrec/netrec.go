@@ -40,7 +40,6 @@ type Tunnel struct {
 type MicroVM struct {
 	Name      string
 	Network   string
-	PodPrefix string
 	Addresses []string
 }
 
@@ -225,7 +224,7 @@ func (r *Reconciler) apply(ctx context.Context, self observed, all []observed, n
 }
 
 // remoteMembers is the members of the network on the hosts other than self: the addresses of
-// their microVMs on it as /32 and the Pod prefixes they hold, sorted and without duplicates.
+// their microVMs on it as /32, sorted and without duplicates.
 func remoteMembers(self, network string, all []observed) []string {
 	set := map[string]bool{}
 	for _, o := range all {
@@ -238,9 +237,6 @@ func remoteMembers(self, network string, all []observed) []string {
 			}
 			for _, a := range m.Addresses {
 				set[hostPrefix(a)] = true
-			}
-			if m.PodPrefix != "" {
-				set[m.PodPrefix] = true
 			}
 		}
 	}
@@ -262,7 +258,7 @@ func hostPrefix(a string) string {
 }
 
 // peers is every other host as a peer: its tunnel's key and port at its advertised address, and
-// the prefixes it holds, which are its machines' and the Pod prefixes of its members.
+// the prefixes it holds, which are its machines'.
 func peers(self string, all []observed) []Peer {
 	out := []Peer{}
 	for _, o := range all {
@@ -270,11 +266,6 @@ func peers(self string, all []observed) []Peer {
 			continue
 		}
 		prefixes := slices.Clone(o.tunnel.MachinePrefixes)
-		for _, m := range o.microVM {
-			if m.PodPrefix != "" && m.Network != "" {
-				prefixes = append(prefixes, m.PodPrefix)
-			}
-		}
 		sort.Strings(prefixes)
 		out = append(out, Peer{Name: o.host.ID, PublicKey: o.tunnel.PublicKey, Endpoint: endpoint(o.host.Address, o.tunnel.ListenPort), Prefixes: slices.Compact(prefixes)})
 	}

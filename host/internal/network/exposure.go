@@ -170,7 +170,7 @@ func checkExposure(base, c Config, e Exposure) error {
 		}
 	}
 	for _, x := range c.Members {
-		if x.Address == e.Address || (x.Routed.IsValid() && x.Routed.Contains(e.Address)) {
+		if x.Address == e.Address {
 			return ErrReserved
 		}
 	}

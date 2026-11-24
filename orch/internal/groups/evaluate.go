@@ -12,9 +12,7 @@ type Observed struct {
 	Groups  []GroupSpec
 	Members []Member
 	Hosts   []Host
-	// Networks are the networks the groups may join.
-	Networks []Network
-	Fences   map[string]Fence
+	Fences  map[string]Fence
 }
 
 // MemberState is a member with what observation says of it.

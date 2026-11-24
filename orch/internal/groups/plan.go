@@ -3,7 +3,6 @@ package groups
 import (
 	"errors"
 	"fmt"
-	"net/netip"
 	"sort"
 	"time"
 )
@@ -51,15 +50,14 @@ func (a Action) String() string {
 // reads nothing else: the same inputs give the same plan.
 func Plan(d Desired, o Observed) []Action {
 	hosts := append([]Host(nil), o.Hosts...)
-	pods := newPodPrefixes(o.Members)
 	var out []Action
 	for _, gs := range d.Groups {
-		out = append(out, planGroup(gs, o, hosts, pods)...)
+		out = append(out, planGroup(gs, o, hosts)...)
 	}
 	return out
 }
 
-func planGroup(gs GroupState, o Observed, hosts []Host, pods *podPrefixes) []Action {
+func planGroup(gs GroupState, o Observed, hosts []Host) []Action {
 	spec := gs.Spec
 	hold := func(format string, a ...any) Action {
 		return Action{Kind: ActionHold, Group: spec.Name, Reason: fmt.Sprintf(format, a...)}
@@ -128,7 +126,7 @@ func planGroup(gs GroupState, o Observed, hosts []Host, pods *podPrefixes) []Act
 	}
 
 	out = append(out, planRetries(gs, o, hosts, keep)...)
-	out = append(out, planCreates(gs, o, hosts, pods, present, keep, len(retire))...)
+	out = append(out, planCreates(gs, o, hosts, present, keep, len(retire))...)
 
 	available := 0
 	for _, ms := range present {
@@ -207,7 +205,7 @@ func planRetries(gs GroupState, o Observed, hosts []Host, keep []MemberState) []
 		m.Host = h.ID
 		out = append(out, Action{
 			Kind: ActionCreate, Group: spec.Name, Member: m, Host: h.ID,
-			Spec:   MachineSpec{ID: m.MachineID, Template: spec.Template, BootSet: bootSetOn(spec.Template, h), PodPrefix: m.PodPrefix, Address: want.String(), Fenced: spec.Stateful},
+			Spec:   MachineSpec{ID: m.MachineID, Template: spec.Template, BootSet: bootSetOn(spec.Template, h), Address: want.String(), Fenced: spec.Stateful},
 			Reason: fmt.Sprintf("tries again after %d refused create(s)", m.CreateFailures),
 		})
 		for i := range hosts {
@@ -222,7 +220,7 @@ func planRetries(gs GroupState, o Observed, hosts []Host, keep []MemberState) []
 
 // planCreates places as many new members as the count and the surge allow, replacing what
 // is missing. A member waiting for its fence still holds its place in the count.
-func planCreates(gs GroupState, o Observed, hosts []Host, pods *podPrefixes, present, keep []MemberState, retiring int) []Action {
+func planCreates(gs GroupState, o Observed, hosts []Host, present, keep []MemberState, retiring int) []Action {
 	spec := gs.Spec
 	deficit := spec.Count - len(keep)
 	room := spec.Count + spec.Rollout.MaxSurge - len(present)
@@ -254,17 +252,9 @@ func planCreates(gs GroupState, o Observed, hosts []Host, pods *podPrefixes, pre
 		}
 		next++
 		m := Member{ID: id, Group: spec.Name, Host: h.ID, MachineID: id, TemplateHash: gs.Hash, Phase: PhasePending, LastSeen: o.Now, Network: spec.Template.Network}
-		if bits := spec.Template.PodPrefixBits; bits > 0 {
-			pfx, err := podPrefix(o.Networks, pods, spec.Template.Network, bits)
-			if err != nil {
-				out = append(out, Action{Kind: ActionHold, Group: spec.Name, Reason: err.Error()})
-				break
-			}
-			m.PodPrefix = pfx.String()
-		}
 		out = append(out, Action{
 			Kind: ActionCreate, Group: spec.Name, Member: m, Host: h.ID,
-			Spec:   MachineSpec{ID: id, Template: spec.Template, BootSet: bootSetOn(spec.Template, h), PodPrefix: m.PodPrefix, Address: want.String(), Fenced: spec.Stateful},
+			Spec:   MachineSpec{ID: id, Template: spec.Template, BootSet: bootSetOn(spec.Template, h), Address: want.String(), Fenced: spec.Stateful},
 			Reason: createReason(len(keep), retiring, spec.Count),
 		})
 		onHost[h.ID]++
@@ -276,16 +266,6 @@ func planCreates(gs GroupState, o Observed, hosts []Host, pods *podPrefixes, pre
 		}
 	}
 	return out
-}
-
-// podPrefix takes a free Pod prefix of the named network.
-func podPrefix(networks []Network, pods *podPrefixes, name string, bits int) (netip.Prefix, error) {
-	for _, n := range networks {
-		if n.Name == name {
-			return pods.take(n, bits)
-		}
-	}
-	return netip.Prefix{}, fmt.Errorf("network %q is not declared", name)
 }
 
 func createReason(keep, retire, count int) string {

@@ -221,18 +221,10 @@ func (w *world) ListNetworks(context.Context) ([]groups.Network, error) {
 	return slices.Clone(w.networks), nil
 }
 
-// PutMember keeps a member's Pod prefix to itself the way the real store does: a member created
-// with a prefix another member that is not gone holds is a conflict.
+// PutMember writes the member when its revision is the stored one, as the real store does.
 func (w *world) PutMember(_ context.Context, m groups.Member) (groups.Member, error) {
 	if w.members[m.ID].Revision != m.Revision {
 		return groups.Member{}, groups.ErrConflict
-	}
-	if m.Revision == 0 && m.PodPrefix != "" {
-		for _, o := range w.members {
-			if o.Phase != groups.PhaseGone && o.Network == m.Network && o.PodPrefix == m.PodPrefix {
-				return groups.Member{}, groups.ErrConflict
-			}
-		}
 	}
 	w.rev++
 	m.Revision = w.rev

@@ -105,7 +105,7 @@ func (c *Client) probe(ctx context.Context, h orchapi.Host, out *groups.Host) {
 	for _, m := range vms {
 		out.Machines = append(out.Machines, groups.Machine{
 			ID: m.Name, State: machineState(m.State), Image: m.ImageDigest, BootSet: m.BootSet,
-			Network: m.Network, PodPrefix: m.PodPrefix, Addresses: m.Addresses,
+			Network: m.Network, Addresses: m.Addresses,
 		})
 	}
 }
@@ -137,7 +137,7 @@ func request(spec groups.MachineSpec) (hostapi.CreateRequest, error) {
 	t := spec.Template
 	r := hostapi.CreateRequest{
 		Name: spec.ID, CPU: uint32(t.CPUs), Memory: uint64(t.MemoryMiB) << 20, Fenced: spec.Fenced,
-		Network: t.Network, PodPrefix: spec.PodPrefix,
+		Network:       t.Network,
 		NetworkPolicy: hostapi.Policy{Egress: rules(t.Policy.Egress), Ingress: rules(t.Policy.Ingress)},
 	}
 	switch t.Form {
