@@ -60,6 +60,7 @@ func genHostProfile(fs *pflag.FlagSet) runner {
 		timeServers, registries, storage, extensions   list
 		awsRegion, awsTrustAnchor, awsProfile, awsRole string
 		hostMgmt, hostEgress, apiClientCA, pool, out   string
+		meshPool                                       string
 		hostTunnelPort                                 int
 	)
 	fs.StringVar(&p.FirecrackerSHA256, "firecracker-sha256", "", "the SHA-256 of the Firecracker binary the image carries")
@@ -77,6 +78,7 @@ func genHostProfile(fs *pflag.FlagSet) runner {
 	fs.Var(&extensions, "extension", "<name> or <name>=<SHA-256 of the image>, a system extension init mounts before any service starts, repeatable")
 	fs.StringVar(&apiClientCA, "api-client-ca", "", "the file holding the PEM of the authority naru-hostd's clients chain to, beside orch's (a key in it is refused)")
 	fs.StringVar(&pool, "machine-pool", "", "the IPv4 prefix orch gives each host a /24 of for its Machines, such as 10.200.0.0/16")
+	fs.StringVar(&meshPool, "mesh-pool", "", "the IPv4 prefix orch gives each admitted host its mesh address from, a /32 on its tunnel, such as 10.99.0.0/24; apart from the Machine pool, every network and every address pool")
 	fs.StringVar(&p.Orch.URL, "orch-url", "", "orch's https URL, which an admitted host's agent keeps reporting to")
 	fs.StringVar(&p.Orch.CASHA256, "orch-ca-sha256", "", "the hex SHA-256 of the authority orch's certificate chains to")
 	fs.StringVar(&out, "out", "", "the profile to write (0600 when it carries a registry's password, else 0644)")
@@ -96,6 +98,13 @@ func genHostProfile(fs *pflag.FlagSet) runner {
 		var err error
 		if p.MachinePool, err = netip.ParsePrefix(pool); err != nil {
 			return fmt.Errorf("--machine-pool: %w", err)
+		}
+		if meshPool != "" {
+			mesh, err := netip.ParsePrefix(meshPool)
+			if err != nil {
+				return fmt.Errorf("--mesh-pool: %w", err)
+			}
+			p.MeshPool = &mesh
 		}
 		p.TimeServers = timeServers
 		for _, r := range registries {

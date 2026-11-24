@@ -85,9 +85,9 @@ func TestClient_EachCallSendsItsMethodPathAndBody(t *testing.T) {
 		{"networks", func(c *hostapi.Client) error { _, err := c.Networks(ctx); return err }, "GET", "/v1/networks", "", map[string]any{"networks": []any{}}},
 		{"network delete", func(c *hostapi.Client) error { return c.DeleteNetwork(ctx, "a") }, "DELETE", "/v1/networks/a", "", nil},
 		{"peers set", func(c *hostapi.Client) error {
-			_, err := c.SetPeers(ctx, []hostapi.Peer{{Name: "h2", PublicKey: "K", Prefixes: []string{"10.1.1.0/24"}}})
+			_, err := c.SetPeers(ctx, hostapi.PeersRequest{MeshAddress: "10.99.0.1", Peers: []hostapi.Peer{{Name: "h2", PublicKey: "K", Prefixes: []string{"10.1.1.0/24"}, MeshAddress: "10.99.0.2"}}})
 			return err
-		}, "PUT", "/v1/peers", `"peers":[{"name":"h2","publicKey":"K","prefixes":["10.1.1.0/24"]}]`, hostapi.PeersRequest{}},
+		}, "PUT", "/v1/peers", `{"meshAddress":"10.99.0.1","peers":[{"name":"h2","publicKey":"K","prefixes":["10.1.1.0/24"],"meshAddress":"10.99.0.2"}]}`, hostapi.PeersRequest{}},
 		{"peers get", func(c *hostapi.Client) error { _, err := c.Peers(ctx); return err }, "GET", "/v1/peers", "", hostapi.PeersRequest{}},
 	}
 	for _, tc := range cases {

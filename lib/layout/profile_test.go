@@ -227,6 +227,43 @@ func TestHostProfileCheck_RefusesAPoolThatCannotGiveEachHostAPrefix(t *testing.T
 	assert.Error(t, p.Check())
 }
 
+func TestHostProfileCheck_RefusesAMeshPoolThatIsNotASpaceOfItsOwn(t *testing.T) {
+	for name, pool := range map[string]string{
+		"IPv6":                         "fd00::/64",
+		"host bits set":                "10.99.0.1/24",
+		"the default route":            "0.0.0.0/0",
+		"inside the Machine pool":      "10.200.5.0/24",
+		"holding the Machine pool":     "10.0.0.0/8",
+		"overlapping the management":   "192.168.0.128/25",
+		"the Machine pool itself":      "10.200.0.0/16",
+		"one address of the Machine's": "10.200.0.7/32",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := profile(t)
+			p.Network = &layout.HostNetwork{ManagementPrefix: netip.MustParsePrefix("192.168.0.0/24"), EgressInterface: "eth0"}
+			mesh := netip.MustParsePrefix(pool)
+			p.MeshPool = &mesh
+			assert.ErrorContains(t, p.Check(), "mesh pool")
+		})
+	}
+	p := profile(t)
+	p.Network = &layout.HostNetwork{ManagementPrefix: netip.MustParsePrefix("192.168.0.0/24"), EgressInterface: "eth0"}
+	require.NoError(t, p.Check(), "the control: no mesh pool is accepted")
+	mesh := netip.MustParsePrefix("10.99.0.0/24")
+	p.MeshPool = &mesh
+	require.NoError(t, p.Check(), "the control: a pool of its own is accepted")
+
+	b, err := p.Marshal()
+	require.NoError(t, err)
+	back, err := layout.ParseHostProfile(b)
+	require.NoError(t, err)
+	require.NotNil(t, back.MeshPool, "the pool is written and read back: %s", b)
+	assert.Equal(t, mesh, *back.MeshPool)
+	none, err := profile(t).Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(none), "meshPool", "a profile with no pool writes none")
+}
+
 func TestHostProfileNode_RefusesAPrefixOutsideThePool(t *testing.T) {
 	h := joined(t)
 	h.MachinePrefix = netip.MustParsePrefix("10.201.1.0/24")

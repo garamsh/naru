@@ -116,13 +116,13 @@ func hostPeersGet(fs *pflag.FlagSet) runner {
 		if err != nil {
 			return err
 		}
-		return printJSON(stdout, hostapi.PeersRequest{Peers: peers})
+		return printJSON(stdout, peers)
 	}
 }
 
 func hostPeersSet(fs *pflag.FlagSet) runner {
 	c := newHostCall(fs)
-	file := c.fs.StringP("file", "f", "", "the whole list of peers as a JSON file, {\"peers\": [...]}, which replaces the host's")
+	file := c.fs.StringP("file", "f", "", "the whole list of peers as a JSON file, {\"meshAddress\": ..., \"peers\": [...]}, which replaces the host's")
 	return func(args []string, stdout, stderr io.Writer) error {
 		if err := c.check(args, 0); err != nil {
 			return err
@@ -146,11 +146,11 @@ func hostPeersSet(fs *pflag.FlagSet) runner {
 		}
 		ctx, cancel := withTimeout()
 		defer cancel()
-		peers, err := cl.SetPeers(ctx, req.Peers)
+		peers, err := cl.SetPeers(ctx, req)
 		if err != nil {
 			return err
 		}
-		return printJSON(stdout, hostapi.PeersRequest{Peers: peers})
+		return printJSON(stdout, peers)
 	}
 }
 

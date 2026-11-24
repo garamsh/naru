@@ -195,3 +195,54 @@ func TestPeers_SetGetAndRefusals(t *testing.T) {
 	code, b = e.do(t, p, "PUT", "/v1/peers", hostapi.PeersRequest{Peers: []hostapi.Peer{{PublicKey: keyOne, Prefixes: []string{"11.0.0.0/8"}}}})
 	assert.Equal(t, 200, code, "the bound itself is accepted: %s", b)
 }
+
+func TestPeers_TheMeshAddressesReachTheTunnelAndTheTunnelReportsTheHosts(t *testing.T) {
+	e := start(t)
+	p := e.as(t, ProvisionerOrganization)
+	r := e.as(t, ReaderOrganization)
+	const keyTwo = "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	req := hostapi.PeersRequest{MeshAddress: "10.99.0.1", Peers: []hostapi.Peer{
+		{Name: "h2", PublicKey: keyOne, Prefixes: []string{"10.1.1.0/24"}, MeshAddress: "10.99.0.2"},
+		{Name: "h3", PublicKey: keyTwo, Prefixes: []string{"10.1.2.0/24"}},
+	}}
+	code, b := e.do(t, p, "PUT", "/v1/peers", req)
+	require.Equal(t, 200, code, string(b))
+	var got hostapi.PeersRequest
+	require.NoError(t, json.Unmarshal(b, &got))
+	assert.Equal(t, "10.99.0.1", got.MeshAddress)
+	assert.Equal(t, req.Peers, got.Peers, "a peer with no mesh address keeps none")
+
+	assert.Equal(t, netip.MustParseAddr("10.99.0.1"), e.tunnel.mesh, "the tunnel is given the host's mesh address")
+	require.Len(t, e.tunnel.peers, 2)
+	assert.Equal(t, netip.MustParseAddr("10.99.0.2"), e.tunnel.peers[0].Mesh, "and the peer's")
+
+	code, b = e.do(t, r, "GET", "/v1/tunnel", nil)
+	require.Equal(t, 200, code, string(b))
+	var tun hostapi.Tunnel
+	require.NoError(t, json.Unmarshal(b, &tun))
+	assert.Equal(t, "10.99.0.1", tun.MeshAddress, "GET /v1/tunnel shows the mesh address")
+	code, b = e.do(t, r, "GET", "/v1/peers", nil)
+	require.Equal(t, 200, code, string(b))
+	require.NoError(t, json.Unmarshal(b, &got))
+	assert.Equal(t, "10.99.0.1", got.MeshAddress)
+
+	for name, bad := range map[string]hostapi.PeersRequest{
+		"own not an address":     {MeshAddress: "10.99.0.1/32"},
+		"own IPv6":               {MeshAddress: "fd00::1"},
+		"own unspecified":        {MeshAddress: "0.0.0.0"},
+		"own loopback":           {MeshAddress: "127.0.0.1"},
+		"peer not an address":    {Peers: []hostapi.Peer{{PublicKey: keyOne, MeshAddress: "x"}}},
+		"peer holds the host's":  {MeshAddress: "10.99.0.1", Peers: []hostapi.Peer{{PublicKey: keyOne, MeshAddress: "10.99.0.1"}}},
+		"two peers hold one":     {Peers: []hostapi.Peer{{PublicKey: keyOne, MeshAddress: "10.99.0.2"}, {PublicKey: keyTwo, MeshAddress: "10.99.0.2"}}},
+		"another peer's prefix":  {Peers: []hostapi.Peer{{PublicKey: keyOne, Prefixes: []string{"10.99.0.2/32"}}, {PublicKey: keyTwo, MeshAddress: "10.99.0.2"}}},
+		"the host's as a prefix": {MeshAddress: "10.99.0.1", Peers: []hostapi.Peer{{PublicKey: keyOne, Prefixes: []string{"10.99.0.1/32"}}}},
+	} {
+		code, b := e.do(t, p, "PUT", "/v1/peers", bad)
+		assert.Equal(t, 422, code, "%s: %s", name, b)
+	}
+	assert.Equal(t, netip.MustParseAddr("10.99.0.1"), e.tunnel.mesh, "a refused declaration changes nothing")
+
+	code, b = e.do(t, p, "PUT", "/v1/peers", hostapi.PeersRequest{Peers: []hostapi.Peer{{PublicKey: keyOne, MeshAddress: "10.99.0.2"}}})
+	require.Equal(t, 200, code, "the control: a declaration without the host's own is accepted: %s", b)
+	assert.False(t, e.tunnel.mesh.IsValid(), "and leaves the interface with no mesh address")
+}

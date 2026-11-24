@@ -105,6 +105,25 @@ func TestGenHostProfile_WritesAProfileOrchCanBuildAHostFromThatInitAccepts(t *te
 	assert.Contains(t, validate(t, cfg), "valid; node=h-0123456789abcdef")
 }
 
+func TestGenHostProfile_WritesTheMeshPoolAndRefusesOneInsideTheMachinePool(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "profile.yaml")
+	stdout, err := run(t, profileFlags(t, out, "--mesh-pool", "10.99.0.0/24")...)
+	require.NoError(t, err, stdout)
+	b, err := os.ReadFile(out)
+	require.NoError(t, err)
+	p, err := layout.ParseHostProfile(b)
+	require.NoError(t, err)
+	require.NotNil(t, p.MeshPool)
+	assert.Equal(t, netip.MustParsePrefix("10.99.0.0/24"), *p.MeshPool)
+
+	for _, bad := range []string{"10.200.9.0/24", "nope"} {
+		refused := filepath.Join(t.TempDir(), "profile.yaml")
+		_, err := run(t, profileFlags(t, refused, "--mesh-pool", bad)...)
+		assert.Error(t, err, bad)
+		assert.NoFileExists(t, refused, "%s: nothing is written", bad)
+	}
+}
+
 func TestGenHostProfile_AProfileWithARegistryPasswordIsKept0600(t *testing.T) {
 	pw := filepath.Join(t.TempDir(), "pw")
 	require.NoError(t, os.WriteFile(pw, []byte("hunter2\n"), 0o600))

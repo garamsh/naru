@@ -22,10 +22,12 @@ import (
 // DefaultInterval is the pause between passes when Config.Interval is zero.
 const DefaultInterval = 10 * time.Second
 
-// Host is an admitted host. Address is where its API listens, as host:port.
+// Host is an admitted host. Address is where its API listens, as host:port, and MeshAddress its
+// own address on the tunnel, empty while orch has given it none.
 type Host struct {
-	ID      string
-	Address string
+	ID          string
+	Address     string
+	MeshAddress string
 }
 
 // Tunnel is what a host reports of its tunnel: the key and port peers dial, and the prefixes it
@@ -51,12 +53,14 @@ type NetworkState struct {
 	RemoteMembers []string
 }
 
-// Peer is another host a host's tunnel reaches. Prefixes are the ones that host holds.
+// Peer is another host a host's tunnel reaches. Prefixes are the ones that host holds, and
+// MeshAddress its own address on the tunnel.
 type Peer struct {
-	Name      string
-	PublicKey string
-	Endpoint  string
-	Prefixes  []string
+	Name        string
+	PublicKey   string
+	Endpoint    string
+	Prefixes    []string
+	MeshAddress string
 }
 
 // Hosts is the host API as the reconciler needs it.
@@ -67,8 +71,8 @@ type Hosts interface {
 	MicroVMs(ctx context.Context, hostID string) ([]MicroVM, error)
 	// PutNetwork declares the network on the host, replacing what it held under the name.
 	PutNetwork(ctx context.Context, hostID, name string, n NetworkState) error
-	// PutPeers replaces the host's whole list of peers.
-	PutPeers(ctx context.Context, hostID string, peers []Peer) error
+	// PutPeers replaces the host's whole list of peers and its own mesh address.
+	PutPeers(ctx context.Context, hostID, meshAddress string, peers []Peer) error
 	// Networks returns the names of the networks the host holds.
 	Networks(ctx context.Context, hostID string) ([]string, error)
 	// DeleteNetwork removes the network from the host.
@@ -201,7 +205,7 @@ func (r *Reconciler) apply(ctx context.Context, self observed, all []observed, n
 			errs = append(errs, fmt.Errorf("host %s: network %s: %w", self.host.ID, n.Name, err))
 		}
 	}
-	if err := r.hosts.PutPeers(ctx, self.host.ID, peers(self.host.ID, all)); err != nil {
+	if err := r.hosts.PutPeers(ctx, self.host.ID, self.host.MeshAddress, peers(self.host.ID, all)); err != nil {
 		errs = append(errs, fmt.Errorf("host %s: peers: %w", self.host.ID, err))
 	}
 	held, err := r.hosts.Networks(ctx, self.host.ID)
@@ -257,8 +261,8 @@ func hostPrefix(a string) string {
 	return a
 }
 
-// peers is every other host as a peer: its tunnel's key and port at its advertised address, and
-// the prefixes it holds, which are its machines'.
+// peers is every other host as a peer: its tunnel's key and port at its advertised address, the
+// prefixes it holds, which are its machines', and its mesh address.
 func peers(self string, all []observed) []Peer {
 	out := []Peer{}
 	for _, o := range all {
@@ -267,7 +271,7 @@ func peers(self string, all []observed) []Peer {
 		}
 		prefixes := slices.Clone(o.tunnel.MachinePrefixes)
 		sort.Strings(prefixes)
-		out = append(out, Peer{Name: o.host.ID, PublicKey: o.tunnel.PublicKey, Endpoint: endpoint(o.host.Address, o.tunnel.ListenPort), Prefixes: slices.Compact(prefixes)})
+		out = append(out, Peer{Name: o.host.ID, PublicKey: o.tunnel.PublicKey, Endpoint: endpoint(o.host.Address, o.tunnel.ListenPort), Prefixes: slices.Compact(prefixes), MeshAddress: o.host.MeshAddress})
 	}
 	return out
 }

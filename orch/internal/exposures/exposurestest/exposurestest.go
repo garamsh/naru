@@ -228,3 +228,14 @@ func (c *Clock) Advance(d time.Duration) {
 	c.T = c.T.Add(d)
 	c.mu.Unlock()
 }
+
+// Profile is the host profile's store: Raw, or none when it is empty.
+type Profile struct{ Raw []byte }
+
+// GetProfile returns Raw, and inventory.ErrNotFound when it is empty.
+func (p Profile) GetProfile(context.Context) ([]byte, error) {
+	if len(p.Raw) == 0 {
+		return nil, inventory.ErrNotFound
+	}
+	return p.Raw, nil
+}

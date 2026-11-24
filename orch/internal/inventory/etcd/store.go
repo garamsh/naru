@@ -16,6 +16,7 @@ import (
 
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/inventory"
+	netetcd "github.com/garamsh/naru/orch/internal/networks/etcd"
 )
 
 // Prefixes of the records. Events sort by the time in their key, so a prefix read is the log in
@@ -29,7 +30,18 @@ const (
 	// it is what makes an allocation unique. profileKey holds the host profile's YAML.
 	allocPrefix = "/naru/orch/allocations/"
 	profileKey  = "/naru/orch/profile"
+	// meshPrefix holds one key per mesh address given to a host, named by its /32, as allocPrefix
+	// does for the Machine prefixes.
+	meshPrefix = "/naru/orch/mesh-addresses/"
 )
+
+// spaceKey is the prefix of the records of space.
+func spaceKey(space inventory.Space) string {
+	if space == inventory.SpaceMesh {
+		return meshPrefix
+	}
+	return allocPrefix
+}
 
 // maxEvents is how many events the log keeps. Groups write one for each action they take, and
 // a log kept forever grows for as long as orch runs and is read whole by anything that lists it;
@@ -84,6 +96,19 @@ func (s *Store) eventOps(ev orchapi.Event) []clientv3.Op {
 		ops = append(ops, clientv3.OpDelete(eventPrefix, clientv3.WithRange(fmt.Sprintf("%s%020d", eventPrefix, cutoff))))
 	}
 	return ops
+}
+
+// unchanged reads key and returns the comparison that holds while nothing has written it since:
+// it is absent still, or holds the revision read.
+func (s *Store) unchanged(ctx context.Context, key string) (clientv3.Cmp, error) {
+	resp, err := s.kv.Get(ctx, key)
+	if err != nil {
+		return clientv3.Cmp{}, err
+	}
+	if len(resp.Kvs) == 0 {
+		return clientv3.Compare(clientv3.CreateRevision(key), "=", 0), nil
+	}
+	return clientv3.Compare(clientv3.ModRevision(key), "=", resp.Kvs[0].ModRevision), nil
 }
 
 // get reads one record into out and returns its modification revision.
@@ -192,12 +217,22 @@ func (s *Store) ListPending(ctx context.Context) ([]inventory.Pending, error) {
 	return list[inventory.Pending](ctx, s, pendingPrefix)
 }
 
-// Reserve is inventory.Store's Reserve. The allocations are read at one revision and the write
-// compares that none of them changed since, so two reservations cannot take the same or overlapping
-// prefixes.
-func (s *Store) Reserve(ctx context.Context, hostID string, pick func([]netip.Prefix) (netip.Prefix, error), until, now time.Time) (inventory.Allocation, error) {
+// Reserve is inventory.Store's Reserve. The allocations of the space are read at one revision and
+// the write compares that none of them changed since, so two reservations cannot take the same or
+// overlapping prefixes.
+func (s *Store) Reserve(ctx context.Context, space inventory.Space, hostID string, pick func([]netip.Prefix) (netip.Prefix, error), until, now time.Time) (inventory.Allocation, error) {
+	records := spaceKey(space)
 	for range casRetries {
-		resp, err := s.kv.Get(ctx, allocPrefix, clientv3.WithPrefix())
+		var conds []clientv3.Cmp
+		if space == inventory.SpaceMesh {
+			// The mesh pool pick reads is the profile's, so the write holds only while it is unchanged.
+			same, err := s.unchanged(ctx, profileKey)
+			if err != nil {
+				return inventory.Allocation{}, err
+			}
+			conds = append(conds, same)
+		}
+		resp, err := s.kv.Get(ctx, records, clientv3.WithPrefix())
 		if err != nil {
 			return inventory.Allocation{}, err
 		}
@@ -233,19 +268,21 @@ func (s *Store) Reserve(ctx context.Context, hostID string, pick func([]netip.Pr
 			}
 			a = inventory.Allocation{Prefix: pf.String(), HostID: hostID, ReservedUntil: until}
 		}
-		ops := []clientv3.Op{clientv3.OpPut(allocPrefix+a.Prefix, encode(a))}
+		ops := []clientv3.Op{clientv3.OpPut(records+a.Prefix, encode(a))}
 		for _, k := range expired {
 			// A key the new reservation overwrites is not deleted as well: a transaction may not
 			// touch one key twice.
-			if k != allocPrefix+a.Prefix {
+			if k != records+a.Prefix {
 				ops = append(ops, clientv3.OpDelete(k))
 			}
 		}
-		t, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(allocPrefix), "<", resp.Header.Revision+1).WithPrefix()).Then(ops...).Commit()
+		conds = append(conds, clientv3.Compare(clientv3.ModRevision(records), "<", resp.Header.Revision+1).WithPrefix())
+		t, err := s.kv.Txn(ctx).If(conds...).Then(ops...).Commit()
 		if err != nil {
 			return inventory.Allocation{}, err
 		}
 		if t.Succeeded {
+			a.Space = space
 			return a, nil
 		}
 	}
@@ -287,23 +324,24 @@ func (s *Store) ClaimPrefix(ctx context.Context, a inventory.Allocation) error {
 }
 
 func (s *Store) Release(ctx context.Context, a inventory.Allocation) error {
-	key := allocPrefix + a.Prefix
+	key := spaceKey(a.Space) + a.Prefix
 	_, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.Value(key), "=", encode(a))).Then(clientv3.OpDelete(key)).Commit()
 	return err
 }
 
-func (s *Store) Admit(ctx context.Context, p inventory.Pending, h inventory.Host, ev orchapi.Event, alloc *inventory.Allocation) error {
+func (s *Store) Admit(ctx context.Context, p inventory.Pending, h inventory.Host, ev orchapi.Event, allocs ...inventory.Allocation) error {
 	key := pendingPrefix + p.HostID
 	cmps := []clientv3.Cmp{
 		clientv3.Compare(clientv3.CreateRevision(key), ">", 0),
 		clientv3.Compare(clientv3.CreateRevision(hostPrefix+h.ID), "=", 0),
 	}
 	ops := append([]clientv3.Op{clientv3.OpDelete(key), clientv3.OpPut(hostPrefix+h.ID, encode(h))}, s.eventOps(ev)...)
-	if alloc != nil {
-		confirmed := *alloc
+	for _, a := range allocs {
+		key := spaceKey(a.Space) + a.Prefix
+		confirmed := a
 		confirmed.ReservedUntil = time.Time{}
-		cmps = append(cmps, clientv3.Compare(clientv3.Value(allocPrefix+alloc.Prefix), "=", encode(*alloc)))
-		ops = append(ops, clientv3.OpPut(allocPrefix+alloc.Prefix, encode(confirmed)))
+		cmps = append(cmps, clientv3.Compare(clientv3.Value(key), "=", encode(a)))
+		ops = append(ops, clientv3.OpPut(key, encode(confirmed)))
 	}
 	resp, err := s.kv.Txn(ctx).If(cmps...).Then(ops...).Commit()
 	if err != nil {
@@ -365,19 +403,21 @@ func (s *Store) RemoveHost(ctx context.Context, id string, ev orchapi.Event) (in
 			return h, err
 		}
 		ops := append([]clientv3.Op{clientv3.OpDelete(key)}, s.eventOps(ev)...)
-		// Every prefix the host holds is freed: the one orch gave a joined host and the ones a host
-		// reported (ClaimPrefix).
-		held, err := s.kv.Get(ctx, allocPrefix, clientv3.WithPrefix())
-		if err != nil {
-			return h, err
-		}
-		for _, kv := range held.Kvs {
-			var a inventory.Allocation
-			if err := json.Unmarshal(kv.Value, &a); err != nil {
-				return h, fmt.Errorf("record %s: %w", kv.Key, err)
+		// Every prefix the host holds is freed: the one orch gave a joined host, the ones a host
+		// reported (ClaimPrefix) and its mesh address.
+		for _, prefix := range []string{allocPrefix, meshPrefix} {
+			held, err := s.kv.Get(ctx, prefix, clientv3.WithPrefix())
+			if err != nil {
+				return h, err
 			}
-			if a.HostID == id {
-				ops = append(ops, clientv3.OpDelete(string(kv.Key)))
+			for _, kv := range held.Kvs {
+				var a inventory.Allocation
+				if err := json.Unmarshal(kv.Value, &a); err != nil {
+					return h, fmt.Errorf("record %s: %w", kv.Key, err)
+				}
+				if a.HostID == id {
+					ops = append(ops, clientv3.OpDelete(string(kv.Key)))
+				}
 			}
 		}
 		resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", rev)).Then(ops...).Commit()
@@ -391,8 +431,70 @@ func (s *Store) RemoveHost(ctx context.Context, id string, ev orchapi.Event) (in
 	return h, errors.New("the record kept changing under the removal")
 }
 
-func (s *Store) ListAllocations(ctx context.Context) ([]inventory.Allocation, error) {
-	return list[inventory.Allocation](ctx, s, allocPrefix)
+func (s *Store) ListAllocations(ctx context.Context, space inventory.Space) ([]inventory.Allocation, error) {
+	out, err := list[inventory.Allocation](ctx, s, spaceKey(space))
+	for i := range out {
+		out[i].Space = space
+	}
+	return out, err
+}
+
+// GiveMeshAddress is inventory.Store's GiveMeshAddress. The mesh allocations are read at one
+// revision and the host at its own, and the write compares that neither changed since.
+func (s *Store) GiveMeshAddress(ctx context.Context, hostID string, pick func([]netip.Prefix) (netip.Prefix, error)) (inventory.Host, error) {
+	hostKey := hostPrefix + hostID
+	for range casRetries {
+		var h inventory.Host
+		rev, err := s.get(ctx, hostKey, &h)
+		if err != nil {
+			return h, err
+		}
+		if h.MeshAddress != "" {
+			return h, nil
+		}
+		profile, err := s.unchanged(ctx, profileKey)
+		if err != nil {
+			return h, err
+		}
+		resp, err := s.kv.Get(ctx, meshPrefix, clientv3.WithPrefix())
+		if err != nil {
+			return h, err
+		}
+		var claimed []netip.Prefix
+		for _, kv := range resp.Kvs {
+			var a inventory.Allocation
+			if err := json.Unmarshal(kv.Value, &a); err != nil {
+				return h, fmt.Errorf("record %s: %w", kv.Key, err)
+			}
+			// A reservation that ran out still claims its address here: only an admission takes one
+			// over, and it compares the record it replaces.
+			pf, err := netip.ParsePrefix(a.Prefix)
+			if err != nil {
+				return h, fmt.Errorf("record %s: %w", kv.Key, err)
+			}
+			claimed = append(claimed, pf)
+		}
+		pf, err := pick(claimed)
+		if err != nil {
+			return h, err
+		}
+		h.MeshAddress = pf.Addr().String()
+		h.Config = nil
+		a := inventory.Allocation{Prefix: pf.String(), HostID: hostID}
+		t, err := s.kv.Txn(ctx).If(
+			profile,
+			clientv3.Compare(clientv3.ModRevision(hostKey), "=", rev),
+			clientv3.Compare(clientv3.ModRevision(meshPrefix), "<", resp.Header.Revision+1).WithPrefix(),
+			clientv3.Compare(clientv3.CreateRevision(meshPrefix+a.Prefix), "=", 0),
+		).Then(clientv3.OpPut(hostKey, encode(h)), clientv3.OpPut(meshPrefix+a.Prefix, encode(a))).Commit()
+		if err != nil {
+			return h, err
+		}
+		if t.Succeeded {
+			return h, nil
+		}
+	}
+	return inventory.Host{}, inventory.ErrConflict
 }
 
 func (s *Store) GetProfile(ctx context.Context) ([]byte, error) {
@@ -406,9 +508,38 @@ func (s *Store) GetProfile(ctx context.Context) ([]byte, error) {
 	return resp.Kvs[0].Value, nil
 }
 
-func (s *Store) PutProfile(ctx context.Context, yaml []byte, ev orchapi.Event) error {
-	_, err := s.kv.Txn(ctx).Then(append([]clientv3.Op{clientv3.OpPut(profileKey, string(yaml))}, s.eventOps(ev)...)...).Commit()
-	return err
+func (s *Store) PutProfile(ctx context.Context, yaml []byte, ev orchapi.Event, check func(current []byte) error) error {
+	ops := append([]clientv3.Op{clientv3.OpPut(profileKey, string(yaml))}, s.eventOps(ev)...)
+	// Every profile write moves the guard, so the guard, read first, stands for the profile read
+	// after it: a profile written in between fails the compare.
+	guard, err := netetcd.Guard(ctx, s.kv)
+	if err != nil {
+		return err
+	}
+	cur, err := s.kv.Get(ctx, profileKey)
+	if err != nil {
+		return err
+	}
+	var current []byte
+	if len(cur.Kvs) > 0 {
+		current = cur.Kvs[0].Value
+	}
+	mesh, err := s.kv.Get(ctx, meshPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	if err != nil {
+		return err
+	}
+	if err := check(current); err != nil {
+		return err
+	}
+	unwritten := clientv3.Compare(clientv3.ModRevision(meshPrefix), "<", mesh.Header.Revision+1).WithPrefix()
+	t, err := s.kv.Txn(ctx).If(guard, unwritten).Then(append(ops, netetcd.MoveGuard())...).Commit()
+	if err != nil {
+		return err
+	}
+	if !t.Succeeded {
+		return inventory.ErrConflict
+	}
+	return nil
 }
 
 func (s *Store) GetHost(ctx context.Context, id string) (inventory.Host, error) {

@@ -67,6 +67,8 @@ type hostJSON struct {
 	LastSeen time.Time         `json:"lastSeen"`
 	// MachinePrefix is the prefix orch allocated to a host that joined from a seed.
 	MachinePrefix string `json:"machinePrefix"`
+	// MeshAddress is the address of the profile's mesh pool orch gave the host.
+	MeshAddress string `json:"meshAddress"`
 }
 
 func (f *fleet) hostList(i int) []hostJSON {

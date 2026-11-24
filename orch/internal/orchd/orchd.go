@@ -278,7 +278,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	o.member = m
 	taker := &snapshot.Taker{Source: snapshot.ClientSource(m.Client()), Sealer: d.Sealer, Dir: c.SnapshotDir, Keep: c.SnapshotKeep, Now: d.Clock.Now, Log: d.Log}
 	invStore := invetcd.New(m.Client())
-	svc := inventory.NewService(invStore, d.Signer, d.Clock, c.Limits)
+	svc := inventory.NewService(invStore, addressSpace{networks: netetcd.New(m.Client()), pools: exposuresetcd.New(m.Client())}, d.Signer, d.Clock, c.Limits)
 	groupStore := groupsetcd.New(m.Client())
 	// The engine and the leader's own inventory writes go through the guard of the leader's term;
 	// the API keeps the plain client, since any member serves an operator's write (ADR 0071).
@@ -307,7 +307,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	var exposureSvc api.Exposures
 	if d.NewExposureHosts != nil {
 		eh := d.NewExposureHosts(svc)
-		exposureSvc = exposures.New(exposuresetcd.New(m.Client()), networkStore, eh, invStore, d.Clock)
+		exposureSvc = exposures.New(exposuresetcd.New(m.Client()), networkStore, eh, invStore, invStore, d.Clock)
 		reconcilers = append(reconcilers, exposures.NewReconciler(exposures.Config{
 			Hosts: eh, Exposures: exposuresetcd.New(leaderKV), Networks: networkStore, Events: invStore, Clock: d.Clock, Log: d.Log,
 		}))
@@ -334,7 +334,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 			}
 		}()
 	}
-	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Machines: machineSvc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
+	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Machines: machineSvc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
 
 	o.wg.Add(3)
 	go func() {

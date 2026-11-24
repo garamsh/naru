@@ -65,8 +65,14 @@ func TestDialNetAPISpeaksTheHostAPI(t *testing.T) {
 	_, deleted := got["DELETE /v1/networks/old"]
 	assert.True(t, deleted)
 
-	require.NoError(t, h.PutPeers(t.Context(), "h1", []netrec.Peer{{Name: "h2", PublicKey: "k2", Endpoint: "192.0.2.2:51820", Prefixes: []string{"10.200.2.0/24"}}}))
+	require.NoError(t, h.PutPeers(t.Context(), "h1", "", []netrec.Peer{{Name: "h2", PublicKey: "k2", Endpoint: "192.0.2.2:51820", Prefixes: []string{"10.200.2.0/24"}}}))
 	var pr map[string]any
 	require.NoError(t, json.Unmarshal([]byte(got["PUT /v1/peers"]), &pr))
 	assert.Equal(t, map[string]any{"peers": []any{map[string]any{"name": "h2", "publicKey": "k2", "endpoint": "192.0.2.2:51820", "prefixes": []any{"10.200.2.0/24"}}}}, pr)
+
+	require.NoError(t, h.PutPeers(t.Context(), "h1", "10.99.0.1", []netrec.Peer{{Name: "h2", PublicKey: "k2", Prefixes: []string{"10.200.2.0/24"}, MeshAddress: "10.99.0.2"}}))
+	pr = nil
+	require.NoError(t, json.Unmarshal([]byte(got["PUT /v1/peers"]), &pr))
+	assert.Equal(t, map[string]any{"meshAddress": "10.99.0.1", "peers": []any{map[string]any{"name": "h2", "publicKey": "k2", "prefixes": []any{"10.200.2.0/24"}, "meshAddress": "10.99.0.2"}}}, pr,
+		"the host's own mesh address and the peer's reach the host API")
 }

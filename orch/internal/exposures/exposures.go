@@ -128,13 +128,15 @@ type Service struct {
 	store    Store
 	networks Networks
 	members  Members
-	log      Log
-	clock    Clock
+	// profile is the host profile, whose mesh pool no address pool overlaps.
+	profile inventory.ProfileReader
+	log     Log
+	clock   Clock
 }
 
 // New returns a Service.
-func New(store Store, networks Networks, members Members, log Log, clock Clock) *Service {
-	return &Service{store: store, networks: networks, members: members, log: log, clock: clock}
+func New(store Store, networks Networks, members Members, profile inventory.ProfileReader, log Log, clock Clock) *Service {
+	return &Service{store: store, networks: networks, members: members, profile: profile, log: log, clock: clock}
 }
 
 func bad(format string, a ...any) error {
@@ -244,10 +246,19 @@ func (s *Service) ApplyPool(ctx context.Context, by, name string, spec orchapi.A
 	return p, s.log.AppendEvent(ctx, orchapi.Event{Time: s.clock.Now(), Type: EventPoolApplied, Subject: name, Detail: map[string]string{"by": by}})
 }
 
-// clear refuses a pool whose ranges overlap a network's prefix or another pool. The store runs it
-// after it noted the address-space guard that a network write also moves, and writes the pool only
-// while that guard is unchanged.
+// clear refuses a pool whose ranges overlap a network's prefix, another pool or the profile's mesh
+// pool. The store runs it after it noted the address-space guard that a network write and a profile
+// write also move, and writes the pool only while that guard is unchanged.
 func (s *Service) clear(ctx context.Context, name string, cidrs []netip.Prefix) error {
+	mesh, err := inventory.MeshPool(ctx, s.profile)
+	if err != nil {
+		return err
+	}
+	if mesh.IsValid() {
+		if c, _, hit := overlapsAny(cidrs, []netip.Prefix{mesh}); hit {
+			return bad("cidr %s overlaps the mesh pool %s", c, mesh)
+		}
+	}
 	all, err := s.networks.List(ctx)
 	if err != nil {
 		return err

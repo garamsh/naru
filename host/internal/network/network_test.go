@@ -223,6 +223,7 @@ func (f *fakeRunner) lastScript() string {
 // fakeTunnel is the Tunnel of the tests: it records the peers it was set to.
 type fakeTunnel struct {
 	peers   []network.Peer
+	mesh    netip.Addr
 	fail    bool
 	sets    int
 	failNth map[int]bool // the numbered calls of Set (from 1) fail
@@ -230,12 +231,12 @@ type fakeTunnel struct {
 
 func (f *fakeTunnel) PublicKey() string { return "PUBLIC" }
 func (f *fakeTunnel) Port() int         { return 51820 }
-func (f *fakeTunnel) Set(p []network.Peer) error {
+func (f *fakeTunnel) Set(mesh netip.Addr, p []network.Peer) error {
 	f.sets++
 	if f.fail || f.failNth[f.sets] {
 		return errors.New("tunnel failed")
 	}
-	f.peers = p
+	f.peers, f.mesh = p, mesh
 	return nil
 }
 
@@ -254,7 +255,7 @@ func TestManager_AppliesTheWholeStateOnEveryChange(t *testing.T) {
 	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16"), Remote: []netip.Prefix{pfx("10.0.2.7/32")}}))
 	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
 	peers := []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}}}
-	require.NoError(t, m.SetPeers(ctx, peers))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, peers))
 
 	assert.Equal(t, []string{"nft", "-f", "-"}, f.calls[len(f.calls)-1].argv)
 	tb := parseTable(t, f.last())
@@ -327,7 +328,7 @@ func TestManager_StateSurvivesARestart(t *testing.T) {
 	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
 	require.NoError(t, m.Attach(ctx, network.Member{Network: "b", Address: addr("10.0.0.4")}))
 	peers := []network.Peer{{Name: "h2", PublicKey: "KEYTWO", Endpoint: netip.MustParseAddrPort("192.0.2.2:51820"), Prefixes: []netip.Prefix{pfx("10.0.2.0/24"), pfx("10.8.2.0/24")}}}
-	require.NoError(t, m.SetPeers(ctx, peers))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, peers))
 	require.NoError(t, m.Detach(ctx, addr("10.0.0.4")))
 
 	st, err := os.Stat(state)
@@ -420,14 +421,14 @@ func TestManager_ADeclarationThatChangesNothingReplacesNoTable(t *testing.T) {
 	n := network.Network{Name: "a", Prefix: pfx("10.8.0.0/16"), Remote: []netip.Prefix{pfx("10.0.2.7/32"), pfx("10.0.2.8/32")}}
 	peers := []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24"), pfx("10.8.3.0/24")}}}
 	require.NoError(t, m.Declare(ctx, n))
-	require.NoError(t, m.SetPeers(ctx, peers))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, peers))
 	before := len(f.calls)
 
 	// The same, in another order: the table's counters are not reset by it.
 	n.Remote = []netip.Prefix{pfx("10.0.2.8/32"), pfx("10.0.2.7/32")}
 	peers[0].Prefixes = []netip.Prefix{pfx("10.8.3.0/24"), pfx("10.8.2.0/24")}
 	require.NoError(t, m.Declare(ctx, n))
-	require.NoError(t, m.SetPeers(ctx, peers))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, peers))
 	assert.Len(t, f.calls, before, "nothing changed, so nft ran no more")
 
 	n.Remote = n.Remote[:1]
@@ -441,7 +442,7 @@ func held(t *testing.T, f *fakeRunner, tun *fakeTunnel, m *network.Manager) (str
 	ctx := context.Background()
 	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16")}))
 	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
-	require.NoError(t, m.SetPeers(ctx, []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}}}))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}}}))
 	return f.table, tun.peers
 }
 
@@ -577,4 +578,51 @@ func TestReconciler_AHungListEndsAndBlocksNoOtherCall(t *testing.T) {
 		t.Fatal("an Attach stayed blocked behind the pass")
 	}
 	assert.Len(t, m.Members(), 1)
+}
+
+func TestManager_TheMeshAddressReachesTheTunnelIsReportedAndSurvivesARestart(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "hostd", "networks.json")
+	ctx := context.Background()
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, state)
+	peers := []network.Peer{{Name: "h2", PublicKey: "KEYTWO", Prefixes: []netip.Prefix{pfx("10.0.2.0/24")}, Mesh: addr("10.99.0.2")}}
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.1"), peers))
+
+	assert.Equal(t, addr("10.99.0.1"), tun.mesh, "the tunnel was given the host's mesh address")
+	assert.Equal(t, peers, tun.peers, "and each peer's")
+	info, ok := m.TunnelInfo()
+	require.True(t, ok)
+	assert.Equal(t, addr("10.99.0.1"), info.Mesh)
+	assert.Equal(t, addr("10.99.0.1"), m.Mesh())
+
+	f2, tun2 := &fakeRunner{}, &fakeTunnel{}
+	again := newManager(f2, tun2, state)
+	require.NoError(t, again.Load(ctx))
+	assert.Equal(t, addr("10.99.0.1"), tun2.mesh, "a restarted host puts its mesh address back before the API serves")
+	assert.Equal(t, peers, tun2.peers, "with each peer's")
+	assert.Equal(t, addr("10.99.0.1"), again.Mesh())
+}
+
+func TestManager_AChangeOfTheMeshAddressAloneIsApplied(t *testing.T) {
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	ctx := context.Background()
+	peers := []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}, Mesh: addr("10.99.0.2")}}
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.1"), peers))
+	sets := tun.sets
+
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.1"), peers))
+	assert.Equal(t, sets, tun.sets, "the control: the same declaration sets nothing")
+
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.3"), peers))
+	assert.Equal(t, sets+1, tun.sets, "a new mesh address is applied")
+	assert.Equal(t, addr("10.99.0.3"), tun.mesh)
+
+	moved := []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}, Mesh: addr("10.99.0.4")}}
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.3"), moved))
+	assert.Equal(t, sets+2, tun.sets, "a peer's new mesh address is applied")
+
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, moved))
+	assert.Equal(t, sets+3, tun.sets, "and so is none")
+	assert.False(t, tun.mesh.IsValid())
 }

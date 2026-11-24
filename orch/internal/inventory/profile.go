@@ -43,6 +43,7 @@ func shown(p layout.HostProfile) layout.HostProfile {
 		Orch:              p.Orch,
 		APIClientCA:       p.APIClientCA,
 		MachinePool:       p.MachinePool,
+		MeshPool:          p.MeshPool,
 	}
 	for _, r := range p.Registries {
 		shownRegistry := layout.Registry{Host: r.Host, CA: r.CA, Username: r.Username, Helper: r.Helper}
@@ -58,14 +59,121 @@ func (s *service) SetProfile(ctx context.Context, by string, yaml []byte) error 
 	if len(yaml) > maxProfile {
 		return invalid("the host profile is larger than %d bytes", maxProfile)
 	}
-	if _, err := layout.ParseHostProfile(yaml); err != nil {
+	p, err := layout.ParseHostProfile(yaml)
+	if err != nil {
 		if errors.Is(err, layout.ErrRedacted) {
 			return fmt.Errorf("%w: %v", ErrRedacted, err)
 		}
 		return invalid("%v", err)
 	}
+	var pool netip.Prefix
+	if p.MeshPool != nil {
+		pool = *p.MeshPool
+	}
+	// The pool is checked against the profile the write replaces, which the store reads and holds
+	// unchanged to the write. A stored profile that no longer parses is checked as a change.
+	check := func(current []byte) error {
+		if old, err := meshPoolOf(current); err == nil && old == pool {
+			return nil
+		}
+		return s.meshPoolClear(ctx, pool)
+	}
 	ev := orchapi.Event{Time: s.clock.Now(), Type: EventProfileSet, Subject: "host-profile", Detail: map[string]string{"by": by}}
-	return s.store.PutProfile(ctx, yaml, ev)
+	return s.store.PutProfile(ctx, yaml, ev, check)
+}
+
+// meshPoolClear refuses a mesh pool (the zero prefix for none) that leaves outside it an address a
+// host holds or is reserved, or that overlaps a network or an address pool. That it overlaps no
+// Machine pool is the profile's own check.
+func (s *service) meshPoolClear(ctx context.Context, pool netip.Prefix) error {
+	held, err := s.store.ListAllocations(ctx, SpaceMesh)
+	if err != nil {
+		return err
+	}
+	for _, a := range held {
+		if p, err := netip.ParsePrefix(a.Prefix); err != nil || !pool.IsValid() || !pool.Contains(p.Addr()) {
+			return fmt.Errorf("%w: host %s holds the mesh address %s, which the profile's mesh pool must hold", ErrConflict, a.HostID, a.Prefix)
+		}
+	}
+	if !pool.IsValid() {
+		return nil
+	}
+	claims, err := s.space.Claimed(ctx)
+	if err != nil {
+		return err
+	}
+	for _, c := range claims {
+		if c.Prefix.Overlaps(pool) {
+			return fmt.Errorf("%w: the mesh pool %s overlaps %s of %s", ErrConflict, pool, c.Prefix, c.By)
+		}
+	}
+	return nil
+}
+
+// meshPick is the pick of a host's mesh address. It reads the pool itself, so that the store, which
+// compares the profile unchanged from before the pick to its write, never commits an address of a
+// pool the profile no longer has.
+func (s *service) meshPick(ctx context.Context) func([]netip.Prefix) (netip.Prefix, error) {
+	return meshPickFrom(ctx, s.store)
+}
+
+func meshPickFrom(ctx context.Context, r ProfileReader) func([]netip.Prefix) (netip.Prefix, error) {
+	return func(claimed []netip.Prefix) (netip.Prefix, error) {
+		pool, err := MeshPool(ctx, r)
+		if err != nil {
+			return netip.Prefix{}, err
+		}
+		if !pool.IsValid() {
+			return netip.Prefix{}, fmt.Errorf("%w: the profile has no mesh pool", ErrConflict)
+		}
+		return nextMeshAddress(pool, claimed)
+	}
+}
+
+// ProfileReader reads the stored host profile, as Store does.
+type ProfileReader interface {
+	GetProfile(ctx context.Context) ([]byte, error)
+}
+
+// MeshPool returns the mesh pool of the stored profile, and the zero prefix when no profile is set
+// or it has none. A stored profile that no longer checks is ErrConflict.
+func MeshPool(ctx context.Context, r ProfileReader) (netip.Prefix, error) {
+	raw, err := r.GetProfile(ctx)
+	if errors.Is(err, ErrNotFound) {
+		return netip.Prefix{}, nil
+	}
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return meshPoolOf(raw)
+}
+
+// meshPoolOf returns the mesh pool of a stored profile, the zero prefix for none (nil raw included).
+func meshPoolOf(raw []byte) (netip.Prefix, error) {
+	if raw == nil {
+		return netip.Prefix{}, nil
+	}
+	p, err := layout.ParseHostProfile(raw)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("%w: the stored host profile: %v", ErrConflict, err)
+	}
+	if p.MeshPool == nil {
+		return netip.Prefix{}, nil
+	}
+	return *p.MeshPool, nil
+}
+
+// nextMeshAddress picks a host's mesh address from the pool, as a /32, given the addresses claimed.
+// A pool of more than two addresses gives up its first, the pool's own network address.
+func nextMeshAddress(pool netip.Prefix, claimed []netip.Prefix) (netip.Prefix, error) {
+	if pool.Bits() < 31 {
+		claimed = append(claimed[:len(claimed):len(claimed)], netip.PrefixFrom(pool.Masked().Addr(), 32))
+	}
+	p, err := prefixes.Allocate(pool, 32, claimed)
+	if errors.Is(err, prefixes.ErrFull) {
+		return netip.Prefix{}, ErrMeshPoolFull
+	}
+	return p, err
 }
 
 func (s *service) Remove(ctx context.Context, by, hostID string) error {
