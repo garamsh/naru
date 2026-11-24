@@ -91,7 +91,6 @@ func (s *Server) reverseProxy(header bool) *httputil.ReverseProxy {
 			}
 			pr.Out.URL.Scheme = "http"
 			pr.Out.URL.Host = net.JoinHostPort(to.route.Address.String(), strconv.Itoa(to.route.Port))
-			pr.Out.Host = pr.In.Host
 			pr.SetXForwarded()
 		},
 		Transport: transport,

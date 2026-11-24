@@ -384,10 +384,10 @@ func TestProxy_CarriesATCPServiceAsPlainTCPAfterAPROXYHeaderWhenItAsksForOne(t *
 			}
 			f := newFixture(t, time.Hour, "", r)
 
-			c, err := f.dialTLS(&tls.Config{ServerName: nameA})
+			c, err := f.dialTLS(&tls.Config{ServerName: nameA, NextProtos: []string{"h2", "http/1.1"}})
 			require.NoError(t, err)
 			defer func() { _ = c.Close() }()
-			assert.Empty(t, c.ConnectionState().NegotiatedProtocol, "a tcp service offers no HTTP protocol")
+			assert.Empty(t, c.ConnectionState().NegotiatedProtocol, "a tcp service takes none of the HTTP protocols a client offers")
 			_, err = c.Write([]byte("ping"))
 			require.NoError(t, err)
 			first := <-got
