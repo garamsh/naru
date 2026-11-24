@@ -231,9 +231,39 @@ func TestSpreadProxiesPutsEachAddressOnAHostOfItsOwnWhileThereAreHostsEnough(t *
 	}
 }
 
-func TestSpreadProxiesPlacesAKeptAddressFirst(t *testing.T) {
-	// Without kept, each address of the pair goes to a host of its own; kept on a silent holder, the
-	// other goes to the other host, whichever its hash prefers.
+func TestAProxyExposureBeingReleasedTakesNoHostFromTheOthers(t *testing.T) {
+	// Two addresses whose highest-ranked host is the same: spread, the second would go to the
+	// other host while the first holds its own.
+	hosts := proxyHosts("p1", "p2")
+	first, second := "192.168.1.80", ""
+	for _, a := range []string{"192.168.1.81", "192.168.1.82", "192.168.1.83"} {
+		if exposures.SpreadProxies([]string{a}, nil, hosts)[a] == exposures.SpreadProxies([]string{first}, nil, hosts)[first] {
+			second = a
+			break
+		}
+	}
+	require.NotEmpty(t, second, "two addresses of the pool rank the same host first")
+	top := exposures.SpreadProxies([]string{second}, nil, hosts)[second]
+	spread := exposures.SpreadProxies([]string{first, second}, nil, hosts)
+	require.NotEqual(t, top, spread[second], "control: placed together, the second goes to the other host")
+
+	s, st, _ := proxyFixture(t)
+	ctx := t.Context()
+	for id, a := range map[string]string{"first": first, "second": second} {
+		req := proxySpec(443)
+		req.RequestedAddress = a
+		_, err := s.ApplyProxyExposure(ctx, "op", id, req)
+		require.NoError(t, err)
+	}
+	require.NoError(t, s.DeleteProxyExposure(ctx, "op", "first"))
+	h := newHosts(hosts...)
+	require.NoError(t, reconciler(st, h, &exposurestest.Clock{T: time.Unix(2000, 0)}).Reconcile(ctx))
+	assert.Equal(t, []string{top}, h.holders(second), "the released one is not placed, so the other takes the host it ranks first")
+}
+
+func TestSpreadProxiesKeepsAnAddressOnItsSilentHolder(t *testing.T) {
+	// Without kept, each address of the pair goes to a host of its own; kept on a silent holder, which
+	// is no candidate, the other goes to the other host, whichever its hash prefers.
 	for i := range 16 {
 		pair := []string{fmt.Sprintf("192.168.%d.80", i), fmt.Sprintf("192.168.%d.81", i)}
 		free := exposures.SpreadProxies(pair, nil, proxyHosts("h1", "h2"))

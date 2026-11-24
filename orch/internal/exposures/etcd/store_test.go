@@ -96,8 +96,10 @@ func TestAnIdIsKeptUnderItsNetwork(t *testing.T) {
 }
 
 func TestAProxyExposureIsKeptApartFromEveryNetworkAndCountedOnItsOwn(t *testing.T) {
-	s := withPool(t)
+	etcd := orchtest.Start(t, orchtest.Options{Members: 1}).Members[0].Etcd()
+	s := exposuresetcd.New(etcd)
 	ctx := t.Context()
+	require.NoError(t, s.PutPool(ctx, lan, nil, noCheck))
 	require.NoError(t, s.CreateExposure(ctx, recOn("", "web", "192.168.0.80"), lan, 1))
 	require.NoError(t, s.CreateExposure(ctx, recOn("a", "web", "192.168.0.81"), lan, 1), "a network's id and count are its own")
 	require.ErrorIs(t, s.CreateExposure(ctx, recOn("", "db", "192.168.0.82"), lan, 1), exposures.ErrFull, "the proxy exposures' own count")
@@ -106,6 +108,11 @@ func TestAProxyExposureIsKeptApartFromEveryNetworkAndCountedOnItsOwn(t *testing.
 	require.NoError(t, err)
 	require.Equal(t, "192.168.0.80", p.Address)
 	require.Empty(t, p.Network)
+	for _, key := range []string{exposuresetcd.ExposurePrefix + "-proxy/web", exposuresetcd.CountPrefix + "-proxy"} {
+		got, err := etcd.Get(ctx, key)
+		require.NoError(t, err)
+		require.Len(t, got.Kvs, 1, "%s: the stored layout orch.md names, which an upgrade keeps reading", key)
+	}
 
 	// The claim reads back as the proxy exposure's, with no network, so a pool's check tells it apart.
 	var claims []exposures.Claim

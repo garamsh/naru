@@ -157,18 +157,22 @@ func TestProxyExposureApplyGetListAndDelete(t *testing.T) {
 }
 
 func TestProxyExposureApply_RefusesAFileThatIsNotAProxyExposure(t *testing.T) {
-	for name, body := range map[string]string{
-		"a field proxy exposures do not have": proxyExposureYAML + "backends: [10.9.0.5]\n",
-		"no id":                               strings.Replace(proxyExposureYAML, "id: web\n", "", 1),
+	for name, tc := range map[string]struct{ body, says string }{
+		"a field proxy exposures do not have": {proxyExposureYAML + "backends: [10.9.0.5]\n", `unknown field "backends"`},
+		"no id":                               {strings.Replace(proxyExposureYAML, "id: web\n", "", 1), "the proxy exposure has no id"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeOrch(t)
 			op := newOperator(t, f, "operator")
-			_, err := run(t, op.args(f, "proxy-exposure", "apply", "-f", writeGroup(t, body))...)
-			require.Error(t, err)
+			_, err := run(t, op.args(f, "proxy-exposure", "apply", "-f", writeGroup(t, tc.body))...)
+			require.ErrorContains(t, err, tc.says, "refused by naructl, before orch is asked")
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			assert.Empty(t, f.proxies)
 		})
 	}
+	f := newFakeOrch(t)
+	op := newOperator(t, f, "operator")
+	_, err := run(t, op.args(f, "proxy-exposure", "apply", "-f", writeGroup(t, proxyExposureYAML))...)
+	require.NoError(t, err, "control: the file the cases vary is applied")
 }
