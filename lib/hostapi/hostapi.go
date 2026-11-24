@@ -120,6 +120,14 @@ type Host struct {
 	// LANInterface is the interface the host announces exposed addresses on; empty when it
 	// announces none (ADR 0085 item 5).
 	LANInterface string `json:"lanInterface,omitempty"`
+	// Proxy is absent on a host that runs no naru-proxy.
+	Proxy *ProxyStatus `json:"proxy,omitempty"`
+}
+
+// ProxyStatus is the host's naru-proxy as hostd last asked its health endpoint: Healthy when it
+// answered, which makes the host a candidate for a proxy exposure (ADR 0112 item 8).
+type ProxyStatus struct {
+	Healthy bool `json:"healthy"`
 }
 
 // DiskSpec is a disk of a microVM, created with it and deleted with it.

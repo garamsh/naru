@@ -36,6 +36,7 @@ func run() error {
 		routesFile   = flag.String("routes-file", wire.ProxyRoutesFile, "the routes file hostd writes")
 		revisionFile = flag.String("revision-file", wire.ProxyRevisionFile, "where the revision of the table loaded is written, for hostd")
 		healthAddr   = flag.String("health-addr", wire.ProxyHealthAddr, "where GET /healthz is answered")
+		redirects    = flag.String("redirect-listen", "", "the addresses plain HTTP is answered on with a redirect to https, separated by commas; empty answers none")
 		maxAge       = flag.Duration("route-max-age", time.Hour, "how long after hostd took a table it is forwarded on")
 		reload       = flag.Duration("reload-interval", time.Second, "how often the routes file is checked for a new table")
 	)
@@ -68,7 +69,22 @@ func run() error {
 	health := &http.Server{Handler: srv.HealthHandler(), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = health.Serve(hl) }()
 	defer func() { _ = health.Close() }()
+	var plain []net.Listener
+	if *redirects != "" {
+		for addr := range strings.SplitSeq(*redirects, ",") {
+			l, err := net.Listen("tcp", addr)
+			if err != nil {
+				return err
+			}
+			plain = append(plain, l)
+		}
+	}
 	go routes.Watch(ctx, *reload)
-	log.Info("serving", "listen", *listen, "health", *healthAddr, "routes", *routesFile)
-	return srv.Serve(ctx, listeners...)
+	log.Info("serving", "listen", *listen, "redirect", *redirects, "health", *healthAddr, "routes", *routesFile)
+	errs := make(chan error, 2)
+	go func() { errs <- srv.ServeRedirects(ctx, plain...) }()
+	go func() { errs <- srv.Serve(ctx, listeners...) }()
+	err = <-errs
+	stop()
+	return errors.Join(err, <-errs)
 }

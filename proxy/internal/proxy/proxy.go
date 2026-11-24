@@ -156,15 +156,24 @@ func (s *Server) accept(ctx context.Context, l net.Listener) error {
 			}
 			continue
 		}
-		src, _ := netip.ParseAddrPort(c.RemoteAddr().String())
-		addr := src.Addr().Unmap()
-		if !s.limit.acquire(addr) {
-			s.conf.Log.Debug("refused a connection over the limit", "remote", c.RemoteAddr().String())
-			_ = c.Close()
-			continue
+		if cc, ok := s.admit(c); ok {
+			go s.handle(ctx, cc)
 		}
-		go s.handle(ctx, newClientConn(c, s.conf.Idle, func() { s.limit.release(addr) }))
 	}
+}
+
+// admit takes a slot for a connection a listener accepted, and returns it as a client's
+// connection, which gives the slot back when it closes. A connection over the proxy's or its
+// address's limit is closed.
+func (s *Server) admit(c net.Conn) (*clientConn, bool) {
+	src, _ := netip.ParseAddrPort(c.RemoteAddr().String())
+	addr := src.Addr().Unmap()
+	if !s.limit.acquire(addr) {
+		s.conf.Log.Debug("refused a connection over the limit", "remote", c.RemoteAddr().String())
+		_ = c.Close()
+		return nil, false
+	}
+	return newClientConn(c, s.conf.Idle, func() { s.limit.release(addr) }), true
 }
 
 // leafKey is the context key of the certificate an http connection's handshake chose.
