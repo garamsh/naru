@@ -107,6 +107,11 @@ type GroupSpec struct {
 
 var dnsLabel = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,38}[a-z0-9])?$`)
 
+// MachinePrefix begins the name of every microVM orch's Machine reconciler makes, which deletes
+// one of a Machine that is gone (ADR 0109 item 4). A group's members are named after the group, so
+// no group name begins with it.
+const MachinePrefix = "m-"
+
 // ErrInvalidSpec is wrapped by every error Validate returns.
 var ErrInvalidSpec = errors.New("invalid group spec")
 
@@ -118,6 +123,8 @@ func (g GroupSpec) Validate() error {
 	switch {
 	case !dnsLabel.MatchString(g.Name):
 		return bad("name %q is not a DNS label of at most 40 characters", g.Name)
+	case strings.HasPrefix(g.Name, MachinePrefix):
+		return bad("name %q begins with %q, which is reserved for the microVMs of Machines", g.Name, MachinePrefix)
 	case g.Count < 0:
 		return bad("count %d is negative", g.Count)
 	case g.Region == "":
