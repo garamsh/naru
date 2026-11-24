@@ -11,7 +11,7 @@ Drafted for garamsh/naru#164, part of plan garamsh/naru#113 and goal garamsh/nar
 
 - **A host's configuration is a whole `naru.yaml` today.** The operator writes services, files, the Node API pair and the network by hand ([config.md](../config.md)), so a host cannot be given to a cluster by naming the cluster.
 - **Orch enrolls a host.** `naru-hostd --join` presents an enrollment key to an orch whose certificate chains to a pinned SHA-256, and writes the configuration the orch gave it ([ADR 0050](./0050-the-image-carries-orch-and-the-signer-and-init-runs-them-as-separate-users-from-spec-orch-spec-signer-and-spec-metrics.md)).
-- **Init applies a configuration through one engine** with three modes and a base-SHA-256 rule ([ADR 0018](./0018-a-nodes-configuration-is-a-base-and-numbered-revisions-stored-on-the-data-disk-and-is-changed-by-merge-patch.md)).
+- **Init applies a configuration through one engine** with three modes and a base-SHA-256 rule ([ADR 0018](./0018-a-nodes-configuration-is-a-base-and-numbered-revisions-stored-on-the-data-disk-and-changed-by-merge-patch.md)).
 - **Init starts no DHCP client** ([init.md](../init.md) §Current decisions), and a joining host has no address written by an operator.
 - **The data disk is a precondition of every service** and is found by an ext4 label ([init.md](../init.md)).
 
