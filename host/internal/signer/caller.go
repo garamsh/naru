@@ -30,10 +30,6 @@ const (
 // expired.
 var ErrBadToken = errors.New("the registration token is not valid, or was spent or has expired")
 
-// ErrNotDue is returned for a renewal before the last identity.CallerRenewWindow of the
-// certificate's life.
-var ErrNotDue = errors.New("the certificate is not yet due for renewal")
-
 // callerClaims is what a registration token carries. The nonce is what spends it.
 type callerClaims struct {
 	Name      string    `json:"name"`
@@ -113,7 +109,7 @@ func (s *Signer) RenewCaller(signed []byte) (identity.Issued, error) {
 	}
 	name, now := who.Subject, s.now()
 	if due := who.NotAfter.Add(-identity.CallerRenewWindow); now.Before(due) {
-		return identity.Issued{}, fmt.Errorf("%w: renew from %s", ErrNotDue, due.Format(time.RFC3339))
+		return identity.Issued{}, fmt.Errorf("%w: renew from %s", identity.ErrCallerNotDue, due.Format(time.RFC3339))
 	}
 	csr, err := parseCSR(req.CSR)
 	if err != nil {

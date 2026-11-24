@@ -190,10 +190,10 @@ func TestCallerRenewal_OnlyInTheLastThirtyDaysForANewKeyWithTheOldOneStillValid(
 	p := e.registered("ws-provider")
 
 	_, err := s.RenewCaller(renewal(t, p, newKey(t), &c))
-	assert.ErrorIs(t, err, signer.ErrNotDue, "61 days before it expires")
+	assert.ErrorIs(t, err, identity.ErrCallerNotDue, "61 days before it expires")
 	c.advance(59 * 24 * time.Hour)
 	_, err = s.RenewCaller(renewal(t, p, newKey(t), &c))
-	assert.ErrorIs(t, err, signer.ErrNotDue, "31 days before it expires")
+	assert.ErrorIs(t, err, identity.ErrCallerNotDue, "31 days before it expires")
 	assert.Equal(t, http.StatusConflict, signer.StatusOf(err))
 
 	c.advance(2 * 24 * time.Hour)
@@ -209,7 +209,7 @@ func TestCallerRenewal_OnlyInTheLastThirtyDaysForANewKeyWithTheOldOneStillValid(
 	_, err = s.RenewCaller(renewal(t, p, newKey(t), &c))
 	assert.NoError(t, err, "the old certificate is not revoked by its renewal")
 	_, err = s.RenewCaller(renewal(t, person{key: key, cert: next}, newKey(t), &c))
-	assert.ErrorIs(t, err, signer.ErrNotDue, "the new one is not due")
+	assert.ErrorIs(t, err, identity.ErrCallerNotDue, "the new one is not due")
 }
 
 func TestCallerRenewal_ARevokedOrExpiredCertificateOrAnotherRoleIsRefused(t *testing.T) {

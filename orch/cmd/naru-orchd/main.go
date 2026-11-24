@@ -157,7 +157,7 @@ func run(log *slog.Logger, f runFlags) error {
 		Listen: f.listen, MachineAPIListen: f.machineAddr, MachineZone: f.machineZone, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
 		GroupInterval: f.groupEach, NetworkInterval: f.netEach, Restore: f.restore,
 	}, orchd.Deps{
-		Signer: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
+		Signer: sg, Credentials: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
 		NewHosts:        func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP, revocations) },
 		NewPrefixHosts:  func(inv inventory.Service) inventory.PrefixHosts { return hostclient.New(inv, hostHTTP, revocations) },
 		BootSets:        bootSets,

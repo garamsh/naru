@@ -221,7 +221,7 @@ func (c *Cluster) member(t testing.TB, i, peerPort, clientPort int) (orchd.Confi
 		MachineAPIListen: "127.0.0.1:0", MachineZone: o.MachineZone,
 		LeaderTTL: o.LeaderTTL, Limits: o.Limits, CRLSyncInterval: o.CRLSyncInterval, GroupInterval: o.GroupInterval, NetworkInterval: o.NetworkInterval,
 	}
-	deps := orchd.Deps{Signer: c.Signer, Auth: auth.Revocations{List: &identity.RevocationList{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, NewPrefixHosts: o.NewPrefixHosts, NewExposureHosts: o.NewExposureHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name), RevocationKey: c.CA.RevocationKey()}
+	deps := orchd.Deps{Signer: c.Signer, Credentials: c.Signer, Auth: auth.Revocations{List: &identity.RevocationList{Source: c.Signer, Key: c.CA.RevocationKey(), Now: time.Now, Log: o.Log}}, Sealer: o.Sealer, NewHosts: o.NewHosts, NewNetworkHosts: o.NewNetworkHosts, NewPrefixHosts: o.NewPrefixHosts, NewExposureHosts: o.NewExposureHosts, Metrics: o.Metrics, Clock: c.Clock, Log: o.Log.With("member", name), RevocationKey: c.CA.RevocationKey()}
 	if i < len(o.CRLPeers) {
 		deps.CRLPeer = o.CRLPeers[i]
 	}
@@ -308,14 +308,18 @@ func (c *Cluster) Client(t testing.TB, i int, id *Identity) *orchapi.Client {
 	return cl
 }
 
-// MachineClient returns a Machine API client of member i that presents id.
+// MachineClient returns a Machine API client of member i that presents id; a zero Identity
+// presents no certificate.
 func (c *Cluster) MachineClient(t testing.TB, i int, id Identity) *machineapi.Client {
 	t.Helper()
 	addr := c.Members[i].MachineAPIAddr()
 	if addr == "" {
 		t.Fatal("the member serves no Machine API: set Options.MachineZone")
 	}
-	conf := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: c.CA.Pool(), Certificates: []tls.Certificate{id.TLS}}
+	conf := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: c.CA.Pool()}
+	if len(id.TLS.Certificate) > 0 {
+		conf.Certificates = []tls.Certificate{id.TLS}
+	}
 	cl, err := machineapi.New("https://"+addr, &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: conf}})
 	if err != nil {
 		t.Fatal(err)

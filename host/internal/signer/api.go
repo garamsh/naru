@@ -129,7 +129,7 @@ func (s *Signer) wrap(next http.Handler) http.Handler {
 // never reaches it: the mux answers 404.
 func statusOf(err error) int {
 	switch {
-	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost), errors.Is(err, ErrNotDue):
+	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost), errors.Is(err, identity.ErrCallerNotDue):
 		return http.StatusConflict
 	case errors.Is(err, ErrBadRequest), errors.Is(err, identity.ErrFormat):
 		return http.StatusBadRequest

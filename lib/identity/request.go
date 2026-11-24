@@ -104,6 +104,10 @@ const (
 	CallerRenewWindow = 30 * 24 * time.Hour
 )
 
+// ErrCallerNotDue is the refusal of a caller's renewal before the last CallerRenewWindow of its
+// certificate's life. The signer answers it 409 with this text, which orch reads back.
+var ErrCallerNotDue = errors.New("the certificate is not yet due for renewal")
+
 // RevokeRequest is the body of ActionRevoke.
 type RevokeRequest struct {
 	Serial string `json:"serial"`

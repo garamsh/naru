@@ -1,11 +1,12 @@
-package inventory
+// Package ratelimit is the token bucket per name that bounds what one source may ask of orch.
+package ratelimit
 
 import (
 	"sync"
 	"time"
 )
 
-// Clock is the time source of the service.
+// Clock is the time source of a Limiter.
 type Clock interface {
 	Now() time.Time
 }
@@ -18,8 +19,8 @@ type bucket struct {
 	last   time.Time
 }
 
-// limiter is a token bucket per name: burst tokens at most, refilled at rate per second.
-type limiter struct {
+// Limiter is a token bucket per name: burst tokens at most, refilled at rate per second.
+type Limiter struct {
 	mu      sync.Mutex
 	clock   Clock
 	rate    float64
@@ -27,12 +28,13 @@ type limiter struct {
 	buckets map[string]*bucket
 }
 
-func newLimiter(clock Clock, rate float64, burst int) *limiter {
-	return &limiter{clock: clock, rate: rate, burst: float64(burst), buckets: map[string]*bucket{}}
+// New returns a Limiter of burst tokens per name, refilled at rate per second.
+func New(clock Clock, rate float64, burst int) *Limiter {
+	return &Limiter{clock: clock, rate: rate, burst: float64(burst), buckets: map[string]*bucket{}}
 }
 
-// allow takes a token of the name's bucket and reports whether there was one.
-func (l *limiter) allow(name string) bool {
+// Allow takes a token of the name's bucket and reports whether there was one.
+func (l *Limiter) Allow(name string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.clock.Now()

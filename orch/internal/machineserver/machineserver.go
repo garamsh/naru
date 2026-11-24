@@ -31,7 +31,11 @@ const maxBody = 4 << 20
 type Deps struct {
 	Machines machines.Service
 	Auth     auth.Authenticator
-	Log      *slog.Logger
+	// Credentials is the signer a caller registers and renews through, and Sources bounds the
+	// registrations of each source address.
+	Credentials Credentials
+	Sources     Limiter
+	Log         *slog.Logger
 }
 
 type handler struct{ Deps }
@@ -58,6 +62,8 @@ func New(d Deps) http.Handler {
 	m.HandleFunc("GET "+p+"snapshots/{name}", h.serve(h.snapshot))
 	m.HandleFunc("DELETE "+p+"snapshots/{name}", h.serve(h.deleteSnapshot))
 	m.HandleFunc("GET "+p+"events", h.serve(h.events))
+	m.HandleFunc("POST "+p+"register", h.register)
+	m.HandleFunc("POST "+p+"renew", h.serve(h.renew))
 	for _, route := range []string{
 		"POST " + p + "machines/{name}/exec", "GET " + p + "machines/{name}/files", "PUT " + p + "machines/{name}/files",
 		"PUT " + p + "aliases/{hostname}", "GET " + p + "aliases/{hostname}", "DELETE " + p + "aliases/{hostname}",
@@ -76,10 +82,10 @@ func Unavailable(why string) http.Handler {
 	})
 }
 
-// TLSConfig is the listener's configuration: TLS 1.3, and a client certificate that verifies
-// against clientCA is required of every connection.
+// TLSConfig is the listener's configuration: TLS 1.3, and a client certificate, when one is sent,
+// that verifies against clientCA. Every operation but register refuses a request without one.
 func TLSConfig(cert tls.Certificate, clientCA *x509.CertPool) *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clientCA}
+	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, ClientAuth: tls.VerifyClientCertIfGiven, ClientCAs: clientCA}
 }
 
 // middleware recovers a panic as a 500 and gives each request a logger with a trace id.
@@ -185,6 +191,15 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, identity.ErrRevoked), errors.Is(err, identity.ErrRole), errors.Is(err, identity.ErrNoChain), errors.Is(err, errCaller):
 		status, code, msg = http.StatusForbidden, machineapi.CodeForbidden, err.Error()
+	case errors.Is(err, errTokenRefused):
+		status, code, msg = http.StatusForbidden, machineapi.CodeTokenRefused, errTokenRefused.Error()
+	case errors.Is(err, identity.ErrCallerNotDue):
+		status, code, msg = http.StatusConflict, machineapi.CodeNotDue, err.Error()
+	case errors.Is(err, errRateLimited):
+		status, code, msg = http.StatusTooManyRequests, machineapi.CodeRateLimited, err.Error()
+	case errors.Is(err, errSigner):
+		status, code, msg = http.StatusServiceUnavailable, machineapi.CodeUnavailable, errSigner.Error()
+		logger(r).Error("the signer failed", "err", err.Error())
 	case errors.Is(err, identity.ErrNoRevocationList), errors.Is(err, identity.ErrStaleRevocationList):
 		status, code, msg = http.StatusServiceUnavailable, machineapi.CodeUnavailable, "the revocation list is not available"
 		logger(r).Error("no revocation list", "err", err.Error())

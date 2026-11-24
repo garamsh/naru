@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/orch/internal/ratelimit"
 )
 
 // Service is what the API offers on the inventory. The roles that may call each method are the
@@ -41,9 +42,15 @@ type Service interface {
 	SetProfile(ctx context.Context, by string, yaml []byte) error
 }
 
+// Clock is the time source of the service.
+type Clock interface {
+	Now() time.Time
+}
+
 // Config sets the service's limits. A zero value is replaced by its default.
 type Config struct {
-	// SourceRate and SourceBurst bound enrollment requests per second per source address, KeyRate
+	// SourceRate and SourceBurst bound enrollment requests per second per source address, and the
+	// Machine API's registrations in a bucket of their own (ADR 0116 item 7), KeyRate
 	// and KeyBurst per enrollment key.
 	SourceRate  float64
 	SourceBurst int
@@ -82,14 +89,25 @@ type service struct {
 	signer  Signer
 	clock   Clock
 	conf    Config
-	sources *limiter
-	keys    *limiter
-	polls   *limiter
+	sources *ratelimit.Limiter
+	keys    *ratelimit.Limiter
+	polls   *ratelimit.Limiter
 }
 
 // NewService returns the service over store and signer. space is what a profile's mesh pool is
 // checked against.
 func NewService(store Store, space AddressSpace, signer Signer, clock Clock, conf Config) Service {
+	conf = conf.WithDefaults()
+	return &service{
+		store: store, space: space, signer: signer, clock: clock, conf: conf,
+		sources: ratelimit.New(clock, conf.SourceRate, conf.SourceBurst),
+		keys:    ratelimit.New(clock, conf.KeyRate, conf.KeyBurst),
+		polls:   ratelimit.New(clock, conf.PollRate, conf.PollBurst),
+	}
+}
+
+// WithDefaults returns c with each zero limit replaced by its default.
+func (conf Config) WithDefaults() Config {
 	if conf.SourceRate == 0 {
 		conf.SourceRate = 1
 	}
@@ -111,10 +129,5 @@ func NewService(store Store, space AddressSpace, signer Signer, clock Clock, con
 	if conf.MaxPending == 0 {
 		conf.MaxPending = 1000
 	}
-	return &service{
-		store: store, space: space, signer: signer, clock: clock, conf: conf,
-		sources: newLimiter(clock, conf.SourceRate, conf.SourceBurst),
-		keys:    newLimiter(clock, conf.KeyRate, conf.KeyBurst),
-		polls:   newLimiter(clock, conf.PollRate, conf.PollBurst),
-	}
+	return conf
 }
