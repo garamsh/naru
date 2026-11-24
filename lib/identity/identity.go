@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 )
 
 // Role is what a certificate lets its holder do. It is carried in the
@@ -44,6 +45,8 @@ type Identity struct {
 	Role    Role
 	// Serial is the certificate's serial number in lowercase hexadecimal.
 	Serial string
+	// NotAfter is when the certificate expires.
+	NotAfter time.Time
 }
 
 // Valid reports whether r is one of the roles.
@@ -89,7 +92,7 @@ func Authenticate(chains [][]*x509.Certificate, crl *CRL) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf)}, nil
+	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf), NotAfter: leaf.NotAfter}, nil
 }
 
 // callerName is what a caller is called: a DNS label.

@@ -34,7 +34,16 @@ func (s *Signer) Handler() http.Handler {
 	}))
 	mux.HandleFunc("POST /v1/orch", handleSigned(s, s.IssueOrch))
 	mux.HandleFunc("POST /v1/operator", handleSigned(s, s.IssueOperator))
-	mux.HandleFunc("POST /v1/caller", handleSigned(s, s.IssueCaller))
+	mux.HandleFunc("POST /v1/caller-token", handleSigned(s, s.IssueCallerToken))
+	mux.HandleFunc("POST /v1/caller", s.handle(func(r *http.Request) (any, error) {
+		var req identity.CallerRegistration
+		if err := readJSON(r, &req); err != nil {
+			return nil, err
+		}
+		return s.RegisterCaller(req)
+	}))
+	mux.HandleFunc("POST /v1/caller-renew", handleSigned(s, s.RenewCaller))
+	mux.HandleFunc("POST /v1/caller-issue", handleSigned(s, s.IssueCaller))
 	mux.HandleFunc("POST /v1/revoke", handleSigned(s, s.Revoke))
 	mux.HandleFunc("POST /v1/reissue-host", handleSigned(s, s.ReissueHost))
 	mux.HandleFunc("POST /v1/retire-host", handleSigned(s, func(signed []byte) (struct{}, error) { return struct{}{}, s.RetireHost(signed) }))
@@ -120,7 +129,7 @@ func (s *Signer) wrap(next http.Handler) http.Handler {
 // never reaches it: the mux answers 404.
 func statusOf(err error) int {
 	switch {
-	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost):
+	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost), errors.Is(err, ErrNotDue):
 		return http.StatusConflict
 	case errors.Is(err, ErrBadRequest), errors.Is(err, identity.ErrFormat):
 		return http.StatusBadRequest
@@ -136,6 +145,7 @@ func statusOf(err error) int {
 		errors.Is(err, identity.ErrRequestSignature),
 		errors.Is(err, identity.ErrRecoverySignature),
 		errors.Is(err, ErrReplay),
+		errors.Is(err, ErrBadToken),
 		errors.Is(err, identity.ErrCRLSignature),
 		errors.Is(err, identity.ErrOpen),
 		errors.Is(err, identity.ErrPassphrase):

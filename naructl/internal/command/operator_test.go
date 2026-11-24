@@ -47,7 +47,7 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 	f := &fakeSigner{socket: shortSocketPath(t), roots: roots, got: map[string]json.RawMessage{}, who: map[string]identity.Identity{}, status: http.StatusOK}
 	l, err := net.Listen("unix", f.socket)
 	require.NoError(t, err)
-	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/caller": identity.ActionIssueCaller, "/v1/revoke": identity.ActionRevoke,
+	actions := map[string]string{"/v1/operator": identity.ActionIssueOperator, "/v1/caller-issue": identity.ActionIssueCaller, "/v1/caller-token": identity.ActionIssueCallerToken, "/v1/revoke": identity.ActionRevoke,
 		"/v1/reissue-host": identity.ActionReissueHost, "/v1/register-host": identity.ActionRegisterHost, "/v1/retire-host": identity.ActionRetireHost,
 		"/v1/lookup-host": identity.ActionLookupHost, "/v1/revoke-host": identity.ActionRevokeHost}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +85,13 @@ func startFakeSigner(t *testing.T, roots *x509.CertPool) *fakeSigner {
 			_ = json.NewEncoder(w).Encode(identity.Issued{Certificate: cert.Raw, Serial: cert.SerialNumber.Text(16), NotAfter: cert.NotAfter})
 			return
 		}
-		if r.URL.Path == "/v1/caller" {
+		if r.URL.Path == "/v1/caller-token" {
+			var c identity.CallerTokenRequest
+			_ = json.Unmarshal(body, &c)
+			_ = json.NewEncoder(w).Encode(identity.CallerToken{Token: "naru-ct-for-" + c.Name, ExpiresAt: time.Now().Add(time.Duration(c.TTLSeconds) * time.Second)})
+			return
+		}
+		if r.URL.Path == "/v1/caller-issue" {
 			var c identity.CallerRequest
 			_ = json.Unmarshal(body, &c)
 			csr, _ := x509.ParseCertificateRequest(c.CSR)

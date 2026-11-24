@@ -31,9 +31,9 @@ func TestCallerCredential_AsksTheSignerForTheCallerAndWritesACertificateOfTheKey
 	require.NoError(t, err, text)
 	assert.Contains(t, text, "issued a caller certificate for garam")
 
-	assert.Equal(t, identity.RoleRoot, f.who["/v1/caller"].Role, "the request is signed with the admin file's key")
+	assert.Equal(t, identity.RoleRoot, f.who["/v1/caller-issue"].Role, "the request is signed with the admin file's key")
 	var req identity.CallerRequest
-	require.NoError(t, json.Unmarshal(f.got["/v1/caller"], &req))
+	require.NoError(t, json.Unmarshal(f.got["/v1/caller-issue"], &req))
 	assert.Equal(t, "garam", req.Name)
 	assert.Equal(t, 30, req.Days)
 	csr, err := x509.ParseCertificateRequest(req.CSR)
@@ -77,7 +77,7 @@ func TestCallerCredential_RefusesAnInvalidNameBeforeAnythingIsSent(t *testing.T)
 	}
 	text, err := run(t, callerArgs(f, admin, pass, t.TempDir(), "--name", "use-1")...)
 	require.NoError(t, err, "the control: a DNS label is accepted: %s", text)
-	assert.NotEmpty(t, f.got["/v1/caller"])
+	assert.NotEmpty(t, f.got["/v1/caller-issue"])
 }
 
 func TestCallerCredential_RefusesMoreThanNinetyDaysAndNeverWritesOverAFile(t *testing.T) {
@@ -94,7 +94,7 @@ func TestCallerCredential_RefusesMoreThanNinetyDaysAndNeverWritesOverAFile(t *te
 	text, err := run(t, callerArgs(f, admin, pass, t.TempDir(), "--name", "garam")...)
 	require.NoError(t, err, "the control: the default is accepted: %s", text)
 	var req identity.CallerRequest
-	require.NoError(t, json.Unmarshal(f.got["/v1/caller"], &req))
+	require.NoError(t, json.Unmarshal(f.got["/v1/caller-issue"], &req))
 	assert.Equal(t, 90, req.Days, "the default is 90 days")
 
 	for _, file := range []string{"caller.key", "caller.crt"} {
@@ -123,4 +123,40 @@ func TestCallerCredential_ReportsTheSignersRefusalAndWritesNothing(t *testing.T)
 	assert.Contains(t, text, "refused by the fake")
 	assert.NoFileExists(t, filepath.Join(dir, "caller.key"), "a refused request leaves no key")
 	assert.NoFileExists(t, filepath.Join(dir, "caller.crt"))
+}
+
+func TestCallerToken_AsksTheSignerAsRootAndWritesTheTokenOnlyToTheFile(t *testing.T) {
+	pool := x509.NewCertPool()
+	pool.AddCert(caOf(t).cert)
+	f := startFakeSigner(t, pool)
+	admin, pass := adminFile(t, identity.RoleRoot, "pw")
+	out := filepath.Join(t.TempDir(), "token")
+
+	text, err := run(t, "caller", "token", "--name", "garam-bot", "--ttl", "2h", "--admin", admin, "--passphrase-file", pass, "--socket", f.socket, "--out", out)
+	require.NoError(t, err, text)
+	assert.Equal(t, identity.RoleRoot, f.who["/v1/caller-token"].Role, "the request is signed with the admin file's key")
+	var req identity.CallerTokenRequest
+	require.NoError(t, json.Unmarshal(f.got["/v1/caller-token"], &req))
+	assert.Equal(t, identity.CallerTokenRequest{Name: "garam-bot", TTLSeconds: 7200}, req)
+	b, err := os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Equal(t, "naru-ct-for-garam-bot\n", string(b))
+	fi, err := os.Stat(out)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
+	assert.NotContains(t, text, "naru-ct-", "the token is printed nowhere")
+
+	for name, extra := range map[string][]string{
+		"the file exists": {"--name", "garam-bot", "--out", out},
+		"a bad name":      {"--name", "Garam", "--out", filepath.Join(t.TempDir(), "t")},
+		"over 24 hours":   {"--name", "garam-bot", "--ttl", "25h", "--out", filepath.Join(t.TempDir(), "t")},
+	} {
+		delete(f.got, "/v1/caller-token")
+		_, err := run(t, append([]string{"caller", "token", "--admin", admin, "--passphrase-file", pass, "--socket", f.socket}, extra...)...)
+		assert.Error(t, err, name)
+		assert.NotContains(t, f.got, "/v1/caller-token", "%s: nothing is sent", name)
+	}
+	b, err = os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Equal(t, "naru-ct-for-garam-bot\n", string(b), "the file is not written over")
 }

@@ -104,7 +104,7 @@ func TestAuthenticate(t *testing.T) {
 
 	id, err := identity.Authenticate(chains, nil)
 	require.NoError(t, err)
-	assert.Equal(t, identity.Identity{Subject: "alice", Role: identity.RoleOperator, Serial: "ab"}, id)
+	assert.Equal(t, identity.Identity{Subject: "alice", Role: identity.RoleOperator, Serial: "ab", NotAfter: cert.NotAfter}, id, "the identity carries when the certificate expires")
 
 	_, err = identity.Authenticate(chains, &identity.CRL{Serials: []string{"ab"}})
 	assert.ErrorIs(t, err, identity.ErrRevoked)

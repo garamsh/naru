@@ -25,15 +25,19 @@ const (
 	ActionIssueOrch     = "issue-orch"
 	ActionIssueOperator = "issue-operator"
 	ActionIssueCaller   = "issue-caller"
-	ActionRevoke        = "revoke"
-	ActionReissueHost   = "reissue-host"
-	ActionRegisterHost  = "register-host"
-	ActionRetireHost    = "retire-host"
-	ActionLookupHost    = "lookup-host"
-	ActionRevokeHost    = "revoke-host"
-	ActionBundle        = "bundle"
-	ActionRestore       = "restore"
-	ActionReplicate     = "replicate"
+	// ActionIssueCallerToken asks for a caller registration token.
+	ActionIssueCallerToken = "issue-caller-token"
+	// ActionRenewCaller is signed by a caller's current certificate to renew it.
+	ActionRenewCaller  = "renew-caller"
+	ActionRevoke       = "revoke"
+	ActionReissueHost  = "reissue-host"
+	ActionRegisterHost = "register-host"
+	ActionRetireHost   = "retire-host"
+	ActionLookupHost   = "lookup-host"
+	ActionRevokeHost   = "revoke-host"
+	ActionBundle       = "bundle"
+	ActionRestore      = "restore"
+	ActionReplicate    = "replicate"
 )
 
 // HostRequest is the body of the signer's POST /v1/host: an admission statement and the
@@ -63,6 +67,42 @@ type CallerRequest struct {
 
 // MaxCallerDays is the longest a caller certificate is valid, and its default.
 const MaxCallerDays = 90
+
+// CallerTokenRequest is the body of ActionIssueCallerToken: the caller the token registers and the
+// seconds it lives (DefaultCallerTokenTTL when 0, at most MaxCallerTokenTTL).
+type CallerTokenRequest struct {
+	Name       string `json:"name"`
+	TTLSeconds int    `json:"ttlSeconds,omitempty"`
+}
+
+// CallerToken is the signer's answer to ActionIssueCallerToken: the token, which the signer keeps
+// no copy of, and when it expires.
+type CallerToken struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// CallerRegistration is the body of the signer's POST /v1/caller: a registration token, which is
+// the only authentication, and the certificate request of a key the caller made, DER.
+type CallerRegistration struct {
+	Token string `json:"token"`
+	CSR   []byte `json:"csr"`
+}
+
+// CallerRenewal is the body of ActionRenewCaller: the certificate request of the caller's new
+// key, DER.
+type CallerRenewal struct {
+	CSR []byte `json:"csr"`
+}
+
+const (
+	// DefaultCallerTokenTTL is how long a caller registration token lives when none is asked.
+	DefaultCallerTokenTTL = time.Hour
+	// MaxCallerTokenTTL is the longest a caller registration token lives.
+	MaxCallerTokenTTL = 24 * time.Hour
+	// CallerRenewWindow is the end of a caller certificate's life in which it may renew itself.
+	CallerRenewWindow = 30 * 24 * time.Hour
+)
 
 // RevokeRequest is the body of ActionRevoke.
 type RevokeRequest struct {

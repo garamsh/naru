@@ -129,9 +129,10 @@ func (s *Signer) IssueOperator(signed []byte) (identity.Issued, error) {
 	return s.issueFor(a, who, a.operator, req, req.Role, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
 }
 
-// IssueCaller issues the certificate of a use of the Machine API, for a request root signed. The CN
-// is the request's name, never the certificate request's, and the certificate is valid at most
-// identity.MaxCallerDays, client authentication only (ADR 0108 item 4).
+// IssueCaller issues the certificate of a use of the Machine API, for a request root signed: root's
+// direct issuance, for tests and recovery, beside a caller's own registration (ADR 0116). The CN is
+// the request's name, never the certificate request's, and the certificate is valid at most
+// identity.MaxCallerDays.
 func (s *Signer) IssueCaller(signed []byte) (identity.Issued, error) {
 	var req identity.CallerRequest
 	who, a, err := s.authorise(signed, identity.ActionIssueCaller, &req, identity.RoleRoot)
@@ -152,12 +153,8 @@ func (s *Signer) IssueCaller(signed []byte) (identity.Issued, error) {
 	if err != nil {
 		return identity.Issued{}, err
 	}
-	now := s.now()
-	issued, err := issueLeafUntil(a.operator, now, now.AddDate(0, 0, days), req.Name, identity.RoleCaller, csr.PublicKey, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil)
+	issued, err := s.issueCaller(a, s.now(), days, req.Name, csr)
 	if err != nil {
-		return identity.Issued{}, err
-	}
-	if err := s.record(issued.Serial, identity.RoleCaller); err != nil {
 		return identity.Issued{}, err
 	}
 	s.log.Info("issued a certificate", "role", string(identity.RoleCaller), "subject", req.Name, "serial", issued.Serial,
