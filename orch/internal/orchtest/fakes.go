@@ -284,7 +284,7 @@ func (s *Signer) issueCaller(name string, csrDER []byte) (identity.Issued, error
 	if err != nil {
 		return identity.Issued{}, fmt.Errorf("%w: %v", signer.ErrInvalid, err)
 	}
-	cert, der, err := s.CA.signUntil(name, string(identity.RoleCaller), csr.PublicKey, nil, time.Now().AddDate(0, 0, identity.MaxCallerDays))
+	cert, der, err := s.CA.signUntil(name, string(identity.RoleCaller), csr.PublicKey, nil, time.Now().AddDate(0, 0, identity.MaxCallerDays), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
 	if err != nil {
 		return identity.Issued{}, err
 	}

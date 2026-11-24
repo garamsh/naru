@@ -99,11 +99,11 @@ func (c *CA) PEM() []byte {
 }
 
 func (c *CA) sign(subject, role string, pub any, ips []net.IP) (*x509.Certificate, []byte, error) {
-	return c.signUntil(subject, role, pub, ips, time.Now().Add(12*time.Hour))
+	return c.signUntil(subject, role, pub, ips, time.Now().Add(12*time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth})
 }
 
-// signUntil is sign, with the certificate valid until notAfter.
-func (c *CA) signUntil(subject, role string, pub any, ips []net.IP, notAfter time.Time) (*x509.Certificate, []byte, error) {
+// signUntil is sign, with the certificate valid until notAfter for usages.
+func (c *CA) signUntil(subject, role string, pub any, ips []net.IP, notAfter time.Time, usages []x509.ExtKeyUsage) (*x509.Certificate, []byte, error) {
 	c.mu.Lock()
 	c.next++
 	serial := c.next
@@ -112,7 +112,7 @@ func (c *CA) signUntil(subject, role string, pub any, ips []net.IP, notAfter tim
 		SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: subject, OrganizationalUnit: []string{role}},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: notAfter,
 		KeyUsage:    x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage: usages,
 		IPAddresses: ips,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, pub, c.key)

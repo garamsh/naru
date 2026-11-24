@@ -109,13 +109,22 @@ func (f *Fake) routes() {
 	m.HandleFunc("DELETE "+p+"aliases/{hostname}", f.handle(func(c string, r *http.Request) (int, any, error) {
 		return http.StatusNoContent, nil, f.deleteAlias(c, r.PathValue("hostname"))
 	}))
+	m.HandleFunc("POST "+p+"register", f.answer(func(r *http.Request) (int, any, error) {
+		c, err := f.register(r)
+		return http.StatusOK, c, err
+	}))
+	m.HandleFunc("POST "+p+"renew", f.handle(func(_ string, r *http.Request) (int, any, error) {
+		c, err := f.renew(r)
+		return http.StatusOK, c, err
+	}))
 	m.HandleFunc("/", f.handle(func(_ string, r *http.Request) (int, any, error) {
 		return 0, nil, refuse(http.StatusNotFound, machineapi.CodeNotFound, "no operation %s %s", r.Method, r.URL.Path)
 	}))
 	f.mux = m
 }
 
-// ServeHTTP answers the Machine API to a caller certificate and 403 to any other.
+// ServeHTTP answers the Machine API to a caller certificate and 403 to any other, and register to a
+// request with no certificate.
 func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) { f.mux.ServeHTTP(w, r) }
 
 // raw is a body answered as it is, not as JSON.
@@ -130,12 +139,19 @@ func createdOr(created bool) int {
 
 // handle answers op's result to the caller the request's certificate names.
 func (f *Fake) handle(op func(caller string, r *http.Request) (int, any, error)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	return f.answer(func(r *http.Request) (int, any, error) {
 		caller, err := callerOf(r)
-		status, body := 0, any(nil)
-		if err == nil {
-			status, body, err = op(caller, r)
+		if err != nil {
+			return 0, nil, err
 		}
+		return op(caller, r)
+	})
+}
+
+// answer writes op's result, or its refusal.
+func (f *Fake) answer(op func(r *http.Request) (int, any, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		status, body, err := op(r)
 		if err != nil {
 			status, eb := errorOf(err)
 			writeJSON(w, status, eb)

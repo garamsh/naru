@@ -34,8 +34,13 @@ func TestFake_PassesTheConformanceTest(t *testing.T) {
 		AliasDomains: map[string][]string{"garam": {"workspaces.example.test"}},
 		Latency:      300 * time.Millisecond,
 	})
+	caller, key, cert := s.ClientWithPair("garam", machineapifake.CallerRole)
 	machineapitest.Run(t, machineapitest.Config{
-		Caller:      s.Client("garam"),
+		Caller:      caller,
+		CallerKey:   key,
+		CallerCert:  cert,
+		Anonymous:   s.AnonymousClient(),
+		Token:       func(_ *testing.T, name string) string { return s.Token(name) },
 		Other:       s.Client("functions"),
 		OtherRole:   s.ClientOfRole("garam", "operator"),
 		ExpireLog:   func(*testing.T) { s.ExpireLog("garam") },

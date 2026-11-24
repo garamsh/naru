@@ -1,6 +1,7 @@
 package orchd_test
 
 import (
+	"crypto"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -58,9 +59,12 @@ func startMachineOrch(t *testing.T) machineOrch {
 // aliases (#387), when machineapitest.Run runs whole.
 func TestOrch_PassesTheMachineAPIConformanceScenariosThatNeedNoHost(t *testing.T) {
 	o := startMachineOrch(t)
-	cfg := machineapitest.Config{Caller: o.garam, Other: o.functions, OtherRole: o.op, Zone: machineZone, Spec: machineSpec(), Timeout: 10 * time.Second}
+	cfg := machineapitest.Config{Caller: o.garam, Other: o.functions, OtherRole: o.op, Zone: machineZone, Spec: machineSpec(), Timeout: 10 * time.Second,
+		Anonymous: o.c.MachineClient(t, 0, orchtest.Identity{}), Token: func(_ *testing.T, name string) string { return o.c.Signer.CallerToken(name) },
+		CallerKey: o.garamID.TLS.PrivateKey.(crypto.Signer), CallerCert: o.garamID.Cert}
 	t.Run("Create", func(t *testing.T) { machineapitest.Create(t, cfg) })
 	t.Run("OtherRole", func(t *testing.T) { machineapitest.OtherRole(t, cfg) })
+	t.Run("Credentials", func(t *testing.T) { machineapitest.Credentials(t, cfg) })
 }
 
 // refused asserts err is the Machine API's refusal with status and code.

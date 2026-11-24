@@ -9,7 +9,9 @@ package machineapitest
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -40,6 +42,14 @@ type Config struct {
 	ExpireLog func(t *testing.T)
 	// Timeout bounds each wait for a phase or for a Machine to be gone. Zero is 2 minutes.
 	Timeout time.Duration
+	// Anonymous is a client of the implementation that presents no certificate, and Token makes a
+	// registration token for a caller name, as root asks the signer for one.
+	Anonymous *machineapi.Client
+	Token     func(t *testing.T, name string) string
+	// CallerKey and CallerCert are the pair Caller presents, which must be in the last 30 days of
+	// its life, so that it renews.
+	CallerKey  crypto.Signer
+	CallerCert *x509.Certificate
 }
 
 // Run runs every scenario against the implementation c reaches.
@@ -60,6 +70,7 @@ func Run(t *testing.T, c Config) {
 		{"Secrets", Secrets},
 		{"RunningOnly", RunningOnly},
 		{"Aliases", Aliases},
+		{"Credentials", Credentials},
 	} {
 		t.Run(s.name, func(t *testing.T) { s.run(t, c) })
 	}
