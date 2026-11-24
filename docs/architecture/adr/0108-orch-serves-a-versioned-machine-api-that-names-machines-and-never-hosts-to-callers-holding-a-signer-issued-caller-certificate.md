@@ -1,6 +1,6 @@
 # ADR 0108: orch serves a versioned Machine API that names Machines and never hosts, to callers holding a signer-issued caller certificate
 
-> Status: accepted
+> Status: accepted; item 4's issuance (who the caller is and how it gets its certificate) superseded by [ADR 0116](./0116-a-caller-registers-once-with-a-one-time-token-root-asks-the-signer-for-and-a-key-it-makes-where-it-runs-and-renews-its-own-certificate-superseding-adr-0108-item-4s-issuance.md)
 > Date: 2026-11-24
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
