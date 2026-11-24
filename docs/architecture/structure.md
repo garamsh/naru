@@ -87,3 +87,4 @@ Each executable unit has its own site: its `cmd/<binary>/main.go`, or the packag
 ## Open questions
 
 - **How a unit is divided inside.** `docs/convention/stack-go.md` §1 lays out a service module, and no decision here adds to it. Until one does, this binds nothing.
+- **`lib/machineapi` (decided, not built).** The Machine API's types and Go client, with the conformance test `machineapitest` and the in-memory implementation `machineapifake`, a module of its own under `lib/` because orch serves it and the uses outside naru require it ([ADR 0108](./adr/0108-orch-serves-a-versioned-machine-api-that-names-machines-and-never-hosts-to-callers-holding-a-signer-issued-caller-certificate.md)). It joins §Units when its first pull request creates it.

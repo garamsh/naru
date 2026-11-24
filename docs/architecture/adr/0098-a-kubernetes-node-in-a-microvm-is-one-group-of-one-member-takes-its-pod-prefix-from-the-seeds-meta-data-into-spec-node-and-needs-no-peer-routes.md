@@ -43,3 +43,7 @@ Drafted for garamsh/naru#262. The Node's address in a microVM is a separate deci
 - A cluster needs a group of several Kubernetes members before per-member certificates exist.
 - A host that does not route another host's members' Pod prefixes (a peer list that omits them) leaves Pods of different Nodes unable to reach each other with no peer routes in the user-data.
 - A second per-member value (beyond the name, the address and the Pod prefix) is needed in the user-data, which makes `spec.node` a list of special cases.
+
+## Errata
+
+- **2026-11-24.** The file this ADR's Context cites, `lib/layout/kubernetes.go`, no longer exists. It was removed with the rest of naru's Kubernetes Node by garamsh/naru#396 (commit `fe7a9b400ffd6225cc5e577eff157c2db57d4996`), which [ADR 0114](./0114-naru-runs-no-kubernetes-or-gaon-and-their-layouts-programs-images-tests-and-documents-are-removed.md) records. This ADR is superseded by it, as its status says. The link is left as written; the file as it stood is at commit `cb8902edd675d8571066230b125ec9a6738a81b8`.

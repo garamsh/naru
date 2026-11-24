@@ -60,3 +60,4 @@ What `naru-signer` is: the one process that holds the keys of naru's authorities
 
 - **aurora#811 A4 is not built:** `naructl login` with a second factor and short-lived certificates, re-confirmation of dangerous actions, passkeys, hardware keys and single sign-on.
 - **Renewal of a host certificate.**
+- **The `caller` role (decided, not built).** `POST /v1/caller`, root only, issues a use's certificate: OrganizationalUnit `caller`, CommonName the caller's name (a DNS label) taken from the body and never from the request, client authentication only, 90 days by default and at most 90, its serial recorded as role `caller`; `naructl caller credential` with `--name` writes the pair ([ADR 0108](./adr/0108-orch-serves-a-versioned-machine-api-that-names-machines-and-never-hosts-to-callers-holding-a-signer-issued-caller-certificate.md) item 4).
