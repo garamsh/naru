@@ -38,15 +38,15 @@ done
 func genNode(t *testing.T, c Config) (userData []byte, line string, err error) {
 	t.Helper()
 	tool, args := fakeNaructl(t)
-	spec := ClusterSpec{N: 1, Gaon: true, Dir: t.TempDir(), Naructl: tool}
+	spec := ClusterSpec{N: 1, GenNode: true, Dir: t.TempDir(), Naructl: tool}
 	c.Name = "node-1"
-	userData, _, err = (&gaonFiles{caDir: t.TempDir()}).node(c, spec)
+	userData, _, err = (&genFiles{caDir: t.TempDir()}).node(c, spec)
 	b, _ := os.ReadFile(args)
 	return userData, string(b), err
 }
 
-func TestGaonNode_StorageIsPassedToNaructlAndItsProbeIsAnAppendedService(t *testing.T) {
-	c := cfg(1, 1, true, false)
+func TestGenNode_StorageIsPassedToNaructlAndItsProbeIsAnAppendedService(t *testing.T) {
+	c := cfg(1, 1, false)
 	c.Storage = []Storage{{Name: "vmdisks", Device: "/dev/vdb", MountPoint: wire.MvmdStorageMount}}
 	c.StorageProbe = wire.MvmdStorageMount
 
@@ -65,16 +65,16 @@ func TestGaonNode_StorageIsPassedToNaructlAndItsProbeIsAnAppendedService(t *test
 	assert.Equal(t, []string{"-dir", wire.MvmdStorageMount}, doc.Spec.Services[0].Args)
 }
 
-func TestGaonNode_WithoutStorageNaructlIsToldOfNoneAndNoProbeIsAdded(t *testing.T) {
-	userData, line, err := genNode(t, cfg(1, 1, true, false))
+func TestGenNode_WithoutStorageNaructlIsToldOfNoneAndNoProbeIsAdded(t *testing.T) {
+	userData, line, err := genNode(t, cfg(1, 1, false))
 
 	require.NoError(t, err)
 	assert.NotContains(t, line, "--storage")
 	assert.False(t, strings.Contains(string(userData), "storageprobe"))
 }
 
-func TestGaonNode_AFirstDiskMountedWhereNaructlDoesNotMountItIsRefused(t *testing.T) {
-	c := cfg(1, 1, true, false)
+func TestGenNode_AFirstDiskMountedWhereNaructlDoesNotMountItIsRefused(t *testing.T) {
+	c := cfg(1, 1, false)
 	c.Storage = []Storage{{Name: "vmdisks", Device: "/dev/vdb", MountPoint: "/mnt/elsewhere"}}
 
 	_, _, err := genNode(t, c)

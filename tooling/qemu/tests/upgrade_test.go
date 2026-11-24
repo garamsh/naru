@@ -37,7 +37,7 @@ const upgradeTimeout = 6 * time.Minute
 // storeFile is the Node's stored configuration on the data disk.
 const storeFile = wire.DataMount + "/config/store.yaml"
 
-// startUpgradeNode boots a one-Node cluster that runs gaon, with the Node API, on a copy of the boot
+// startUpgradeNode boots one Node with the Node API, on a copy of the boot
 // disk of the build with its ESP writable, with the user-data of the naructl of the checkout. It
 // returns the Node and the admin's client file once the Node answers.
 func startUpgradeNode(t *testing.T) (*node.Node, string) {
@@ -54,22 +54,21 @@ func startUpgradeNodeOn(t *testing.T, bin naructl.Tool, inputs fixture.Inputs, d
 	t.Helper()
 	dir := t.TempDir()
 	caDir := filepath.Join(dir, "ca")
-	apiPort, hostPort := freeLoopbackPort(t), freeLoopbackPort(t)
+	apiPort := freeLoopbackPort(t)
 	admin := filepath.Join(dir, "admin.yaml")
-	require.NoError(t, bin.GenCA(caDir))
 	require.NoError(t, bin.GenAPICA(caDir))
 	require.NoError(t, bin.GenAPIClient(caDir, "admin", "127.0.0.1:"+strconv.Itoa(apiPort), admin))
 
-	cfg := node.Config{Name: "node-1", Index: 1, Total: 1, ControlPlane: true, Inputs: inputs, HostPort: hostPort, APIHostPort: apiPort}
+	cfg := node.Config{Name: "node-1", Index: 1, Total: 1, Inputs: inputs, HostNIC: true, APIHostPort: apiPort}
 	n := node.QEMUNetwork(1, 1)
 	ones, _ := net.IPMask(net.ParseIP(n.Netmask).To4()).Size()
 	nodeDir := filepath.Join(dir, "node-1")
 	require.NoError(t, os.MkdirAll(nodeDir, 0o755))
 	gen := naructl.Node{
-		CA: caDir, Name: "node-1", ControlPlane: true, PairsAsFiles: true,
+		CA: caDir, Name: "node-1",
 		Address: n.IP + "/" + strconv.Itoa(ones), MAC: n.MAC, Gateway: n.Gateway, Nameservers: n.Nameservers, Search: n.Search,
-		APIServer: n.IP, MachinePrefix: n.MachinePrefix.String(), Firecracker: inputs.FirecrackerSHA256,
-		ServingAddresses: []string{"127.0.0.1"}, ExtraNIC: cfg.HostMAC() + "=" + node.HostNICPrefix, Binaries: map[string]string{},
+		MachinePrefix: n.MachinePrefix.String(), Firecracker: inputs.FirecrackerSHA256,
+		ServingAddresses: []string{"127.0.0.1"}, ExtraNIC: cfg.HostMAC() + "=" + node.HostNICPrefix,
 		Out: filepath.Join(nodeDir, "naru.yaml"), NetworkConfig: filepath.Join(nodeDir, "network-config"),
 	}
 	configure(&cfg, &gen)

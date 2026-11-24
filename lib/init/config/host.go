@@ -22,7 +22,7 @@ const InitStatusFile = "/run/naru-hostd/init.json"
 type Host struct {
 	// Region is a DNS label.
 	Region string `yaml:"region"`
-	// Labels are Kubernetes-style label pairs.
+	// Labels are label pairs: a key of a name and an optional DNS-subdomain prefix, and a value.
 	Labels map[string]string `yaml:"labels,omitempty"`
 	// Network is what naru-hostd keeps the virtual networks from, and the egress and tunnel it
 	// uses. It is nil when the host runs none.

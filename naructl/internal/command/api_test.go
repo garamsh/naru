@@ -68,8 +68,6 @@ func TestGenAPICA_WritesTheAuthorityWithAPrivateKeyAndRefusesToReplaceIt(t *test
 	assert.Equal(t, os.FileMode(0o600), key.Mode().Perm(), "the authority's key is private")
 	before, err := os.ReadFile(filepath.Join(dir, "api", "ca.key"))
 	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(dir, "ca.key"))
-	assert.ErrorIs(t, err, os.ErrNotExist, "no gaon CA key was needed, and none was made")
 
 	out, err := run(t, "gen", "api-ca", "--ca-dir", dir)
 	require.Error(t, err, "a second gen api-ca would lose the first's key")
@@ -79,28 +77,13 @@ func TestGenAPICA_WritesTheAuthorityWithAPrivateKeyAndRefusesToReplaceIt(t *test
 	assert.Equal(t, before, after, "the refused run left the key as it was")
 }
 
-func TestGenAPICA_IsIndependentOfGaonsCA(t *testing.T) {
-	dep := newDeployment(t)
-
-	apiAuthority(t, dep)
-
-	gaon, err := os.ReadFile(filepath.Join(dep.ca, "ca.pem"))
-	require.NoError(t, err)
-	api, err := os.ReadFile(filepath.Join(dep.ca, "api", "ca.pem"))
-	require.NoError(t, err)
-	assert.NotEqual(t, gaon, api, "two authorities")
-	out, err := run(t, "gen", "ca", "--ca-dir", dep.ca)
-	require.Error(t, err)
-	assert.Contains(t, out, "already holds an authority", "gen ca still sees its own key beside api/")
-}
-
 func TestGenNode_WithAnAPIAuthorityCarriesSpecAPIOfAPairItIssuedAndNeverTheAuthoritysKey(t *testing.T) {
 	dep := newDeployment(t)
 	apiAuthority(t, dep)
 
 	for name, extra := range map[string][]string{
-		"worker":        nil,
-		"control plane": {"--control-plane", "--serving-address", "10.1.1.1", "--serving-address", "127.0.0.1"},
+		"a Node":                        nil,
+		"a Node with serving addresses": {"--serving-address", "10.1.1.1", "--serving-address", "127.0.0.1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out := dep.node(t, "node-2", extra...)
@@ -113,8 +96,6 @@ func TestGenNode_WithAnAPIAuthorityCarriesSpecAPIOfAPairItIssuedAndNeverTheAutho
 			cert := certOf(t, a.Certificate)
 			_, err = cert.Verify(x509.VerifyOptions{Roots: roots(t, filepath.Join(dep.ca, "api", "ca.pem")), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
 			require.NoError(t, err, "the serving pair is the API authority's")
-			_, err = cert.Verify(x509.VerifyOptions{Roots: roots(t, filepath.Join(dep.ca, "ca.pem")), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
-			assert.Error(t, err, "and not gaon's CA's")
 			var ips []string
 			for _, ip := range cert.IPAddresses {
 				ips = append(ips, ip.String())
@@ -157,7 +138,7 @@ func TestGenNode_AnAPIDirectoryThatHoldsNoAuthorityIsRefused(t *testing.T) {
 	dep := newDeployment(t)
 	require.NoError(t, os.Mkdir(filepath.Join(dep.ca, "api"), 0o750))
 
-	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-2", "--address", "192.168.0.20/24", "--api-server", "192.168.0.10",
+	out, err := run(t, "gen", "node", "--ca-dir", dep.ca, "--name", "node-2", "--address", "192.168.0.20/24",
 		"--machine-prefix", "10.200.2.0/24", "--firecracker-sha256", d("7"), "--out", filepath.Join(t.TempDir(), "n.yaml"))
 
 	require.Error(t, err, "a half-made authority would silently leave the Node without an API")
@@ -744,9 +725,10 @@ func TestClientCommands_ANodeWhoseCertificateTheFilesAuthorityDidNotIssueIsRefus
 
 	f, err := client.LoadFile(good)
 	require.NoError(t, err)
-	gaon, err := os.ReadFile(filepath.Join(dep.ca, "ca.pem"))
+	mustRun(t, "gen", "host-ca", "--ca-dir", dep.ca)
+	other, err := os.ReadFile(filepath.Join(dep.ca, "host", "ca.pem"))
 	require.NoError(t, err)
-	f.CA = string(gaon)
+	f.CA = string(other)
 	path := filepath.Join(t.TempDir(), "wrong.yaml")
 	require.NoError(t, f.Write(path))
 

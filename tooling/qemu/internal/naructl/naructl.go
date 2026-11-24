@@ -1,18 +1,15 @@
-// Package naructl runs the naructl binary, which owns the layout of a gaon Node (ADR 0015): the
-// tests and naru-cluster have it write the cluster's CA, each Node's user-data and the test host's
-// client pair. It runs a binary and imports nothing of naructl, so that this module builds
-// with GOWORK=off (ADR 0014).
+// Package naructl runs the naructl binary, which owns the layout of a Node (ADR 0015): the tests
+// have it write the authorities, each Node's user-data and the test host's client files. It runs a
+// binary and imports nothing of naructl, so that the binary of a release is driven as the
+// checkout's is.
 package naructl
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -22,23 +19,38 @@ type Tool struct {
 	// Bin is the path of the executable.
 	Bin string
 	// Legacy is set for the naructl of a release made before naructl moved to cobra (v0.1.0-dev.11
-	// and earlier; see ForRelease), which knows only the flag spellings it was released with: gen takes --ca for
-	// the CA directory of token, client, etcd-client and node, and --out for the directory gen ca
-	// writes. A later naructl keeps those as hidden aliases for one release only.
+	// and earlier; see ForRelease), which knows only the flag spellings it was released with: gen node
+	// takes --ca for its authorities' directory, and gen ca --out for the directory it writes. A later
+	// naructl keeps those as hidden aliases for one release only.
 	Legacy bool
+	// Gaon is set for the naructl of a release made before naru ran no gaon (v0.1.0-dev.14 and
+	// earlier; see ForRelease), whose gen node writes a Node of a gaon cluster from the cluster's
+	// authority and the API server's address. GenNode has it make that authority and write a worker
+	// whose pairs are files and whose gaon services are left out: the user-data this checkout's
+	// init boots (ADR 0114).
+	Gaon bool
 }
 
 // lastLegacyDev is the number of the last v0.1.0-dev.N release whose naructl knows only the flag
-// spellings from before cobra; dev.12 keeps them as hidden aliases until dev.13.
-const lastLegacyDev = 11
+// spellings from before cobra; dev.12 keeps them as hidden aliases until dev.13. lastGaonDev is the
+// number of the last one whose naructl writes gaon Nodes.
+const (
+	lastLegacyDev = 11
+	lastGaonDev   = 14
+)
+
+// gaonServices are the services of a gaon Node that the naructl of a Gaon Tool leaves out.
+var gaonServices = []string{"etcd", "gaon-apiserver", "gaon-scheduler", "gaon-controllers", "gaon-node-agent"}
 
 // ForRelease is the Tool for the naructl at bin that the release of that version shipped: a release
-// of v0.1.0-dev.11 or earlier is driven with the spellings it was released with. Any other version,
-// including one that is not a v0.1.0-dev.N, is driven with the current ones.
+// of v0.1.0-dev.11 or earlier is driven with the spellings it was released with, and one of
+// v0.1.0-dev.14 or earlier as one that writes gaon Nodes. Any other version, including one that is
+// not a v0.1.0-dev.N, is driven as the checkout's naructl.
 func ForRelease(bin, version string) Tool {
 	n, ok := strings.CutPrefix(version, "v0.1.0-dev.")
 	dev, err := strconv.Atoi(n)
-	return Tool{Bin: bin, Legacy: ok && err == nil && dev <= lastLegacyDev}
+	dated := ok && err == nil
+	return Tool{Bin: bin, Legacy: dated && dev <= lastLegacyDev, Gaon: dated && dev <= lastGaonDev}
 }
 
 // caDirFlag is the flag that names the directory of the CA the gen command reads.
@@ -77,126 +89,6 @@ func (t Tool) output(args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("naructl %s: %w: %s", strings.Join(args[:min(len(args), 2)], " "), err, strings.TrimSpace(stderr.String()+stdout.String()))
 	}
 	return stdout.Bytes(), nil
-}
-
-// Service is one of the services a Node runs besides mvmd.
-type Service struct {
-	Name string `json:"name"`
-	// ControlPlane is set for a service only the control-plane Node runs.
-	ControlPlane bool `json:"controlPlane"`
-	// Gaon is set for a service that is one of gaon's binaries.
-	Gaon bool `json:"gaon"`
-}
-
-// Topology is what naructl says a Node runs, in the order init starts it, and which service signs the
-// agents' requests on a control-plane Node that issues its certificates (ADR 0019).
-type Topology struct {
-	Services []Service `json:"services"`
-	Signer   string    `json:"signer"`
-	// APIServer and Agent are the services a harness needs both of to ask the API whether the Nodes
-	// have registered.
-	APIServer string `json:"apiserver"`
-	Agent     string `json:"agent"`
-}
-
-// Topology asks naructl for its topology.
-func (t Tool) Topology() (Topology, error) {
-	b, err := t.output("topology")
-	if err != nil {
-		return Topology{}, fmt.Errorf("%w (a naructl made before ADR 0019 has no topology command)", err)
-	}
-	var top Topology
-	if err := json.Unmarshal(b, &top); err != nil {
-		return Topology{}, fmt.Errorf("naructl topology: %w", err)
-	}
-	if len(top.Services) == 0 || top.Signer == "" || top.APIServer == "" || top.Agent == "" {
-		return Topology{}, fmt.Errorf("naructl topology names no services or no signer, API server or agent: %s", strings.TrimSpace(string(b)))
-	}
-	return top, nil
-}
-
-// Names are the services' names, in order.
-func (t Topology) Names() []string {
-	names := make([]string, len(t.Services))
-	for i, s := range t.Services {
-		names[i] = s.Name
-	}
-	return names
-}
-
-// Has reports whether name is one of the services.
-func (t Topology) Has(name string) bool { return slices.Contains(t.Names(), name) }
-
-// GaonNames are the names of gaon's own binaries among the services.
-func (t Topology) GaonNames() []string {
-	var names []string
-	for _, s := range t.Services {
-		if s.Gaon {
-			names = append(names, s.Name)
-		}
-	}
-	return names
-}
-
-// Running are the services a Node runs, in order: all of them on the control-plane Node, and the
-// others elsewhere.
-func (t Topology) Running(controlPlane bool) []Service {
-	return slices.DeleteFunc(slices.Clone(t.Services), func(s Service) bool { return s.ControlPlane && !controlPlane })
-}
-
-// CheckNames refuses a name that is not one of the services.
-func (t Topology) CheckNames(names []string) error {
-	for _, n := range names {
-		if !t.Has(n) {
-			return fmt.Errorf("%q is not a service; the names are %s", n, strings.Join(t.Names(), ", "))
-		}
-	}
-	return nil
-}
-
-// GenCA has naructl write the cluster's CA, ca.pem and ca.key, into dir.
-func (t Tool) GenCA(dir string) error {
-	genCADirFlag := "--ca-dir"
-	if t.Legacy {
-		genCADirFlag = "--out"
-	}
-	return t.run("gen", "ca", genCADirFlag, dir)
-}
-
-// GenToken has naructl write the bootstrap token of the Node of that name next to the CA in caDir,
-// if there is none. The control-plane Node's user-data lists the tokens there are when it is written,
-// so every Node's token is made before the first gen node.
-func (t Tool) GenToken(caDir, name string) error {
-	return t.run("gen", "token", t.caDirFlag(), caDir, "--name", name)
-}
-
-// TokenCreate and TokenRevoke have naructl add or revoke the bootstrap token of the Node of that name
-// on the running control-plane Node the client file config reaches, with a configuration patch.
-func (t Tool) TokenCreate(caDir, name, config string) error {
-	return t.run("token", "create", t.caDirFlag(), caDir, "--name", name, "--config", config)
-}
-
-func (t Tool) TokenRevoke(caDir, name, config string) error {
-	return t.run("token", "revoke", t.caDirFlag(), caDir, "--name", name, "--config", config)
-}
-
-// Client is the files of a client pair and the CA that signed it.
-type Client struct {
-	CA, Cert, Key string
-}
-
-// GenClient has naructl issue a client pair with the CN cn from the CA in caDir, into out.
-func (t Tool) GenClient(caDir, cn, out string) (Client, error) {
-	if err := t.run("gen", "client", t.caDirFlag(), caDir, "--cn", cn, "--out", out); err != nil {
-		return Client{}, err
-	}
-	return Client{CA: filepath.Join(caDir, "ca.pem"), Cert: filepath.Join(out, "client.pem"), Key: filepath.Join(out, "client.key")}, nil
-}
-
-// GenEtcdClient has naructl write the etcd client pair of gaon's snapshot writer from the CA in
-// caDir: ca.crt, tls.crt and tls.key in out.
-func (t Tool) GenEtcdClient(caDir, out string) error {
-	return t.run("gen", "etcd-client", t.caDirFlag(), caDir, "--out", out)
 }
 
 // GenAPICA has naructl write the Node API's authority, api/ca.pem and api/ca.key, under dir. A Node's
@@ -242,17 +134,12 @@ func (t Tool) Run(args ...string) Result {
 
 // Node is the arguments of gen node; empty ones are left to naructl's default or refusal.
 type Node struct {
-	CA, Name     string
-	ControlPlane bool
-	// PairsAsFiles carries operator-issued pairs as files in place of a bootstrap token.
-	PairsAsFiles                  bool
+	// CA is the authorities' directory: gen api-ca's and gen host-ca's.
+	CA, Name                      string
 	Address, MAC, Gateway, Search string
 	Nameservers                   []string
 	ExtraNIC                      string
-	APIServer                     string
 	ServingAddresses              []string
-	// Members are the <name>=<address> of every control-plane Node of a control plane of several.
-	Members []string
 	// TimeServers are host[:port] entries of spec.time.servers (gen node --time-server).
 	TimeServers []string
 	// Peers are <address>=<machine-prefix> entries (gen node --peer).
@@ -270,10 +157,7 @@ type Node struct {
 	// disks, snapshots and run directories.
 	Storage []string
 	// Extra are further gen node flags, each as given on the command line ("--signer").
-	Extra []string
-	// Binaries maps a service's name to its executable's path on the Node.
-	Binaries                   map[string]string
-	Disable                    []string
+	Extra                      []string
 	MachinePrefix, Firecracker string
 	Out, NetworkConfig         string
 }
@@ -282,18 +166,20 @@ type Node struct {
 // n.NetworkConfig when that is set.
 func (t Tool) GenNode(n Node) error {
 	args := []string{"gen", "node", t.caDirFlag(), n.CA, "--name", n.Name, "--address", n.Address,
-		"--api-server", n.APIServer, "--machine-prefix", n.MachinePrefix,
-		"--firecracker-sha256", n.Firecracker, "--out", n.Out}
+		"--machine-prefix", n.MachinePrefix, "--firecracker-sha256", n.Firecracker, "--out", n.Out}
 	flag := func(name string, values ...string) {
 		for _, v := range values {
 			args = append(args, "--"+name, v)
 		}
 	}
-	if n.ControlPlane {
-		args = append(args, "--control-plane")
-	}
-	if n.PairsAsFiles {
+	if t.Gaon {
+		if err := t.genClusterCA(n.CA); err != nil {
+			return err
+		}
+		apiServer, _, _ := strings.Cut(n.Address, "/")
+		flag("api-server", apiServer)
 		args = append(args, "--pairs-as-files")
+		flag("disable", gaonServices...)
 	}
 	if n.NetworkConfig != "" {
 		flag("network-config", n.NetworkConfig)
@@ -308,7 +194,6 @@ func (t Tool) GenNode(n Node) error {
 		flag("extra-nic", n.ExtraNIC)
 	}
 	flag("serving-address", n.ServingAddresses...)
-	flag("member", n.Members...)
 	flag("time-server", n.TimeServers...)
 	flag("peer", n.Peers...)
 	flag("extension", n.Extensions...)
@@ -320,19 +205,23 @@ func (t Tool) GenNode(n Node) error {
 		flag("aws-profile", n.AWSProfile)
 		flag("aws-role", n.AWSRole)
 	}
-	names := make([]string, 0, len(n.Binaries))
-	for name := range n.Binaries {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		flag("binary", name+"="+n.Binaries[name])
-	}
-	flag("disable", n.Disable...)
 	if n.HostRegion != "" {
 		flag("host-region", n.HostRegion)
 		flag("host-label", n.HostLabels...)
 	}
 	args = append(args, n.Extra...)
 	return t.run(args...)
+}
+
+// genClusterCA has the naructl of a Gaon Tool write the cluster's authority, ca.pem and ca.key, into
+// dir, which its gen node needs, unless dir holds one.
+func (t Tool) genClusterCA(dir string) error {
+	if _, err := os.Stat(filepath.Join(dir, "ca.pem")); err == nil {
+		return nil
+	}
+	flag := "--ca-dir"
+	if t.Legacy {
+		flag = "--out"
+	}
+	return t.run("gen", "ca", flag, dir)
 }

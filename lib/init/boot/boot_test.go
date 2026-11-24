@@ -48,9 +48,6 @@ spec:
   services:
     - name: mvmd
       binary: /usr/bin/mvmd
-    - name: gaon
-      binary: /usr/bin/gaon
-      controlPlane: true
 `
 
 // recorder is both Host and Services and records the order of their calls.
@@ -101,8 +98,6 @@ type recorder struct {
 	timeServers   []string
 	routes        []config.Route
 	registries    config.Spec
-	setAside      bool
-	setAsideErr   error
 	registriesErr error
 	storage       []config.Storage
 	extensions    []config.Extension
@@ -230,11 +225,6 @@ func (r *recorder) WriteRegistries(spec config.Spec) error {
 	return r.registriesErr
 }
 
-func (r *recorder) SetAsidePair(p config.KeptPair) (bool, error) {
-	r.calls = append(r.calls, "pair "+p.File)
-	return r.setAside, r.setAsideErr
-}
-
 func (r *recorder) PrepareStorage(s config.Storage, _ *slog.Logger) error {
 	r.calls = append(r.calls, "storage "+s.Name)
 	r.storage = append(r.storage, s)
@@ -329,14 +319,6 @@ func TestRun_StartsServicesAfterTheMachineIsReady(t *testing.T) {
 	assert.Equal(t, "eth0", r.applied.Interfaces[0].Name)
 	require.Len(t, r.written, 1)
 	assert.Equal(t, "/run/mvmd/config.json", r.written[0].Path)
-}
-
-func TestRun_StartsAControlPlaneServiceOnlyOnAControlPlaneNode(t *testing.T) {
-	r := &recorder{raw: replace(t, validConfig, "controlPlane: false", "controlPlane: true")}
-
-	require.NoError(t, run(r))
-
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "prepare", "seal", "start mvmd", "start gaon"}, r.calls)
 }
 
 // withPKI adds a spec.pki that asks for one certificate to validConfig.
@@ -560,28 +542,6 @@ func TestRun_WritesTheRegistryFilesBeforeAnyServiceStarts(t *testing.T) {
 	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "prepare", "seal", "start mvmd"}, r.calls)
 	require.Len(t, r.registries.Registries, 1)
 	assert.Equal(t, "registry.example", r.registries.Registries[0].Host)
-}
-
-// withKeptPair gives the mvmd service of validConfig a kept pair.
-func withKeptPair(t *testing.T) string {
-	t.Helper()
-	return replace(t, validConfig, "      binary: /usr/bin/mvmd\n", "      binary: /usr/bin/mvmd\n      keptPair: {file: /var/lib/mvmd/agent/node-agent.pem, organization: gaon:nodes}\n")
-}
-
-func TestRun_ChecksAServicesKeptPairJustBeforeItStarts(t *testing.T) {
-	r := &recorder{raw: withKeptPair(t), setAside: true}
-
-	require.NoError(t, run(r))
-
-	assert.Equal(t, []string{"read", "network", "mount", "load", "api", "forward", "files", "registries", "prepare", "seal", "pair /var/lib/mvmd/agent/node-agent.pem", "start mvmd"}, r.calls)
-}
-
-func TestRun_StartsTheServiceWhenItsKeptPairCannotBeSetAside(t *testing.T) {
-	r := &recorder{raw: withKeptPair(t), setAsideErr: errors.New("read-only")}
-
-	require.NoError(t, run(r))
-
-	assert.Equal(t, []string{"mvmd"}, r.started)
 }
 
 func TestRun_RefusesWhenTheRegistryFilesCannotBeWritten(t *testing.T) {

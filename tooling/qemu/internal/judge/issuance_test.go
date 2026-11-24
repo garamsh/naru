@@ -10,13 +10,16 @@ import (
 )
 
 const (
-	authorityLine = `time=2026-11-12T00:00:00Z level=INFO msg="authority written" name=gaon path=/run/gaon/ca.pem key=false`
+	authorityLine = `time=2026-11-12T00:00:00Z level=INFO msg="authority written" name=ca path=/run/pki/ca.pem key=false`
 	startLine     = `time=2026-11-12T00:00:01Z level=INFO msg=started service=mvmd pid=40`
 )
 
 func issuedLine(name string) string {
-	return `time=2026-11-12T00:00:00Z level=INFO msg="certificate issued" name=` + name + ` authority=gaon usage=client path=/run/gaon/` + name + `.pem expires=2026-12-12T00:00:00Z`
+	return `time=2026-11-12T00:00:00Z level=INFO msg="certificate issued" name=` + name + ` authority=ca usage=client path=/run/pki/` + name + `.pem expires=2026-12-12T00:00:00Z`
 }
+
+// issued are the certificates a spec.pki of the tests names.
+var issued = []string{"apiserver", "scheduler", "controllers"}
 
 func issuedLog(names ...string) []string {
 	lines := []string{authorityLine}
@@ -27,22 +30,22 @@ func issuedLog(names ...string) []string {
 }
 
 func TestIssuance_EveryLineBeforeTheFirstServiceStartPasses(t *testing.T) {
-	log := strings.Join(append(issuedLog(judge.GaonIssued...), startLine), "\n")
+	log := strings.Join(append(issuedLog(issued...), startLine), "\n")
 
-	assert.Empty(t, judge.Check("node-1", judge.Log{Text: log}, judge.Issuance(judge.GaonIssued...)))
+	assert.Empty(t, judge.Check("node-1", judge.Log{Text: log}, judge.Issuance(issued...)))
 }
 
 func TestIssuance_EachMissingLineIsNamedAlone(t *testing.T) {
-	for _, missing := range judge.GaonIssued {
+	for _, missing := range issued {
 		var names []string
-		for _, n := range judge.GaonIssued {
+		for _, n := range issued {
 			if n != missing {
 				names = append(names, n)
 			}
 		}
 		log := strings.Join(append(issuedLog(names...), startLine), "\n")
 
-		bad := judge.Check("node-1", judge.Log{Text: log}, judge.Issuance(judge.GaonIssued...))
+		bad := judge.Check("node-1", judge.Log{Text: log}, judge.Issuance(issued...))
 
 		if assert.Len(t, bad, 1, missing) {
 			assert.Equal(t, "init issued "+missing, bad[0].Expect.What)

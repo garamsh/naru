@@ -50,12 +50,14 @@ type Metadata struct {
 
 // Spec is what the Node is configured to run.
 type Spec struct {
-	Services     []Service `yaml:"services"`
-	ControlPlane bool      `yaml:"controlPlane"`
-	DataDisk     DataDisk  `yaml:"dataDisk"`
-	Network      Network   `yaml:"network"`
-	Files        []File    `yaml:"files"`
-	PKI          PKI       `yaml:"pki"`
+	Services []Service `yaml:"services"`
+	// ControlPlane is retired: naru runs no control plane (docs/architecture/adr/0114-naru-runs-no-kubernetes-or-gaon-and-their-layouts-programs-images-tests-and-documents-are-removed.md).
+	// A configuration written before then carries false, which is read as no field; true is refused.
+	ControlPlane bool     `yaml:"controlPlane,omitempty"`
+	DataDisk     DataDisk `yaml:"dataDisk"`
+	Network      Network  `yaml:"network"`
+	Files        []File   `yaml:"files"`
+	PKI          PKI      `yaml:"pki"`
 	// Time is how the Node keeps its clock. It is nil when init keeps none.
 	Time *Time `yaml:"time,omitempty"`
 	// API is the Node API's listener. It is nil when the Node serves none.
@@ -187,11 +189,6 @@ type Service struct {
 	Binary string            `yaml:"binary"`
 	Args   []string          `yaml:"args"`
 	Env    map[string]string `yaml:"env"`
-	// ControlPlane marks a service started only on the node that runs the control plane.
-	ControlPlane bool `yaml:"controlPlane"`
-	// KeptPair names a certificate pair the service keeps, which init checks before it starts the
-	// service. It is nil for a service that keeps none.
-	KeptPair *KeptPair `yaml:"keptPair,omitempty"`
 	// RestartOnChange lists files, each a clean absolute path, that something other than init
 	// writes and the service reads once at start. init restarts the service when the content of
 	// one changes, or the file appears or goes missing (docs/architecture/adr/0029-aws-credentials-is-a-service-serving-the-instance-metadata-endpoint-to-mvmd.md).
@@ -246,22 +243,11 @@ type Setup struct {
 	Unless []string `yaml:"unless,omitempty"`
 }
 
-// KeptPair is a certificate pair file a service keeps across boots. A pair whose certificate's
-// subject has no Organization of the given value is set aside before the service starts, so the
-// service asks for a new one.
-type KeptPair struct {
-	// File is the pair file: the certificate, then its key, in PEM.
-	File string `yaml:"file"`
-	// Organization is the Organization the certificate's subject must carry.
-	Organization string `yaml:"organization"`
-}
-
 // Equal reports whether o is the same service. A nil list or map equals an empty one.
 func (s Service) Equal(o Service) bool {
-	return s.Name == o.Name && s.Binary == o.Binary && s.ControlPlane == o.ControlPlane && s.RestartPolicy == o.RestartPolicy &&
+	return s.Name == o.Name && s.Binary == o.Binary && s.RestartPolicy == o.RestartPolicy &&
 		slices.Equal(s.Args, o.Args) && maps.Equal(s.Env, o.Env) &&
 		slices.Equal(s.RestartOnChange, o.RestartOnChange) && slices.Equal(s.LogFiles, o.LogFiles) &&
-		(s.KeptPair == nil) == (o.KeptPair == nil) && (s.KeptPair == nil || *s.KeptPair == *o.KeptPair) &&
 		(s.User == nil) == (o.User == nil) && (s.User == nil || s.User.equal(*o.User)) &&
 		slices.Equal(s.Dirs, o.Dirs) &&
 		slices.EqualFunc(s.Setup, o.Setup, func(a, b Setup) bool { return slices.Equal(a.Unless, b.Unless) && slices.Equal(a.Args, b.Args) })
@@ -269,12 +255,6 @@ func (s Service) Equal(o Service) bool {
 
 func (u User) equal(o User) bool {
 	return u.UID == o.UID && u.GID == o.GID && slices.Equal(u.Groups, o.Groups)
-}
-
-// Runs reports whether init starts svc on this Node: a service marked controlPlane runs only on
-// the Node that runs the control plane.
-func (s Spec) Runs(svc Service) bool {
-	return !svc.ControlPlane || s.ControlPlane
 }
 
 // DataDisk names the disk mounted at MountPoint, by Device or by Label, exactly one of them.

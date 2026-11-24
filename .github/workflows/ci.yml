@@ -2,7 +2,7 @@ name: ci
 
 # Runs `make ci`, the whole set a contributor runs locally (docs/convention/ci.md): lint, the import
 # and module checks, format, test and build. It needs no Docker, QEMU or image build; the QEMU
-# suites are `make test-qemu`, `test-fleet` and `test-harness`, which a contributor runs. shellcheck
+# suites are `make test-qemu` and `test-fleet`, which a contributor runs. shellcheck
 # is the one the runner image carries, and its version is recorded on each run.
 #
 # Moved by (every pin below): the PM, in a pull request that reads the action's current release and

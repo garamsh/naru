@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/tooling/qemu/internal/judge"
-	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
 
 // consoleOf is a console that shows every expectation: a line holding each of the fragments of
@@ -25,11 +24,10 @@ func consoleOf(want []judge.Expect) string {
 
 func TestCheck_AConsoleWithEveryExpectationPasses(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		controlPlane bool
-		probe        bool
-	}{{"node-1", true, true}, {"node-2", false, false}} {
-		want := judge.Node(tc.name, tc.controlPlane, tc.probe)
+		name  string
+		probe bool
+	}{{"node-1", true}, {"node-2", false}} {
+		want := judge.Node(tc.name, tc.probe)
 
 		failures := judge.Check(tc.name, judge.Clean([]byte(consoleOf(want))), want)
 
@@ -38,7 +36,7 @@ func TestCheck_AConsoleWithEveryExpectationPasses(t *testing.T) {
 }
 
 func TestCheck_EachMissingExpectationIsNamedAlone(t *testing.T) {
-	want := judge.Node("node-1", true, true)
+	want := judge.Node("node-1", true)
 	for i, gone := range want {
 		if gone.Absent {
 			continue
@@ -54,7 +52,7 @@ func TestCheck_EachMissingExpectationIsNamedAlone(t *testing.T) {
 }
 
 func TestCheck_AFailedProbeLineFailsTheNode(t *testing.T) {
-	want := judge.Node("node-1", true, true)
+	want := judge.Node("node-1", true)
 	console := consoleOf(want) + "PROBE machine-still-running fail the machine is gone\n"
 
 	failures := judge.Check("node-1", judge.Clean([]byte(console)), want)
@@ -63,20 +61,10 @@ func TestCheck_AFailedProbeLineFailsTheNode(t *testing.T) {
 	assert.Equal(t, "no probe check failed", failures[0].Expect.What)
 }
 
-func TestCheck_TheOtherNodeMustNotHaveStartedTheControlService(t *testing.T) {
-	want := judge.Node("node-2", false, false)
-	console := consoleOf(want) + "time=x msg=started service=control\n"
-
-	failures := judge.Check("node-2", judge.Clean([]byte(console)), want)
-
-	require.Len(t, failures, 1)
-	assert.Equal(t, "init never started the control service", failures[0].Expect.What)
-}
-
 func TestCheck_TheNameInTheConfigurationLineIsTheNodes(t *testing.T) {
-	want := judge.Node("node-1", true, false)
+	want := judge.Node("node-1", false)
 
-	failures := judge.Check("node-1", judge.Clean([]byte(consoleOf(judge.Node("node-2", true, false)))), want)
+	failures := judge.Check("node-1", judge.Clean([]byte(consoleOf(judge.Node("node-2", false)))), want)
 
 	require.Len(t, failures, 1)
 	assert.Equal(t, "init accepted the configuration", failures[0].Expect.What)
@@ -143,7 +131,7 @@ func TestClean_RemovesTheReprintMarkersAndCountsThem(t *testing.T) {
 }
 
 func TestCheck_ALogOfReprintedBlocksJudgesAsTheLogDoes(t *testing.T) {
-	want := judge.Node("node-1", true, true)
+	want := judge.Node("node-1", true)
 	one := consoleOf(want)
 	var many strings.Builder
 	for i := 1; i <= 20; i++ {
@@ -161,68 +149,17 @@ func TestHasLine_FragmentsMustShareALineInOrder(t *testing.T) {
 	assert.False(t, judge.HasLine(console, []string{"configuration accepted", "started"}), "on one line")
 }
 
-func TestGaon_ANodeShowsTheRegistryAndTheNodeAgentAndTheControlPlaneOnlyOnNodeOne(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		controlPlane bool
-	}{{"node-1", true}, {"node-2", false}} {
-		want := judge.Gaon(topo, tc.name, tc.controlPlane, 1)
-		assert.Empty(t, judge.Check(tc.name, judge.Clean([]byte(consoleOf(want))), want), tc.name)
-	}
+func TestReleased_ANodeOfTheReleasesUserDataShowsMvmdAndTheRegistryAndNoStandIn(t *testing.T) {
+	want := judge.Released("node-2")
+	console := consoleOf(want)
+	require.Empty(t, judge.Check("node-2", judge.Clean([]byte(console)), want), "the control: every line is shown")
 
-	second := judge.Gaon(topo, "node-2", false, 1)
-	console := consoleOf(second) + "time=x msg=started service=gaon-apiserver\n"
-	failures := judge.Check("node-2", judge.Clean([]byte(console)), second)
+	without := strings.ReplaceAll(console, "service=registry", "service=other")
+	failures := judge.Check("node-2", judge.Clean([]byte(without)), want)
+
 	require.Len(t, failures, 1)
-	assert.Equal(t, "init never started gaon-apiserver", failures[0].Expect.What)
-
-	// The registry runs on every Node: a Node whose console lacks its start fails, on either role.
-	for _, tc := range []struct {
-		name         string
-		controlPlane bool
-	}{{"node-1", true}, {"node-2", false}} {
-		want := judge.Gaon(topo, tc.name, tc.controlPlane, 1)
-		var without []judge.Expect
-		for _, e := range want {
-			if e.What != "init started registry" {
-				without = append(without, e)
-			}
-		}
-		require.Len(t, without, len(want)-1, "the expectation for the registry exists on "+tc.name)
-		failures := judge.Check(tc.name, judge.Clean([]byte(consoleOf(without))), want)
-		require.Len(t, failures, 1, tc.name)
-		assert.Equal(t, "init started registry", failures[0].Expect.What)
-	}
-
-	first := judge.Gaon(topo, "node-1", true, 1)
-	failures = judge.Check("node-1", judge.Clean([]byte(consoleOf(first[:len(first)-1]))), first)
-	require.Len(t, failures, 1)
-	assert.Equal(t, "init started gaon-node-agent", failures[0].Expect.What)
-}
-
-func TestGaon_JudgesEveryServiceTheTopologyNamesAndNoOtherAndDoesNotKnowTheNamesItself(t *testing.T) {
-	// A layout that renamed a service and added one: the judge follows it with no change of its own.
-	renamed := naructl.Topology{Services: []naructl.Service{
-		{Name: "alpha"}, {Name: "beta", ControlPlane: true}, {Name: "gamma"},
-	}, Signer: "beta", APIServer: "beta", Agent: "alpha"}
-	for _, tc := range []struct {
-		controlPlane bool
-		started      []string
-		skipped      []string
-	}{
-		{true, []string{"alpha", "beta", "gamma"}, nil},
-		{false, []string{"alpha", "gamma"}, []string{"beta"}},
-	} {
-		var started, skipped []string
-		for _, e := range judge.Gaon(renamed, "node-1", tc.controlPlane, 1) {
-			if name, ok := strings.CutPrefix(e.What, "init started "); ok && name != "mvmd" {
-				started = append(started, name)
-			}
-			if name, ok := strings.CutPrefix(e.What, "init skipped "); ok {
-				skipped = append(skipped, name)
-			}
-		}
-		assert.Equal(t, tc.started, started, "controlPlane=%v", tc.controlPlane)
-		assert.Equal(t, tc.skipped, skipped, "controlPlane=%v", tc.controlPlane)
+	assert.Equal(t, "init started the registry", failures[0].Expect.What)
+	for _, e := range want {
+		assert.NotContains(t, e.Fragments, "service=standin", "the release's Nodes run no stand-in")
 	}
 }

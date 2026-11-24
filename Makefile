@@ -1,4 +1,4 @@
-.PHONY: lint lint-imports lint-modules format format-apply test test-cgroup test-qemu test-fleet test-count test-harness test-release-upgrade nodes judge-serial release build image image-upgrade disk image-repro source-archive in-builder-image in-builder-image-upgrade in-builder-disk in-builder-release ci
+.PHONY: lint lint-imports lint-modules format format-apply test test-cgroup test-qemu test-fleet test-count test-release-upgrade nodes judge-serial release build image image-upgrade disk image-repro source-archive in-builder-image in-builder-image-upgrade in-builder-disk in-builder-release ci
 
 # The modules every check covers: the ones go.work lists, so a new module
 # joins by adding its use line there.
@@ -134,10 +134,9 @@ in_builder = $(BUILDER) make $(1) VERSION='$(VERSION)' TEST_ROOT='$(call contain
 # bzImage.bare is the kernel before that), initramfs.cpio.gz, node-initrd.cpio.gz, boot-sets.json,
 # inputs.env (the Firecracker pin the tests read), guest/ (guest.json and what it names, which the
 # initramfs carries of the guests), extensions/ (the naru-orch system extension, ADR 0055), and the
-# directories of programs the tests and the release take: gaon/, etcd/ and regtools/ (the credential
-# helpers, ADR 0026, and the root bundle).
+# directory of programs the tests and the release take: regtools/ (the credential helpers, ADR 0026,
+# and the root bundle).
 GUEST := $(IMAGE)/guest
-GAON := $(IMAGE)/gaon
 # TEST_ROOT, empty for the release, is the PEM file of a throwaway root appended to the bundle: the
 # test image's, which test-qemu builds and no release carries.
 TEST_ROOT ?=
@@ -234,28 +233,23 @@ nodes: disk
 # judge-serial reads the serial logs of two Nodes, node-1 first, and exits 0 only when they show
 # what the QEMU tests assert (tooling/qemu/internal/judge). The logs are raw captures: Proxmox's
 # termproxy or `qm terminal`, or the console.log of a `make nodes` run started with -probe. With
-# JUDGE_GAON=1 they are the logs of Nodes started from the release's naru-node-<n>.test.yaml,
-# which run gaon's services in place of the stand-ins and the probe. With JUDGE_GAON=1, JUDGE_PKI=1
-# also requires node-1's log to show init issuing its pairs from spec.pki, and
-# JUDGE_NODE1_INTERFACES=<n> sets the interfaces node-1's network-config gives it (1 when unset;
-# the QEMU tests' control-plane Node has 2). JUDGE_GAON=1 also needs JUDGE_NARUCTL=<a naructl
-# binary, the release's naructl-<version>-linux-amd64>: the services to expect are the ones its
-# `topology` command prints (ADR 0019). JUDGE_NODE_API=listening|off also requires init's Node API
+# JUDGE_RELEASE=1 they are the logs of Nodes started from the release's naru-node-<n>.test.yaml,
+# which run mvmd and the registry in place of the stand-ins and the probe. JUDGE_NODE_API=listening|off also requires init's Node API
 # line on both Nodes, that it serves the API or that it says the API is off (the release's test
 # user-data has no spec.api, so off); left out, the line is not judged.
 judge-serial:
 	@test -n "$(NODE1)" -a -n "$(NODE2)" || { echo "judge-serial: usage: make judge-serial NODE1=<log> NODE2=<log>" >&2; exit 2; }
-	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_GAON),-gaon) $(if $(JUDGE_NARUCTL),-naructl "$(abspath $(JUDGE_NARUCTL))") $(if $(JUDGE_PKI),-pki) $(if $(JUDGE_NODE_API),-node-api $(JUDGE_NODE_API)) $(if $(JUDGE_NODE1_INTERFACES),-node1-interfaces $(JUDGE_NODE1_INTERFACES)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
+	cd tooling/qemu && go run ./cmd/naru-judge $(if $(JUDGE_RELEASE),-release) $(if $(JUDGE_NODE_API),-node-api $(JUDGE_NODE_API)) -node1 "$(abspath $(NODE1))" -node2 "$(abspath $(NODE2))"
 
 # in-builder-release writes the assets of a deployment into $(RELEASE): naru-host-<version>.qcow2 (the boot disk),
 # naru-host-upgrade-<version>.tar (the upgrade bundle: the kernel and a manifest of its digest),
 # naru-node-kernel-<version>, naru-node-initramfs-<version> and naru-node-<version>.json (the Node boot
 # set a host takes with `naructl host boot-set add`, ADR 0046), naru-data-<version>.qcow2 (the one data
 # disk both Nodes attach), naru-guest-<version>.json,
-# naru-inputs-<version>.json (what naru-cluster reads besides the disks), naructl-<version>-linux-amd64
-# (the operator's tool, which also writes the test user-data below from a CA derived from the version (ADR 0078) that lives only for the
-# run), naru-cluster-<version>-linux-amd64 (the harness's command, a static binary, ADR 0074), naru-node-1.test.yaml and naru-node-2.test.yaml (test-only user-data for Proxmox: they carry
-# gaon's keys, so they are for a throwaway deployment) and SHA256SUMS. $(BUILD)/release-figures.env,
+# naru-inputs-<version>.json (the inputs tree of the data disk, which the release-upgrade tests read),
+# naructl-<version>-linux-amd64 (the operator's tool, which also writes the test user-data below),
+# naru-node-1.test.yaml and naru-node-2.test.yaml (example user-data for Proxmox, which carry no key)
+# and SHA256SUMS. $(BUILD)/release-figures.env,
 # outside $(RELEASE) because every file there is an asset, holds the ESP size and the largest in-place
 # upgrade kernel, which the release workflow puts in the notes. VERSION is defined above image.
 # PREV_MANIFEST is the path of the manifest.json of the previous release's upgrade bundle: the
@@ -271,8 +265,7 @@ in-builder-release: in-builder-disk
 	rm -rf $(PKGROOT)/naru
 	$(BUILD)/naru-pkg unpack $(PKGROOT) $(PKGS)/naru.tar
 	cd naructl && $(GOBUILD) -o $(abspath $(BUILD))/naructl/naructl ./cmd/naructl
-	cd tooling/qemu && $(GOBUILD) -o $(abspath $(BUILD))/naructl/naru-cluster ./cmd/naru-cluster
-	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -naru-cluster $(BUILD)/naructl/naru-cluster -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env -epoch $$(. $(CURDIR)/image/build.env && echo $$SOURCE_DATE_EPOCH) -binaries $(IMAGE)/gaon,$(IMAGE)/etcd,$(IMAGE)/regtools,$(PKGROOT)/naru/usr/bin -archives $(IMAGE)/initramfs.cpio.gz,$(IMAGE)/node-initrd.cpio.gz -source-archive $(SOURCE_ARCHIVE) $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
+	cd tooling/qemu && go run ./cmd/naru-release -root $(CURDIR) -image $(IMAGE) -disk $(IMAGE) -guest $(GUEST) -naructl $(BUILD)/naructl/naructl -out $(RELEASE) -version $(VERSION) -notes-figures $(BUILD)/release-figures.env -epoch $$(. $(CURDIR)/image/build.env && echo $$SOURCE_DATE_EPOCH) -binaries $(IMAGE)/regtools,$(PKGROOT)/naru/usr/bin -archives $(IMAGE)/initramfs.cpio.gz,$(IMAGE)/node-initrd.cpio.gz -source-archive $(SOURCE_ARCHIVE) $(if $(PREV_MANIFEST),-prev-manifest $(abspath $(PREV_MANIFEST))) $(if $(RECREATE),-requires-recreation)
 
 # test-qemu boots Nodes of the image under QEMU, as the user, and reads their consoles. It needs
 # /dev/kvm with nested virtualization and the host's mkfs.ext4 (for the data disk), and fails,
@@ -286,9 +279,9 @@ test-qemu:
 	(cd tooling/qemu && go run ./cmd/naru-testroot -out $(TESTROOT)); \
 	$(MAKE) --no-print-directory disk image-upgrade TEST_ROOT=$(TESTROOT)/ca.pem; \
 	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
-	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) NARU_UPGRADE_DIR=$(UPGRADE) NARU_TESTROOT=$(TESTROOT) go test -tags qemu_real -count=1 -v -timeout 60m -run '^Test(Node|ControlPlane)_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
+	if ! (cd tooling/qemu && NARU_ROOT=$(CURDIR) NARU_IMAGE_DIR=$(IMAGE) NARU_GUEST_DIR=$(GUEST) NARU_UPGRADE_DIR=$(UPGRADE) NARU_TESTROOT=$(TESTROOT) go test -tags qemu_real -count=1 -v -timeout 60m -run '^TestNode_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
-	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='Test(Node|ControlPlane)_'
+	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='TestNode_'
 
 # test-fleet runs the TestFleet_ scenarios: several Nodes, hosts and an orch under QEMU, on the
 # image test-qemu runs on. It has a timeout of its own and the same count check as test-qemu.
@@ -332,20 +325,5 @@ test-release-upgrade:
 	if ! (cd tooling/qemu && NARU_FROM_RELEASE_DIR=$(abspath $(FROM)) NARU_TO_RELEASE_DIR=$(abspath $(TO)) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestRelease_' ./tests) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
 	cat "$$log"; \
 	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='TestRelease_' SKIP_ALLOW=TestRelease_AControlHostRunningTheExtensionUpgradesWithTheBundleAloneAndMountsTheNewImage
-
-# test-harness drives naru-cluster as an external harness does (docs/architecture/harness.md): from
-# a directory outside the checkout, against the output of `make release`, with the gaon binaries
-# of the pin as -gaon-bin. With RELEASE=<dir> on the command line it builds nothing and runs the
-# release directory's naru-cluster-<version>-linux-amd64, after checking it against SHA256SUMS, and
-# fails when the directory has none; without it, `make release` runs first and the test builds
-# naru-cluster from the workspace. It is a target of its own so that test-qemu stays the length it
-# is. It needs what test-qemu needs, and fails, never skips, when no test ran.
-HARNESS_FROM := $(filter command line,$(origin RELEASE))
-test-harness: $(if $(HARNESS_FROM),,release)
-	@set -e; \
-	log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
-	if ! (cd tooling/qemu && NARU_RELEASE_DIR=$(abspath $(RELEASE)) NARU_GAON_DIR=$(GAON) NARU_HARNESS_RELEASE_BINARY=$(if $(HARNESS_FROM),1) go test -tags qemu_real -count=1 -v -timeout 30m -run '^TestCluster_' ./tests/harness) >"$$log" 2>&1; then cat "$$log"; exit 1; fi; \
-	cat "$$log"; \
-	$(MAKE) --no-print-directory test-count TARGET=$@ LOG="$$log" PATTERN='TestCluster_'
 
 ci: lint lint-imports lint-modules format test build

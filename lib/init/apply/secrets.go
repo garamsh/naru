@@ -24,8 +24,6 @@ var shown = map[string]bool{
 	".spec.services[].binary":                  true,
 	".spec.services[].args[]":                  true,
 	".spec.services[].env{}":                   true,
-	".spec.services[].keptPair.file":           true,
-	".spec.services[].keptPair.organization":   true,
 	".spec.services[].restartOnChange[]":       true,
 	".spec.services[].logFiles[]":              true,
 	".spec.services[].dirs[].path":             true,

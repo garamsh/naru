@@ -31,30 +31,28 @@ type Config struct {
 	Name string
 	// Index is the Node's position, from 1, and Total the number of Nodes.
 	Index, Total int
-	// ControlPlane sets spec.controlPlane.
-	ControlPlane bool
 	// Probe adds the service that checks a Machine outlives mvmd.
 	Probe bool
 	// Inputs is what the data disk carries.
 	Inputs fixture.Inputs
 	// Network is the Node's addresses; the zero value is QEMUNetwork(Index, Total).
 	Network Network
-	// HostPort, when not 0, gives the Node a second NIC on QEMU's user-mode network, which forwards
-	// the host's loopback port HostPort to the API server (see hostnic.go).
-	HostPort int
-	// APIHostPort, when not 0 and with HostPort, adds a forward of the host's loopback port to the
+	// HostNIC gives the Node a second NIC on QEMU's user-mode network, which carries the forwards
+	// below (see hostnic.go).
+	HostNIC bool
+	// APIHostPort, when not 0 and with HostNIC, adds a forward of the host's loopback port to the
 	// Node API's port on the same NIC.
 	APIHostPort int
-	// HostAPIHostPort, when not 0 and with HostPort, adds a forward of the host's loopback port to
+	// HostAPIHostPort, when not 0 and with HostNIC, adds a forward of the host's loopback port to
 	// naru-hostd's port on the same NIC (ADR 0028).
 	HostAPIHostPort int
-	// RouteHostPort, when not 0 and with HostPort, adds a forward of the host's loopback port to
+	// RouteHostPort, when not 0 and with HostNIC, adds a forward of the host's loopback port to
 	// naru-mvmroute's port on the same NIC, the test host's route to the microVMs' addresses.
 	RouteHostPort int
-	// ExtraForwards, with HostPort, are forwards of the host's loopback to more ports of the second NIC:
+	// ExtraForwards, with HostNIC, are forwards of the host's loopback to more ports of the second NIC:
 	// the orch, the signer's socket proxy and the metrics of a multi-host scenario (see Forward).
 	ExtraForwards []Forward
-	// HostReach, with HostPort, leaves the second NIC's user-mode network unrestricted, so the
+	// HostReach, with HostNIC, leaves the second NIC's user-mode network unrestricted, so the
 	// guest reaches the test host at 10.0.2.2 (a time server the test runs on the host). The NIC
 	// has no gateway, so the Node still has no route off the host. Without it the NIC is
 	// restrict=on, as image.md describes.
@@ -73,9 +71,6 @@ type Config struct {
 	// RegistryCA is the PEM authority of the registry service, which the Node's spec.registries
 	// names for RegistryHost and mvmd's registry section trusts through ca_file.
 	RegistryCA string
-	// AgentPair, when not empty, is a host directory the data disk carries as gaon-node-agent/,
-	// so that a Node boots with a kept agent pair that init may set aside (ADR 0026).
-	AgentPair string
 	// ExtraDisk, when not 0, is the size in bytes of a blank sparse disk the Node has besides its
 	// boot and data disks, which a Node boots with at /dev/sdc unless VirtioDisks says otherwise.
 	ExtraDisk int64
@@ -183,11 +178,10 @@ config:
 }
 
 type service struct {
-	Name         string            `yaml:"name"`
-	Binary       string            `yaml:"binary"`
-	Args         []string          `yaml:"args,omitempty"`
-	Env          map[string]string `yaml:"env,omitempty"`
-	ControlPlane bool              `yaml:"controlPlane,omitempty"`
+	Name   string            `yaml:"name"`
+	Binary string            `yaml:"binary"`
+	Args   []string          `yaml:"args,omitempty"`
+	Env    map[string]string `yaml:"env,omitempty"`
 }
 
 // storageProbeService is the naru-storageprobe service that reports on the file system mounted at dir.
@@ -214,8 +208,7 @@ type nodeConfig struct {
 		Name string `yaml:"name"`
 	} `yaml:"metadata"`
 	Spec struct {
-		ControlPlane bool `yaml:"controlPlane"`
-		DataDisk     struct {
+		DataDisk struct {
 			Label      string `yaml:"label"`
 			MountPoint string `yaml:"mountPoint"`
 		} `yaml:"dataDisk"`
@@ -242,11 +235,10 @@ type file struct {
 }
 
 // NaruYAML is the Node's naru.yaml, which is its NoCloud user-data, for the Nodes that run the
-// tests' own services; a Node that runs gaon has the user-data naructl writes. It carries mvmd's
-// configuration as a file for init to write under /run. Its services, in this order: mvmd; the
-// registry that serves the test image; a stand-in that waits for mvmd's
-// socket and for the next Node's stand-in; a control-plane stand-in, which
-// starts only where spec.controlPlane is true; and, where asked, the probe.
+// tests' own services; a Node of a GenNode cluster has the user-data naructl writes. It carries
+// mvmd's configuration as a file for init to write under /run. Its services, in this order: mvmd;
+// the registry that serves the test image; a stand-in that waits for mvmd's socket and for the next
+// Node's stand-in; and, where asked, the probe.
 func (c Config) NaruYAML() ([]byte, error) {
 	mvmdJSON, err := c.MvmdJSON()
 	if err != nil {
@@ -257,7 +249,6 @@ func (c Config) NaruYAML() ([]byte, error) {
 	n.APIVersion = "naru.garam.sh/v1alpha1"
 	n.Kind = "NodeConfig"
 	n.Metadata.Name = "naru-" + c.Name
-	n.Spec.ControlPlane = c.ControlPlane
 	n.Spec.DataDisk.Label = wire.DataLabel
 	n.Spec.DataDisk.MountPoint = wire.DataMount
 	n.Spec.Network.Forwarding = []string{"ipv4"}
@@ -277,7 +268,6 @@ func (c Config) NaruYAML() ([]byte, error) {
 			Name: "standin", Binary: "/bin/naru-standin",
 			Args: []string{"-socket", MvmdSocket, "-mount", wire.DataMount, "-listen", c.IP() + ":" + StandinPort, "-peer", c.PeerIP() + ":" + StandinPort},
 		},
-		{Name: "control", Binary: "/bin/naru-standin", ControlPlane: true},
 	}
 	if len(c.NetEcho) > 0 {
 		n.Spec.Services = append(n.Spec.Services, service{Name: "netecho", Binary: path.Join(root, "bin/naru-netecho"), Args: c.NetEcho})

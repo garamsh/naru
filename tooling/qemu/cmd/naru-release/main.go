@@ -1,6 +1,6 @@
 // Command naru-release writes the release assets into a directory: the boot disk, the upgrade bundle, the shared data
-// disk, the guest manifest, the Node boot set (a kernel, an initramfs and the manifest naming them), a test-only user-data per Node that runs gaon, naru-inputs-<version>.json
-// (the Firecracker digest and the test image's reference), the naructl and naru-cluster binaries, the SPDX SBOM, the tar of the
+// disk, the guest manifest, the Node boot set (a kernel, an initramfs and the manifest naming them), a test-only user-data per Node, naru-inputs-<version>.json
+// (the Firecracker digest and the test image's reference), the naructl binary, the SPDX SBOM, the tar of the
 // corresponding source of the GPL-family components, and SHA256SUMS. `make release` runs it.
 //
 // naru-release compare <published SHA256SUMS> <new SHA256SUMS> exits 0 when a tag's published release and a new build of it agree on
@@ -58,7 +58,6 @@ func run() error {
 	flag.StringVar(&o.Out, "out", "", "directory that receives the assets")
 	flag.StringVar(&o.Version, "version", "", "version in the asset names")
 	flag.StringVar(&o.Naructl, "naructl", "", "the naructl binary (static, linux/amd64): an asset, and it writes the user-data")
-	flag.StringVar(&o.NaruCluster, "naru-cluster", "", "the naru-cluster binary (static, linux/amd64): an asset")
 	flag.StringVar(&o.PrevManifest, "prev-manifest", "", "the manifest.json of the previous release's upgrade bundle, to refuse a kernel its Nodes cannot take (ADR 0037)")
 	flag.BoolVar(&o.RequiresRecreation, "requires-recreation", false, "allow a kernel the previous release's Nodes cannot take: the notes tell them to be recreated")
 	flag.StringVar(&o.Figures, "notes-figures", "", "a file to write the release notes' figures to (ESP_BYTES, LARGEST_UPGRADE_KERNEL_BYTES); not in -out, whose files are all assets")
@@ -77,8 +76,8 @@ func run() error {
 	if o.SourceArchive == "" {
 		return fmt.Errorf("-source-archive is required (make source-archive)")
 	}
-	if o.ImageDir == "" || o.DiskDir == "" || o.GuestDir == "" || o.Out == "" || o.Version == "" || o.Naructl == "" || o.NaruCluster == "" {
-		return fmt.Errorf("-image, -disk, -guest, -out, -version, -naructl and -naru-cluster are required")
+	if o.ImageDir == "" || o.DiskDir == "" || o.GuestDir == "" || o.Out == "" || o.Version == "" || o.Naructl == "" {
+		return fmt.Errorf("-image, -disk, -guest, -out, -version and -naructl are required")
 	}
 	assets, err := release.Build(o)
 	if err != nil {

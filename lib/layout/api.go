@@ -27,7 +27,7 @@ func (n Node) specAPI() (*apiSpec, error) {
 
 func (n Node) apiAuthority() (*apiSpec, error) {
 	if h := n.Host; h != nil && h.APIClientCA != "" {
-		// A Node that runs no gaon has no API authority to issue from: it serves the Node API with the
+		// A joined host has no API authority to issue from: it serves the Node API with the
 		// certificate its host API has, whose key is the one the host made, which stays in its file.
 		return &apiSpec{ClientCA: h.APIClientCA, Certificate: h.Certificate, KeyFile: h.KeyFile}, nil
 	}

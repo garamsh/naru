@@ -49,9 +49,6 @@ func (e *Engine) refuse(next config.NodeConfig, mode Mode) error {
 	if mode != NoReboot {
 		return nil
 	}
-	if next.Spec.ControlPlane != running.Spec.ControlPlane {
-		reboot = append(reboot, "spec.controlPlane")
-	}
 	if !slices.Equal(next.Spec.Network.Forwarding, running.Spec.Network.Forwarding) {
 		reboot = append(reboot, "spec.network.forwarding")
 	}
@@ -151,22 +148,16 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 
 	touched := map[string]bool{}
 	for _, old := range running.Spec.Services {
-		if !running.Spec.Runs(old) {
-			continue
-		}
-		if _, ok := serviceAt(next.Spec.Services, old.Name); ok && next.Spec.Runs(old) {
+		if _, ok := serviceAt(next.Spec.Services, old.Name); ok {
 			continue
 		}
 		steps = append(steps, step{Action{"stop", old.Name}, func() error { e.deps.Services.Stop(old.Name); return nil }})
 		touched[old.Name] = true
 	}
 	for _, svc := range next.Spec.Services {
-		if !next.Spec.Runs(svc) {
-			continue
-		}
 		old, ok := serviceAt(running.Spec.Services, svc.Name)
 		switch {
-		case !ok || !running.Spec.Runs(old):
+		case !ok:
 			steps = append(steps, step{Action{"start", svc.Name}, func() error { return e.deps.Services.Start(svc) }})
 		case !old.Equal(svc):
 			steps = append(steps, step{Action{"restart", svc.Name}, func() error {
@@ -179,8 +170,7 @@ func (e *Engine) plan(next config.NodeConfig) []step {
 		touched[svc.Name] = true
 	}
 	for _, n := range named {
-		svc, ok := serviceAt(next.Spec.Services, n)
-		if touched[n] || !ok || !next.Spec.Runs(svc) {
+		if _, ok := serviceAt(next.Spec.Services, n); touched[n] || !ok {
 			continue
 		}
 		steps = append(steps, step{Action{"restart", n}, func() error { e.deps.Services.Restart(n); return nil }})

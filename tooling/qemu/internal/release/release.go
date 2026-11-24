@@ -5,7 +5,7 @@
 // orch and the signer with its description, the guest manifest (the names
 // and SHA-256 of the guest kernels and initrds the boot disk carries), the inputs file (the Firecracker
 // digest and the test image's reference), a test-only NoCloud
-// user-data per Node for Proxmox that runs gaon with certificates issued for the release, and the
+// user-data per Node for Proxmox that pulls from the data disk's test registry, and the
 // SHA256SUMS of them, the SPDX SBOM and the tar of the corresponding source of the GPL-family
 // components (ADR 0076). `make release` runs it.
 package release
@@ -38,8 +38,7 @@ import (
 const Nodes = 2
 
 // Proxmox is where Node index (1 or 2) is in the example deployment: its address on the LAN and
-// the IPv4 prefix mvmd gives its Machines, 10.200.<index>.0/24. Node 1 is the control-plane Node,
-// and every agent dials its address.
+// the IPv4 prefix mvmd gives its Machines, 10.200.<index>.0/24.
 type Proxmox struct {
 	Name, Address, MachinePrefix string
 }
@@ -53,48 +52,32 @@ func Deployment(index int) Proxmox {
 	}
 }
 
-// APIServer is the address every Node dials: node-1's.
-const APIServer = "192.168.0.40"
-
-// NaruClusterName is the name of the naru-cluster asset: the static binary an external harness
-// downloads and checks against SHA256SUMS (ADR 0074).
-func NaruClusterName(version string) string { return "naru-cluster-" + version + "-linux-amd64" }
-
-// UserDataName is the name of Node index's user-data asset. ".test" marks it as one that carries
-// key material, which is for a test deployment only.
+// UserDataName is the name of Node index's user-data asset. ".test" marks it as one for a test
+// deployment only: its Nodes trust the authority of the data disk's test registry.
 func UserDataName(index int) string { return fmt.Sprintf("naru-node-%d.test.yaml", index) }
 
 // UserData has the naructl binary write the user-data files by name (UserDataName), each running
-// gaon: mvmd, the registry, etcd and gaon's control plane on node-1, and gaon's Node Agent on both.
-// The CA is a test authority: node-1's user-data carries it, private key included, in spec.pki, so
-// that its controllers sign the agents' requests (ADR 0016), and every Node carries a bootstrap
-// token. The CA and the tokens are derived from version and epoch (testpki.go), so that two builds
-// of one commit write the same files. The CA's directory is removed before UserData returns, so the key
-// is in no file but node-1's user-data, and no file carries a client pair for an operator.
-// firecracker is the digest of the Firecracker binary, and
-// registryCA the path of the authority of the registry service, which every Node trusts for the
-// registry's address through spec.registries.
-func UserData(tool naructl.Tool, version string, epoch int64, firecracker, registryCA string) (map[string][]byte, error) {
+// mvmd and the registry of the data disk, and routing to the other Node's Machines. They carry no
+// key: the authorities' directory naructl is given is empty, so no Node serves the Node API or the
+// host API. firecracker is the digest of the Firecracker binary, and registryCA the path of the
+// authority of the registry service, which every Node trusts for the registry's address through
+// spec.registries.
+func UserData(tool naructl.Tool, firecracker, registryCA string) (map[string][]byte, error) {
 	work, err := os.MkdirTemp("", "naru15-userdata-")
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(work) }()
 	ca := filepath.Join(work, "ca")
-	var names []string
-	for i := 1; i <= Nodes; i++ {
-		// node-1's user-data, written first, lists the token of every Node.
-		names = append(names, Deployment(i).Name)
-	}
-	if err := testPKI(ca, version, epoch, names); err != nil {
-		return nil, fmt.Errorf("make the CA: %w", err)
+	if err := os.Mkdir(ca, 0o700); err != nil {
+		return nil, err
 	}
 	out := map[string][]byte{}
 	for i := 1; i <= Nodes; i++ {
 		d := Deployment(i)
 		p := filepath.Join(work, UserDataName(i))
 		if err := tool.GenNode(naructl.Node{
-			CA: ca, Name: d.Name, ControlPlane: i == 1, Address: d.Address, APIServer: APIServer, MachinePrefix: d.MachinePrefix,
+			CA: ca, Name: d.Name, Address: d.Address, MachinePrefix: d.MachinePrefix,
 			Firecracker: firecracker, Peers: peers(i), Out: p,
 			Registries: []string{"host=" + fixture.RegistryAddr + ",ca=" + registryCA},
 		}); err != nil {
@@ -172,8 +155,6 @@ type Options struct {
 	// Naructl is the naructl binary, built static for linux/amd64: it is an asset, and it writes the
 	// user-data.
 	Naructl string
-	// NaruCluster is the naru-cluster binary, built static for linux/amd64: it is an asset.
-	NaruCluster string
 	// PrevManifest is the path of the manifest.json of the previous release's upgrade bundle, or
 	// empty when there is none to check against. Build refuses a kernel that would not fit the
 	// trial slot of a Node installed from that release, unless RequiresRecreation is set, which
@@ -187,8 +168,8 @@ type Options struct {
 	// Epoch is SOURCE_DATE_EPOCH: the only time in the SBOM and the sources tar.
 	Epoch int64
 	// Binaries are the directories whose Go binaries the SBOM states the modules of, and Archives
-	// the gzip-compressed cpio archives (the initramfs) whose Go binaries it states too; Naructl and
-	// NaruCluster are stated as well.
+	// the gzip-compressed cpio archives (the initramfs) whose Go binaries it states too; Naructl is
+	// stated as well.
 	Binaries, Archives []string
 	// Downloads are the directories that hold the verified upstream tarballs make image fetched; a
 	// tarball the sources tar needs and they lack is fetched from its pin's URL.
@@ -319,7 +300,7 @@ func Build(o Options) ([]Asset, error) {
 	names = append(names, manifest)
 
 	// The data disk's tree is not enough to configure a Node: mvmd's configuration names the
-	// Firecracker digest, and a harness needs the image's reference (naru-cluster reads both).
+	// Firecracker digest, and a test needs the image's reference (fixture.ReadRelease reads both).
 	ri, err := json.MarshalIndent(fixture.ReleaseInputs{
 		FirecrackerSHA256: inputs.FirecrackerSHA256, ImageRepository: inputs.Image.Repository, ImageDigest: inputs.Image.Digest,
 	}, "", "  ")
@@ -346,19 +327,17 @@ func Build(o Options) ([]Asset, error) {
 	}
 
 	// naructl is the operator's tool and the one owner of the Node layout: the release ships the
-	// binary and writes the test user-data with it. naru-cluster is what a harness runs.
+	// binary and writes the test user-data with it.
 	tool := "naructl-" + o.Version + "-linux-amd64"
-	for _, b := range []struct{ from, name string }{{o.Naructl, tool}, {o.NaruCluster, NaruClusterName(o.Version)}} {
-		if err := copyFile(b.from, filepath.Join(o.Out, b.name)); err != nil {
-			return nil, fmt.Errorf("the %s binary: %w", b.name, err)
-		}
-		if err := os.Chmod(filepath.Join(o.Out, b.name), 0o755); err != nil {
-			return nil, err
-		}
-		names = append(names, b.name)
+	if err := copyFile(o.Naructl, filepath.Join(o.Out, tool)); err != nil {
+		return nil, fmt.Errorf("the %s binary: %w", tool, err)
 	}
+	if err := os.Chmod(filepath.Join(o.Out, tool), 0o755); err != nil {
+		return nil, err
+	}
+	names = append(names, tool)
 
-	files, err := UserData(naructl.Tool{Bin: o.Naructl}, o.Version, o.Epoch, inputs.FirecrackerSHA256, filepath.Join(inputs.Dir, "registry", "ca.pem"))
+	files, err := UserData(naructl.Tool{Bin: o.Naructl}, inputs.FirecrackerSHA256, filepath.Join(inputs.Dir, "registry", "ca.pem"))
 	if err != nil {
 		return nil, err
 	}
@@ -386,7 +365,7 @@ func Build(o Options) ([]Asset, error) {
 	}
 
 	// The SBOM and the sources are written last: they state what the other assets were built from.
-	bins, err := ReadGoBinaries(o.Binaries, []string{o.Naructl, o.NaruCluster}, o.Archives)
+	bins, err := ReadGoBinaries(o.Binaries, []string{o.Naructl}, o.Archives)
 	if err != nil {
 		return nil, err
 	}

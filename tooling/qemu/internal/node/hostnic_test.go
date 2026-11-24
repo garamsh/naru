@@ -20,19 +20,19 @@ func qemuLine(t *testing.T, c Config) string {
 	return strings.Join(args, " ")
 }
 
-func TestQemuArgs_TheHostNICForwardsLoopbackToTheAPIServer(t *testing.T) {
-	c := cfg(1, 2, true, false)
-	c.HostPort = 41234
+func TestQemuArgs_TheHostNICForwardsLoopbackToTheNodesAPIs(t *testing.T) {
+	c := cfg(1, 2, false)
+	c.HostNIC, c.APIHostPort, c.HostAPIHostPort = true, 41234, 41236
 
 	line := qemuLine(t, c)
 
-	assert.Contains(t, line, "-netdev user,id=net1,restrict=on,hostfwd=tcp:127.0.0.1:41234-10.0.2.15:6443")
+	assert.Contains(t, line, "-netdev user,id=net1,restrict=on,hostfwd=tcp:127.0.0.1:41234-10.0.2.15:50000,hostfwd=tcp:127.0.0.1:41236-10.0.2.15:7443")
 	assert.Contains(t, line, "virtio-net-pci,netdev=net1,mac=02:00:00:01:00:01")
 }
 
 func TestQemuArgs_ARouteHostPortForwardsLoopbackToTheRouteOnTheHostNIC(t *testing.T) {
-	c := cfg(1, 2, true, false)
-	c.HostPort, c.RouteHostPort = 41234, 41235
+	c := cfg(1, 2, false)
+	c.HostNIC, c.RouteHostPort = true, 41235
 
 	assert.Contains(t, qemuLine(t, c), ",hostfwd=tcp:127.0.0.1:41235-10.0.2.15:7480")
 
@@ -41,8 +41,8 @@ func TestQemuArgs_ARouteHostPortForwardsLoopbackToTheRouteOnTheHostNIC(t *testin
 }
 
 func TestQemuArgs_ExtraForwardsReachMorePortsOfTheHostNICAndCaptureDumpsTheSharedNetwork(t *testing.T) {
-	c := cfg(1, 2, true, false)
-	c.HostPort, c.ExtraForwards = 41234, []Forward{{HostPort: 41300, GuestPort: "7500"}, {HostPort: 41301, GuestPort: "9102"}}
+	c := cfg(1, 2, false)
+	c.HostNIC, c.ExtraForwards = true, []Forward{{HostPort: 41300, GuestPort: "7500"}, {HostPort: 41301, GuestPort: "9102"}}
 
 	line := qemuLine(t, c)
 
@@ -57,22 +57,22 @@ func TestQemuArgs_ExtraForwardsReachMorePortsOfTheHostNICAndCaptureDumpsTheShare
 	assert.Contains(t, strings.Join(args, " "), "-object filter-dump,id=cap0,netdev=net0,file="+CapturePath(spec.Dir))
 }
 
-func TestQemuArgs_ANodeWithoutAHostPortHasOneNIC(t *testing.T) {
-	assert.NotContains(t, qemuLine(t, cfg(2, 2, false, false)), "net1")
+func TestQemuArgs_ANodeWithoutAHostNICHasOneNIC(t *testing.T) {
+	assert.NotContains(t, qemuLine(t, cfg(2, 2, false)), "net1")
 }
 
 func TestQemuArgs_AHostReachNICIsNotRestricted(t *testing.T) {
-	c := cfg(1, 2, true, false)
-	c.HostPort, c.HostReach = 41234, true
+	c := cfg(1, 2, false)
+	c.HostNIC, c.HostReach, c.APIHostPort = true, true, 41234
 
 	line := qemuLine(t, c)
 
-	assert.Contains(t, line, "-netdev user,id=net1,hostfwd=tcp:127.0.0.1:41234-10.0.2.15:6443")
+	assert.Contains(t, line, "-netdev user,id=net1,hostfwd=tcp:127.0.0.1:41234-10.0.2.15:50000")
 	assert.NotContains(t, line, "restrict")
 }
 
 func TestQemuArgs_AMemoryOfTheConfigReplacesTheDefault(t *testing.T) {
-	c := cfg(1, 2, true, false)
+	c := cfg(1, 2, false)
 
 	assert.Contains(t, qemuLine(t, c), "-m 3072 ")
 	c.MemoryMiB = 4096
@@ -80,7 +80,7 @@ func TestQemuArgs_AMemoryOfTheConfigReplacesTheDefault(t *testing.T) {
 }
 
 func TestQemuArgs_ARTCBaseStartsTheNodesClockAtThatDate(t *testing.T) {
-	spec := Spec{Config: cfg(1, 1, true, false), RTCBase: "2021-03-04T05:06:07"}
+	spec := Spec{Config: cfg(1, 1, false), RTCBase: "2021-03-04T05:06:07"}
 	spec.Dir, spec.Disk, spec.Mcast = t.TempDir(), filepath.Join(t.TempDir(), "naru.img"), "230.78.0.1:5000"
 	require.NoError(t, os.WriteFile(spec.Disk, []byte("disk"), 0o644))
 
@@ -89,6 +89,6 @@ func TestQemuArgs_ARTCBaseStartsTheNodesClockAtThatDate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, strings.Join(args, " "), "-rtc base=2021-03-04T05:06:07,clock=vm")
 	assert.Contains(t, strings.Join(args, " "), "-cpu host,-kvmclock")
-	assert.NotContains(t, qemuLine(t, cfg(1, 1, true, false)), "-rtc")
-	assert.NotContains(t, qemuLine(t, cfg(1, 1, true, false)), "kvmclock")
+	assert.NotContains(t, qemuLine(t, cfg(1, 1, false)), "-rtc")
+	assert.NotContains(t, qemuLine(t, cfg(1, 1, false)), "kvmclock")
 }

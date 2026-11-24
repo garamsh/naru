@@ -13,7 +13,7 @@ func TestQemuArgs_ADetachedSeedLeavesTheNoCloudDriveOut(t *testing.T) {
 	dir := t.TempDir()
 	boot := dir + "/naru.img"
 	require.NoError(t, os.WriteFile(boot, nil, 0o644))
-	spec := Spec{Config: cfg(1, 2, true, false), Disk: boot, Dir: dir, Mcast: "230.78.0.1:5000"}
+	spec := Spec{Config: cfg(1, 2, false), Disk: boot, Dir: dir, Mcast: "230.78.0.1:5000"}
 
 	with, err := qemuArgs(spec, "naru15-node-1", "cidata.img", "data.img", "console.log")
 	require.NoError(t, err)

@@ -35,20 +35,15 @@ const (
 	ESPGUID = "cb4162e7-9d1e-48df-b937-f5792071b950"
 )
 
-// The TCP ports of the APIs and of etcd.
+// The TCP ports of the APIs.
 const (
 	// HostAPIPort is the port naru-hostd serves the host API on (ADR 0028).
 	HostAPIPort = "7443"
 	// NodeAPIPort is the port init serves the Node API on by default (ADR 0017).
 	NodeAPIPort = "50000"
-	// KubeAPIPort is the port gaon's API server serves mutual TLS on.
-	KubeAPIPort = "6443"
-	// EtcdClientPort and EtcdPeerPort are etcd's client and peer ports (ADR 0024).
-	EtcdClientPort = "2379"
-	EtcdPeerPort   = "2380"
 )
 
-// Protocol is the transport of an exposed port, spelled as Kubernetes spells a Service port's. Orch's
+// Protocol is the transport of an exposed port, in upper case (TCP, UDP). Orch's
 // API, the host API and naru-hostd take it in this one spelling and no other (ADR 0107).
 type Protocol string
 

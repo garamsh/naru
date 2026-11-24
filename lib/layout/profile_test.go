@@ -46,7 +46,7 @@ func joined(t *testing.T) layout.JoinedHost {
 	}
 }
 
-func TestHostProfileNode_BuildsAHostConfigWithNoGaonAndNoClusterSections(t *testing.T) {
+func TestHostProfileNode_BuildsAHostConfigWithNoSignerOrchJoinOrPKISection(t *testing.T) {
 	p := profile(t)
 	h := joined(t)
 	n, err := p.Node(h)
@@ -197,8 +197,8 @@ func TestParseHostProfile_RefusesWhatIsOneHostsOwn(t *testing.T) {
 		doc  string
 		want string
 	}{
-		"a bootstrap token": {"token: abcdef.0123456789abcdef\n", "token"},
-		"a CA key":          {"caKey: x\n", "caKey"},
+		"a token":  {"token: abcdef.0123456789abcdef\n", "token"},
+		"a CA key": {"caKey: x\n", "caKey"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := layout.ParseHostProfile(append(slices.Clone(good), c.doc...))

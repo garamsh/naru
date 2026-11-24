@@ -6,7 +6,7 @@
 #   bzImage bzImage.bare initramfs.cpio.gz node-initrd.cpio.gz boot-sets.json inputs.env
 #   guest/        guest.json, the guest kernel, the Node's boot-set kernel and the two guest initrds
 #   extensions/   the naru-orch extension
-#   gaon/ etcd/ regtools/   the programs the tests run on the host or hand to the release
+#   regtools/     the programs the tests run on the host
 #
 # regtools/ca-certificates.crt is the cacert package's bundle with the throwaway root of NARU_TEST_ROOT
 # appended when the image is a test image (ADR 0026), the bytes the initramfs packages hold.
@@ -23,7 +23,7 @@ pkgs=$2
 root=$3
 image=$4
 
-want=(mvmd gaon etcd ecr-login rolesanywhere cacert extension kernel-host initramfs-host initramfs-node bzImage)
+want=(mvmd ecr-login rolesanywhere cacert extension kernel-host initramfs-host initramfs-node bzImage)
 tars=()
 for p in "${want[@]}"; do
   tars+=("$pkgs/$p.tar")
@@ -32,7 +32,7 @@ done
 # directory, and make image-upgrade lays out again after it.
 rm -rf "$root"
 mkdir -p "$root" "$image"
-for f in bzImage bzImage.bare initramfs.cpio.gz node-initrd.cpio.gz boot-sets.json inputs.env guest extensions gaon etcd regtools; do
+for f in bzImage bzImage.bare initramfs.cpio.gz node-initrd.cpio.gz boot-sets.json inputs.env guest extensions regtools; do
   rm -rf "${image:?}/$f"
 done
 "$naru_pkg" unpack "$root" "${tars[@]}"
@@ -42,9 +42,7 @@ cp "$root/bzImage/bzImage" "$root/kernel-host/bzImage.bare" "$root/initramfs-hos
 cp -r "$root/initramfs-host/guest" "$image/guest"
 cp -r "$root/extension/extensions" "$image/extensions"
 
-mkdir -p "$image/gaon" "$image/etcd" "$image/regtools"
-cp "$root"/gaon/usr/bin/* "$image/gaon/"
-cp "$root/etcd/usr/bin/etcd" "$image/etcd/"
+mkdir -p "$image/regtools"
 cp "$root/ecr-login/usr/bin/docker-credential-ecr-login" "$root/rolesanywhere/usr/bin/aws_signing_helper" "$image/regtools/"
 {
   cat "$root/cacert/etc/ssl/certs/ca-certificates.crt"

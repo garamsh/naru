@@ -55,8 +55,8 @@ func TestLAN_KernelLifetimeProofOnQEMUKernel(t *testing.T) {
 	}
 
 	c := start(t, node.ClusterSpec{
-		N:    1,
-		Gaon: true,
+		N:       1,
+		GenNode: true,
 		ExtraServices: []node.ExtraService{
 			{
 				Name:   "naru94-lantest-seq",

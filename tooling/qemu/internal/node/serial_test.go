@@ -10,7 +10,7 @@ import (
 // A unix socket path may have no more than 107 bytes. The serial socket of a Node whose directory
 // carries a long test name is still inside that, and two Nodes do not share one.
 func TestSerialSocketPathStaysInsideTheUnixSocketLimitForALongNodeDirectory(t *testing.T) {
-	long := "/home/sauce/.cache/t-w14/TestControlPlane_" + strings.Repeat("ThreeNodesWhoseSerialSocket", 4) + "123456/001/"
+	long := "/home/sauce/.cache/t-w14/TestNode_" + strings.Repeat("ThreeNodesWhoseSerialSocket", 4) + "123456/001/"
 	one, two := SerialSocketPath(long+"node-1"), SerialSocketPath(long+"node-2")
 
 	assert.LessOrEqual(t, len(one), 107, one)
@@ -20,7 +20,7 @@ func TestSerialSocketPathStaysInsideTheUnixSocketLimitForALongNodeDirectory(t *t
 
 // The monitor socket of a Node is inside the same limit, and is not the serial socket.
 func TestMonitorSocketPathStaysInsideTheUnixSocketLimitAndIsNotTheSerialSocket(t *testing.T) {
-	long := "/home/sauce/.cache/t-w14/TestControlPlane_" + strings.Repeat("ThreeNodesWhoseSerialSocket", 4) + "123456/001/node-1"
+	long := "/home/sauce/.cache/t-w14/TestNode_" + strings.Repeat("ThreeNodesWhoseSerialSocket", 4) + "123456/001/node-1"
 
 	assert.LessOrEqual(t, len(MonitorSocketPath(long)), 107)
 	assert.NotEqual(t, SerialSocketPath(long), MonitorSocketPath(long))

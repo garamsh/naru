@@ -28,7 +28,6 @@ The words the architecture documents use, what each names, and the flag, field o
 | volume | A disk of a Machine that lives as long as the Machine and moves with it; the root disk does not. | `volumes` of a Machine; an mvmd disk on its host |
 | binding | Orch's record of the host a Machine is placed on and the epoch of that placement; the microVM is `m-<id>-<epoch>`. | `/naru/orch/machines/` ([machines.md](./machines.md) §State) |
 | member | One of three things, and a document says which. A control host's member of orch (`naru-orchd` with its etcd). A member of a group: the record of one microVM. A member of a network: a microVM's address. | `naructl gen node --orch-member`, `spec.orch` ([orch.md](./orch.md)); `GET /v1/groups` ([groups.md](./groups.md)); `PUT /v1/networks/{name}` ([host.md](./host.md)) |
-| control plane Node | The Node that runs gaon's control plane services and etcd. It is not a control host. | `spec.controlPlane`; `naructl gen node --control-plane` |
 
 The word Node in the older documents named the physical machine, and `boundaries.md` said so. It does not: a Node can be a microVM ([ADR 0034](./adr/0034-a-node-boots-as-a-microvm-from-a-guest-kernel-and-initramfs-the-image-carries-as-a-boot-set.md)), and a physical machine is a host.
 
@@ -65,7 +64,7 @@ The word Node in the older documents named the physical machine, and `boundaries
 | admin | The Node API role `naru:admin`: a client certificate from the Node API authority whose Organization is `naru:admin`. It reads and changes a Node. It is a role on one Node and not a person. | `naructl gen api-client`; [init.md](./init.md) |
 | root person | The person who holds the root certificate and its encrypted person file. Root alone issues operator, reader, automation and orch certificates. A new root comes from `naru-signer init` or from the recovery key's reissue. | `naructl operator request`, `naructl operator person`; `naructl signer reissue-root` |
 | the four authorities | What a signer answers to `GET /v1/ca`: the host authority, the operator authority and the orch authority, which sign certificates, and the revocation key, which signs the revocation list. All four are in the signer's private directory. | `lib/identity` `Authorities`; `naructl signer ca`; [signer.md](./signer.md) |
-| other authorities | Files `naructl` writes with `--ca-dir` and that no signer holds: the cluster authority of gaon's certificates (`gen ca`), the Node API authority (`gen api-ca`) and the host API authority (`gen host-ca`). | [config.md](./config.md) |
+| other authorities | Files `naructl` writes with `--ca-dir` and that no signer holds: the Node API authority (`gen api-ca`) and the host API authority (`gen host-ca`). | [config.md](./config.md) |
 
 ## Code layout
 

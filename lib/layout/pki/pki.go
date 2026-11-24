@@ -1,5 +1,6 @@
-// Package pki makes a cluster's certificate authority and the certificates it signs: the pairs a
-// Node carries as files and the operator's client pair. Every key is ECDSA P-256 and PEM encoded.
+// Package pki makes the Node API and host API authorities and the certificates they sign: the
+// serving pairs a Node carries and the operator's client pairs. Every key is ECDSA P-256 and PEM
+// encoded.
 package pki
 
 import (
@@ -28,13 +29,13 @@ const (
 	// behind the issuer's accepts it.
 	skew = time.Hour
 
-	// CertFile and KeyFile are the names of the authority's files in the directory of gen ca.
+	// CertFile and KeyFile are the names of an authority's files in its directory.
 	CertFile = "ca.pem"
 	KeyFile  = "ca.key"
-	// APIDir is the directory under a cluster's directory that holds the Node API authority, which
-	// is not the cluster's CA.
+	// APIDir is the directory under the operator's authorities directory (naructl's --ca-dir) that
+	// holds the Node API authority.
 	APIDir = "api"
-	// HostDir is the directory under a cluster's directory that holds the host API authority,
+	// HostDir is the directory under the operator's authorities directory that holds the host API authority,
 	// which signs naru-hostd's serving pair and its clients' certificates.
 	HostDir = "host"
 )
@@ -175,8 +176,8 @@ func (c *CA) Server(cn string, ips ...net.IP) (Pair, error) {
 	})
 }
 
-// Client issues a client certificate whose subject CN, the caller's identity to gaon, is cn, with
-// orgs as its Organizations.
+// Client issues a client certificate whose subject CN is cn, with orgs as its Organizations: the
+// caller's identity and roles to the API that trusts the authority.
 func (c *CA) Client(cn string, orgs ...string) (Pair, error) {
 	if cn == "" {
 		return Pair{}, errors.New("a client certificate needs a CN")
@@ -185,20 +186,6 @@ func (c *CA) Client(cn string, orgs ...string) (Pair, error) {
 		Subject:     pkix.Name{CommonName: cn, Organization: orgs},
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	})
-}
-
-// ClientAt issues a client certificate like Client, with each of ips as an IP SAN: the identity of a
-// peer that the server it dials checks against the address it dials from (etcd does).
-func (c *CA) ClientAt(cn string, ips ...net.IP) (Pair, error) {
-	if cn == "" {
-		return Pair{}, errors.New("a client certificate needs a CN")
-	}
-	return c.issue(&x509.Certificate{
-		Subject:     pkix.Name{CommonName: cn},
-		KeyUsage:    x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		IPAddresses: ips,
 	})
 }
 

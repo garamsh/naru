@@ -79,7 +79,7 @@ type JoinedHost struct {
 }
 
 // ParseHostProfile reads a profile and checks it. A field the type does not have is refused, which
-// is how a profile that carries a bootstrap token or an authority key is.
+// is how a profile that carries a token or an authority key is.
 func ParseHostProfile(b []byte) (HostProfile, error) {
 	var p HostProfile
 	dec := yaml.NewDecoder(bytes.NewReader(b))
@@ -193,8 +193,7 @@ func trustSet(authorities ...string) string {
 
 // Node is the Node of host h under the profile: the host API served from the certificate orch issued
 // for the key the host made, naru-hostd's clients trusted through the authority orch's certificate
-// chains to, and spec.host.orch so its agent keeps reporting. It runs no gaon and so carries no
-// cluster authority and no token. Its UserData is the host's naru.yaml.
+// chains to, and spec.host.orch so its agent keeps reporting. Its UserData is the host's naru.yaml.
 func (p HostProfile) Node(h JoinedHost) (Node, error) {
 	if !h.Address.IsValid() || !h.Address.Is4() {
 		return Node{}, errors.New("the host's address is not an IPv4 address")
@@ -203,7 +202,7 @@ func (p HostProfile) Node(h JoinedHost) (Node, error) {
 		return Node{}, fmt.Errorf("the host's Machine prefix %s is not a /%d of the pool %s", h.MachinePrefix, MachinePrefixBits, p.MachinePool)
 	}
 	return Node{
-		Name: h.ID, Mode: HostOnly,
+		Name: h.ID, Joined: true,
 		Address:           netip.PrefixFrom(h.Address, 32),
 		MachinePrefix:     h.MachinePrefix,
 		FirecrackerSHA256: p.FirecrackerSHA256,

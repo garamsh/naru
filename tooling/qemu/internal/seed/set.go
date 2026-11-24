@@ -11,7 +11,7 @@ import (
 // Set sets the field at path of the user-data in file to value, making the maps along the path that
 // are missing and keeping every other field and its order. The scenario tests use it for the parts of
 // spec that naructl writes no command for: spec.signer, spec.orch, spec.metrics, spec.host.network and
-// spec.host.orch (docs/architecture/harness.md).
+// spec.host.orch (docs/architecture/image.md).
 func Set(file string, value any, path ...string) error {
 	return modify(file, value, path, func(old *yaml.Node, v yaml.Node) error { *old = v; return nil })
 }

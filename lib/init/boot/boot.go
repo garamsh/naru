@@ -43,9 +43,6 @@ type Host interface {
 	WriteFiles([]config.File) error
 	// WriteRegistries writes the files of spec.registries and spec.aws.
 	WriteRegistries(config.Spec) error
-	// SetAsidePair sets the pair file of p aside when its certificate lacks the Organization p
-	// names, and reports whether it did.
-	SetAsidePair(config.KeptPair) (bool, error)
 	// MountExtensions mounts the system extensions of spec.extensions read-only under their
 	// directories, or refuses: one that is missing, built for another version or fails its digest.
 	MountExtensions([]config.Extension) error
@@ -183,11 +180,6 @@ func run(host Host, issuer Issuer, services Services, configs Configs, api API, 
 	}
 	log.Info("root remounted read-only")
 	for _, svc := range cfg.Spec.Services {
-		if !cfg.Spec.Runs(svc) {
-			log.Info("skipping a control-plane service on a Node that is not one", "service", svc.Name)
-			continue
-		}
-		setAsidePair(host, svc, log)
 		if err := services.Start(svc); err != nil {
 			return store.Stored{}, fmt.Errorf("start %s: %w", svc.Name, err)
 		}
@@ -264,22 +256,6 @@ func bootStored(host Host, configs Configs, noSeed error, log *slog.Logger) (sto
 	log.Info("network configured", "interfaces", len(network.Interfaces), "nameservers", len(applied.Nameservers))
 	log.Info("running the stored configuration", "revision", stored.Revision)
 	return stored, applied, nil
-}
-
-// setAsidePair sets aside the pair svc kept when its certificate lacks the Organization svc needs
-// (config.KeptPair), so svc asks for a new one. It never refuses the boot: a pair that cannot be
-// set aside is logged at error level and svc starts, and reports what it cannot use.
-func setAsidePair(host Host, svc config.Service, log *slog.Logger) {
-	if svc.KeptPair == nil {
-		return
-	}
-	set, err := host.SetAsidePair(*svc.KeptPair)
-	switch {
-	case err != nil:
-		log.Error("kept pair not set aside; the boot goes on", "service", svc.Name, "file", svc.KeptPair.File, "err", err)
-	case set:
-		log.Warn("kept pair set aside: its certificate has no required Organization", "service", svc.Name, "file", svc.KeptPair.File, "organization", svc.KeptPair.Organization)
-	}
 }
 
 // addRoutes installs spec.network.routes. It never refuses the boot: a route the kernel refuses is

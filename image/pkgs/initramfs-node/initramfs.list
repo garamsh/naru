@@ -21,11 +21,8 @@ slink /etc/resolv.conf /run/naru/resolv.conf 0777 0 0
 file /init @OUT@/naru-init 0755 0 0
 file /bin/mkfs.ext4 @OUT@/mkfs.ext4 0755 0 0
 file /bin/mkfs.xfs @OUT@/mkfs.xfs 0755 0 0
-file /bin/etcd @OUT@/etcd 0755 0 0
 file /bin/docker-credential-ecr-login @OUT@/docker-credential-ecr-login 0755 0 0
 file /bin/aws_signing_helper @OUT@/aws_signing_helper 0755 0 0
 file /etc/ssl/certs/ca-certificates.crt @OUT@/ca-certificates.crt 0644 0 0
 file /bin/naru-standin @OUT@/naru-standin 0755 0 0
-file /bin/naru-vip @OUT@/naru-vip 0755 0 0
-file /bin/naru-fence @OUT@/naru-fence 0755 0 0
 file /bin/nft @OUT@/nft 0755 0 0

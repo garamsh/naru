@@ -5,9 +5,6 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
-
-	"github.com/garamsh/naru/lib/layout"
 )
 
 // Run runs naructl with args, the command line without the program's name.
@@ -69,16 +66,11 @@ func newRoot() *cobra.Command {
 	}
 	root.AddCommand(
 		genCommands(),
-		leaf("topology", "print the services a Node runs, and which signs, as JSON", topology),
 		leaf("version", "print the Node's version, boot ID and uptime", version),
 		leaf("services", "list the Node's services and their state", services),
 		leaf("logs <service>", "print a service's kept log, and with -f each new line", logs),
 		parent("get", "read the Node's configuration", leaf("config", "print the Node's configuration and its status as YAML", getConfig)),
 		leaf("apply", "merge a patch into the Node's configuration", apply),
-		parent("token", "add or revoke a Node's bootstrap token on the control-plane Node, live",
-			leaf("create", "make a Node's token and add it to the control-plane Node's list", tokenCommand(true)),
-			leaf("revoke", "delete a Node's token and remove it from the control-plane Node's list", tokenCommand(false)),
-		),
 		leaf("reboot", "stop the Node's services and reboot it", reboot),
 		leaf("upgrade", "send a host upgrade bundle, or print the boot slot and how the last upgrade ended", upgradeCmd),
 		leaf("reset", "remove the host's stored configuration or data by scope and reboot it", hostReset),
@@ -190,29 +182,11 @@ func hostCommands() *cobra.Command {
 // genCommands is gen: what writes files, offline.
 func genCommands() *cobra.Command {
 	return parent("gen", "write authorities, client files and Node user data",
-		leaf("ca", "write the cluster's authority, ca.pem and ca.key", genAuthority(clusterAuthority)),
 		leaf("api-ca", "write the Node API authority, api/ca.pem and api/ca.key", genAuthority(apiAuthority)),
 		leaf("host-ca", "write the host API authority, host/ca.pem and host/ca.key", genAuthority(hostAuthority)),
 		leaf("api-client", "write a client file for the Node API", genAPIClient),
 		leaf("host-client", "write a client file for the host API (naru-hostd, port 7443)", genHostClient),
 		leaf("host-profile", "write the fleet-wide inputs orch builds each joined host's configuration from", genHostProfile),
-		leaf("client", "write an operator's client.pem and client.key", genClient),
-		leaf("etcd-client", "write ca.crt, tls.crt and tls.key, a client pair etcd's members accept", genEtcdClient),
-		leaf("token", "write a Node's bootstrap token, if none is there", genToken),
 		leaf("node", "write a Node's user data", genNode),
 	)
-}
-
-func topology(fs *pflag.FlagSet) runner {
-	return func(args []string, stdout, _ io.Writer) error {
-		if len(args) > 0 {
-			return fmt.Errorf("topology takes no argument")
-		}
-		b, err := layout.Gaon.JSON()
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintf(stdout, "%s\n", b)
-		return err
-	}
 }

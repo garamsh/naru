@@ -17,7 +17,6 @@ kind: NodeConfig
 metadata:
   name: node-1
 spec:
-  controlPlane: true
   services:
     - name: mvmd
       binary: /usr/bin/mvmd
@@ -26,7 +25,6 @@ spec:
         MVMD_LOG: debug
     - name: etcd
       binary: /usr/bin/etcd
-      controlPlane: true
   dataDisk:
     label: NARUDATA
     mountPoint: /var/lib/mvmd
@@ -69,7 +67,6 @@ func TestParse_Valid(t *testing.T) {
 	assert.Equal(t, "mvmd", cfg.Spec.Services[0].Name)
 	assert.Equal(t, []string{"--state-dir", "/var/lib/mvmd"}, cfg.Spec.Services[0].Args)
 	assert.Equal(t, map[string]string{"MVMD_LOG": "debug"}, cfg.Spec.Services[0].Env)
-	assert.True(t, cfg.Spec.Services[1].ControlPlane)
 	assert.Equal(t, "NARUDATA", cfg.Spec.DataDisk.Label)
 	assert.Equal(t, []config.Family{config.IPv4, config.IPv6}, cfg.Spec.Network.Forwarding)
 	require.Len(t, cfg.Spec.Files, 2)
@@ -77,6 +74,21 @@ func TestParse_Valid(t *testing.T) {
 	assert.Equal(t, "{\"listen\": \":8080\"}\n", cfg.Spec.Files[0].Content)
 	assert.Equal(t, os.FileMode(0o600), cfg.Spec.Files[0].Perm())
 	assert.Equal(t, os.FileMode(0o644), cfg.Spec.Files[1].Perm(), "a file without a mode is 0644")
+}
+
+// A host's layout wrote spec.controlPlane: false before naru ran no control plane (ADR 0114), so
+// a stored configuration with it still boots; true, and a service's controlPlane, are refused.
+func TestParse_ARetiredControlPlaneOfFalseIsReadAsNoFieldAndTrueIsRefused(t *testing.T) {
+	without, err := config.Parse([]byte(valid))
+	require.NoError(t, err)
+	with, err := config.Parse([]byte(replaceFirst(valid, "spec:\n", "spec:\n  controlPlane: false\n")))
+	require.NoError(t, err)
+	assert.Equal(t, without, with)
+
+	_, err = config.Parse([]byte(replaceFirst(valid, "spec:\n", "spec:\n  controlPlane: true\n")))
+	assert.Equal(t, []string{"spec.controlPlane"}, fields(t, err))
+	_, err = config.Parse([]byte(replaceFirst(valid, "      binary: /usr/bin/etcd\n", "      binary: /usr/bin/etcd\n      controlPlane: true\n")))
+	assert.Equal(t, []string{"spec.services[1].controlPlane"}, fields(t, err))
 }
 
 func TestParse_RefusesAndNamesTheField(t *testing.T) {
@@ -91,7 +103,7 @@ func TestParse_RefusesAndNamesTheField(t *testing.T) {
 		{"empty node name", "name: node-1", "name: ''", "metadata.name"},
 		{"unknown top-level field", "spec:\n", "bogus: 1\nspec:\n", "bogus"},
 		{"unknown nested field", "      binary: /usr/bin/mvmd\n", "      binary: /usr/bin/mvmd\n      bogus: 1\n", "spec.services[0].bogus"},
-		{"mistyped bool", "controlPlane: true\n  services", "controlPlane: maybe\n  services", "spec.controlPlane"},
+		{"mistyped bool", "    label: NARUDATA\n", "    label: NARUDATA\n    formatBlank: maybe\n", "spec.dataDisk.formatBlank"},
 		{"relative binary", "binary: /usr/bin/etcd", "binary: etcd", "spec.services[1].binary"},
 		{"duplicate service name", "name: etcd", "name: mvmd", "spec.services[1].name"},
 		{"reserved service name", "name: etcd", "name: detached", "spec.services[1].name"},

@@ -31,7 +31,7 @@ func TestServer_ConfigCarriesTheStatusBesideTheSpec(t *testing.T) {
 		"revision":    float64(3),
 		"services": []any{
 			map[string]any{"name": "mvmd", "state": "running", "restarts": float64(2)},
-			map[string]any{"name": "gaon", "state": "stopped", "restarts": float64(0)},
+			map[string]any{"name": "registry", "state": "stopped", "restarts": float64(0)},
 		},
 	}, doc["status"])
 }

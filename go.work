@@ -13,7 +13,6 @@ use (
 	./lib/machineapi
 	./lib/metrics
 	./lib/orchapi
-	./lib/vip
 	./lib/wire
 	./naructl
 	./node

@@ -119,7 +119,7 @@ func newRig(t *testing.T) *rig {
 	r.chosen = store.Stored{Revision: 3, Config: config.NodeConfig{
 		Metadata: config.Metadata{Name: "node-1"},
 		Spec: config.Spec{
-			Services: []config.Service{{Name: "mvmd", Binary: "/usr/bin/mvmd"}, {Name: "gaon", Binary: "/usr/bin/gaon"}},
+			Services: []config.Service{{Name: "mvmd", Binary: "/usr/bin/mvmd"}, {Name: "registry", Binary: "/usr/bin/registry"}},
 			Files: []config.File{
 				{Path: "/run/private", Mode: "0600", Content: "private-content"},
 				{Path: "/run/public", Mode: "0644", Content: "public-content"},
@@ -411,7 +411,7 @@ func TestServer_ServicesListsEachConfiguredServiceWithItsState(t *testing.T) {
 	assert.Equal(t, http.StatusOK, status)
 	assert.Equal(t, map[string]any{"services": []any{
 		map[string]any{"name": "mvmd", "state": "running", "pid": float64(42), "restarts": float64(2), "startedAt": "2030-01-02T03:04:05Z"},
-		map[string]any{"name": "gaon", "state": "stopped", "pid": float64(0), "restarts": float64(0)},
+		map[string]any{"name": "registry", "state": "stopped", "pid": float64(0), "restarts": float64(0)},
 		map[string]any{"name": "extra", "state": "backoff", "pid": float64(0), "restarts": float64(0)},
 	}}, decode(t, body))
 }
@@ -419,16 +419,16 @@ func TestServer_ServicesListsEachConfiguredServiceWithItsState(t *testing.T) {
 func TestServer_LogsReturnsOnlyTheLinesOfThatService(t *testing.T) {
 	r := newRig(t)
 	_, _ = r.con.Source("mvmd").Write([]byte("mvmd one\nmvmd two\n"))
-	_, _ = r.con.Source("gaon").Write([]byte("gaon one\n"))
+	_, _ = r.con.Source("registry").Write([]byte("registry one\n"))
 	_, _ = r.con.Write([]byte("init line\n"))
 	r.start(t)
 
 	status, body := r.do(t, r.admin(t), http.MethodGet, "/v1/services/mvmd/logs", "")
-	_, other := r.do(t, r.admin(t), http.MethodGet, "/v1/services/gaon/logs", "")
+	_, other := r.do(t, r.admin(t), http.MethodGet, "/v1/services/registry/logs", "")
 
 	assert.Equal(t, http.StatusOK, status)
 	assert.Equal(t, "mvmd one\nmvmd two\n", string(body))
-	assert.Equal(t, "gaon one\n", string(other), "the control: another service's lines are served for its own name")
+	assert.Equal(t, "registry one\n", string(other), "the control: another service's lines are served for its own name")
 }
 
 func TestServer_LogsOfAnUnknownServiceIs404(t *testing.T) {
@@ -485,7 +485,7 @@ func TestServer_LogsWithFollowStreamsLinesAsTheyAreKept(t *testing.T) {
 	}
 
 	assert.Equal(t, "before", next())
-	_, _ = r.con.Source("gaon").Write([]byte("not for mvmd\n"))
+	_, _ = r.con.Source("registry").Write([]byte("not for mvmd\n"))
 	_, _ = r.con.Source("mvmd").Write([]byte("after\n"))
 	assert.Equal(t, "after", next(), "a line another service kept is not streamed")
 }

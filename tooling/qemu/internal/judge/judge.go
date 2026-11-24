@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-
-	"github.com/garamsh/naru/tooling/qemu/internal/naructl"
 )
 
 // Expect is one thing a console must show: one line holding every fragment, in order. With Absent
@@ -50,7 +48,7 @@ func boot(name string, interfaces int) []Expect {
 }
 
 // dataDiskMounted is the stand-in's line about the data disk: init logs nothing of its mount, so
-// only a Node that runs the stand-in shows it. A Node that runs gaon shows no such line.
+// only a Node that runs the stand-in shows it.
 var dataDiskMounted = Expect{What: "the data disk is mounted", Fragments: []string{"data disk is mounted", "dir=/var/lib/naru", "fstype=ext4"}}
 
 // Services is what a Node's console shows once every service runs, mvmd answers and the stand-in
@@ -63,41 +61,11 @@ func Services(name string) []Expect {
 	)
 }
 
-// ControlPlane is what a Node's console shows of the control service: started where
-// spec.controlPlane is true, skipped and never started where it is false.
-func ControlPlane(controlPlane bool) []Expect {
-	if controlPlane {
-		return []Expect{
-			{What: "init started the control service", Fragments: []string{"started", "service=control"}},
-			{What: "init skipped no control-plane service", Fragments: []string{"skipping a control-plane service"}, Absent: true},
-		}
-	}
-	return []Expect{
-		{What: "init skipped the control service", Fragments: []string{"skipping a control-plane service", "service=control"}},
-		{What: "init never started the control service", Fragments: []string{"started", "service=control"}, Absent: true},
-	}
-}
-
-// Gaon is what the console of a Node that runs gaon shows, in place of what the stand-in and the
-// probe make a Node show: init's boot lines, the start of every service of the topology naructl
-// reports that the Node runs, and, for the services only the control-plane Node runs, init's
-// skipping of them on a Node that does not (spec.controlPlane). The services are the topology's
-// and the judge names none: a service added to the layout is judged here without a change.
-// interfaces is the number of interfaces the Node's network-config gives it: one on a Proxmox
-// Node, two on the QEMU tests' control-plane Node, which has a second NIC for the host forward.
-func Gaon(top naructl.Topology, name string, controlPlane bool, interfaces int) []Expect {
-	out := boot(name, interfaces)
-	for _, s := range top.Services {
-		if controlPlane || !s.ControlPlane {
-			out = append(out, Expect{What: "init started " + s.Name, Fragments: []string{"started", "service=" + s.Name}})
-			continue
-		}
-		out = append(out,
-			Expect{What: "init skipped " + s.Name, Fragments: []string{"skipping a control-plane service", "service=" + s.Name}},
-			Expect{What: "init never started " + s.Name, Fragments: []string{"started", "service=" + s.Name}, Absent: true},
-		)
-	}
-	return out
+// Released is what the console of a Node booted from the release's test user-data shows, in place
+// of what the stand-in and the probe make a Node show: init's boot lines and the start of mvmd and
+// the registry, the services naructl writes for a Node that serves no API.
+func Released(name string) []Expect {
+	return append(boot(name, 1), Expect{What: "init started the registry", Fragments: []string{"started", "service=registry"}})
 }
 
 // Issuance is what the console of a Node whose spec.pki carries a CA shows of init's issuing
@@ -114,11 +82,6 @@ func Issuance(certificates ...string) []Expect {
 	return append(out, Expect{What: "no renewal failed", Fragments: []string{"certificate renewal failed"}, Absent: true})
 }
 
-// GaonIssued are the certificates the control-plane Node of the QEMU tests' spec.pki test has init
-// issue: the API server's, the scheduler's and the controllers'. The agent's pair is issued by gaon
-// through a signing request, not by init (ADR 0016).
-var GaonIssued = []string{"apiserver", "scheduler", "controllers"}
-
 // Probe is what the console of the Node that runs the probe shows: every check ok, no check
 // failed, the probe finished, and init restarted mvmd.
 func Probe() []Expect {
@@ -133,10 +96,9 @@ func Probe() []Expect {
 	)
 }
 
-// Node is what one Node's console must show, in the cluster the tests and the release's example
-// user-data share: node-1 is the control-plane Node and runs the probe.
-func Node(name string, controlPlane, probe bool) []Expect {
-	out := append(Services(name), ControlPlane(controlPlane)...)
+// Node is what one Node's console must show in the cluster of the stand-ins: node-1 runs the probe.
+func Node(name string, probe bool) []Expect {
+	out := Services(name)
 	if probe {
 		out = append(out, Probe()...)
 	}

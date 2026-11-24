@@ -169,7 +169,7 @@ func nocloudDrive(spec Spec) (string, error) {
 // with the Config's inputs.
 func dataDiskOf(spec Spec) (string, error) {
 	if !spec.BlankData {
-		return BuildDataDiskWith(spec.Dir, spec.Config.Inputs.Dir, spec.Config.AgentPair, spec.Config.Inputs.Extension.StoreDir)
+		return BuildDataDiskWith(spec.Dir, spec.Config.Inputs.Dir, spec.Config.Inputs.Extension.StoreDir)
 	}
 	data := filepath.Join(spec.Dir, "data.img")
 	if err := os.WriteFile(data, nil, 0o644); err != nil {
@@ -293,7 +293,7 @@ func (n *Node) ReplaceUserData(userData, networkConfig []byte) error {
 // are gone. The boot disk, the NoCloud drive and the variable store are kept.
 func (n *Node) ResetData(inputs fixture.Inputs) error {
 	n.Stop()
-	if _, err := BuildDataDiskWith(n.dir, inputs.Dir, "", inputs.Extension.StoreDir); err != nil {
+	if _, err := BuildDataDiskWith(n.dir, inputs.Dir, inputs.Extension.StoreDir); err != nil {
 		return err
 	}
 	return n.launch()
@@ -343,16 +343,14 @@ func qemuArgs(spec Spec, name, cidata, dataDisk, console string) ([]string, erro
 		"-netdev", "socket,id=net0,mcast="+spec.Mcast+",localaddr=127.0.0.1",
 		"-device", "virtio-net-pci,netdev=net0,mac="+spec.Config.MAC(),
 	)
-	// The control-plane Node of a gaon cluster has a second NIC on QEMU's user-mode network,
-	// whose forward from 127.0.0.1 is how the test host reaches the API server without
-	// privilege (ADR 0012). The network has no route off the host and the Nodes' network is
-	// untouched.
-	if spec.Config.hostNIC() {
-		restrict := ",restrict=on"
-		if spec.Config.HostReach {
-			restrict = ""
+	// A Node the test host reaches has a second NIC on QEMU's user-mode network, whose forwards from
+	// 127.0.0.1 are how the test host reaches the Node's APIs without privilege. The network has no
+	// route off the host and the Nodes' network is untouched.
+	if spec.Config.HostNIC {
+		netdev := "user,id=net1"
+		if !spec.Config.HostReach {
+			netdev += ",restrict=on"
 		}
-		netdev := fmt.Sprintf("user,id=net1%s,hostfwd=tcp:127.0.0.1:%d-%s:%s", restrict, spec.Config.HostPort, HostNICAddress, wire.KubeAPIPort)
 		if spec.Config.APIHostPort != 0 {
 			netdev += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-%s:%s", spec.Config.APIHostPort, HostNICAddress, wire.NodeAPIPort)
 		}

@@ -3,11 +3,9 @@ package release_test
 import (
 	"archive/tar"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,7 +26,7 @@ import (
 )
 
 // allInitramfsBinaries is an initramfs list that installs every binary the user-data names there.
-const allInitramfsBinaries = "file /bin/mvmd x\nfile /bin/etcd x\nfile /bin/gaon-apiserver x\nfile /bin/gaon-scheduler x\nfile /bin/gaon-controllers x\nfile /bin/gaon-node-agent x\n"
+const allInitramfsBinaries = "file /bin/mvmd x\n"
 
 var inputs = fixture.Inputs{
 	Dir:               "/staged",
@@ -90,24 +88,18 @@ func tool(t *testing.T) naructl.Tool {
 // userDataFiles is release.UserData with naructl and the test inputs.
 func userDataFiles(t *testing.T) (map[string][]byte, error) {
 	t.Helper()
-	return userDataFor(t, "v9.9.9")
-}
-
-// userDataFor is release.UserData of a release of that version.
-func userDataFor(t *testing.T, version string) (map[string][]byte, error) {
-	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, fixture.WriteRoot(dir))
-	return userDataIn(t, dir, version)
+	return userDataIn(t, dir)
 }
 
-// userDataIn is release.UserData of a release of that version, with the registry authority of dir.
-func userDataIn(t *testing.T, dir, version string) (map[string][]byte, error) {
+// userDataIn is release.UserData with the registry authority of dir.
+func userDataIn(t *testing.T, dir string) (map[string][]byte, error) {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(dir, "ca.pem"))
 	require.NoError(t, err)
 	testCA = string(b)
-	return release.UserData(tool(t), version, 1794355200, inputs.FirecrackerSHA256, filepath.Join(dir, "ca.pem"))
+	return release.UserData(tool(t), inputs.FirecrackerSHA256, filepath.Join(dir, "ca.pem"))
 }
 
 // testCA is the registry authority of the user-data the tests last asked for.
@@ -156,8 +148,7 @@ func TestUserData_ABrokenFileIsRefusedByNaruInit(t *testing.T) {
 
 type userData struct {
 	Spec struct {
-		ControlPlane bool `yaml:"controlPlane"`
-		Services     []struct {
+		Services []struct {
 			Name string
 			Args []string
 		}
@@ -166,16 +157,7 @@ type userData struct {
 			Routes []struct{ To, Via string }
 		}
 		Registries []struct{ Host, CA string }
-		PKI        *struct {
-			Authorities []struct {
-				Certificate, Key string
-				KeyPath          string `yaml:"keyPath"`
-			}
-			Certificates []struct {
-				Name        string
-				IPAddresses []string `yaml:"ipAddresses"`
-			}
-		}
+		PKI        any
 	}
 }
 
@@ -199,24 +181,17 @@ func (u userData) file(path string) string {
 // init renders at each write (ADR 0106); a test of the rest of the file reads it as null.
 var guestAction = regexp.MustCompile(`\{\{json [^}]*\}\}`)
 
-func TestUserData_CarriesTheDeploymentsAddressesAndRoles(t *testing.T) {
+func TestUserData_CarriesTheDeploymentsAddresses(t *testing.T) {
 	files, err := userDataFiles(t)
 	require.NoError(t, err)
 
 	for _, tc := range []struct {
-		file, prefix, gateway, api string
-		controlPlane               bool
+		file, prefix, gateway string
 	}{
-		{"naru-node-1.test.yaml", "10.200.1.0/24", "10.200.1.1", "https://192.168.0.40:6443/apis/compute.gaon.garam.sh/v1alpha1", true},
-		{"naru-node-2.test.yaml", "10.200.2.0/24", "10.200.2.1", "https://192.168.0.40:6443/apis/compute.gaon.garam.sh/v1alpha1", false},
+		{"naru-node-1.test.yaml", "10.200.1.0/24", "10.200.1.1"},
+		{"naru-node-2.test.yaml", "10.200.2.0/24", "10.200.2.1"},
 	} {
 		n := parseUserData(t, files[tc.file])
-		assert.Equal(t, tc.controlPlane, n.Spec.ControlPlane, tc.file)
-		for _, s := range n.Spec.Services {
-			if s.Name == "gaon-node-agent" {
-				assert.Contains(t, strings.Join(s.Args, " "), "--api-server "+tc.api, "%s: every agent dials node-1's address", tc.file)
-			}
-		}
 		var mvmd struct {
 			Network struct {
 				Prefix   string   `json:"ipv4_prefix"`
@@ -255,112 +230,43 @@ func TestUserData_RoutesToTheOtherNodesMachinePrefixAndKeepsTheSourceAddress(t *
 	}
 }
 
-func TestUserData_HasTheServicesOfTheGaonNodesAndNoStandIn(t *testing.T) {
+func TestUserData_RunsMvmdAndTheRegistryAndNothingElse(t *testing.T) {
 	files, err := userDataFiles(t)
 	require.NoError(t, err)
 
 	for i := 1; i <= 2; i++ {
-		got, err := release.ServiceBinaries(files[release.UserDataName(i)])
-		require.NoError(t, err)
-
-		assert.NotContains(t, got, "standin", "a deployed Node runs no stand-in")
-		assert.NotContains(t, got, "control")
-		assert.NotContains(t, got, "probe")
-		assert.Contains(t, got, "registry", "the scheduler may bind a Machine to either Node")
-		assert.Contains(t, got, "gaon-node-agent")
-	}
-}
-
-func TestUserData_PublishesTheTestAuthorityOnNodeOneAndNoKeyOnNodeTwoAndNoOperatorsPair(t *testing.T) {
-	files, err := userDataFiles(t)
-	require.NoError(t, err)
-	first, second := parseUserData(t, files["naru-node-1.test.yaml"]), parseUserData(t, files["naru-node-2.test.yaml"])
-
-	require.NotNil(t, first.Spec.PKI, "node-1 issues its pairs at boot")
-	require.Len(t, first.Spec.PKI.Authorities, 1)
-	authority := first.Spec.PKI.Authorities[0]
-	keyBlock, _ := pem.Decode([]byte(authority.Key))
-	require.NotNil(t, keyBlock, "the test authority's private key is published, as ADR 0016 says")
-	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
-	require.NoError(t, err)
-	caBlock, _ := pem.Decode([]byte(authority.Certificate))
-	caCert, err := x509.ParseCertificate(caBlock.Bytes)
-	require.NoError(t, err)
-	assert.True(t, key.PublicKey.Equal(caCert.PublicKey), "it is the key of the CA node-2 trusts")
-	assert.Equal(t, "/run/gaon/ca.key", authority.KeyPath, "the controllers sign with it")
-	assert.Equal(t, authority.Certificate, second.file("/run/gaon/ca.pem"), "both Nodes trust one authority")
-
-	assert.Nil(t, second.Spec.PKI, "node-2 carries no authority")
-	for name, content := range files {
-		assert.NotContains(t, string(content), "client.key", name)
-	}
-	for _, f := range second.Spec.Files {
-		assert.NotContains(t, f.Content, "PRIVATE KEY", "node-2 holds no key: %s", f.Path)
-	}
-	for _, f := range first.Spec.Files {
-		assert.NotContains(t, f.Content, "PRIVATE KEY", "node-1's files hold no key, its pairs are issued by init: %s", f.Path)
-	}
-}
-
-func TestUserData_EveryNodeHasATokenAndNodeOnesAPIServerListsBoth(t *testing.T) {
-	files, err := userDataFiles(t)
-	require.NoError(t, err)
-	first, second := parseUserData(t, files["naru-node-1.test.yaml"]), parseUserData(t, files["naru-node-2.test.yaml"])
-
-	token := regexp.MustCompile(`^[a-z0-9]{6}\.[a-z0-9]{16}$`)
-	one, two := strings.TrimSpace(first.file("/run/gaon/bootstrap-token")), strings.TrimSpace(second.file("/run/gaon/bootstrap-token"))
-	assert.Regexp(t, token, one)
-	assert.Regexp(t, token, two)
-	assert.NotEqual(t, one, two)
-	assert.Equal(t, []string{one, two}, strings.Fields(first.file("/run/gaon/bootstrap-tokens")), "the list is the API server's")
-	assert.Empty(t, second.file("/run/gaon/bootstrap-tokens"))
-}
-
-func TestUserData_TheServingCertificateIsIssuedForNodeOnesAddress(t *testing.T) {
-	files, err := userDataFiles(t)
-	require.NoError(t, err)
-	first := parseUserData(t, files["naru-node-1.test.yaml"])
-
-	var names []string
-	for _, c := range first.Spec.PKI.Certificates {
-		names = append(names, c.Name)
-		if c.Name == "apiserver" {
-			assert.Equal(t, []string{"192.168.0.40"}, c.IPAddresses)
+		n := parseUserData(t, files[release.UserDataName(i)])
+		var names []string
+		for _, s := range n.Spec.Services {
+			names = append(names, s.Name)
 		}
+
+		assert.Equal(t, []string{"mvmd", "registry"}, names, "the scheduler may bind a Machine to either Node; a deployed Node runs no stand-in")
 	}
-	assert.ElementsMatch(t, []string{"apiserver", "scheduler", "controllers", "etcd-server", "etcd-peer", "apiserver-etcd"}, names, "the agents' pairs come through signing requests")
 }
 
-func TestUserData_TwoCallsForOneVersionAreByteIdentical(t *testing.T) {
+func TestUserData_HoldsNoKeyAndNoAuthority(t *testing.T) {
+	files, err := userDataFiles(t)
+	require.NoError(t, err)
+
+	for name, content := range files {
+		n := parseUserData(t, content)
+		assert.Nil(t, n.Spec.PKI, name)
+		assert.NotContains(t, string(content), "PRIVATE KEY", name)
+	}
+}
+
+func TestUserData_TwoCallsAreByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, fixture.WriteRoot(dir))
-	one, err := userDataIn(t, dir, "v9.9.9")
+	one, err := userDataIn(t, dir)
 	require.NoError(t, err)
-	two, err := userDataIn(t, dir, "v9.9.9")
+	two, err := userDataIn(t, dir)
 	require.NoError(t, err)
 
 	require.Len(t, one, 2)
 	for name := range one {
-		assert.Equal(t, string(one[name]), string(two[name]), "%s: the same authority and tokens", name)
-	}
-}
-
-func TestUserData_AnotherVersionDiffersInTheAuthorityTheTokensAndNothingElse(t *testing.T) {
-	one, err := userDataFor(t, "v9.9.9")
-	require.NoError(t, err)
-	two, err := userDataFor(t, "v9.9.10")
-	require.NoError(t, err)
-
-	for name := range one {
-		assert.NotEqual(t, one[name], two[name], "%s: another authority and other tokens", name)
-		a, b := parseUserData(t, one[name]), parseUserData(t, two[name])
-		assert.Equal(t, a.Spec.Services, b.Spec.Services, name)
-		for i, f := range a.Spec.Files {
-			if strings.HasPrefix(f.Path, "/run/gaon/") {
-				continue
-			}
-			assert.Equal(t, f, b.Spec.Files[i], "%s: %s is the same file", name, f.Path)
-		}
+		assert.Equal(t, string(one[name]), string(two[name]), name)
 	}
 }
 
@@ -381,11 +287,11 @@ func TestMissingBinaries_NamesAServiceWhoseBinaryTheInitramfsDoesNotInstall(t *t
 	files, err := userDataFiles(t)
 	require.NoError(t, err)
 
-	missing, err := release.MissingBinaries(files["naru-node-2.test.yaml"], func(string) bool { return true }, "file /bin/mvmd x\n")
+	missing, err := release.MissingBinaries(files["naru-node-2.test.yaml"], func(p string) bool { return !strings.HasSuffix(p, "/bin/mvmd") }, "file /bin/other x\n")
 
 	require.NoError(t, err)
-	require.Len(t, missing, 5, "the file names etcd, the control plane and the Node Agent (init skips the control plane on node-2), and the list holds mvmd")
-	assert.Contains(t, strings.Join(missing, "\n"), "/bin/gaon-node-agent is neither on the data disk nor in the initramfs list")
+	require.Len(t, missing, 1)
+	assert.Contains(t, missing[0], "/bin/mvmd is neither on the data disk nor in the initramfs list")
 }
 
 func TestMissingBinaries_FindsNothingMissingWhenEveryBinaryIsThere(t *testing.T) {
@@ -424,14 +330,12 @@ func fakeBuildInputs(t *testing.T, firecracker string) release.Options {
 	d := strings.Repeat("a", 64)
 	require.NoError(t, os.WriteFile(filepath.Join(guestDir, "guest.json"), []byte(`{"kernels":{"naru":{"path":"/k","sha256":"`+d+`"}},"default_kernel":"naru",
 "guest_initrd":{"path":"/g","sha256":"`+d+`"},"converter_initrd":{"path":"/c","sha256":"`+d+`"}}`), 0o600))
-	cluster := filepath.Join(t.TempDir(), "naru-cluster")
-	require.NoError(t, os.WriteFile(cluster, []byte("naru-cluster binary"), 0o600))
 	comps, downloads := fakeComponents(t)
 	require.NoError(t, os.WriteFile(filepath.Join(downloads, "lgplpkg-2.tar.gz"), []byte("lgpl tarball"), 0o600))
 	archive := filepath.Join(t.TempDir(), "source.tar")
 	require.NoError(t, os.WriteFile(archive, []byte("git archive"), 0o600))
 	return release.Options{
-		Root: repoRoot(t), ImageDir: imageDir, DiskDir: diskDir, GuestDir: guestDir, Out: t.TempDir(), Version: "v9", Naructl: tool(t).Bin, NaruCluster: cluster,
+		Root: repoRoot(t), ImageDir: imageDir, DiskDir: diskDir, GuestDir: guestDir, Out: t.TempDir(), Version: "v9", Naructl: tool(t).Bin,
 		Epoch: 1794355200, Components: comps, Downloads: []string{downloads}, SourceArchive: archive,
 		Fetch: func(url, _ string) error { return fmt.Errorf("a test fetched %s", url) },
 	}
@@ -486,41 +390,6 @@ func TestBuild_ShipsNaructlAsAnExecutableAssetListedInSHA256SUMS(t *testing.T) {
 	assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums))
 }
 
-func TestBuild_ShipsNaruClusterAsAnExecutableAssetWhoseSHA256SUMSLineIsItsDigest(t *testing.T) {
-	o := fakeBuildInputs(t, strings.Repeat("7", 64))
-
-	assets, err := release.Build(o)
-
-	require.NoError(t, err)
-	name := release.NaruClusterName("v9")
-	assert.Equal(t, "naru-cluster-v9-linux-amd64", name)
-	st, err := os.Stat(filepath.Join(o.Out, name))
-	require.NoError(t, err, "the release holds the naru-cluster asset")
-	assert.Equal(t, os.FileMode(0o755), st.Mode().Perm())
-	got, err := os.ReadFile(filepath.Join(o.Out, name))
-	require.NoError(t, err)
-	assert.Equal(t, []byte("naru-cluster binary"), got, "the asset is the binary Options named")
-	var listed []string
-	for _, a := range assets {
-		listed = append(listed, a.Name)
-	}
-	assert.Contains(t, listed, name)
-	sums, err := os.ReadFile(filepath.Join(o.Out, "SHA256SUMS"))
-	require.NoError(t, err)
-	assert.Contains(t, string(sums), hexOf(got)+"  "+name+"\n", "SHA256SUMS lists the asset with the digest of its bytes")
-}
-
-func TestBuild_RefusesAReleaseWhoseNaruClusterBinaryIsMissing(t *testing.T) {
-	o := fakeBuildInputs(t, strings.Repeat("7", 64))
-	o.NaruCluster = filepath.Join(t.TempDir(), "absent")
-
-	_, err := release.Build(o)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "naru-cluster-v9-linux-amd64")
-	assert.NoFileExists(t, filepath.Join(o.Out, "SHA256SUMS"))
-}
-
 func TestBuild_NamesTheHostArtifactsNaruHostAndLeavesTheOldNamesOut(t *testing.T) {
 	o := fakeBuildInputs(t, strings.Repeat("7", 64))
 
@@ -540,7 +409,7 @@ func TestBuild_NamesTheHostArtifactsNaruHostAndLeavesTheOldNamesOut(t *testing.T
 	assert.NoFileExists(t, filepath.Join(o.Out, "naru-v9.qcow2"))
 	entries, err := os.ReadDir(o.Out)
 	require.NoError(t, err)
-	assert.Len(t, entries, 17, "the assets and SHA256SUMS")
+	assert.Len(t, entries, 16, "the assets and SHA256SUMS")
 }
 
 func TestBuild_ShipsTheUpgradeBundleListedInSHA256SUMS(t *testing.T) {
@@ -609,7 +478,7 @@ func TestBuild_ShipsTheNodeBootSetAsKernelInitramfsAndAManifestThatNamesTheirDig
 	for _, name := range []string{"naru-node-kernel-v9", "naru-node-initramfs-v9", "naru-node-v9.json"} {
 		assert.Regexp(t, `(?m)^[0-9a-f]{64}  `+regexp.QuoteMeta(name)+`$`, string(sums), "SHA256SUMS lists "+name)
 	}
-	assert.Len(t, assets, 16, "the nine assets of before, the three of the boot set, the two of the extension, the SBOM and the sources, which SHA256SUMS makes 17 files")
+	assert.Len(t, assets, 15, "the eight assets of before, the three of the boot set, the two of the extension, the SBOM and the sources, which SHA256SUMS makes 16 files")
 }
 
 func TestBuild_ShipsTheOrchExtensionAndItsDescriptionListedInSHA256SUMS(t *testing.T) {

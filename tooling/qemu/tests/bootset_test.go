@@ -25,13 +25,13 @@ import (
 
 // osFormSeed writes into dir the user-data of a Node that is a microVM of the OS form and runs no
 // service: its data disk, which hostd gives it blank, and its Node API, whose serving pair names
-// address and is issued from the Node API authority in ca (gen ca and gen api-ca). naructl writes no
+// address and is issued from the Node API authority in ca (gen api-ca). naructl writes no
 // such Node by itself, so spec.api is taken from what gen node writes for that address.
 func osFormSeed(t *testing.T, ca, name, address, dir string) string {
 	t.Helper()
 	gen := filepath.Join(dir, name+"-gen.yaml")
 	require.NoError(t, tool.GenNode(naructl.Node{
-		CA: ca, Name: name, Address: address + "/24", APIServer: address, PairsAsFiles: true,
+		CA: ca, Name: name, Address: address + "/24",
 		MachinePrefix: "10.201.0.0/24", Firecracker: strings.Repeat("0", 64), Out: gen,
 	}))
 	raw, err := os.ReadFile(gen)
@@ -78,7 +78,6 @@ func TestNode_HostAPITakesAReleasesNodeBootSetWithNoRebootAndCreatesANodeMicroVM
 	// The user-data of a Node that is a microVM.
 	dir := t.TempDir()
 	ca := filepath.Join(dir, "ca")
-	require.NoError(t, tool.GenCA(ca))
 	require.NoError(t, tool.GenAPICA(ca))
 	seed := osFormSeed(t, ca, "vm", "10.200.0.2", dir)
 

@@ -109,6 +109,9 @@ func validate(cfg NodeConfig) error {
 	if !nameRE.MatchString(cfg.Metadata.Name) {
 		v.fail("metadata.name", "must be lowercase letters, digits and '-', at most 63 characters, got %q", cfg.Metadata.Name)
 	}
+	if cfg.Spec.ControlPlane {
+		v.fail("spec.controlPlane", "must not be true: naru runs no control plane (ADR 0114); leave the field out")
+	}
 	v.services(cfg.Spec.Services)
 	v.dataDisk(cfg.Spec.DataDisk)
 	v.network(cfg.Spec.Network)
@@ -152,14 +155,6 @@ func (v *validation) services(services []Service) {
 		seen[s.Name] = true
 		if !isCleanAbs(s.Binary) {
 			v.fail(field+".binary", "must be a clean absolute path, got %q", s.Binary)
-		}
-		if p := s.KeptPair; p != nil {
-			if !isCleanAbs(p.File) {
-				v.fail(field+".keptPair.file", "must be a clean absolute path, got %q", p.File)
-			}
-			if p.Organization == "" {
-				v.fail(field+".keptPair.organization", "must be given")
-			}
 		}
 		for _, list := range []struct {
 			name  string

@@ -94,9 +94,6 @@ spec:
       binary: /bin/b
     - name: e
       binary: /bin/e
-    - name: cp
-      binary: /bin/cp
-      controlPlane: true
   dataDisk:
     label: NARUDATA
     mountPoint: /var/lib/naru
@@ -159,21 +156,21 @@ func TestMerge(t *testing.T) {
 	t.Run("an element that is not in the patch is unchanged and keeps its place", func(t *testing.T) {
 		cfg := newRig(t).staged(t, patch(obj{"services": []any{obj{"name": "b", "args": []any{"q"}}}}))
 
-		require.Len(t, cfg.Spec.Services, 4)
-		assert.Equal(t, []string{"a", "b", "e", "cp"}, []string{cfg.Spec.Services[0].Name, cfg.Spec.Services[1].Name, cfg.Spec.Services[2].Name, cfg.Spec.Services[3].Name})
+		require.Len(t, cfg.Spec.Services, 3)
+		assert.Equal(t, []string{"a", "b", "e"}, []string{cfg.Spec.Services[0].Name, cfg.Spec.Services[1].Name, cfg.Spec.Services[2].Name})
 		assert.Equal(t, []string{"-x", "1"}, cfg.Spec.Services[0].Args)
 	})
 	t.Run("an element with a new key is appended", func(t *testing.T) {
 		cfg := newRig(t).staged(t, patch(obj{"services": []any{obj{"name": "d", "binary": "/bin/d"}}}))
 
-		require.Len(t, cfg.Spec.Services, 5)
-		assert.Equal(t, "d", cfg.Spec.Services[4].Name)
+		require.Len(t, cfg.Spec.Services, 4)
+		assert.Equal(t, "d", cfg.Spec.Services[3].Name)
 	})
 	t.Run("$patch delete removes the element", func(t *testing.T) {
 		cfg := newRig(t).staged(t, patch(obj{"services": []any{obj{"name": "e", "$patch": "delete"}}}))
 
-		require.Len(t, cfg.Spec.Services, 3)
-		assert.Equal(t, []string{"a", "b", "cp"}, []string{cfg.Spec.Services[0].Name, cfg.Spec.Services[1].Name, cfg.Spec.Services[2].Name})
+		require.Len(t, cfg.Spec.Services, 2)
+		assert.Equal(t, []string{"a", "b"}, []string{cfg.Spec.Services[0].Name, cfg.Spec.Services[1].Name})
 	})
 	t.Run("files merge by path and certificates by name", func(t *testing.T) {
 		cfg := newRig(t).staged(t, patch(obj{
@@ -223,7 +220,7 @@ func TestApply_RefusesWithoutChangingTheNode(t *testing.T) {
 		{"an unknown field", apply.Request{Patch: patch(obj{"bogus": 1}), Mode: apply.Staged}, invalidAt("spec.bogus")},
 		{"a never field in no-reboot", apply.Request{Patch: obj{"metadata": obj{"name": "other"}}, Mode: apply.NoReboot}, invalidAt("metadata.name")},
 		{"a never field in staged", apply.Request{Patch: patch(obj{"dataDisk": obj{"mountPoint": "/mnt"}}), Mode: apply.Staged}, invalidAt("spec.dataDisk")},
-		{"a reboot-only field in no-reboot", apply.Request{Patch: patch(obj{"controlPlane": true, "network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.NoReboot}, invalidAt("spec.controlPlane", "spec.network.forwarding")},
+		{"a reboot-only field in no-reboot", apply.Request{Patch: patch(obj{"network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.NoReboot}, invalidAt("spec.network.forwarding")},
 		{"a changed authority in no-reboot", apply.Request{Patch: patch(obj{"pki": obj{"authorities": []any{obj{"name": "ca", "certificatePath": "/run/other.pem"}}}}), Mode: apply.NoReboot}, invalidAt("spec.pki.authorities")},
 		{"a new listen address in no-reboot", apply.Request{Patch: patch(obj{"api": obj{"listen": "127.0.0.1:50001"}}), Mode: apply.NoReboot}, invalidAt("spec.api.listen")},
 		{"turning spec.api off in no-reboot", apply.Request{Patch: patch(obj{"api": nil}), Mode: apply.NoReboot}, invalidAt("spec.api")},
@@ -265,22 +262,22 @@ func TestApply_REDACTEDOnAPublicFileIsContent(t *testing.T) {
 func TestApply_StagedStoresAndTakesNoLiveAction(t *testing.T) {
 	r := newRig(t)
 
-	res, err := r.engine.Apply(apply.Request{Patch: patch(obj{"controlPlane": true}), Mode: apply.Staged})
+	res, err := r.engine.Apply(apply.Request{Patch: patch(obj{"network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.Staged})
 
 	require.NoError(t, err)
 	assert.Equal(t, apply.Result{Revision: 1, Mode: apply.Staged, Actions: []apply.Action{{Action: "store", Target: "config"}}}, res)
 	assert.Equal(t, []string{"store"}, r.calls())
-	assert.True(t, r.saved[0].Config.Spec.ControlPlane)
+	assert.Equal(t, []config.Family{config.IPv4, config.IPv6}, r.saved[0].Config.Spec.Network.Forwarding)
 	assert.Equal(t, "base", r.saved[0].BaseSha256, "the base digest stays")
 }
 
 func TestApply_AStagedRebootOnlyChangeMakesNoRebootRefuseUntilARebootRunsIt(t *testing.T) {
 	r := newRig(t)
-	r.staged(t, patch(obj{"controlPlane": true}))
+	r.staged(t, patch(obj{"network": obj{"forwarding": []any{"ipv4", "ipv6"}}}))
 
 	_, err := r.engine.Apply(apply.Request{Revision: 1, Patch: patch(obj{"services": []any{obj{"name": "a", "args": []any{"z"}}}}), Mode: apply.NoReboot})
 
-	invalidAt("spec.controlPlane")(t, err)
+	invalidAt("spec.network.forwarding")(t, err)
 }
 
 func TestApply_NoRebootTouchesOnlyWhatChanged(t *testing.T) {
@@ -294,19 +291,9 @@ func TestApply_NoRebootTouchesOnlyWhatChanged(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"store", "stop e", "stop a", "start a", "start d"}, r.calls(),
-		"the store comes first; service cp, which runs only on a control-plane Node, is not touched, and neither is any unchanged service")
+		"the store comes first, and no unchanged service is touched")
 	assert.Equal(t, []apply.Action{{"store", "config"}, {"stop", "e"}, {"restart", "a"}, {"start", "d"}}, res.Actions)
 	assert.Equal(t, 1, res.Revision)
-}
-
-func TestApply_AServiceThisNodeDoesNotRunIsStoredAndNotStarted(t *testing.T) {
-	r := newRig(t)
-
-	res, err := r.engine.Apply(apply.Request{Patch: patch(obj{"services": []any{obj{"name": "cp", "args": []any{"y"}}}}), Mode: apply.NoReboot})
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"store"}, r.calls(), "a service this Node does not run is stored and not started")
-	assert.Len(t, res.Actions, 1)
 }
 
 func TestApply_AFileThatChangedIsWrittenAndItsServicesRestartOnce(t *testing.T) {
@@ -376,7 +363,7 @@ func TestApply_ANewAPIPairReloadsTheListener(t *testing.T) {
 func TestApply_ConfigReplacesTheConfiguration(t *testing.T) {
 	r := newRig(t)
 	_, cfg := r.engine.Config()
-	cfg.Spec.Services = []config.Service{cfg.Spec.Services[0], cfg.Spec.Services[1], cfg.Spec.Services[3]}
+	cfg.Spec.Services = []config.Service{cfg.Spec.Services[0], cfg.Spec.Services[1]}
 	doc := toObj(t, cfg)
 
 	res, err := r.engine.Apply(apply.Request{Config: doc, Mode: apply.NoReboot})
@@ -402,9 +389,9 @@ func TestApply_DryRunListsTheActionsAndDoesNone(t *testing.T) {
 }
 
 func TestApply_ADryRunRefusesAsARealCallDoes(t *testing.T) {
-	_, err := newRig(t).engine.Apply(apply.Request{Patch: patch(obj{"controlPlane": true}), Mode: apply.NoReboot, DryRun: true})
+	_, err := newRig(t).engine.Apply(apply.Request{Patch: patch(obj{"network": obj{"forwarding": []any{"ipv4", "ipv6"}}}), Mode: apply.NoReboot, DryRun: true})
 
-	invalidAt("spec.controlPlane")(t, err)
+	invalidAt("spec.network.forwarding")(t, err)
 }
 
 func TestApply_ASecondCallMustNameTheNewRevision(t *testing.T) {
@@ -453,7 +440,7 @@ func TestApply_AFailedLiveActionIsReportedAfterTheStoreAndNothingIsUndone(t *tes
 	assert.Equal(t, []string{"store", "stop a", "start a", "start d"}, r.calls(), "nothing after the failure ran, and nothing was undone")
 	rev, cfg := r.engine.Config()
 	assert.Equal(t, 1, rev, "the stored revision stays")
-	assert.Len(t, cfg.Spec.Services, 6)
+	assert.Len(t, cfg.Spec.Services, 5)
 }
 
 func TestApply_AppliesAreSerialised(t *testing.T) {
@@ -508,7 +495,7 @@ func TestApply_UnchangedRegistriesWriteNothing(t *testing.T) {
 	_, err := r.engine.Apply(apply.Request{Patch: patch(registryPatch("r.example", "s3cret")), Mode: apply.NoReboot})
 	require.NoError(t, err)
 
-	_, err = r.engine.Apply(apply.Request{Revision: 1, Patch: patch(obj{"controlPlane": false}), Mode: apply.NoReboot})
+	_, err = r.engine.Apply(apply.Request{Revision: 1, Patch: patch(obj{"services": []any{obj{"name": "a", "args": []any{"-y"}}}}), Mode: apply.NoReboot})
 
 	require.NoError(t, err)
 	assert.NotContains(t, r.calls()[2:], "write-registries")
