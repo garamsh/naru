@@ -10,6 +10,7 @@ use (
 	./lib/init
 	./lib/iso9660
 	./lib/layout
+	./lib/machineapi
 	./lib/metrics
 	./lib/orchapi
 	./lib/vip
