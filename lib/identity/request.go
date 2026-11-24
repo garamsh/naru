@@ -24,6 +24,7 @@ var (
 const (
 	ActionIssueOrch     = "issue-orch"
 	ActionIssueOperator = "issue-operator"
+	ActionIssueCaller   = "issue-caller"
 	ActionRevoke        = "revoke"
 	ActionReissueHost   = "reissue-host"
 	ActionRegisterHost  = "register-host"
@@ -50,6 +51,18 @@ type IssueRequest struct {
 	Role Role   `json:"role,omitempty"`
 	CSR  []byte `json:"csr"`
 }
+
+// CallerRequest is the body of ActionIssueCaller: the caller's name, the days the certificate is
+// valid (MaxCallerDays when 0) and the certificate request, DER. The signer takes the CN from the
+// name; the request names no other.
+type CallerRequest struct {
+	Name string `json:"name"`
+	Days int    `json:"days,omitempty"`
+	CSR  []byte `json:"csr"`
+}
+
+// MaxCallerDays is the longest a caller certificate is valid, and its default.
+const MaxCallerDays = 90
 
 // RevokeRequest is the body of ActionRevoke.
 type RevokeRequest struct {

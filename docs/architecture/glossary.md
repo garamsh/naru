@@ -60,7 +60,7 @@ The word Node in the older documents named the physical machine, and `boundaries
 
 | Term | Meaning | Maps to |
 |---|---|---|
-| caller | A use's certificate of the role `caller`, named by its CommonName, which reaches only the Machine API and its own Machines ([ADR 0108](./adr/0108-orch-serves-a-versioned-machine-api-that-names-machines-and-never-hosts-to-callers-holding-a-signer-issued-caller-certificate.md), decided, not built). | `POST /v1/caller` of the signer; `naructl caller credential` |
+| caller | A use's certificate of the role `caller`, named by its CommonName, which reaches only the Machine API and its own Machines ([ADR 0108](./adr/0108-orch-serves-a-versioned-machine-api-that-names-machines-and-never-hosts-to-callers-holding-a-signer-issued-caller-certificate.md); the credential is built, the Machine API is not). | `POST /v1/caller` of the signer; `naructl caller credential` |
 | operator | A person who runs a fleet. The signer's role `operator` is the certificate that person holds; it signs admission statements and can revoke any serial that is not root's. | `naructl operator add`, `naructl operator revoke`; [signer.md](./signer.md) |
 | admin | The Node API role `naru:admin`: a client certificate from the Node API authority whose Organization is `naru:admin`. It reads and changes a Node. It is a role on one Node and not a person. | `naructl gen api-client`; [init.md](./init.md) |
 | root person | The person who holds the root certificate and its encrypted person file. Root alone issues operator, reader, automation and orch certificates. A new root comes from `naru-signer init` or from the recovery key's reissue. | `naructl operator request`, `naructl operator person`; `naructl signer reissue-root` |
