@@ -21,25 +21,28 @@ Drafted for garamsh/naru#388, in goal garamsh/naru#378. It supersedes the means 
    - An exposure whose holder is silent, admitted but not answering, stays on that holder within ADR 0085's grace, as before.
    - The concurrent pass then moves and renews each exposure toward its placement, under ADR 0085's lease, confirm-or-deadline and skew, unchanged.
 2. **Proxy exposures are spread.** The candidates are ADR 0112 item 8's: hosts that answered, have a LAN interface, and whose proxy is healthy.
-   - A proxy exposure kept on a silent holder is placed first.
-   - The rest are placed in the order of their addresses. Each goes to its highest-ranked candidate that holds no other proxy exposure, and to its highest-ranked candidate overall when every candidate holds one. The rank is rendezvous hashing of the address and the host's ID.
-   - So with n candidates, the first n addresses are on n different hosts, and no candidate is idle while there are addresses enough.
+   - A proxy exposure kept on a silent holder stays there, and its host, being silent, is no candidate for the rest.
+   - The rest are assigned in rounds over every pair of an address and a candidate. A pair's score is the rendezvous hash of the address and the host's ID. In each round the pairs are taken highest score first, numerically by address and then by host ID on a tie, and every candidate takes at most one more address.
+   - So with n candidates, n addresses are on n different hosts, the hosts' counts differ by one at most, and no candidate is idle while there are addresses enough.
 3. **The placement is a function of the addresses and the candidates alone.** It does not depend on where an address is held now, except on a silent holder. The same set of addresses and candidates gives the same placement on every pass and under every leader, so a new leader moves nothing.
 
 ## Options considered
 
 - **Keep pure rendezvous, and amend the promise to "spread by hashing, not guaranteed".** Nothing in the reconciler changes. Rejected: it gives up the outcome item 8 was written for, and half of all two-host sites would run one idle proxy.
 - **Prefer the current holder, and spread only new addresses.** Fewer moves when a host returns. Rejected: the placement would depend on the history of passes, so two leaders could disagree. A host that came back would also stay idle until an address was added.
+- **Place in address order, each address on its highest-ranked free candidate.** This was this decision's first form. Each address took its host knowing only the addresses before it, so adding an address that sorts low moved those after it whenever their hosts were its own best: over 200 adds of a third address on three hosts (`TestAProxyExposureAddedMovesOnlyTheAddressesItDisplaces`), an existing address moved 113 times. Rejected for the assignment by score, which moved one 96 times over the same adds.
 - **A per-host cap on proxy exposures.** It spreads the addresses only when the cap is set to match the hosts, and leaves addresses without a candidate when the cap is too low. Rejected for a rule that needs no setting.
 
 ## Consequences
 
 - With two proxy hosts and two proxy exposures, each host holds one while both run. When one host is lost, both addresses are on the other after ADR 0085's grace, lease and skew. When it comes back, it takes one address back, through the same confirm-or-deadline.
-- When a candidate is added or removed, the placement of more than the addresses it held can change. With rendezvous alone, only the addresses the host held moved. Each move goes through ADR 0085's release, so no address is held by two hosts.
+- When a candidate is added or removed, the placement of more than the addresses it held can change. With rendezvous alone, only the addresses the host held moved.
+- When a proxy exposure is added, the existing addresses that move are a chain of displacements that begins at the new one: an address moves only when an address that scores higher on its host takes it. When one is removed, the addresses it displaced move back. Each move cuts the connections open on its address.
+- Each move goes through ADR 0085's release, so no address is held by two hosts.
 - The reconciler's pass has one sequential step over the records it already reads, and makes no extra call to a host.
 - A network's exposures are untouched by the spread, and proxy exposures take no account of them.
 
 ## Signs the decision was wrong
 
-- Sites see proxy addresses move often while hosts come and go, and the moves cost more than an idle proxy would.
+- Sites see proxy addresses move often while hosts or proxy exposures come and go, and the moves cost more than an idle proxy would.
 - Proxy hosts differ in capacity, so an even spread is not the right one.

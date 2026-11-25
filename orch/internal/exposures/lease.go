@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"sort"
 	"sync"
@@ -172,8 +173,7 @@ func rank(address string, hosts []Host, eligible func(Host) bool) []string {
 		if h.Silent || h.LAN == "" || !eligible(h) {
 			continue
 		}
-		sum := sha256.Sum256([]byte(address + "\x00" + h.ID))
-		c = append(c, scored{h.ID, binary.BigEndian.Uint64(sum[:8])})
+		c = append(c, scored{h.ID, score(address, h.ID)})
 	}
 	slices.SortFunc(c, func(a, b scored) int {
 		if a.score != b.score {
@@ -188,34 +188,82 @@ func rank(address string, hosts []Host, eligible func(Host) bool) []string {
 	return out
 }
 
+// score is the rendezvous hash of address on the host id: the higher, the more the address prefers
+// the host.
+func score(address, id string) uint64 {
+	sum := sha256.Sum256([]byte(address + "\x00" + id))
+	return binary.BigEndian.Uint64(sum[:8])
+}
+
 // SpreadProxies returns the host each proxy exposure's address is to be held on, among the hosts
 // that answered, have a LAN interface and whose proxy is healthy (ADR 0117). kept are the addresses
-// that stay where they are, on a silent holder; they are placed first. Then, by address, each goes
-// to its highest-ranked candidate that holds no other, and to its highest-ranked one when every
-// candidate holds one, so two addresses are on two hosts while there are two candidates. An address
-// with no candidate is left out.
+// that stay where they are, on a silent holder, which is no candidate for the rest. The rest are
+// assigned in rounds over every pair of an address and a candidate, highest score first: in each
+// round every candidate takes at most one more address, so the addresses are spread evenly, and
+// each takes the best candidate left in its round. The result depends on the addresses and the
+// candidates alone, and an address added displaces another only where its own pair scores higher.
+// An address with no candidate is left out.
 func SpreadProxies(addresses []string, kept map[string]string, hosts []Host) map[string]string {
 	out := map[string]string{}
-	holds := map[string]bool{}
+	var rest []string
 	for _, a := range addresses {
 		if h, ok := kept[a]; ok {
-			out[a], holds[h] = h, true
+			out[a] = h
+		} else {
+			rest = append(rest, a)
 		}
 	}
-	rest := slices.DeleteFunc(slices.Clone(addresses), func(a string) bool { _, ok := kept[a]; return ok })
-	slices.Sort(rest)
+	var candidates []string
+	for _, h := range hosts {
+		if !h.Silent && h.LAN != "" && h.Proxy {
+			candidates = append(candidates, h.ID)
+		}
+	}
+	if len(candidates) == 0 {
+		return out
+	}
+	type pair struct {
+		address, host string
+		score         uint64
+	}
+	pairs := make([]pair, 0, len(rest)*len(candidates))
 	for _, a := range rest {
-		ranked := rank(a, hosts, func(h Host) bool { return h.Proxy })
-		if len(ranked) == 0 {
-			continue
+		for _, h := range candidates {
+			pairs = append(pairs, pair{a, h, score(a, h)})
 		}
-		pick := ranked[0]
-		if i := slices.IndexFunc(ranked, func(id string) bool { return !holds[id] }); i >= 0 {
-			pick = ranked[i]
+	}
+	slices.SortFunc(pairs, func(x, y pair) int {
+		if x.score != y.score {
+			return cmp.Compare(y.score, x.score)
 		}
-		out[a], holds[pick] = pick, true
+		if c := compareAddresses(x.address, y.address); c != 0 {
+			return c
+		}
+		return cmp.Compare(x.host, y.host)
+	})
+	// A round that places nothing has placed every address.
+	for placed := true; placed; {
+		placed = false
+		took := map[string]bool{}
+		for _, p := range pairs {
+			if _, done := out[p.address]; done || took[p.host] {
+				continue
+			}
+			out[p.address], took[p.host], placed = p.host, true, true
+		}
 	}
 	return out
+}
+
+// compareAddresses orders two addresses as IP addresses, numerically, and as text when either does
+// not parse.
+func compareAddresses(a, b string) int {
+	x, errX := netip.ParseAddr(a)
+	y, errY := netip.ParseAddr(b)
+	if errX != nil || errY != nil {
+		return cmp.Compare(a, b)
+	}
+	return x.Compare(y)
 }
 
 // placement is the host each exposure of recs is to be held on this pass, by recordKey; an

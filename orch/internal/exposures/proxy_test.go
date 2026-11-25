@@ -3,6 +3,7 @@ package exposures_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -209,6 +210,7 @@ func TestSpreadProxiesTakesOnlyAHostThatAnsweredWithALANAndAHealthyProxy(t *test
 	assert.Empty(t, exposures.SpreadProxies([]string{"192.168.1.80"}, nil, hosts), "no candidate: the address is left out")
 	hosts = append(hosts, proxyHosts("h1")...)
 	assert.Equal(t, map[string]string{"192.168.1.80": "h1"}, exposures.SpreadProxies([]string{"192.168.1.80"}, nil, hosts))
+	assert.Equal(t, map[string]string{"192.168.1.80": "h1"}, exposures.SpreadProxies([]string{"192.168.1.80", "192.168.1.80"}, nil, hosts), "an address given twice is placed once, and the spread ends")
 
 	_, ok := exposures.Choose("192.168.1.80", "a", []string{"10.1.0.5"}, proxyHosts("h1", "h2"))
 	assert.False(t, ok, "a proxy is no candidate for a network's exposure")
@@ -438,4 +440,42 @@ func TestAReleasedProxyExposureLeavesItsHostAndTheStore(t *testing.T) {
 	again, err := s.ApplyProxyExposure(ctx, "op", "web", proxySpec(443))
 	require.NoError(t, err, "its id and address are free again")
 	assert.Equal(t, e.Address, again.Address)
+}
+
+// adding returns, for an address added to addrs on hosts, the addresses of addrs whose host
+// changes, before and after.
+func adding(addrs []string, added string, hosts []exposures.Host) (moved []string, before, after map[string]string) {
+	before = exposures.SpreadProxies(addrs, nil, hosts)
+	after = exposures.SpreadProxies(append(slices.Clone(addrs), added), nil, hosts)
+	for _, a := range addrs {
+		if before[a] != after[a] {
+			moved = append(moved, a)
+		}
+	}
+	return moved, before, after
+}
+
+func TestAProxyExposureAddedMovesOnlyTheAddressesItDisplaces(t *testing.T) {
+	hosts := proxyHosts("h0", "h1", "h2")
+	moves := 0
+	for i := range 200 {
+		// Three addresses in an order that varies, so the added one sorts anywhere among them.
+		addrs := []string{fmt.Sprintf("10.1.%d.%d", i, i*37%251), fmt.Sprintf("10.2.%d.%d", i, i*91%251)}
+		added := fmt.Sprintf("10.%d.%d.%d", i%3, i, i*53%251)
+		moved, before, after := adding(addrs, added, hosts)
+		moves += len(moved)
+		// Each address that moves lost its host to the added one or to another that moved: a chain
+		// of displacements that begins at the added address, and no other address moves.
+		takers := map[string]bool{after[added]: true}
+		for _, a := range moved {
+			takers[after[a]] = true
+		}
+		for _, a := range moved {
+			assert.True(t, takers[before[a]], "%v + %s: %s left %s, which no displacing address took", addrs, added, a, before[a])
+		}
+		assert.ElementsMatch(t, []string{"h0", "h1", "h2"}, distinct(after), "%v + %s: three addresses on three hosts", addrs, added)
+	}
+	// The count over these 200 adds, which the scores fix: 96. Placed in address order, each on its
+	// best free host, the same adds moved an existing address 113 times.
+	assert.LessOrEqual(t, moves, 96, "moves of an existing address over the adds")
 }
