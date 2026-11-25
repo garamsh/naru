@@ -213,12 +213,17 @@ func (p Proxy) listen() []string {
 	return p.Listen
 }
 
-// tlsPort is the port of the first listen address, which a proxy exposure's port 443 is
-// redirected to on the host (ADR 0112 item 8), so that address is the wildcard or the LAN
-// interface's own. It is only meaningful once Parse has accepted the section.
+// tlsPort is the port of the first listen address on 0.0.0.0, which a proxy exposure's port 443
+// is redirected to on the host (ADR 0112 item 8): the redirect sends a flow to the address of the
+// interface it came in on, which only a wildcard listener is sure to have. It is 0 when there is
+// none, which Parse refuses.
 func (p Proxy) tlsPort() uint16 {
-	ap, _ := netip.ParseAddrPort(p.listen()[0])
-	return ap.Port()
+	for _, l := range p.listen() {
+		if ap, err := netip.ParseAddrPort(l); err == nil && ap.Addr() == netip.IPv4Unspecified() {
+			return ap.Port()
+		}
+	}
+	return 0
 }
 
 // Metrics is where init and the daemons it starts serve /metrics.
@@ -449,6 +454,9 @@ func (v *validation) proxy(spec Spec) {
 		case ap.Port() == wire.ProxyRedirectPort:
 			v.fail(fmt.Sprintf("spec.proxy.listen[%d]", i), "must not be port %d, where the proxy answers plain HTTP with a redirect to https", wire.ProxyRedirectPort)
 		}
+	}
+	if p.tlsPort() == 0 {
+		v.fail("spec.proxy.listen", "must have an address on 0.0.0.0, which a proxy exposure's port 443 is redirected to")
 	}
 	if !pemOf(p.Certificate, "CERTIFICATE") {
 		v.fail("spec.proxy.certificate", "must be the PEM of the zone's certificate, then its chain")
