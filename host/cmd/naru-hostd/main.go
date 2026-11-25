@@ -93,15 +93,16 @@ func main() {
 		return
 	}
 
-	if (*proxyHealth == "") != (*proxyTLS == 0) || *proxyTLS < 0 || *proxyTLS > 65535 {
-		log.Error("--proxy-health-addr and --proxy-tls-port go together, and the port is 1 to 65535")
+	proxyPorts, err := proxyFlags(*proxyHealth, *proxyTLS)
+	if err != nil {
+		log.Error(err.Error())
 		os.Exit(1)
 	}
-	var proxyPorts network.ProxyPorts
+	var proxyState *proxyCheck
 	var proxyHealthy func(context.Context) bool
-	if *proxyHealth != "" {
-		proxyPorts = network.ProxyPorts{TLS: uint16(*proxyTLS), Redirect: wire.ProxyRedirectPort}
-		proxyHealthy = probeProxy(*proxyHealth)
+	if proxyPorts.Runs() {
+		proxyState = &proxyCheck{}
+		proxyHealthy = proxyState.Healthy
 	}
 	if *lan != "" && *management == "" {
 		log.Error("--lan-interface needs --management-prefix: the exposed addresses are forwarded to a network's members")
@@ -167,6 +168,9 @@ func main() {
 
 	r := &fence.Renewer{Runtime: rt, Length: *length, Interval: *interval, Retry: 5 * time.Second, Log: log}
 	go r.Run(ctx)
+	if proxyState != nil {
+		go proxyState.run(ctx, probeProxy(*proxyHealth), proxyProbeInterval)
+	}
 	if netMgr != nil {
 		startReconciler(ctx, netMgr, rt, log)
 	}

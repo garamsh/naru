@@ -7,8 +7,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/garamsh/naru/host/internal/network"
+	"github.com/garamsh/naru/lib/wire"
 )
 
 func TestProbeProxy_IsHealthyOnlyWhenTheProxyAnswers200(t *testing.T) {
@@ -28,4 +33,63 @@ func TestProbeProxy_IsHealthyOnlyWhenTheProxyAnswers200(t *testing.T) {
 	assert.False(t, probe(context.Background()), "a proxy that answers otherwise")
 	srv.Close()
 	assert.False(t, probe(context.Background()), "a proxy that does not answer")
+}
+
+func TestProxyCheck_IsUnhealthyOnlyAfterThreeFailedProbesInARowAndHealthyAfterOneSuccess(t *testing.T) {
+	var h proxyCheck
+	ctx := context.Background()
+	assert.False(t, h.Healthy(ctx), "unhealthy until a probe succeeds")
+	h.observe(false)
+	assert.False(t, h.Healthy(ctx), "a probe that fails before any success")
+	h.observe(true)
+	assert.True(t, h.Healthy(ctx), "healthy from one success")
+	h.observe(false)
+	assert.True(t, h.Healthy(ctx), "one missed probe")
+	h.observe(false)
+	assert.True(t, h.Healthy(ctx), "two missed probes")
+	h.observe(true)
+	h.observe(false)
+	h.observe(false)
+	assert.True(t, h.Healthy(ctx), "a success between counts the failures again")
+	h.observe(false)
+	assert.False(t, h.Healthy(ctx), "three missed probes in a row")
+	h.observe(true)
+	assert.True(t, h.Healthy(ctx), "healthy again after one success")
+}
+
+func TestProxyCheck_RunProbesAtOnceAndThenEveryInterval(t *testing.T) {
+	var h proxyCheck
+	var probes atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		h.run(ctx, func(context.Context) bool { probes.Add(1); return true }, 10*time.Millisecond)
+		close(done)
+	}()
+	require.Eventually(t, func() bool { return h.Healthy(ctx) }, time.Second, time.Millisecond, "the first probe is at once")
+	require.Eventually(t, func() bool { return probes.Load() >= 3 }, time.Second, time.Millisecond, "and the next every interval")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("run does not end with its context")
+	}
+}
+
+func TestProxyFlags_TakeTheHealthAddressAndTheTLSPortTogether(t *testing.T) {
+	p, err := proxyFlags("", 0)
+	require.NoError(t, err)
+	assert.False(t, p.Runs(), "neither flag: the host runs no proxy")
+	p, err = proxyFlags("127.0.0.1:9443", 8443)
+	require.NoError(t, err)
+	assert.Equal(t, network.ProxyPorts{TLS: 8443, Redirect: wire.ProxyRedirectPort}, p)
+	_, err = proxyFlags("127.0.0.1:9443", 65535)
+	require.NoError(t, err, "the highest port")
+	for _, c := range []struct {
+		health string
+		port   int
+	}{{"127.0.0.1:9443", 0}, {"", 8443}, {"127.0.0.1:9443", -1}, {"127.0.0.1:9443", 65536}} {
+		_, err := proxyFlags(c.health, c.port)
+		assert.Error(t, err, "health %q, port %d", c.health, c.port)
+	}
 }
