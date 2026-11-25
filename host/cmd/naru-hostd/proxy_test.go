@@ -58,28 +58,33 @@ func TestProxyCheck_IsUnhealthyOnlyAfterThreeFailedProbesInARowAndHealthyAfterOn
 }
 
 func TestProxyCheck_RunProbesAtOnceAndThenEveryInterval(t *testing.T) {
-	var h proxyCheck
-	var probes atomic.Int32
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		h.run(ctx, func(context.Context) bool { probes.Add(1); return true }, 10*time.Millisecond)
-		close(done)
-	}()
-	require.Eventually(t, func() bool { return h.Healthy(ctx) }, time.Second, time.Millisecond, "the first probe is at once")
-	require.Eventually(t, func() bool { return probes.Load() >= 3 }, time.Second, time.Millisecond, "and the next every interval")
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("run does not end with its context")
+	// run probes with interval until it ends, and returns the probes it made.
+	run := func(interval time.Duration, until func(h *proxyCheck, probes int32) bool) {
+		t.Helper()
+		var h proxyCheck
+		var probes atomic.Int32
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			h.run(ctx, func(context.Context) bool { probes.Add(1); return true }, interval)
+			close(done)
+		}()
+		assert.Eventually(t, func() bool { return until(&h, probes.Load()) }, time.Second, time.Millisecond)
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("run does not end with its context")
+		}
 	}
+	run(time.Hour, func(h *proxyCheck, _ int32) bool { return h.Healthy(context.Background()) })
+	run(10*time.Millisecond, func(_ *proxyCheck, probes int32) bool { return probes >= 3 })
 }
 
 func TestProxyFlags_TakeTheHealthAddressAndTheTLSPortTogether(t *testing.T) {
 	p, err := proxyFlags("", 0)
 	require.NoError(t, err)
-	assert.False(t, p.Runs(), "neither flag: the host runs no proxy")
+	assert.Equal(t, network.ProxyPorts{}, p, "neither flag: the host runs no proxy")
 	p, err = proxyFlags("127.0.0.1:9443", 8443)
 	require.NoError(t, err)
 	assert.Equal(t, network.ProxyPorts{TLS: 8443, Redirect: wire.ProxyRedirectPort}, p)
