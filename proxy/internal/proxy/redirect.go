@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,9 @@ func redirect(w http.ResponseWriter, r *http.Request) {
 	if host == "" {
 		http.Error(w, "the request names no host", http.StatusBadRequest)
 		return
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]" // an IPv6 literal, whose brackets hostOf took off with the port
 	}
 	http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), http.StatusPermanentRedirect)
 }

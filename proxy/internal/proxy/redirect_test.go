@@ -51,6 +51,11 @@ func TestRedirect_AnswersPlainHTTPWithAPermanentRedirectToHTTPSOnTheSameNameAndP
 	assert.Equal(t, http.StatusPermanentRedirect, resp.StatusCode, "308, so the client repeats the method")
 	assert.Equal(t, "https://"+nameA+"/a/b?c=d", resp.Header.Get("Location"), "the port is dropped and the path and query kept")
 
+	resp, _ = ask(t, addr, "GET /a HTTP/1.1\r\nHost: [fd00::1]:80\r\n\r\n")
+	assert.Equal(t, "https://[fd00::1]/a", resp.Header.Get("Location"), "an IPv6 literal keeps its brackets without its port")
+	resp, _ = ask(t, addr, "GET /a HTTP/1.1\r\nHost: [fd00::1]\r\n\r\n")
+	assert.Equal(t, "https://[fd00::1]/a", resp.Header.Get("Location"), "and with no port")
+
 	resp, _ = ask(t, addr, "GET / HTTP/1.0\r\n\r\n")
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "a request with no name has nothing to redirect to")
 }
