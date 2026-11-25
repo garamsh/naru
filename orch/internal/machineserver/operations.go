@@ -78,3 +78,21 @@ func (h *handler) events(r *http.Request, caller string) (int, any, error) {
 	p, err := h.Machines.Events(r.Context(), caller, r.URL.Query().Get("since"))
 	return http.StatusOK, p, err
 }
+
+func (h *handler) putAlias(r *http.Request, caller string) (int, any, error) {
+	var a machineapi.AliasRequest
+	if err := decode(r, &a); err != nil {
+		return 0, nil, err
+	}
+	al, created, err := h.Machines.PutAlias(r.Context(), caller, r.PathValue("hostname"), a)
+	return createdOr(created), al, err
+}
+
+func (h *handler) alias(r *http.Request, caller string) (int, any, error) {
+	a, err := h.Machines.Alias(r.Context(), caller, r.PathValue("hostname"))
+	return http.StatusOK, a, err
+}
+
+func (h *handler) deleteAlias(r *http.Request, caller string) (int, any, error) {
+	return http.StatusNoContent, nil, h.Machines.DeleteAlias(r.Context(), caller, r.PathValue("hostname"))
+}

@@ -92,6 +92,8 @@ type Machines interface {
 	CancelMove(ctx context.Context, caller, name string) (orchapi.Machine, error)
 	AbandonedVolumes(ctx context.Context) ([]orchapi.AbandonedVolumes, error)
 	DeleteAbandonedVolumes(ctx context.Context, caller, name, host string, epoch uint64) error
+	PutCaller(ctx context.Context, c machines.Caller) (machines.Caller, error)
+	Callers(ctx context.Context) ([]machines.Caller, error)
 }
 
 // Deps is what the handlers call.
@@ -138,6 +140,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("DELETE /v1/machines/{caller}/{name}/abandoned-volumes/{host}/{epoch}", h.guard(auth.Attest, h.deleteAbandonedVolumes))
 	mux.HandleFunc("POST /v1/machines/{caller}/{name}/move", h.guard(auth.Operate, h.moveMachine))
 	mux.HandleFunc("DELETE /v1/machines/{caller}/{name}/move", h.guard(auth.Operate, h.cancelMove))
+	mux.HandleFunc("GET /v1/callers", h.guard(auth.Read, h.callerList))
+	mux.HandleFunc("PUT /v1/callers/{name}", h.guard(auth.Operate, h.callerApply))
 	mux.HandleFunc("GET /v1/groups", h.guard(auth.Read, h.groupList))
 	mux.HandleFunc("GET /v1/groups/{name}", h.guard(auth.Read, h.groupGet))
 	mux.HandleFunc("PUT /v1/groups/{name}", h.guard(auth.Operate, h.groupApply))
@@ -331,7 +335,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusUnprocessableEntity, err.Error()
 	case tooLarge(err):
 		status, msg = http.StatusRequestEntityTooLarge, "the request body is too large"
-	case errors.Is(err, inventory.ErrInvalid), errors.Is(err, orchapi.ErrBadProof):
+	case errors.Is(err, inventory.ErrInvalid), errors.Is(err, orchapi.ErrBadProof), errors.Is(err, machineapi.ErrInvalid):
 		status, msg = http.StatusBadRequest, err.Error()
 	case storeFull(err):
 		status, msg = http.StatusInsufficientStorage, "orch's database is full (etcdserver: mvcc: database space exceeded): it refuses writes until the housekeeper has compacted and defragmented it and cleared the no-space alarm"
@@ -401,6 +405,25 @@ func (h *handler) deleteAbandonedVolumes(w http.ResponseWriter, r *http.Request,
 func (h *handler) cancelMove(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
 	out, err := h.Machines.CancelMove(r.Context(), r.PathValue("caller"), r.PathValue("name"))
 	reply(w, r, out, err)
+}
+
+// callerList shows the operator's grants to the Machine API's callers.
+func (h *handler) callerList(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	cs, err := h.Machines.Callers(r.Context())
+	out := make([]orchapi.Caller, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, orchapi.Caller{Name: c.Name, AliasDomains: c.AliasDomains})
+	}
+	reply(w, r, out, err)
+}
+
+// callerApply replaces a caller's grant of alias domains (ADR 0112 item 3).
+func (h *handler) callerApply(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	var spec orchapi.CallerSpec
+	if decode(w, r, &spec) {
+		c, err := h.Machines.PutCaller(r.Context(), machines.Caller{Name: r.PathValue("name"), AliasDomains: spec.AliasDomains})
+		reply(w, r, orchapi.Caller{Name: c.Name, AliasDomains: c.AliasDomains}, err)
+	}
 }
 
 func (h *handler) pending(w http.ResponseWriter, r *http.Request, _ identity.Identity) {

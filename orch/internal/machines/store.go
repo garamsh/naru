@@ -99,6 +99,26 @@ type Store interface {
 	// revision the read is current at. A nil after is the whole log. A revision above the current one
 	// is ErrBadCursor; one older than the log keeps is ErrCursorExpired.
 	Events(ctx context.Context, caller string, after *int64) ([]machineapi.Event, int64, error)
+	// MarkDeleting writes r, marked deleting, removes aliases, its Machine's, and appends ev in one
+	// transaction, while r and each alias are still the ones read; ErrRaced otherwise. An alias's
+	// create writes its Machine, so one created since r was read fails the guard.
+	MarkDeleting(ctx context.Context, r Record, rev int64, aliases []AliasEntry, ev machineapi.Event) error
+	// Alias returns the alias of hostname and the revision of its write; ErrNotFound when there is
+	// none.
+	Alias(ctx context.Context, hostname string) (Alias, int64, error)
+	// Aliases returns every alias, ordered by hostname.
+	Aliases(ctx context.Context) ([]AliasEntry, error)
+	// CreateAlias writes a while no alias holds its hostname, and writes m again, so its revision
+	// moves, while m is still the one written at machine; ErrRaced otherwise.
+	CreateAlias(ctx context.Context, a Alias, m Record, machine int64) error
+	// DeleteAlias removes a while it is still the one written at rev; ErrRaced otherwise.
+	DeleteAlias(ctx context.Context, a Alias, rev int64) error
+	// Caller returns what the operator granted the caller; an empty grant when nothing.
+	Caller(ctx context.Context, name string) (Caller, error)
+	// Callers returns every grant, ordered by name.
+	Callers(ctx context.Context) ([]Caller, error)
+	// PutCaller writes the caller's grant.
+	PutCaller(ctx context.Context, c Caller) error
 	// ClaimZone records zone as the zone of the cluster's stable names when none is recorded, and
 	// returns the recorded one. An empty zone claims nothing and returns what is recorded, if any.
 	ClaimZone(ctx context.Context, zone string) (string, error)

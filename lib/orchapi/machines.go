@@ -141,3 +141,28 @@ func (c *Client) CancelMove(ctx context.Context, caller, name string) (Machine, 
 	var out Machine
 	return out, c.do(ctx, http.MethodDelete, machinePath(caller, name)+"/move", nil, nil, &out)
 }
+
+// CallerSpec is what the operator grants a caller of the Machine API: the domains outside the zone
+// it may publish aliases in (ADR 0112 item 3). It replaces the caller's grant; an alias already
+// published stays when its domain leaves it.
+type CallerSpec struct {
+	AliasDomains []string `json:"aliasDomains"`
+}
+
+// Caller is a caller's grant as orch keeps it, its domains sorted and each once.
+type Caller struct {
+	Name         string   `json:"name"`
+	AliasDomains []string `json:"aliasDomains"`
+}
+
+// ApplyCaller replaces the caller's grant.
+func (c *Client) ApplyCaller(ctx context.Context, name string, spec CallerSpec) (Caller, error) {
+	var out Caller
+	return out, c.do(ctx, http.MethodPut, "/v1/callers/"+url.PathEscape(name), nil, spec, &out)
+}
+
+// Callers lists every caller the operator granted anything.
+func (c *Client) Callers(ctx context.Context) ([]Caller, error) {
+	var out []Caller
+	return out, c.do(ctx, http.MethodGet, "/v1/callers", nil, nil, &out)
+}
