@@ -69,7 +69,7 @@ func (e routesEnv) put(t *testing.T, req hostapi.RoutesRequest) (int, hostapi.Er
 
 func TestRoutes_TheHostWritesTheTableForItsProxyAndAnswersTheRevisionTheProxyLoaded(t *testing.T) {
 	e := startRoutes(t)
-	require.NoError(t, e.nets.SetPeers(t.Context(), netip.MustParseAddr("10.99.0.2"), nil))
+	require.NoError(t, e.nets.SetPeers(t.Context(), netip.MustParseAddr("10.99.0.2"), netip.Prefix{}, nil))
 
 	code, _, answer := e.put(t, table(7, e.now.Add(-time.Second), route("a.m.example")))
 	require.Equal(t, 200, code)

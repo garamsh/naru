@@ -224,6 +224,28 @@ func TestPeers_AProxyPeersMeshAddressAloneReachesTheMicroVMs(t *testing.T) {
 	assert.Contains(t, string(b), "peers.proxy")
 }
 
+func TestPeers_TheMeshPoolIsDroppedWholeAndReadsBack(t *testing.T) {
+	e := start(t)
+	p := e.as(t, ProvisionerOrganization)
+	req := hostapi.PeersRequest{MeshAddress: "10.99.0.1", MeshPool: "10.99.0.0/24", Peers: []hostapi.Peer{
+		{Name: "h2", PublicKey: keyOne, Prefixes: []string{"10.1.1.0/24"}, MeshAddress: "10.99.0.2", Proxy: true},
+	}}
+	code, b := e.do(t, p, "PUT", "/v1/peers", req)
+	require.Equal(t, 200, code, string(b))
+	var got hostapi.PeersRequest
+	require.NoError(t, json.Unmarshal(b, &got))
+	assert.Equal(t, "10.99.0.0/24", got.MeshPool)
+	assert.Contains(t, e.nft.ruleset(), "ip saddr 10.99.0.0/24 counter drop comment \"a host to a microVM\"")
+
+	for _, pool := range []string{"10.99.0.1/24", "fd00::/64", "10.0.0.0/4", "nonsense"} {
+		req.MeshPool = pool
+		code, b = e.do(t, p, "PUT", "/v1/peers", req)
+		assert.Equal(t, 422, code, "%s: %s", pool, b)
+		assert.Contains(t, string(b), "meshPool", pool)
+	}
+	assert.Contains(t, e.nft.ruleset(), "ip saddr 10.99.0.0/24 counter drop", "a refused pool replaces nothing")
+}
+
 func TestPeers_TheMeshAddressesReachTheTunnelAndTheTunnelReportsTheHosts(t *testing.T) {
 	e := start(t)
 	p := e.as(t, ProvisionerOrganization)

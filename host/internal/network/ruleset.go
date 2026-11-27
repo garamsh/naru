@@ -98,11 +98,13 @@ func Ruleset(c Config) string {
 		set("members", members)
 	}
 	hosts, proxies := meshes(c.Peers)
-	if c.TapPrefix != "" && len(hosts) > 0 {
+	pool := c.MeshPool.IsValid()
+	guard := c.TapPrefix != "" && (pool || len(hosts) > 0)
+	if guard && !pool {
 		set("mesh_hosts", hosts)
-		if len(proxies) > 0 {
-			set("mesh_proxies", proxies)
-		}
+	}
+	if guard && len(proxies) > 0 {
+		set("mesh_proxies", proxies)
 	}
 
 	line("\tchain input {")
@@ -129,13 +131,18 @@ func Ruleset(c Config) string {
 		}
 	}
 	// Of the hosts' own addresses on the mesh, only a proxy's reaches a microVM, and only through
-	// its tap (ADR 0112 item 7); the rest are dropped and counted. A network's members never have a
-	// mesh address, so the sets below are not reached by them.
-	if c.TapPrefix != "" && len(hosts) > 0 {
+	// its tap (ADR 0119); the rest of the mesh pool, or of the peers' addresses when orch declared no
+	// pool, is dropped and counted. A network's members never have a mesh address, so the rules
+	// below are not reached by them.
+	if guard {
 		if len(proxies) > 0 {
 			line("\t\tip saddr @mesh_proxies oifname \"%s*\" accept comment \"a proxy to a microVM\"", c.TapPrefix)
 		}
-		line("\t\tip saddr @mesh_hosts counter drop comment \"a host to a microVM\"")
+		if pool {
+			line("\t\tip saddr %s counter drop comment \"a host to a microVM\"", c.MeshPool)
+		} else {
+			line("\t\tip saddr @mesh_hosts counter drop comment \"a host to a microVM\"")
+		}
 	}
 	for _, n := range nets {
 		if c.Management.IsValid() && n.Endpoint.IsValid() {

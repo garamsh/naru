@@ -59,6 +59,9 @@ type Config struct {
 	Peers    []Peer
 	// Mesh is the host's own address on the tunnel (ADR 0113 item 1); the zero value means none.
 	Mesh netip.Addr
+	// MeshPool is the prefix the hosts' mesh addresses come from (ADR 0119): of its sources, only a
+	// proxy peer's reaches a microVM. The zero value drops the peers' own mesh addresses instead.
+	MeshPool netip.Prefix
 	// Management is the prefix of the management plane: nothing from a network reaches it, and it
 	// reaches only a network's API endpoint.
 	Management netip.Prefix

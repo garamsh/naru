@@ -47,5 +47,9 @@ type Peer struct {
 // tunnel interface. An empty MeshAddress leaves the interface with none.
 type PeersRequest struct {
 	MeshAddress string `json:"meshAddress,omitempty"`
-	Peers       []Peer `json:"peers"`
+	// MeshPool is the prefix the hosts' mesh addresses come from: of its sources, the host lets
+	// only a proxy peer's mesh address reach its microVMs, and drops the rest (ADR 0119). Empty
+	// leaves the peers' own mesh addresses as the sources it drops.
+	MeshPool string `json:"meshPool,omitempty"`
+	Peers    []Peer `json:"peers"`
 }

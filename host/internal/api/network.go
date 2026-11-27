@@ -23,9 +23,10 @@ type Networks interface {
 	Networks() []network.Network
 	Attach(ctx context.Context, m network.Member) error
 	Detach(ctx context.Context, a netip.Addr) error
-	SetPeers(ctx context.Context, mesh netip.Addr, peers []network.Peer) error
+	SetPeers(ctx context.Context, mesh netip.Addr, pool netip.Prefix, peers []network.Peer) error
 	Peers() []network.Peer
 	Mesh() netip.Addr
+	MeshPool() netip.Prefix
 	Members() []network.Member
 	TunnelInfo() (network.TunnelInfo, bool)
 }
@@ -282,6 +283,14 @@ func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		bad("meshAddress")
 	}
+	var pool netip.Prefix
+	if req.MeshPool != "" {
+		p, err := netip.ParsePrefix(req.MeshPool)
+		if err != nil || p.Masked() != p || !p.Addr().Is4() || p.Bits() < minPrefixBits {
+			bad("meshPool")
+		}
+		pool = p
+	}
 	if mesh.IsValid() {
 		held[netip.PrefixFrom(mesh, 32)] = true
 	}
@@ -330,7 +339,7 @@ func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := s.deps.Networks.SetPeers(ctx, mesh, peers); err != nil {
+	if err := s.deps.Networks.SetPeers(ctx, mesh, pool, peers); err != nil {
 		s.networkFail(w, err)
 		return
 	}
@@ -349,6 +358,9 @@ func (s *Server) writePeers(w http.ResponseWriter) {
 	out := hostapi.PeersRequest{Peers: peerViews(s.deps.Networks.Peers())}
 	if m := s.deps.Networks.Mesh(); m.IsValid() {
 		out.MeshAddress = m.String()
+	}
+	if p := s.deps.Networks.MeshPool(); p.IsValid() {
+		out.MeshPool = p.String()
 	}
 	writeJSON(w, http.StatusOK, out)
 }
