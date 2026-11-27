@@ -120,7 +120,8 @@ func TestFleet_OnlyAProxyHostsMeshAddressReachesAMachineAndOnlyOnItsServicePorts
 	})
 
 	// The forward chain's other drops still count: the first microVM is no network's member, so a
-	// connection it makes out of the host is dropped as a forged source.
+	// connection it makes out of the host is dropped as a forged source. A Machine's egress is
+	// dropped the same way, which garamsh/naru#446 is to change, and this assertion with it.
 	addr, stop, err := f.hostOfNode(machineHost).RouteTo(context.Background(), open+":"+probePort)
 	require.NoError(t, err)
 	t.Cleanup(stop)
