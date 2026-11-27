@@ -828,3 +828,21 @@ func TestReconciler_AdoptsAtTheFirstPassThatSucceedsAndNotAfter(t *testing.T) {
 	require.NoError(t, r.Once(ctx))
 	assert.Equal(t, []netip.Prefix{pfx("10.0.0.9/32")}, parseTable(t, f.table).sets["machines"], "a later pass does not")
 }
+
+func TestManager_ANetworksMemberIsNoMachineOnceItsNetworkIsRemoved(t *testing.T) {
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	ctx := context.Background()
+	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16")}))
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
+	require.NoError(t, m.Adopt(ctx, func(context.Context) ([]netip.Addr, error) {
+		return []netip.Addr{addr("10.0.0.3"), addr("10.0.0.4"), addr("10.0.0.9")}, nil
+	}))
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.4")}), "adopted, then put on a")
+	require.NoError(t, m.Admit(ctx, addr("10.0.0.3")), "a member admitted by mistake")
+	require.Equal(t, []netip.Prefix{pfx("10.0.0.9/32")}, parseTable(t, f.table).sets["machines"], "the setup: the one Machine")
+
+	require.NoError(t, m.Remove(ctx, "a"))
+	assert.Equal(t, []netip.Prefix{pfx("10.0.0.9/32")}, parseTable(t, f.table).sets["machines"],
+		"a removed network's microVMs get no Machine's egress: they were created for a network")
+}
