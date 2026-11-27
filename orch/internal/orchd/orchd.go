@@ -319,7 +319,8 @@ func (o *Orchd) assemble(m *member.Member) bool {
 		reconcilers = append(reconcilers, d.Reconciler)
 	}
 	if d.NewNetworkHosts != nil {
-		reconcilers = append(reconcilers, netrec.New(netrec.Config{Hosts: d.NewNetworkHosts(svc), Networks: networkStore, Interval: c.NetworkInterval, Log: d.Log}))
+		reconcilers = append(reconcilers, netrec.New(netrec.Config{Hosts: d.NewNetworkHosts(svc), Networks: networkStore, Interval: c.NetworkInterval, Log: d.Log,
+			MeshPool: func(ctx context.Context) (netip.Prefix, error) { return inventory.MeshPool(ctx, invStore) }}))
 	}
 	if d.NewPrefixHosts != nil {
 		reconcilers = append(reconcilers, inventory.NewRecorder(leaderInv, d.NewPrefixHosts(svc), d.Clock, c.NetworkInterval, d.Log))
@@ -350,7 +351,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	if d.NewRouteHosts != nil {
 		push := routes.New(routes.Config{
 			Source: machineStore, Hosts: d.NewRouteHosts(svc), Acks: routesetcd.New(leaderKV), Zone: c.MachineZone, Clock: d.Clock,
-			Interval: cmp.Or(c.NetworkInterval, netrec.DefaultInterval), Log: d.Log,
+			Interval: cmp.Or(c.NetworkInterval, netrec.DefaultInterval), Fleet: leaderInv, Log: d.Log,
 			Wake: func(ctx context.Context) <-chan struct{} { return machinesetcd.WatchRouting(ctx, m.Client(), d.Log) },
 		})
 		reconcilers, gate = append(reconcilers, push), push

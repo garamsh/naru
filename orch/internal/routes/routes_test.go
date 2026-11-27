@@ -3,7 +3,9 @@ package routes_test
 import (
 	"context"
 	"errors"
+	"math"
 	"net/netip"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +15,8 @@ import (
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/machineapi"
+	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/orch/internal/machines"
 	"github.com/garamsh/naru/orch/internal/orchtest"
 	"github.com/garamsh/naru/orch/internal/routes"
@@ -87,39 +91,53 @@ func TestTable_DropsEveryRouteOfANameGivenTwice(t *testing.T) {
 	assert.Equal(t, []routes.Dropped{{"00000000000000aa." + zone, "the name is given twice"}, {"00000000000000aa." + zone, "the name is given twice"}}, dropped)
 }
 
-// fakeSource answers one revision's Machines and aliases.
+// fakeSource answers one revision's Machines and aliases; during, when not nil, runs inside each
+// read, as a write and a delete's question would land while the read is in flight.
 type fakeSource struct {
-	mu   sync.Mutex
-	recs []machines.Record
-	rev  int64
+	mu     sync.Mutex
+	recs   []machines.Record
+	rev    int64
+	during func()
 }
 
 func (s *fakeSource) Routing(context.Context) ([]machines.Record, []machines.Alias, int64, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.recs, nil, s.rev, nil
+	recs, rev, during := s.recs, s.rev, s.during
+	s.mu.Unlock()
+	if during != nil {
+		during()
+	}
+	return recs, nil, rev, nil
 }
 
 // fakeHosts is the hosts: proxies take each table and answer loaded, reporting the max age in
-// maxAge (none when absent), others is admitted with no proxy, and a host in refuse refuses every
-// push.
+// maxAge seconds (none when absent); ungranted report a proxy without the grant; others is
+// admitted with no proxy; a host in refuse refuses every push; probe, when not nil, runs inside
+// each probe, which takes as long as it does.
 type fakeHosts struct {
-	mu       sync.Mutex
-	proxies  []string
-	maxAge   map[string]time.Duration
-	admitted []string
-	loaded   map[string]int64
-	pushed   map[string][]hostapi.RoutesRequest
-	refuse   map[string]error
-	deadline map[string]time.Duration
+	mu        sync.Mutex
+	proxies   []string
+	ungranted []string
+	noProxy   []string
+	maxAge    map[string]int64
+	admitted  []string
+	loaded    map[string]int64
+	pushed    map[string][]hostapi.RoutesRequest
+	refuse    map[string]error
+	deadline  map[string]time.Duration
+	probe     func()
 }
 
-func (h *fakeHosts) Proxies(context.Context) ([]routes.Proxy, error) {
+func (h *fakeHosts) Proxies(context.Context) (routes.Probe, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	out := make([]routes.Proxy, len(h.proxies))
-	for i, p := range h.proxies {
-		out[i] = routes.Proxy{ID: p, MaxAge: h.maxAge[p]}
+	probe := h.probe
+	out := routes.Probe{Ungranted: slices.Clone(h.ungranted), NoProxy: slices.Clone(h.noProxy)}
+	for _, p := range h.proxies {
+		out.Proxies = append(out.Proxies, routes.Proxy{ID: p, MaxAgeSeconds: h.maxAge[p]})
+	}
+	h.mu.Unlock()
+	if probe != nil {
+		probe()
 	}
 	return out, nil
 }
@@ -143,11 +161,37 @@ func (h *fakeHosts) Push(ctx context.Context, host string, t hostapi.RoutesReque
 	return h.loaded[host], nil
 }
 
+// fleet keeps the events appended.
+type fleet struct {
+	mu     sync.Mutex
+	events []orchapi.Event
+}
+
+func (f *fleet) AppendEvent(_ context.Context, ev orchapi.Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, ev)
+	return nil
+}
+
+func (f *fleet) of(typ string) []orchapi.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []orchapi.Event
+	for _, e := range f.events {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 type rig struct {
 	src   *fakeSource
 	hosts *fakeHosts
 	acks  *routesetcd.Store
 	clock *orchtest.Clock
+	fleet *fleet
 	push  *routes.Reconciler
 }
 
@@ -156,11 +200,11 @@ func newRig(t *testing.T) *rig {
 	kv := orchtest.Start(t, orchtest.Options{Members: 1}).Members[0].Etcd()
 	r := &rig{
 		src: &fakeSource{recs: []machines.Record{machine("00000000000000aa", "10.200.0.5", machineapi.PhaseRunning)}, rev: 40},
-		hosts: &fakeHosts{proxies: []string{"p1", "p2"}, admitted: []string{"p1", "p2", "m1"}, maxAge: map[string]time.Duration{}, loaded: map[string]int64{},
+		hosts: &fakeHosts{proxies: []string{"p1", "p2"}, admitted: []string{"p1", "p2", "m1"}, maxAge: map[string]int64{}, loaded: map[string]int64{},
 			pushed: map[string][]hostapi.RoutesRequest{}, refuse: map[string]error{}, deadline: map[string]time.Duration{}},
-		acks: routesetcd.New(kv), clock: orchtest.NewClock(),
+		acks: routesetcd.New(kv), clock: orchtest.NewClock(), fleet: &fleet{},
 	}
-	r.push = routes.New(routes.Config{Source: r.src, Hosts: r.hosts, Acks: r.acks, Zone: zone, Clock: r.clock})
+	r.push = routes.New(routes.Config{Source: r.src, Hosts: r.hosts, Acks: r.acks, Zone: zone, Clock: r.clock, Fleet: r.fleet})
 	return r
 }
 
@@ -169,6 +213,13 @@ func (r *rig) acked(t *testing.T) map[string]routes.Ack {
 	a, err := r.acks.Acks(t.Context())
 	require.NoError(t, err)
 	return a
+}
+
+func (r *rig) delivered(t *testing.T, rev int64, at time.Time) bool {
+	t.Helper()
+	ok, err := r.push.Delivered(t.Context(), rev, at)
+	require.NoError(t, err)
+	return ok
 }
 
 func TestReconcile_PutsTheWholeTableToEveryProxyHostAndKeepsWhatEachLoaded(t *testing.T) {
@@ -188,8 +239,8 @@ func TestReconcile_PutsTheWholeTableToEveryProxyHostAndKeepsWhatEachLoaded(t *te
 	acks := r.acked(t)
 	assert.Equal(t, int64(40), acks["p1"].Loaded)
 	assert.Equal(t, int64(31), acks["p2"].Loaded, "the revision the proxy loaded, which may be behind")
-	assert.True(t, acks["p1"].At.Equal(r.clock.Now()))
-	assert.Equal(t, routes.DefaultMaxAge, acks["p1"].MaxAge, "a host that reports no max age is taken to have the proxy's default")
+	assert.True(t, acks["p1"].LastSent.Equal(r.clock.Now()), "the time it was last sent a table")
+	assert.Equal(t, wire.ProxyRouteMaxAge, acks["p1"].MaxAge, "a host that reports no max age is taken to have the proxy's default")
 	assert.NotContains(t, acks, "m1")
 
 	r.hosts.loaded["p2"] = 12
@@ -205,8 +256,97 @@ func TestReconcile_AHostThatRefusesIsTrackedAndTheOthersAreServed(t *testing.T) 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "p1")
 	acks := r.acked(t)
-	assert.Equal(t, routes.Ack{MaxAge: routes.DefaultMaxAge}, acks["p1"], "tracked before its push, so a delete waits on it")
+	assert.Equal(t, routes.Ack{MaxAge: wire.ProxyRouteMaxAge, LastSent: acks["p1"].LastSent}, acks["p1"], "tracked before its push, so a delete waits on it")
+	assert.True(t, acks["p1"].LastSent.Equal(r.clock.Now()))
 	assert.Equal(t, int64(40), acks["p2"].Loaded, "the control: the other host is served")
+}
+
+func TestReconcile_SendsATableWithATimeBeforeItsReadAfterASlowProbe(t *testing.T) {
+	r := newRig(t)
+	r.hosts.probe = func() { r.clock.Advance(10 * time.Second) }
+	var read time.Time
+	r.src.during = func() { read = r.clock.Now(); r.clock.Advance(time.Second) }
+	require.NoError(t, r.push.Reconcile(t.Context()))
+	require.False(t, read.IsZero(), "the setup: the table was read")
+	for _, h := range []string{"p1", "p2"} {
+		require.Len(t, r.hosts.pushed[h], 1)
+		assert.False(t, r.hosts.pushed[h][0].SentAt.After(read), "%s: a table older than a commit after its read is sent with a time before the commit", h)
+	}
+}
+
+func TestReconcile_TracksAHostThatJoinsBeforeTheTableIsReadSoADeleteWaitsOnIt(t *testing.T) {
+	r := newRig(t)
+	r.hosts.loaded["p1"], r.hosts.loaded["p2"] = 41, 41
+	require.NoError(t, r.push.Reconcile(t.Context()))
+	r.hosts.proxies = append(r.hosts.proxies, "p3")
+	r.hosts.admitted = append(r.hosts.admitted, "p3")
+	var during bool
+	// The Machine is marked deleting at revision 41 while revision 40's table is being read, and
+	// its delete asks at once.
+	r.src.during = func() { during = r.delivered(t, 41, r.clock.Now()) }
+	r.hosts.refuse["p3"] = errors.New("cut off after it took the table")
+	_ = r.push.Reconcile(t.Context())
+	assert.False(t, during, "p3 may take the table read before the delete, so the delete waits on it")
+	assert.Contains(t, r.acked(t), "p3")
+}
+
+func TestReconcile_ProxyHostsWithoutTheGrantAreSentNothingAndNotedOnce(t *testing.T) {
+	r := newRig(t)
+	r.hosts.ungranted = []string{"u1"}
+	r.hosts.admitted = append(r.hosts.admitted, "u1")
+	require.NoError(t, r.push.Reconcile(t.Context()))
+	require.NoError(t, r.push.Reconcile(t.Context()))
+	assert.Empty(t, r.hosts.pushed["u1"], "a host's report of a proxy is no grant")
+	assert.NotContains(t, r.acked(t), "u1")
+	got := r.fleet.of(routes.EventProxyNotGranted)
+	require.Len(t, got, 1, "one event for the leader")
+	assert.Equal(t, "u1", got[0].Subject)
+	assert.Len(t, r.hosts.pushed["p1"], 2, "control: the granted hosts are served")
+}
+
+func TestReconcile_TakesAMaxAgeOutsideWhatAProxyMayBeGivenAsTheLongest(t *testing.T) {
+	r := newRig(t)
+	r.hosts.maxAge["p1"] = math.MaxInt64
+	r.hosts.maxAge["p2"] = 5400
+	require.NoError(t, r.push.Reconcile(t.Context()))
+	require.NoError(t, r.push.Reconcile(t.Context()))
+	acks := r.acked(t)
+	assert.Equal(t, wire.ProxyMaxRouteMaxAge, acks["p1"].MaxAge, "a value that would overflow is taken as the longest, not the default")
+	assert.Equal(t, 90*time.Minute, acks["p2"].MaxAge, "control: one within the bound is kept")
+	got := r.fleet.of(routes.EventMaxAgeClamped)
+	require.Len(t, got, 1, "once for the leader")
+	assert.Equal(t, "p1", got[0].Subject)
+
+	r.hosts.maxAge["p2"] = -1
+	require.NoError(t, r.push.Reconcile(t.Context()))
+	assert.Equal(t, wire.ProxyMaxRouteMaxAge, r.acked(t)["p2"].MaxAge, "a negative one too")
+}
+
+func TestReconcile_ForgetsAHostThatNoLongerProxiesOnceItsLastTableExpired(t *testing.T) {
+	for name, leave := range map[string]func(*fakeHosts){
+		"it stopped running a proxy": func(h *fakeHosts) { h.proxies, h.noProxy = []string{"p1"}, []string{"p2"} },
+		"its grant was revoked":      func(h *fakeHosts) { h.proxies, h.ungranted = []string{"p1"}, []string{"p2"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.hosts.loaded["p1"], r.hosts.loaded["p2"] = 40, 40
+			require.NoError(t, r.push.Reconcile(t.Context()))
+			sent := r.clock.Now()
+			leave(r.hosts)
+			r.src.rev, r.hosts.loaded["p1"] = 50, 50
+
+			r.clock.Advance(wire.ProxyRouteMaxAge + hostapi.RouteRelease - time.Millisecond)
+			require.NoError(t, r.push.Reconcile(t.Context()))
+			assert.Contains(t, r.acked(t), "p2", "its proxy may still forward on the table it was last sent")
+			assert.False(t, r.delivered(t, 50, r.clock.Now()))
+
+			r.clock.Advance(time.Millisecond)
+			require.NoError(t, r.push.Reconcile(t.Context()))
+			assert.NotContains(t, r.acked(t), "p2", "past its last table's max age and the release, it holds no table")
+			assert.True(t, r.delivered(t, 50, r.clock.Now()), "so a delete no longer waits on it")
+			assert.True(t, r.acked(t)["p1"].LastSent.After(sent), "control: the host that still proxies is tracked on")
+		})
+	}
 }
 
 func TestDelivered_WaitsForEveryAdmittedProxyHostOrTheMaxAgeAndTheAllowance(t *testing.T) {
@@ -214,38 +354,29 @@ func TestDelivered_WaitsForEveryAdmittedProxyHostOrTheMaxAgeAndTheAllowance(t *t
 	at := r.clock.Now()
 	r.hosts.loaded["p1"], r.hosts.loaded["p2"] = 40, 39
 	require.NoError(t, r.push.Reconcile(t.Context()))
-
-	ok, err := r.push.Delivered(t.Context(), 40, at)
-	require.NoError(t, err)
-	assert.False(t, ok, "p2's proxy forwards on revision 39, which may name the address")
+	assert.False(t, r.delivered(t, 40, at), "p2's proxy forwards on revision 39, which may name the address")
 
 	r.hosts.loaded["p2"] = 41
 	require.NoError(t, r.push.Reconcile(t.Context()))
-	ok, err = r.push.Delivered(t.Context(), 40, at)
-	require.NoError(t, err)
-	assert.True(t, ok, "every proxy host has loaded a table at or above it")
+	assert.True(t, r.delivered(t, 40, at), "every proxy host has loaded a table at or above it")
 }
 
-func TestDelivered_AHostThatDoesNotAcknowledgeIsWaitedOutByTheLongestMaxAgeItReportedAndTheAllowance(t *testing.T) {
+func TestDelivered_AHostThatDoesNotAcknowledgeIsWaitedOutByTheLongestMaxAgeItReportedAndTheRelease(t *testing.T) {
 	r := newRig(t)
 	at := r.clock.Now()
 	r.hosts.loaded["p1"] = 40
 	r.hosts.refuse["p2"] = errors.New("no answer")
-	r.hosts.maxAge["p2"] = 2 * time.Hour
+	r.hosts.maxAge["p2"] = 7200
 	_ = r.push.Reconcile(t.Context())
-	r.hosts.maxAge["p2"] = 30 * time.Minute
+	r.hosts.maxAge["p2"] = 1800
 	_ = r.push.Reconcile(t.Context())
 	assert.Equal(t, 2*time.Hour, r.acked(t)["p2"].MaxAge, "a proxy restarted with a shorter max age may still forward on a table its longer one kept")
 
-	r.clock.Advance(2*time.Hour + hostapi.RouteAllowance - time.Millisecond)
-	ok, err := r.push.Delivered(t.Context(), 40, at)
-	require.NoError(t, err)
-	assert.False(t, ok, "p2 may still forward on a table it took up to the allowance after it was sent")
+	r.clock.Advance(2*time.Hour + hostapi.RouteRelease - time.Millisecond)
+	assert.False(t, r.delivered(t, 40, at), "p2 may still forward on a table it took up to the release after it was sent")
 	r.clock.Advance(time.Millisecond)
-	ok, err = r.push.Delivered(t.Context(), 40, at)
-	require.NoError(t, err)
-	assert.True(t, ok, "past the max age and the allowance, p2 forwards on no table that named the address")
-	assert.Equal(t, 4*time.Second, hostapi.RouteAllowance, "the 2 s of a push and 2 s of skew")
+	assert.True(t, r.delivered(t, 40, at), "past the max age and the release, p2 forwards on no table that named the address")
+	assert.Equal(t, 8*time.Second, hostapi.RouteRelease, "the 2 s of a push, the host's skew counted against both sides, and the skew between orch members")
 }
 
 func TestDelivered_AHostRemovedFromTheInventoryLeavesTheSet(t *testing.T) {
@@ -254,19 +385,13 @@ func TestDelivered_AHostRemovedFromTheInventoryLeavesTheSet(t *testing.T) {
 	r.hosts.loaded["p1"] = 40
 	r.hosts.refuse["p2"] = errors.New("no answer")
 	_ = r.push.Reconcile(t.Context())
-	ok, err := r.push.Delivered(t.Context(), 40, at)
-	require.NoError(t, err)
-	require.False(t, ok, "the control: p2 is waited on while it is admitted")
+	require.False(t, r.delivered(t, 40, at), "the control: p2 is waited on while it is admitted")
 
 	r.hosts.admitted = []string{"p1", "m1"}
-	ok, err = r.push.Delivered(t.Context(), 40, at)
-	require.NoError(t, err)
-	assert.True(t, ok, "a removed host is out of every peer list, so out of the mesh its proxy forwards over")
+	assert.True(t, r.delivered(t, 40, at), "a removed host is out of every peer list, so out of the mesh its proxy forwards over")
 }
 
 func TestDelivered_NoHostThatWasEverSentATableIsWaitedOn(t *testing.T) {
 	r := newRig(t)
-	ok, err := r.push.Delivered(t.Context(), 40, r.clock.Now())
-	require.NoError(t, err)
-	assert.True(t, ok, "a host that holds no table forwards on none")
+	assert.True(t, r.delivered(t, 40, r.clock.Now()), "a host that holds no table forwards on none")
 }

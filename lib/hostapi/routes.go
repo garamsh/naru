@@ -97,15 +97,20 @@ type RoutesAnswer struct {
 	Loaded int64 `json:"loaded"`
 }
 
-// MaxRouteSkew is the most a host's clock and orch's may differ by (each keeps time from
-// spec.time, ADR 0021), and MaxRouteDelay the most a push may take, after which orch abandons it.
-// A host refuses a table sent more than their sum before it arrives (ADR 0112 item 5, widened by
-// the skew as ADR 0085 widens its deadlines), so a table is never taken later than its sending
-// plus RouteAllowance.
+// MaxRouteSkew is the most two of the fleet's clocks may differ by, orch members' and hosts' (each
+// keeps time from spec.time, ADR 0021), and MaxRouteDelay the most a push may take, after which
+// orch abandons it. A host refuses a table whose sentAt is more than RouteAllowance behind its own
+// clock (ADR 0112 item 5, widened by the skew as ADR 0085 widens its deadlines).
+//
+// RouteRelease is how long past a proxy's max age orch waits, from a time at or after a table was
+// sent, before no proxy holds that table: the host takes it up to RouteAllowance after sentAt by its
+// own clock, which may run MaxRouteSkew behind the sender's, and the member that releases an address
+// may run MaxRouteSkew behind the one that recorded the time it waits from (ADR 0112 item 6).
 const (
 	MaxRouteSkew   = 2 * time.Second
 	MaxRouteDelay  = 2 * time.Second
 	RouteAllowance = MaxRouteDelay + MaxRouteSkew
+	RouteRelease   = RouteAllowance + 2*MaxRouteSkew
 )
 
 // CodeStaleTable is the Code of the 409 the host answers to a table of a lower revision than one it

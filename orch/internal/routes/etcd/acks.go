@@ -41,24 +41,31 @@ func (s *Store) Acks(ctx context.Context) (map[string]routes.Ack, error) {
 	return out, nil
 }
 
-// Track creates the host's ack at revision 0 when it has none, and raises its MaxAge to maxAge
-// when that is above the kept one.
-func (s *Store) Track(ctx context.Context, host string, maxAge time.Duration) error {
+// Track creates the host's ack at revision 0 when it has none, raises its MaxAge to maxAge when
+// that is above the kept one, and sets LastSent to sent.
+func (s *Store) Track(ctx context.Context, host string, maxAge time.Duration, sent time.Time) error {
 	return s.change(ctx, host, func(kept routes.Ack) (routes.Ack, bool) {
-		kept.MaxAge = max(kept.MaxAge, maxAge)
+		kept.MaxAge, kept.LastSent = max(kept.MaxAge, maxAge), sent
 		return kept, true
 	})
 }
 
-// Raise keeps a's Loaded and At when Loaded is above the kept one's, and the kept MaxAge.
-func (s *Store) Raise(ctx context.Context, host string, a routes.Ack) error {
+// Raise keeps loaded as the host's when it is above the kept one.
+func (s *Store) Raise(ctx context.Context, host string, loaded int64) error {
 	return s.change(ctx, host, func(kept routes.Ack) (routes.Ack, bool) {
-		if a.Loaded <= kept.Loaded {
+		if loaded <= kept.Loaded {
 			return kept, false
 		}
-		a.MaxAge = max(kept.MaxAge, a.MaxAge)
-		return a, true
+		kept.Loaded = loaded
+		return kept, true
 	})
+}
+
+// Forget deletes the host's ack when it is still a, so a Track since is kept.
+func (s *Store) Forget(ctx context.Context, host string, a routes.Ack) error {
+	key := AckPrefix + host
+	_, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.Value(key), "=", encode(a))).Then(clientv3.OpDelete(key)).Commit()
+	return err
 }
 
 // change writes what f makes of the kept ack (the zero Ack when there is none), when f says to

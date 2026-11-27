@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/identity"
@@ -39,21 +38,35 @@ func DialRouteAPI(hc *http.Client, revocations *identity.RevocationList) func(id
 	}
 }
 
-// Proxies are the admitted hosts whose GET /v1/host answers and reports a proxy, healthy or not
-// (one that is not healthy may still forward, and takes the table that stops it), each with the
-// max age it reports for its proxy.
-func (h *RouteHosts) Proxies(ctx context.Context) ([]routes.Proxy, error) {
+// Proxies probes the admitted hosts' GET /v1/host. A host that holds the operator's grant and
+// reports a proxy, healthy or not (one that is not healthy may still forward, and takes the table
+// that stops it), is a proxy, with the max age it reports; one that reports a proxy without the
+// grant is ungranted; one that answers otherwise runs no proxy the push serves.
+func (h *RouteHosts) Proxies(ctx context.Context) (routes.Probe, error) {
 	admitted, err := h.inv.Hosts(ctx)
 	if err != nil {
-		return nil, err
+		return routes.Probe{}, err
 	}
-	return probeAll(ctx, admitted, func(ctx context.Context, a orchapi.Host) (routes.Proxy, bool) {
+	type seen struct {
+		id      string
+		proxy   *hostapi.ProxyStatus
+		granted bool
+	}
+	var out routes.Probe
+	for _, s := range probeAll(ctx, admitted, func(ctx context.Context, a orchapi.Host) (seen, bool) {
 		info, err := h.dial(a.ID, a.Address).Host(ctx)
-		if err != nil || info.Proxy == nil {
-			return routes.Proxy{}, false
+		return seen{a.ID, info.Proxy, a.Proxy}, err == nil
+	}) {
+		switch {
+		case s.proxy != nil && s.granted:
+			out.Proxies = append(out.Proxies, routes.Proxy{ID: s.id, MaxAgeSeconds: s.proxy.RouteMaxAgeSeconds})
+		case s.proxy != nil:
+			out.Ungranted = append(out.Ungranted, s.id)
+		default:
+			out.NoProxy = append(out.NoProxy, s.id)
 		}
-		return routes.Proxy{ID: a.ID, MaxAge: time.Duration(info.Proxy.RouteMaxAgeSeconds) * time.Second}, true
-	}), nil
+	}
+	return out, nil
 }
 
 // Admitted are the admitted hosts' IDs.

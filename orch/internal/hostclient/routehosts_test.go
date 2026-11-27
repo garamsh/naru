@@ -42,17 +42,19 @@ func TestRouteHosts_PushesToTheHostsThatReportAProxyAndAnswersWhatTheyLoaded(t *
 	var gotP1, gotM1 hostapi.RoutesRequest
 	p1, c1 := hostServer(t, `,"proxy":{"healthy":false,"routeMaxAgeSeconds":5400}`, 41, &gotP1)
 	m1, c2 := hostServer(t, "", 0, &gotM1)
-	clients := map[string]hostclient.RouteAPI{p1: c1, m1: c2}
-	inv := &invFake{hosts: []orchapi.Host{{ID: "p1", Address: p1}, {ID: "m1", Address: m1}}}
+	var gotU1 hostapi.RoutesRequest
+	u1, c3 := hostServer(t, `,"proxy":{"healthy":true,"routeMaxAgeSeconds":3600}`, 0, &gotU1)
+	clients := map[string]hostclient.RouteAPI{p1: c1, m1: c2, u1: c3}
+	inv := &invFake{hosts: []orchapi.Host{{ID: "p1", Address: p1, Proxy: true}, {ID: "m1", Address: m1, Proxy: true}, {ID: "u1", Address: u1}}}
 	h := hostclient.NewRouteHosts(inv, func(_, addr string) hostclient.RouteAPI { return clients[addr] })
 
 	proxies, err := h.Proxies(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, []routes.Proxy{{ID: "p1", MaxAge: 90 * time.Minute}}, proxies,
-		"a proxy that is not healthy still takes the table that stops it, and its max age goes with it")
+	assert.Equal(t, routes.Probe{Proxies: []routes.Proxy{{ID: "p1", MaxAgeSeconds: 5400}}, Ungranted: []string{"u1"}, NoProxy: []string{"m1"}}, proxies,
+		"a granted proxy that is not healthy still takes the table that stops it; a proxy without the grant is not one; a grant without a proxy is no proxy")
 	admitted, err := h.Admitted(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, []string{"p1", "m1"}, admitted)
+	assert.Equal(t, []string{"p1", "m1", "u1"}, admitted)
 
 	sent := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
 	loaded, err := h.Push(t.Context(), "p1", hostapi.RoutesRequest{Revision: 42, SentAt: sent})
