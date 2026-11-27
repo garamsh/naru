@@ -176,6 +176,52 @@ func TestRuleset_InputChain(t *testing.T) {
 	}
 }
 
+func TestRuleset_OnlyAProxyHostsMeshAddressReachesAMicroVM(t *testing.T) {
+	c := twoNetworks()
+	c.Peers = []network.Peer{
+		{Name: "proxy", PublicKey: "p", Mesh: addr("10.99.0.3"), Proxy: true},
+		{Name: "machines", PublicKey: "m", Mesh: addr("10.99.0.4")},
+		{Name: "no-mesh", PublicKey: "n"},
+	}
+	tb := parseTable(t, network.Ruleset(c))
+	for _, tc := range []struct {
+		name   string
+		p      packet
+		accept bool
+		rule   string
+	}{
+		{"a proxy host to a microVM", packet{in: "wg-naru", out: "tap1", src: "10.99.0.3", dst: "10.0.0.3", dport: 8080}, true, "a proxy to a microVM"},
+		{"another host to a microVM", packet{in: "wg-naru", out: "tap1", src: "10.99.0.4", dst: "10.0.0.3", dport: 8080}, false, "a host to a microVM"},
+		{"a proxy host past a microVM", packet{in: "wg-naru", out: "eth0", src: "10.99.0.3", dst: "192.0.2.9"}, false, "a host to a microVM"},
+		{"a microVM's reply to a proxy", packet{in: "tap1", out: "wg-naru", src: "10.0.0.3", dst: "10.99.0.3", established: true}, true, ""},
+		{"the control: a remote member of a to a local one", packet{in: "wg-naru", out: "tap1", src: "10.0.2.7", dst: "10.0.0.3"}, true, "a inside its set"},
+		{"the forward chain's other drops still count", packet{in: "tap1", out: "tap2", src: "10.0.0.3", dst: "10.0.0.4"}, false, "a to another network"},
+	} {
+		got := tb.judge("forward", tc.p)
+		assert.Equal(t, tc.accept, got.accept, tc.name)
+		if tc.rule != "" {
+			assert.Equal(t, tc.rule, got.rule, tc.name)
+		}
+	}
+	assert.Equal(t, []netip.Prefix{pfx("10.99.0.3/32"), pfx("10.99.0.4/32")}, tb.sets["mesh_hosts"])
+	assert.Equal(t, []netip.Prefix{pfx("10.99.0.3/32")}, tb.sets["mesh_proxies"])
+}
+
+func TestRuleset_NoProxyHostLeavesEveryHostsMeshAddressDropped(t *testing.T) {
+	c := twoNetworks()
+	c.Peers = []network.Peer{{Name: "machines", PublicKey: "m", Mesh: addr("10.99.0.4")}}
+	rules := network.Ruleset(c)
+	assert.NotContains(t, rules, "mesh_proxies", "an empty set is not written")
+	tb := parseTable(t, rules)
+	assert.Equal(t, "a host to a microVM", tb.judge("forward", packet{in: "wg-naru", out: "tap1", src: "10.99.0.4", dst: "10.0.0.3"}).rule)
+
+	c.Peers = nil
+	assert.NotContains(t, network.Ruleset(c), "mesh_hosts", "no peer with a mesh address writes no rule")
+	c.Peers = []network.Peer{{Name: "machines", PublicKey: "m", Mesh: addr("10.99.0.4")}}
+	c.TapPrefix = ""
+	assert.NotContains(t, network.Ruleset(c), "mesh_hosts", "nor a host with no taps")
+}
+
 type call struct {
 	stdin string
 	argv  []string

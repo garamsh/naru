@@ -196,6 +196,34 @@ func TestPeers_SetGetAndRefusals(t *testing.T) {
 	assert.Equal(t, 200, code, "the bound itself is accepted: %s", b)
 }
 
+func TestPeers_AProxyPeersMeshAddressAloneReachesTheMicroVMs(t *testing.T) {
+	e := start(t)
+	p := e.as(t, ProvisionerOrganization)
+	const keyTwo = "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	req := hostapi.PeersRequest{MeshAddress: "10.99.0.1", Peers: []hostapi.Peer{
+		{Name: "h2", PublicKey: keyOne, Prefixes: []string{"10.1.1.0/24"}, MeshAddress: "10.99.0.2", Proxy: true},
+		{Name: "h3", PublicKey: keyTwo, Prefixes: []string{"10.1.2.0/24"}, MeshAddress: "10.99.0.3"},
+	}}
+	code, b := e.do(t, p, "PUT", "/v1/peers", req)
+	require.Equal(t, 200, code, string(b))
+	var got hostapi.PeersRequest
+	require.NoError(t, json.Unmarshal(b, &got))
+	assert.Equal(t, req.Peers, got.Peers, "each peer's proxy flag reads back")
+	rules := e.nft.ruleset()
+	assert.Contains(t, rules, "ip saddr @mesh_proxies oifname \"tap*\" accept")
+	assert.Contains(t, rules, "elements = { 10.99.0.2 }", "the proxy peer's mesh address")
+	assert.Contains(t, rules, "elements = { 10.99.0.2, 10.99.0.3 }", "and every peer's")
+
+	req.Peers[0].Proxy = false
+	code, b = e.do(t, p, "PUT", "/v1/peers", req)
+	require.Equal(t, 200, code, string(b))
+	assert.NotContains(t, e.nft.ruleset(), "mesh_proxies", "a proxy that goes takes its address out of the set")
+
+	code, b = e.do(t, p, "PUT", "/v1/peers", hostapi.PeersRequest{Peers: []hostapi.Peer{{PublicKey: keyOne, Proxy: true}}})
+	assert.Equal(t, 422, code, "a proxy with no mesh address: %s", b)
+	assert.Contains(t, string(b), "peers.proxy")
+}
+
 func TestPeers_TheMeshAddressesReachTheTunnelAndTheTunnelReportsTheHosts(t *testing.T) {
 	e := start(t)
 	p := e.as(t, ProvisionerOrganization)

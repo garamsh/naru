@@ -241,6 +241,7 @@ func peerViews(in []network.Peer) []hostapi.Peer {
 		if p.Mesh.IsValid() {
 			v.MeshAddress = p.Mesh.String()
 		}
+		v.Proxy = p.Proxy
 		for _, x := range p.Prefixes {
 			v.Prefixes = append(v.Prefixes, x.String())
 		}
@@ -253,7 +254,7 @@ func peerViews(in []network.Peer) []hostapi.Peer {
 // putPeers replaces the tunnel's peers and the host's mesh address. Each peer has a WireGuard public
 // key (44 base64 characters), at most one endpoint, the prefixes it holds and at most one mesh
 // address; a prefix or a mesh address is held by one peer only, and the host's own mesh address by
-// none.
+// none. A peer that runs a proxy has a mesh address.
 func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 	if s.noNetworks(w) {
 		return
@@ -316,6 +317,11 @@ func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 			held[netip.PrefixFrom(m, 32)] = true
 			np.Mesh = m
 		}
+		// A proxy reaches the microVMs from its mesh address, so one without it reaches none.
+		if p.Proxy && p.MeshAddress == "" {
+			bad("peers.proxy")
+		}
+		np.Proxy = p.Proxy
 		peers = append(peers, np)
 	}
 	if len(fields) > 0 {
