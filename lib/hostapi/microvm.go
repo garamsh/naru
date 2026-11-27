@@ -27,6 +27,9 @@ type CreateRequest struct {
 	// Fenced gives the microVM a fence of its own. It is created and not started: the caller
 	// renews the fence (POST /v1/microvms/{name}/fence), then starts it.
 	Fenced bool `json:"fenced,omitempty"`
+	// NoStart makes the microVM and leaves it created, not started, as a fenced one is: the caller
+	// starts it (POST /v1/microvms/{name}/start). A repeat of the create leaves it as it is.
+	NoStart bool `json:"noStart,omitempty"`
 	// Network is the name of a declared network (PUT /v1/networks/{name}) the microVM is created on:
 	// its address, which mvmd gives it. Absent,
 	// the microVM is on no network and the host forwards nothing for it.

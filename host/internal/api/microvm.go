@@ -100,6 +100,7 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, hostapi.ErrorBody{Error: msg, Fields: fields})
 		return
 	}
+	p.noStart = req.NoStart
 	if p.create.BootSet != "" && !s.deps.MachineGateway.IsValid() {
 		writeJSON(w, http.StatusNotImplemented, hostapi.ErrorBody{Error: "this host was started with no --machine-gateway, so it cannot write the network-config of an OS-form microVM"})
 		return
@@ -124,8 +125,8 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// The first attempt may have ended after the create and before the start. A fenced microVM
-		// is started by its caller, once it has renewed the fence.
-		if !existing.Fenced && (existing.State == mvmd.StateCreated || existing.State == mvmd.StateStopped) {
+		// is started by its caller, once it has renewed the fence, and so is one asked not started.
+		if !existing.Fenced && !p.noStart && (existing.State == mvmd.StateCreated || existing.State == mvmd.StateStopped) {
 			if existing, err = rt.StartMachine(ctx, req.Name); err != nil {
 				s.fail(w, err)
 				return
@@ -153,15 +154,17 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		for id := range sizes {
 			ids = append(ids, id)
 		}
-		// The microVM runs unless it is fenced, and mvmd deletes only a Machine that does not.
-		s.dropMade(m.ID, ids, m.State == mvmd.StateRunning || !p.create.Fenced)
+		// The microVM runs unless it is fenced or asked not started, and mvmd deletes only a Machine
+		// that does not.
+		s.dropMade(m.ID, ids, m.State == mvmd.StateRunning || !p.create.Fenced && !p.noStart)
 		s.networkFail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, s.view(m, sizes))
 }
 
-// provision makes what the plan describes and starts the Machine, unless it is fenced. The image form pulls the image,
+// provision makes what the plan describes and starts the Machine, unless it is fenced or the plan
+// asks it not started. The image form pulls the image,
 // makes the disks, then the Machine. The OS form makes the data disk, then the Machine, then the
 // seed, whose network-config needs the address mvmd gave the Machine, and attaches the seed
 // read-only before the start. A failure before the start removes what this request made, and no
@@ -216,7 +219,7 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 		}
 		sizes[seedID] = seedSize
 	}
-	if p.create.Fenced {
+	if p.create.Fenced || p.noStart {
 		return m, sizes, nil
 	}
 	started, err := rt.StartMachine(ctx, m.ID)

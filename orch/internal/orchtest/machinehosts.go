@@ -224,6 +224,9 @@ func (f *FakeMachineHosts) Create(_ context.Context, host string, r hostapi.Crea
 		Name: r.Name, MachineID: r.Name, State: "running", ImageDigest: r.Image, CPU: r.CPU, Memory: r.Memory,
 		RootDiskBytes: r.RootDiskBytes, Disks: r.Disks, NetworkPolicy: r.NetworkPolicy,
 	}
+	if r.NoStart {
+		vm.State = "created"
+	}
 	h.vms[r.Name] = vm
 	h.roots[r.Name] = map[string][]byte{}
 	for _, d := range r.Disks {

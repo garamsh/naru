@@ -160,6 +160,7 @@ func TestReconcile_RunsAMachineOnAHostAsItsRecordAsks(t *testing.T) {
 	assert.False(t, c.Fenced, "a Machine is not fenced per microVM")
 	require.NotNil(t, c.RestartOnBoot)
 	assert.True(t, *c.RestartOnBoot, "it comes back after its host reboots")
+	assert.False(t, c.NoStart, "a Machine desired running is started")
 	assert.Equal(t, spec().Image, c.Image)
 	assert.Equal(t, uint32(2), c.CPU)
 	assert.Equal(t, uint64(4*gib), c.Memory)
@@ -596,15 +597,28 @@ func TestReconcile_MakesNoCreateFromAStaleAnswer(t *testing.T) {
 	assert.Len(t, r.hosts.Creates("h-a"), 1)
 }
 
-func TestReconcile_ShowsAMachineCreatedStoppedAsStoppingUntilItIsStopped(t *testing.T) {
+func TestReconcile_CreatesAMachineDesiredStoppedWithoutStartingIt(t *testing.T) {
 	r := newRig(t, host("h-a", 64*gib))
 	s := spec()
 	s.State = machineapi.StateStopped
 	m := r.create("web", s)
 	r.pass()
+	creates := r.hosts.Creates("h-a")
+	require.Len(t, creates, 1)
+	assert.True(t, creates[0].NoStart, "the host is asked not to start it")
+	vm := "m-" + m.ID + "-1"
+	assert.Equal(t, "created", r.hosts.MicroVMs("h-a")[vm].State, "never booted")
 	phases, _ := r.phases(m.ID)
-	assert.Equal(t, []machineapi.Phase{machineapi.PhasePending, machineapi.PhaseStopping, machineapi.PhaseStopped}, phases)
-	assert.Equal(t, "stopped", r.hosts.MicroVMs("h-a")["m-"+m.ID+"-1"].State)
+	assert.Equal(t, []machineapi.Phase{machineapi.PhasePending, machineapi.PhaseStopped}, phases, "stopped, with no starting or stopping between")
+	r.pass()
+	assert.Equal(t, "created", r.hosts.MicroVMs("h-a")[vm].State, "and the next pass leaves it so")
+
+	_, err := r.svc.Start(t.Context(), "garam", "web")
+	require.NoError(t, err)
+	r.pass()
+	assert.Equal(t, "running", r.hosts.MicroVMs("h-a")[vm].State, "a start starts the microVM made")
+	assert.Len(t, r.hosts.Creates("h-a"), 1, "and makes no other")
+	assert.Equal(t, machineapi.PhaseRunning, r.record("web").Status.Phase)
 }
 
 func TestReconcile_StopsWithAGraceAtMostTheHostsBound(t *testing.T) {
