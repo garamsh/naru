@@ -169,6 +169,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("POST /v1/hosts/{id}/drain", h.guard(auth.Operate, h.drain))
 	mux.HandleFunc("POST /v1/hosts/{id}/undrain", h.guard(auth.Operate, h.undrain))
 	mux.HandleFunc("POST /v1/hosts/{id}/abandon", h.guard(auth.Attest, h.abandon))
+	mux.HandleFunc("POST /v1/hosts/{id}/proxy", h.guard(auth.Operate, h.grantProxy))
+	mux.HandleFunc("DELETE /v1/hosts/{id}/proxy", h.guard(auth.Operate, h.revokeProxy))
 	mux.HandleFunc("DELETE /v1/hosts/{id}", h.guard(auth.Operate, h.removeHost))
 	mux.HandleFunc("GET /v1/profile", h.guard(auth.Read, h.profile))
 	mux.HandleFunc("PUT /v1/profile", h.guard(auth.Operate, h.setProfile))
@@ -533,10 +535,19 @@ func (h *handler) undrain(w http.ResponseWriter, r *http.Request, who identity.I
 	reply(w, r, out, err)
 }
 
+func (h *handler) grantProxy(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	out, err := h.Inventory.GrantProxy(r.Context(), who.Subject, r.PathValue("id"))
+	reply(w, r, out, err)
+}
+
+func (h *handler) revokeProxy(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	out, err := h.Inventory.RevokeProxy(r.Context(), who.Subject, r.PathValue("id"))
+	reply(w, r, out, err)
+}
+
 // errAbandonedBound is a removal of an abandoned host a Machine is still bound to: the record of
 // its abandonment is what marks that Machine lost until an operator moves or deletes it.
 var errAbandonedBound = errors.New("the host is abandoned and a Machine is still bound to it")
-
 func (h *handler) removeHost(w http.ResponseWriter, r *http.Request, who identity.Identity) {
 	if err := h.abandonedBound(r.Context(), r.PathValue("id")); err != nil {
 		writeError(w, r, err)

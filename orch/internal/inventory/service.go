@@ -32,6 +32,9 @@ type Service interface {
 	// recording its outcome on the record. A repeat of an abandonment changes only the revocation's
 	// outcome, so it retries a revocation that failed.
 	Abandon(ctx context.Context, by, hostID string, req orchapi.AbandonRequest) (orchapi.Host, error)
+	// GrantProxy and RevokeProxy set whether the host holds the proxy role (ADR 0119).
+	GrantProxy(ctx context.Context, by, hostID string) (orchapi.Host, error)
+	RevokeProxy(ctx context.Context, by, hostID string) (orchapi.Host, error)
 	// Heartbeat records that the admitted host hostID is alive.
 	Heartbeat(ctx context.Context, hostID string) error
 	Hosts(ctx context.Context) ([]orchapi.Host, error)

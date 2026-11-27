@@ -42,15 +42,18 @@ var (
 
 // Event types.
 const (
-	EventEnrolling   = "host.enrolling"
-	EventAdmitted    = "host.admitted"
-	EventLabeled     = "host.labeled"
-	EventDrained     = "host.drained"
-	EventUndrained   = "host.undrained"
-	EventKeyCreated  = "enrollment-key.created"
-	EventKeyRevoked  = "enrollment-key.revoked"
-	EventCodeRefused = "host.admission-refused"
-	EventRemoved     = "host.removed"
+	EventEnrolling = "host.enrolling"
+	EventAdmitted  = "host.admitted"
+	EventLabeled   = "host.labeled"
+	EventDrained   = "host.drained"
+	EventUndrained = "host.undrained"
+	// EventProxyGranted and EventProxyRevoked are an operator's grant of the proxy role and its end.
+	EventProxyGranted = "host.proxy-granted"
+	EventProxyRevoked = "host.proxy-revoked"
+	EventKeyCreated   = "enrollment-key.created"
+	EventKeyRevoked   = "enrollment-key.revoked"
+	EventCodeRefused  = "host.admission-refused"
+	EventRemoved      = "host.removed"
 	// EventAbandoned is an operator's abandonment of a fenced host, EventRevoked the signer's
 	// revocation of its certificates, and EventRevocationFailed a revocation that failed, which a
 	// repeat of the abandonment retries.
@@ -123,6 +126,8 @@ type Host struct {
 	AdmittedAt  time.Time         `json:"admittedAt"`
 	LastSeen    time.Time         `json:"lastSeen,omitzero"`
 	Draining    bool              `json:"draining,omitempty"`
+	// Proxy is the operator's grant of the proxy role.
+	Proxy bool `json:"proxy,omitempty"`
 	// MachinePrefix is the prefix orch allocated for a host that joined from the install seed, and
 	// empty for a host enrolled with its own configuration. Orch builds the naru.yaml of a joined host
 	// on each answer from this record and the current profile, so no credential is stored here.
@@ -142,5 +147,5 @@ func (h Host) api() orchapi.Host {
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	return orchapi.Host{ID: h.ID, Region: h.Region, Labels: labels, Address: h.Address, AdmittedAt: h.AdmittedAt, LastSeen: h.LastSeen, Draining: h.Draining, MachinePrefix: h.MachinePrefix, MeshAddress: h.MeshAddress, Abandonment: h.Abandonment}
+	return orchapi.Host{ID: h.ID, Region: h.Region, Labels: labels, Address: h.Address, AdmittedAt: h.AdmittedAt, LastSeen: h.LastSeen, Draining: h.Draining, Proxy: h.Proxy, MachinePrefix: h.MachinePrefix, MeshAddress: h.MeshAddress, Abandonment: h.Abandonment}
 }

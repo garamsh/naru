@@ -40,6 +40,23 @@ func (s *service) setDraining(ctx context.Context, by, hostID string, draining b
 	return h.api(), nil
 }
 
+func (s *service) GrantProxy(ctx context.Context, by, hostID string) (orchapi.Host, error) {
+	return s.setProxy(ctx, by, hostID, true, EventProxyGranted)
+}
+
+func (s *service) RevokeProxy(ctx context.Context, by, hostID string) (orchapi.Host, error) {
+	return s.setProxy(ctx, by, hostID, false, EventProxyRevoked)
+}
+
+func (s *service) setProxy(ctx context.Context, by, hostID string, proxy bool, event string) (orchapi.Host, error) {
+	ev := orchapi.Event{Time: s.clock.Now(), Type: event, Subject: hostID, Detail: map[string]string{"by": by}}
+	h, err := s.store.UpdateHost(ctx, hostID, func(h *Host) { h.Proxy = proxy }, &ev)
+	if err != nil {
+		return orchapi.Host{}, err
+	}
+	return h.api(), nil
+}
+
 func (s *service) Heartbeat(ctx context.Context, hostID string) error {
 	h, err := s.store.GetHost(ctx, hostID)
 	if err != nil {

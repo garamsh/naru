@@ -24,6 +24,9 @@ type Host struct {
 	// Draining is whether an operator drained the host: its members move off it and nothing is
 	// placed on it until it is undrained.
 	Draining bool `json:"draining"`
+	// Proxy is whether an operator granted the host the proxy role: only such a host, when it
+	// reports a proxy, is sent the routing table and named a proxy to its peers (ADR 0119).
+	Proxy bool `json:"proxy"`
 	// MachinePrefix is the prefix orch allocated for the Machines of a host that joined from the
 	// install seed. It is empty for a host enrolled with its own configuration.
 	MachinePrefix string `json:"machinePrefix,omitempty"`
