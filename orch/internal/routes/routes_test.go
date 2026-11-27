@@ -349,6 +349,19 @@ func TestReconcile_ForgetsAHostThatNoLongerProxiesOnceItsLastTableExpired(t *tes
 	}
 }
 
+func TestForget_KeepsAnAckTrackedSinceItWasRead(t *testing.T) {
+	r := newRig(t)
+	require.NoError(t, r.acks.Track(t.Context(), "p1", time.Hour, r.clock.Now()))
+	read := r.acked(t)["p1"]
+	require.NoError(t, r.acks.Track(t.Context(), "p1", time.Hour, r.clock.Now().Add(time.Minute)))
+
+	require.NoError(t, r.acks.Forget(t.Context(), "p1", read))
+	assert.Contains(t, r.acked(t), "p1", "a host sent a table since the read may forward on it")
+
+	require.NoError(t, r.acks.Forget(t.Context(), "p1", r.acked(t)["p1"]))
+	assert.NotContains(t, r.acked(t), "p1", "control: an ack still as read is deleted")
+}
+
 func TestDelivered_WaitsForEveryAdmittedProxyHostOrTheMaxAgeAndTheAllowance(t *testing.T) {
 	r := newRig(t)
 	at := r.clock.Now()
