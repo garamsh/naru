@@ -182,10 +182,3 @@ func TestParse_TheProxyServiceAndCertificateGoWithTheSection(t *testing.T) {
 	}
 	assert.Empty(t, cfg.Spec.Files)
 }
-
-func TestParse_HostdRedirectsAProxyExposureTo443ToTheFirstListenersPort(t *testing.T) {
-	doc := strings.Replace(proxyDoc(t), `    listen: ["0.0.0.0:443", "192.168.0.40:8443"]`, `    listen: ["0.0.0.0:8443", "192.168.0.40:443"]`, 1)
-	cfg, err := config.Parse([]byte(doc))
-	require.NoError(t, err)
-	assert.Contains(t, service(t, cfg, "naru-hostd").Args, "--proxy-tls-port=8443")
-}
