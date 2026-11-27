@@ -104,3 +104,26 @@ func (s *Store) PutCaller(ctx context.Context, c machines.Caller) error {
 	_, err := s.kv.Put(ctx, CallerPrefix+c.Name, encode(c))
 	return err
 }
+
+// Routing reads every Machine and every alias at one revision of the store, which it returns: what
+// the routing table of that revision is made from.
+func (s *Store) Routing(ctx context.Context) ([]machines.Record, []machines.Alias, int64, error) {
+	m, err := s.kv.Get(ctx, MachinePrefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	rev := m.Header.Revision
+	a, err := s.kv.Get(ctx, AliasPrefix, clientv3.WithPrefix(), clientv3.WithRev(rev))
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	recs, err := decode[machines.Record](m)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	aliases, err := decode[machines.Alias](a)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return recs, aliases, rev, nil
+}

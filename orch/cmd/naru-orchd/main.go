@@ -28,6 +28,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/member"
 	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/orchd"
+	"github.com/garamsh/naru/orch/internal/routes"
 	"github.com/garamsh/naru/orch/internal/signer"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
@@ -66,6 +67,7 @@ func main() {
 		groupEach   = flag.Duration("group-interval", groups.DefaultInterval, "the pause between the groups engine's passes")
 		netEach     = flag.Duration("network-interval", netrec.DefaultInterval, "the pause between the network reconciler's passes")
 		machineEach = flag.Duration("machine-interval", machines.DefaultInterval, "the pause between the Machine reconciler's passes")
+		routeAge    = flag.Duration("route-max-age", routes.DefaultMaxAge, "the proxies' --route-max-age: how long a proxy forwards on a table, which a deleted Machine's address waits out for a proxy that has not acknowledged the table without it")
 		reserveCPU  = flag.Uint("host-reserve-cpu", uint(machines.DefaultReserve.CPU), "the CPUs each host keeps for itself, apart from the Machines placed on it")
 		reserveMem  = flag.Uint64("host-reserve-memory", machines.DefaultReserve.Memory, "the memory in bytes each host keeps for itself, apart from the Machines placed on it")
 		departAfter = flag.Duration("depart-after", member.DepartAfter, "how long the leader sees a member unreachable before it removes the member so that it rejoins empty")
@@ -86,7 +88,7 @@ func main() {
 		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
 		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, departAfter: *departAfter, houseEvery: *houseEvery, quota: *etcdQuota, keep: *etcdKeep, metricsAddr: *metricsAddr,
-		machineAddr: *machineAddr, machineZone: *machineZone, machineEach: *machineEach,
+		machineAddr: *machineAddr, machineZone: *machineZone, machineEach: *machineEach, routeAge: *routeAge,
 		reserve:  machines.Reserve{CPU: uint32(min(*reserveCPU, math.MaxUint32)), Memory: *reserveMem},
 		bootSets: release.Config{Location: *bsStore, TrustRoot: *bsRoot, Identity: *bsIdentity, Issuer: *bsIssuer},
 	}); err != nil {
@@ -100,7 +102,7 @@ type runFlags struct {
 	cert, key, ca, sock, snapDir, revoke, recovery               string
 	snapEvery, maxAge, crlEvery, groupEach, netEach, machineEach time.Duration
 	reserve                                                      machines.Reserve
-	departAfter, houseEvery                                      time.Duration
+	departAfter, houseEvery, routeAge                            time.Duration
 	quota                                                        int64
 	keep                                                         string
 	hostCert, hostKey, hostCA                                    string
@@ -162,7 +164,7 @@ func run(log *slog.Logger, f runFlags) error {
 	o, err := orchd.Start(ctx, orchd.Config{
 		Config: mcfg,
 		Listen: f.listen, MachineAPIListen: f.machineAddr, MachineZone: f.machineZone, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
-		GroupInterval: f.groupEach, NetworkInterval: f.netEach, MachineInterval: f.machineEach, HostReserve: f.reserve, Restore: f.restore,
+		GroupInterval: f.groupEach, NetworkInterval: f.netEach, MachineInterval: f.machineEach, RouteMaxAge: f.routeAge, HostReserve: f.reserve, Restore: f.restore,
 	}, orchd.Deps{
 		Signer: sg, Credentials: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
 		NewHosts:       func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP, revocations) },
@@ -177,6 +179,9 @@ func run(log *slog.Logger, f runFlags) error {
 		},
 		NewExposureHosts: func(inv inventory.Service) orchd.ExposureHosts {
 			return hostclient.NewExposureHosts(inv, hostclient.DialExposureAPI(hostHTTP, revocations))
+		},
+		NewRouteHosts: func(inv inventory.Service) routes.Hosts {
+			return hostclient.NewRouteHosts(inv, hostclient.DialRouteAPI(hostHTTP, revocations))
 		},
 	})
 	if err != nil {

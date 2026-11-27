@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"reflect"
 	"slices"
 	"strconv"
@@ -50,6 +51,13 @@ type Move struct {
 	Target *Binding `json:"target,omitempty"`
 	// Volumes are the volumes copied to the target, each with the SHA-256 both hosts agreed on.
 	Volumes []MovedVolume `json:"volumes,omitempty"`
+	// TargetAddress is the address the target gave the Machine's microVM there, which the commit
+	// makes the Machine's private address; invalid while the target has reported none.
+	TargetAddress netip.Addr `json:"targetAddress,omitzero"`
+	// Routed is the first revision after the commit the clean up read, and when: no table of it or
+	// later routes the Machine to the source, so the source is deleted once every proxy has
+	// loaded one (ADR 0112 item 6).
+	Routed *Unrouted `json:"routed,omitempty"`
 	// Cancel is an operator's cancellation, carried out before the commit.
 	Cancel bool `json:"cancel,omitempty"`
 	// AbandonVolumes is a move of a lost Machine: nothing is stopped or copied, and the target
@@ -100,15 +108,6 @@ const targetSilence = 10 * time.Minute
 // copyTimeout bounds one volume's export and import together. The hosts end a stream that stops
 // moving; this is the backstop for one that moves too slowly to finish.
 const copyTimeout = 6 * time.Hour
-
-// RoutesDelivered reports whether every proxy host has loaded routes that send the Machine id to
-// its binding b. A move deletes its source only once they have (ADR 0109 item 5).
-type RoutesDelivered func(ctx context.Context, id string, b Binding) (bool, error)
-
-// NoRoutes is the RoutesDelivered of an orch that pushes no routes: it answers yes, since no proxy
-// holds a route to the source. #387, which derives the routing table and pushes it to the proxy
-// hosts, replaces it with the revisions the proxies report loaded.
-func NoRoutes(context.Context, string, Binding) (bool, error) { return true, nil }
 
 // ErrNotPlaced is a move of a Machine that is bound to no host.
 var ErrNotPlaced = errors.New("the Machine is not placed on a host")
@@ -371,7 +370,8 @@ func (r *Reconciler) move(ctx context.Context, p *pass, e *Entry) error {
 			err = r.set(ctx, e, func(rec *Record) {
 				mv := *rec.Move
 				mv.Step, mv.Reason = MoveCommitted, ""
-				rec.Move, rec.Binding = &mv, mv.Target
+				// The route changes in the write that rebinds the Machine (ADR 0112 item 6).
+				rec.Move, rec.Binding, rec.PrivateAddress = &mv, mv.Target, mv.TargetAddress
 			})
 		case m.Step == MoveCommitted:
 			err = r.startTarget(ctx, p, e)
@@ -538,14 +538,17 @@ func (r *Reconciler) createTarget(ctx context.Context, p *pass, e *Entry) error 
 		d := &req.Disks[i]
 		d.FromSnapshot, d.Imported = "", slices.ContainsFunc(e.Move.Volumes, func(v MovedVolume) bool { return v.Name == d.Name })
 	}
-	if _, err := r.cfg.Hosts.Create(ctx, t.Host, req); err != nil {
+	vm, err := r.cfg.Hosts.Create(ctx, t.Host, req)
+	if err != nil {
 		if refused(err) {
 			he, _ := hostError(err)
 			return r.abort(ctx, p, e, "the target refused the Machine: "+he.Message)
 		}
 		return fmt.Errorf("create %s on %s for its move: %w", req.Name, t.Host, err)
 	}
-	return r.setMove(ctx, e, func(_ *Record, m *Move) { m.Step, m.Reason = MoveCreated, "" })
+	return r.setMove(ctx, e, func(_ *Record, m *Move) {
+		m.Step, m.Reason, m.TargetAddress = MoveCreated, "", privateAddress(vm)
+	})
 }
 
 // startTarget starts the Machine on the target when it is desired running, and records the step
@@ -559,8 +562,10 @@ func (r *Reconciler) startTarget(ctx context.Context, p *pass, e *Entry) error {
 		return r.waits(ctx, e, "the target "+t.Host+" does not answer; the move waits to start the Machine there")
 	}
 	phase := machineapi.PhaseStopped
+	var vm hostapi.MicroVM
 	if e.Spec.State != machineapi.StateStopped {
-		vm, err := r.cfg.Hosts.Start(ctx, t.Host, t.MicroVM(e.ID))
+		var err error
+		vm, err = r.cfg.Hosts.Start(ctx, t.Host, t.MicroVM(e.ID))
 		if err != nil {
 			return fmt.Errorf("start %s on %s for its move: %w", t.MicroVM(e.ID), t.Host, err)
 		}
@@ -571,23 +576,34 @@ func (r *Reconciler) startTarget(ctx context.Context, p *pass, e *Entry) error {
 	}
 	return r.setMove(ctx, e, func(rec *Record, m *Move) {
 		m.Step, m.Reason = MoveStarted, ""
+		if a := privateAddress(vm); a.IsValid() {
+			rec.PrivateAddress = a
+		}
 		rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = phase, "", ""
 		rec.Status.ObservedGeneration = rec.Status.Generation
 	})
 }
 
 // cleanUp deletes the source's microVM and its volumes, whose verified copies the target holds,
-// once every proxy routes the Machine to the target, and then ends the move with the source's
-// capacity freed. A Machine being deleted needs no routes.
+// once no proxy forwards on a table that routes the Machine to the source, and then ends the move
+// with the source's capacity freed. A Machine being deleted waits too: a table from before its
+// delete still names the source's address.
 func (r *Reconciler) cleanUp(ctx context.Context, p *pass, e *Entry) error {
 	src := e.Move.Source
-	if e.Status.Phase != machineapi.PhaseDeleting {
-		ok, err := r.cfg.Routes(ctx, e.ID, *e.Binding)
+	if r.cfg.Routes != nil {
+		if e.Move.Routed == nil {
+			// e was read after the commit, so no table of its revision or later names the source.
+			at := Unrouted{Rev: e.Rev, At: r.cfg.Clock.Now()}
+			if err := r.setMove(ctx, e, func(_ *Record, m *Move) { m.Routed = &at }); err != nil {
+				return err
+			}
+		}
+		ok, err := r.cfg.Routes.Delivered(ctx, e.Move.Routed.Rev, e.Move.Routed.At)
 		if err != nil {
-			return fmt.Errorf("read the proxies' routes of %s/%s: %w", e.Caller, e.Name, err)
+			return fmt.Errorf("ask whether the proxies stopped routing %s/%s to %s: %w", e.Caller, e.Name, src.Host, err)
 		}
 		if !ok {
-			return r.waits(ctx, e, "a proxy does not yet route the Machine to "+e.Binding.Host)
+			return r.waits(ctx, e, "a proxy may still route the Machine to "+src.Host)
 		}
 	}
 	// An abandoned source is reached no more, and a lost Machine's is not deleted even on a host

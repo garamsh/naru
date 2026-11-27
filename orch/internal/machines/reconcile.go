@@ -80,13 +80,20 @@ type ReconcilerConfig struct {
 	Wake func(ctx context.Context) <-chan struct{}
 	// Fleet is the fleet's event log.
 	Fleet Appender
-	// Routes tells whether every proxy routes a Machine to its binding, which a move waits for
-	// before it deletes its source; NoRoutes when nil.
-	Routes RoutesDelivered
-	Log    *slog.Logger
+	Log   *slog.Logger
+	// Routes says whether every proxy has stopped forwarding on tables older than a revision; nil
+	// deletes a microVM without waiting, for a fleet that runs no proxy.
+	Routes Routes
 	// MeshPool reads the mesh pool, the hosts' own addresses, which alone reach a Machine's services
 	// (ADR 0112 item 7); nil, or the zero prefix, creates a Machine that admits nothing.
 	MeshPool func(ctx context.Context) (netip.Prefix, error)
+}
+
+// Routes is the routing push as a Machine's delete waits on it (routes.Reconciler).
+type Routes interface {
+	// Delivered reports whether every proxy has acknowledged rev or above, or can no longer forward
+	// on a table taken before rev, which was committed at or before at.
+	Delivered(ctx context.Context, rev int64, at time.Time) (bool, error)
 }
 
 // Reconciler is the leader's Machine reconciler (ADR 0109 item 4, ADR 0110): it places each
@@ -117,9 +124,6 @@ func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
-	}
-	if cfg.Routes == nil {
-		cfg.Routes = NoRoutes
 	}
 	return &Reconciler{cfg: cfg, busy: map[string]bool{}, noted: map[string]bool{}, drift: map[string]string{}, holds: map[string]string{}, moving: map[string]bool{}}
 }

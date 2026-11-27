@@ -42,11 +42,30 @@ func (r *Reconciler) drive(ctx context.Context, p *pass, e *Entry) error {
 }
 
 // finish removes a deleted Machine: its microVM and disks first, when it was placed, then its
-// record, freeing its name and its host's allocation, with its deleted event and tombstone.
+// record, freeing its name and its host's allocation, with its deleted event and tombstone. A
+// microVM whose address a route named is deleted only once no proxy forwards to the address, so
+// mvmd gives it to no other Machine while one does (ADR 0112 item 6); the revision and time the
+// table stopped naming it are kept in the record, so a new leader waits on the same.
 func (r *Reconciler) finish(ctx context.Context, p *pass, e *Entry) error {
 	// A lost Machine's host is not called, whatever it answers: what it holds there is the
 	// abandoned volumes', which its tombstone has a host that answers delete.
 	if e.Binding != nil && !p.abandoned(e.Binding.Host) && !e.lost() {
+		if e.PrivateAddress.IsValid() && r.cfg.Routes != nil {
+			if e.Unrouted == nil {
+				// e was read deleting, so no table of its revision or later names the address.
+				at := Unrouted{Rev: e.Rev, At: r.cfg.Clock.Now()}
+				if err := r.set(ctx, e, func(rec *Record) { rec.Unrouted = &at }); err != nil {
+					return err
+				}
+			}
+			done, err := r.cfg.Routes.Delivered(ctx, e.Unrouted.Rev, e.Unrouted.At)
+			if err != nil {
+				return fmt.Errorf("ask whether the proxies stopped forwarding to %s/%s: %w", e.Caller, e.Name, err)
+			}
+			if !done {
+				return nil
+			}
+		}
 		name := e.Binding.MicroVM(e.ID)
 		if err := r.cfg.Hosts.Delete(ctx, e.Binding.Host, name); err != nil {
 			return fmt.Errorf("delete %s on %s: %w", name, e.Binding.Host, err)

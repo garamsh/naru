@@ -329,6 +329,76 @@ func TestReconcile_DeletesTheMicroVMThenFreesTheNameAndTheAllocation(t *testing.
 	assert.True(t, deleted, "its end is an event")
 }
 
+// fakeRoutes answers Delivered with done, and keeps what it was asked.
+type fakeRoutes struct {
+	mu    sync.Mutex
+	done  bool
+	asked []machines.Unrouted
+}
+
+func (f *fakeRoutes) Delivered(_ context.Context, rev int64, at time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, machines.Unrouted{Rev: rev, At: at})
+	return f.done, nil
+}
+
+func TestReconcile_DeletesARoutedMicroVMOnlyOnceNoProxyForwardsToItsAddress(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	gate := &fakeRoutes{}
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet, Routes: gate,
+	})
+	m := r.create("web", spec())
+	r.pass()
+	vm := "m-" + m.ID + "-1"
+	_, err := r.svc.Delete(t.Context(), "garam", "web")
+	require.NoError(t, err)
+	_, markRev, err := r.store.Machine(t.Context(), "garam", "web")
+	require.NoError(t, err)
+	at := r.clock.Now()
+
+	r.pass()
+	assert.Contains(t, r.hosts.MicroVMs("h-a"), vm, "the microVM stays while a proxy may forward to its address")
+	rec := r.record("web")
+	require.NotNil(t, rec.Unrouted, "the revision and time the table stopped naming the address are kept")
+	assert.Equal(t, markRev, rec.Unrouted.Rev, "the revision the Machine was read deleting at, which no later table routes")
+	assert.True(t, rec.Unrouted.At.Equal(at))
+	r.clock.Advance(time.Minute)
+	r.pass()
+	require.Len(t, gate.asked, 2)
+	for _, a := range gate.asked {
+		assert.Equal(t, markRev, a.Rev, "a later pass, or a new leader, waits on the same revision")
+		assert.True(t, a.At.Equal(at), "and time")
+	}
+
+	gate.done = true
+	r.pass()
+	assert.NotContains(t, r.hosts.MicroVMs("h-a"), vm, "deleted once no proxy forwards to the address")
+	_, _, err = r.store.Machine(t.Context(), "garam", "web")
+	require.ErrorIs(t, err, machines.ErrNotFound)
+}
+
+func TestReconcile_DeletesAMicroVMNoRouteNamedWithoutWaiting(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	gate := &fakeRoutes{}
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet, Routes: gate,
+	})
+	r.hosts.NoAddresses = true
+	m := r.create("web", spec())
+	r.pass()
+	require.NotNil(t, r.record("web").Binding, "the setup: placed")
+	require.False(t, r.record("web").PrivateAddress.IsValid(), "and its host reported no address")
+	_, err := r.svc.Delete(t.Context(), "garam", "web")
+	require.NoError(t, err)
+	r.pass()
+	_, _, err = r.store.Machine(t.Context(), "garam", "web")
+	require.ErrorIs(t, err, machines.ErrNotFound, "no table named an address, so nothing is waited on")
+	assert.Empty(t, gate.asked)
+	assert.NotContains(t, r.hosts.MicroVMs("h-a"), "m-"+m.ID+"-1")
+}
+
 func TestReconcile_RemovesAMachineDeletedBeforeItWasPlaced(t *testing.T) {
 	r := newRig(t)
 	m := r.create("web", spec())

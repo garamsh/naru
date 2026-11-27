@@ -182,3 +182,23 @@ func TestClaimZone_KeepsTheZoneFirstClaimed(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "m.example.test", got, "an empty zone reads it")
 }
+
+func TestRouting_ReadsTheMachinesAndTheAliasesAtOneRevision(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	r := record("garam", "web", "0123456789abcdef")
+	require.NoError(t, s.Create(ctx, r, 0, event(r, time.Now())))
+	_, rev, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	require.NoError(t, s.CreateAlias(ctx, machines.Alias{Hostname: "app.m.example", Caller: "garam", Machine: "web", MachineID: r.ID}, r, rev))
+
+	recs, aliases, at, err := s.Routing(ctx)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	assert.Equal(t, r.ID, recs[0].ID)
+	require.Len(t, aliases, 1)
+	assert.Equal(t, "app.m.example", aliases[0].Hostname)
+	_, last, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, at, last, "the revision read is at or after every write it holds")
+}
