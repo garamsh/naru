@@ -158,12 +158,17 @@ func DialNetAPI(hc *http.Client, revocations *identity.RevocationList) func(id, 
 	}
 }
 
+// Tunnel reads the host's tunnel, and its GET /v1/host for whether it runs a proxy.
 func (n hostNet) Tunnel(ctx context.Context) (netrec.Tunnel, error) {
 	t, err := n.api.Tunnel(ctx)
 	if err != nil {
 		return netrec.Tunnel{}, err
 	}
-	return netrec.Tunnel{PublicKey: t.PublicKey, ListenPort: t.ListenPort, MachinePrefixes: t.MachinePrefixes}, nil
+	h, err := n.api.Host(ctx)
+	if err != nil {
+		return netrec.Tunnel{}, err
+	}
+	return netrec.Tunnel{PublicKey: t.PublicKey, ListenPort: t.ListenPort, MachinePrefixes: t.MachinePrefixes, Proxy: h.Proxy != nil}, nil
 }
 
 func (n hostNet) MicroVMs(ctx context.Context) ([]netrec.MicroVM, error) {
@@ -186,7 +191,7 @@ func (n hostNet) PutNetwork(ctx context.Context, name string, s netrec.NetworkSt
 func (n hostNet) PutPeers(ctx context.Context, meshAddress string, peers []netrec.Peer) error {
 	out := make([]hostapi.Peer, len(peers))
 	for i, p := range peers {
-		out[i] = hostapi.Peer{Name: p.Name, PublicKey: p.PublicKey, Endpoint: p.Endpoint, Prefixes: p.Prefixes, MeshAddress: p.MeshAddress}
+		out[i] = hostapi.Peer{Name: p.Name, PublicKey: p.PublicKey, Endpoint: p.Endpoint, Prefixes: p.Prefixes, MeshAddress: p.MeshAddress, Proxy: p.Proxy}
 	}
 	_, err := n.api.SetPeers(ctx, hostapi.PeersRequest{MeshAddress: meshAddress, Peers: out})
 	return err

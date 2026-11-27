@@ -164,6 +164,39 @@ func TestEachHostIsToldItsOwnMeshAddressAndEveryPeersBesideItsPrefixes(t *testin
 	assert.Empty(t, f.hosts["h2"].mesh)
 }
 
+func TestAHostThatRunsNoProxyAdmitsExactlyTheProxyPeersAndFollowsThemComeAndGo(t *testing.T) {
+	f := fleet()
+	f.hosts["h1"].MeshAddress = "10.99.0.1"
+	f.hosts["h2"].MeshAddress = "10.99.0.2"
+	f.hosts["h3"] = &fakeHost{
+		Host:   netrec.Host{ID: "h3", Address: "192.0.2.3:7443", MeshAddress: "10.99.0.3"},
+		tunnel: &netrec.Tunnel{PublicKey: "key3", ListenPort: 51822, MachinePrefixes: []string{"10.200.3.0/24"}},
+	}
+	f.hosts["h1"].tunnel.Proxy = true
+	// proxies are the mesh addresses the Machine-only host h2 is told run a proxy.
+	proxies := func() []string {
+		t.Helper()
+		require.NoError(t, newRec(f, twoNetworks, &bytes.Buffer{}).Reconcile(t.Context()))
+		var out []string
+		for _, p := range f.hosts["h2"].peers {
+			if p.Proxy {
+				out = append(out, p.MeshAddress)
+			}
+		}
+		return out
+	}
+	assert.Equal(t, []string{"10.99.0.1"}, proxies(), "the one proxy host, and not h3")
+
+	f.hosts["h3"].tunnel.Proxy = true
+	assert.ElementsMatch(t, []string{"10.99.0.1", "10.99.0.3"}, proxies(), "a proxy host that comes is added")
+
+	f.hosts["h1"].tunnel.Proxy = false
+	assert.Equal(t, []string{"10.99.0.3"}, proxies(), "and one that goes is taken out")
+
+	f.hosts["h3"].MeshAddress = ""
+	assert.Empty(t, proxies(), "a proxy host with no mesh address is marked no proxy: it reaches no microVM")
+}
+
 func TestAMemberThatIsRemovedDisappearsFromTheOtherHosts(t *testing.T) {
 	f := fleet()
 	r := newRec(f, twoNetworks, &bytes.Buffer{})

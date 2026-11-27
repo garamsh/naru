@@ -31,11 +31,13 @@ type Host struct {
 }
 
 // Tunnel is what a host reports of its tunnel: the key and port peers dial, and the prefixes it
-// holds for its own machines.
+// holds for its own machines; and whether it runs naru-proxy, whose mesh address alone of the
+// hosts' its peers let reach their microVMs (ADR 0112 item 7).
 type Tunnel struct {
 	PublicKey       string
 	ListenPort      int
 	MachinePrefixes []string
+	Proxy           bool
 }
 
 // MicroVM is a microVM as its host reports it. Network is empty for one on no network.
@@ -53,14 +55,15 @@ type NetworkState struct {
 	RemoteMembers []string
 }
 
-// Peer is another host a host's tunnel reaches. Prefixes are the ones that host holds, and
-// MeshAddress its own address on the tunnel.
+// Peer is another host a host's tunnel reaches. Prefixes are the ones that host holds,
+// MeshAddress its own address on the tunnel, and Proxy whether it runs naru-proxy.
 type Peer struct {
 	Name        string
 	PublicKey   string
 	Endpoint    string
 	Prefixes    []string
 	MeshAddress string
+	Proxy       bool
 }
 
 // Hosts is the host API as the reconciler needs it.
@@ -271,7 +274,8 @@ func peers(self string, all []observed) []Peer {
 		}
 		prefixes := slices.Clone(o.tunnel.MachinePrefixes)
 		sort.Strings(prefixes)
-		out = append(out, Peer{Name: o.host.ID, PublicKey: o.tunnel.PublicKey, Endpoint: endpoint(o.host.Address, o.tunnel.ListenPort), Prefixes: slices.Compact(prefixes), MeshAddress: o.host.MeshAddress})
+		out = append(out, Peer{Name: o.host.ID, PublicKey: o.tunnel.PublicKey, Endpoint: endpoint(o.host.Address, o.tunnel.ListenPort), Prefixes: slices.Compact(prefixes), MeshAddress: o.host.MeshAddress,
+			Proxy: o.tunnel.Proxy && o.host.MeshAddress != ""})
 	}
 	return out
 }
