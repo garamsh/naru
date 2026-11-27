@@ -74,6 +74,22 @@ type Exposure struct {
 
 // forwarded returns the ports DNAT carries: all of them, or the UDP ones of an exposure with Proxy,
 // and none of a proxy exposure's.
+// served is the TCP ports a flow to the exposure's address reaches the host on: each port the
+// host's PROXY protocol listener takes, or, for a proxy exposure, each port of the proxy its ports
+// are redirected to.
+func (e Exposure) served(proxy ProxyPorts) []uint16 {
+	var out []uint16
+	for _, p := range e.Ports {
+		switch {
+		case e.ToProxy:
+			out = append(out, proxy.target(p.Port))
+		case e.Proxy && p.Protocol == wire.ProtocolTCP:
+			out = append(out, uint16(p.Port))
+		}
+	}
+	return out
+}
+
 func (e Exposure) forwarded() []ExposurePort {
 	if e.ToProxy {
 		return nil

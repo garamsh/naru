@@ -31,6 +31,7 @@ table inet naru {
 		iifname "tap*" counter drop comment "microVM to the host"
 		ip saddr @net_a counter drop comment "a to the host"
 		ip saddr @net_b counter drop comment "b to the host"
+		ip daddr { 192.168.0.80 } counter drop comment "an exposure's address to the host"
 	}
 	chain forward {
 		type filter hook forward priority 0; policy drop;

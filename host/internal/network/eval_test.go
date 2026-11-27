@@ -3,6 +3,7 @@ package network_test
 import (
 	"net/netip"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -10,10 +11,11 @@ import (
 )
 
 // packet is what the interpreter below judges: where it came in, where it goes out, its addresses,
-// and whether it belongs to a flow that was allowed.
+// its TCP destination port (0 for none), and whether it belongs to a flow that was allowed.
 type packet struct {
 	in, out     string
 	src, dst    string
+	dport       int
 	established bool
 }
 
@@ -29,13 +31,16 @@ type rule struct {
 	comment string
 }
 
+// chain keeps its rules' text, which judge parses, so a chain no test judges may use what the
+// interpreter does not know.
 type chain struct {
 	policy string
-	rules  []rule
+	lines  []string
 }
 
 // table is a parsed `table inet naru` script: just the part of nftables the ruleset uses.
 type table struct {
+	t      *testing.T
 	sets   map[string][]netip.Prefix
 	chains map[string]*chain
 }
@@ -56,7 +61,7 @@ func parsePrefix(s string) netip.Prefix {
 // parseTable reads the script the way nft would, so a test can ask what the host does with a packet.
 func parseTable(t *testing.T, script string) *table {
 	t.Helper()
-	tb := &table{sets: map[string][]netip.Prefix{}, chains: map[string]*chain{}}
+	tb := &table{t: t, sets: map[string][]netip.Prefix{}, chains: map[string]*chain{}}
 	var set string
 	var ch *chain
 	for _, l := range strings.Split(script, "\n") {
@@ -68,8 +73,8 @@ func parseTable(t *testing.T, script string) *table {
 		case strings.HasPrefix(l, "elements = {"):
 			body := strings.TrimSuffix(strings.TrimPrefix(l, "elements = {"), "}")
 			for _, e := range strings.Split(body, ",") {
-				if e = strings.TrimSpace(e); e != "" {
-					tb.sets[set] = append(tb.sets[set], parsePrefix(e))
+				if f := strings.Fields(e); len(f) > 0 { // "a timeout 15s" is the address a
+					tb.sets[set] = append(tb.sets[set], parsePrefix(f[0]))
 				}
 			}
 		case strings.HasPrefix(l, "chain "):
@@ -78,7 +83,7 @@ func parseTable(t *testing.T, script string) *table {
 		case strings.HasPrefix(l, "type filter"):
 			ch.policy = policyRe.FindStringSubmatch(l)[1]
 		case ch != nil && (strings.Contains(l, "accept") || strings.Contains(l, "drop")) && l != "}":
-			ch.rules = append(ch.rules, tb.parseRule(t, l))
+			ch.lines = append(ch.lines, l)
 		}
 	}
 	return tb
@@ -132,14 +137,25 @@ func (tb *table) parseRule(t *testing.T, l string) rule {
 				i++
 			}
 			var set []netip.Prefix
-			if strings.HasPrefix(f[i], "@") {
+			switch {
+			case f[i] == "{":
+				for i++; f[i] != "}"; i++ {
+					set = append(set, parsePrefix(strings.TrimSuffix(f[i], ",")))
+				}
+			case strings.HasPrefix(f[i], "@"):
 				s, ok := tb.sets[f[i][1:]]
 				require.True(t, ok, "the set %s is not declared", f[i])
 				set = s
-			} else {
+			default:
 				set = []netip.Prefix{parsePrefix(f[i])}
 			}
 			r.matches = append(r.matches, func(p packet) bool { return in(set, get(p)) != not })
+		case "tcp":
+			require.Equal(t, "dport", f[i+1], "the interpreter knows only tcp dport, in %q", l)
+			port, err := strconv.Atoi(f[i+2])
+			require.NoError(t, err, "a port list is not known to the interpreter, in %q", l)
+			r.matches = append(r.matches, func(p packet) bool { return p.dport == port })
+			i += 2
 		case "counter":
 		case "accept":
 			r.accept = true
@@ -153,8 +169,10 @@ func (tb *table) parseRule(t *testing.T, l string) rule {
 
 // judge runs the packet through the chain.
 func (tb *table) judge(chainName string, p packet) verdict {
+	tb.t.Helper()
 	ch := tb.chains[chainName]
-	for _, r := range ch.rules {
+	for _, l := range ch.lines {
+		r := tb.parseRule(tb.t, l)
 		ok := true
 		for _, m := range r.matches {
 			ok = ok && m(p)
