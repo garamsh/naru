@@ -84,14 +84,37 @@ func (r Route) Check() (*tls.Certificate, error) {
 }
 
 // RoutesRequest is the routing table orch's leader puts to each proxy host: the revision of orch's
-// store it was derived at, orch's time when it was sent, the mesh addresses of the hosts that run a
-// proxy, and every route.
+// store it was derived at, orch's time when it was sent, and every route.
 type RoutesRequest struct {
-	Revision int64        `json:"revision"`
-	SentAt   time.Time    `json:"sentAt"`
-	Proxies  []netip.Addr `json:"proxies"`
-	Routes   []Route      `json:"routes"`
+	Revision int64     `json:"revision"`
+	SentAt   time.Time `json:"sentAt"`
+	Routes   []Route   `json:"routes"`
 }
+
+// RoutesAnswer is what PUT /v1/routes answers: the revision of the table the host's proxy has
+// loaded, 0 before its first, which may be below the one just taken until the proxy loads it.
+type RoutesAnswer struct {
+	Loaded int64 `json:"loaded"`
+}
+
+// MaxRouteSkew is the most a host's clock and orch's may differ by (each keeps time from
+// spec.time, ADR 0021), and MaxRouteDelay the most a push may take, after which orch abandons it.
+// A host refuses a table sent more than their sum before it arrives (ADR 0112 item 5, widened by
+// the skew as ADR 0085 widens its deadlines), so a table is never taken later than its sending
+// plus RouteAllowance.
+const (
+	MaxRouteSkew   = 2 * time.Second
+	MaxRouteDelay  = 2 * time.Second
+	RouteAllowance = MaxRouteDelay + MaxRouteSkew
+)
+
+// CodeStaleTable is the Code of the 409 the host answers to a table of a lower revision than one it
+// took, and CodeLateTable the Code of the 409 to a table sent more than RouteAllowance before it
+// arrived by the host's clock, whose message reports the difference seen.
+const (
+	CodeStaleTable = "stale-table"
+	CodeLateTable  = "late-table"
+)
 
 // RoutesFile is what naru-hostd writes to wire.ProxyRoutesFile for naru-proxy: the table it took,
 // the time it took it by the host's clock, from which the proxy counts the table's age, and the
