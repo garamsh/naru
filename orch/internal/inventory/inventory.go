@@ -11,14 +11,16 @@ import (
 
 // The failures a caller branches on. Each API transport maps them in one place.
 var (
-	ErrNotFound       = errors.New("not found")
-	ErrConflict       = errors.New("conflicts with what orch holds")
-	ErrInvalid        = errors.New("invalid request")
-	ErrKeyRefused     = errors.New("enrollment key refused")
-	ErrRateLimited    = errors.New("too many requests")
-	ErrCodeMismatch   = errors.New("the pairing code does not match the pending host")
-	ErrSignerRefused  = errors.New("the signer refused the request")
-	ErrSignerFailed   = errors.New("the signer failed")
+	ErrNotFound      = errors.New("not found")
+	ErrConflict      = errors.New("conflicts with what orch holds")
+	ErrInvalid       = errors.New("invalid request")
+	ErrKeyRefused    = errors.New("enrollment key refused")
+	ErrRateLimited   = errors.New("too many requests")
+	ErrCodeMismatch  = errors.New("the pairing code does not match the pending host")
+	ErrSignerRefused = errors.New("the signer refused the request")
+	ErrSignerFailed  = errors.New("the signer failed")
+	// ErrAbandoned is a heartbeat of a host an operator abandoned.
+	ErrAbandoned      = errors.New("the host is abandoned")
 	ErrTooManyPending = errors.New("too many pending enrollments")
 	// ErrPoolFull is an admission that finds every prefix of the Machine pool given to a host.
 	ErrPoolFull = errors.New("the Machine pool has no free prefix")
@@ -55,7 +57,10 @@ const (
 	EventAbandoned        = "host.abandoned"
 	EventRevoked          = "host.revoked"
 	EventRevocationFailed = "host.revocation-failed"
-	EventProfileSet       = "host-profile.set"
+	// EventAbandonedHeartbeat is a heartbeat of an abandoned host, which orch refuses: the sign
+	// that its fence did not hold. One per host per member.
+	EventAbandonedHeartbeat = "host.abandoned-heartbeat"
+	EventProfileSet         = "host-profile.set"
 	// EventPrefixConflict is a Machine prefix a host reports that another host holds.
 	EventPrefixConflict = "host.prefix-conflict"
 	// EventMeshAddressUnavailable is a host the recorder could not give a mesh address, such as one

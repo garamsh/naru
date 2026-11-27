@@ -8,6 +8,7 @@ package machines
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/garamsh/naru/lib/machineapi"
@@ -70,13 +71,45 @@ type Record struct {
 	Abandoned []AbandonedEpoch `json:"abandoned,omitempty"`
 }
 
-// AbandonedEpoch is a placement of the Machine on a host that was abandoned, and the volumes it
-// left there.
+// AbandonedEpoch is a copy of the Machine's volumes left behind, at an epoch on a host: the
+// placement on a host that was abandoned (RoleBound), or a move's source copy, left stopped when
+// the move's target was abandoned after the commit (RoleSource).
 type AbandonedEpoch struct {
 	Host    string    `json:"host"`
 	Epoch   uint64    `json:"epoch"`
 	Volumes []string  `json:"volumes"`
 	At      time.Time `json:"at"`
+	Role    string    `json:"role,omitempty"`
+	// Deleting is an operator's delete of a source copy, which the reconciler carries out on its
+	// host before it forgets the entry and frees the disk it holds.
+	Deleting bool `json:"deleting,omitempty"`
+}
+
+// The roles of an AbandonedEpoch. A RoleSource copy is on a host that answers: its microVM is
+// counted through the disk its host's allocation keeps for it.
+const (
+	RoleBound  = "bound"
+	RoleSource = "source"
+)
+
+// role is the entry's role, RoleBound for an entry recorded without one.
+func (a AbandonedEpoch) role() string {
+	if a.Role == "" {
+		return RoleBound
+	}
+	return a.Role
+}
+
+// lost reports whether the Machine is lost: its phase is, or its current binding is a placement
+// listed as abandoned. It is read from the record alone, so it holds after the host's abandonment
+// mark is gone, as when the host is removed and admitted again under its ID (ADR 0109 item 6).
+func (r Record) lost() bool {
+	if r.Status.Phase == machineapi.PhaseLost {
+		return true
+	}
+	return r.Binding != nil && slices.ContainsFunc(r.Abandoned, func(a AbandonedEpoch) bool {
+		return a.role() == RoleBound && a.Host == r.Binding.Host && a.Epoch == r.Binding.Epoch
+	})
 }
 
 // Binding is a placement of a Machine: its host, and the epoch that counts its placements.

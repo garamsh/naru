@@ -13,6 +13,7 @@ import (
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/machineapi"
+	inventoryetcd "github.com/garamsh/naru/orch/internal/inventory/etcd"
 	"github.com/garamsh/naru/orch/internal/machines"
 )
 
@@ -110,10 +111,16 @@ func allocationGuard(host string, rev int64) clientv3.Cmp {
 	return clientv3.Compare(clientv3.ModRevision(allocationKey(host)), "=", rev)
 }
 
+// notAbandoned guards a write that takes capacity on host on the host's abandonment key being
+// absent.
+func notAbandoned(host string) clientv3.Cmp {
+	return clientv3.Compare(clientv3.CreateRevision(inventoryetcd.AbandonedHostPrefix+host), "=", 0)
+}
+
 func (s *Store) Bind(ctx context.Context, r machines.Record, rev int64, alloc machines.Allocation) (int64, error) {
 	key := machineKey(r.Caller, r.Name)
 	return s.guarded(ctx,
-		[]clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", rev), allocationGuard(r.Binding.Host, alloc.Rev)},
+		[]clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", rev), allocationGuard(r.Binding.Host, alloc.Rev), notAbandoned(r.Binding.Host)},
 		clientv3.OpPut(key, encode(r)), clientv3.OpPut(allocationKey(r.Binding.Host), encode(alloc.Resources)))
 }
 
@@ -123,7 +130,11 @@ func (s *Store) Allocate(ctx context.Context, r machines.Record, rev int64, host
 	if ev != nil {
 		ops = append(ops, eventOp(r.Caller, *ev))
 	}
-	at, err := s.guarded(ctx, []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", rev), allocationGuard(host, alloc.Rev)}, ops...)
+	cmps := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", rev), allocationGuard(host, alloc.Rev)}
+	if alloc.Takes {
+		cmps = append(cmps, notAbandoned(host))
+	}
+	at, err := s.guarded(ctx, cmps, ops...)
 	if err != nil {
 		return 0, err
 	}

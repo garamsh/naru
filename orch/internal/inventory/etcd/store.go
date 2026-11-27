@@ -35,6 +35,12 @@ const (
 	meshPrefix = "/naru/orch/mesh-addresses/"
 )
 
+// AbandonedHostPrefix holds a key for each abandoned host, written in the transaction that writes
+// its abandonment and deleted with the host. A write that takes capacity on a host is guarded on
+// its absence, so a pass that read the host before its abandonment places nothing there after it.
+// The host's own record is no guard: every heartbeat rewrites it.
+const AbandonedHostPrefix = "/naru/orch/abandoned-hosts/"
+
 // spaceKey is the prefix of the records of space.
 func spaceKey(space inventory.Space) string {
 	if space == inventory.SpaceMesh {
@@ -142,6 +148,11 @@ func list[T any](ctx context.Context, s *Store, prefix string) ([]T, error) {
 // update reads the record at key, applies change and writes it back with ops, retrying when
 // another writer got in between.
 func update[T any](ctx context.Context, s *Store, key string, change func(*T) error, ops ...clientv3.Op) (T, error) {
+	return updateWith(ctx, s, key, change, nil, ops...)
+}
+
+// updateWith is update with the operations more gives for the changed value added to the write.
+func updateWith[T any](ctx context.Context, s *Store, key string, change func(*T) error, more func(T) []clientv3.Op, ops ...clientv3.Op) (T, error) {
 	var v T
 	for range casRetries {
 		// Each attempt decodes into a fresh value: JSON leaves a field the document omits as it
@@ -155,6 +166,9 @@ func update[T any](ctx context.Context, s *Store, key string, change func(*T) er
 			return v, err
 		}
 		put := append([]clientv3.Op{clientv3.OpPut(key, encode(v))}, ops...)
+		if more != nil {
+			put = append(put, more(v)...)
+		}
 		resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", rev)).Then(put...).Commit()
 		if err != nil {
 			return v, err
@@ -402,7 +416,7 @@ func (s *Store) RemoveHost(ctx context.Context, id string, ev orchapi.Event) (in
 		if err != nil {
 			return h, err
 		}
-		ops := append([]clientv3.Op{clientv3.OpDelete(key)}, s.eventOps(ev)...)
+		ops := append([]clientv3.Op{clientv3.OpDelete(key), clientv3.OpDelete(AbandonedHostPrefix + id)}, s.eventOps(ev)...)
 		// Every prefix the host holds is freed: the one orch gave a joined host, the ones a host
 		// reported (ClaimPrefix) and its mesh address.
 		for _, prefix := range []string{allocPrefix, meshPrefix} {
@@ -557,11 +571,16 @@ func (s *Store) UpdateHost(ctx context.Context, id string, change func(*inventor
 	if ev != nil {
 		ops = append(ops, s.eventOps(*ev)...)
 	}
-	return update(ctx, s, hostPrefix+id, func(h *inventory.Host) error {
+	return updateWith(ctx, s, hostPrefix+id, func(h *inventory.Host) error {
 		change(h)
 		// A write never carries the config older records held, so a heartbeat cannot bring it back.
 		h.Config = nil
 		return nil
+	}, func(h inventory.Host) []clientv3.Op {
+		if h.Abandonment == nil {
+			return nil
+		}
+		return []clientv3.Op{clientv3.OpPut(AbandonedHostPrefix+id, h.Abandonment.At.UTC().Format(time.RFC3339Nano))}
 	}, ops...)
 }
 

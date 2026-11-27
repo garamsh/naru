@@ -26,6 +26,9 @@ type SnapshotEntry struct {
 type Allocation struct {
 	hostapi.Resources
 	Rev int64
+	// Takes is a write that takes capacity on the host, which the store refuses (ErrRaced) once the
+	// host is abandoned: a pass that read the host before its abandonment places nothing there.
+	Takes bool
 }
 
 // ErrRaced is a write's refusal when a record it depends on is taken or changed since it was read.

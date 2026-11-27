@@ -68,17 +68,28 @@ type MoveRequest struct {
 	AbandonVolumes bool `json:"abandonVolumes,omitempty"`
 }
 
-// AbandonedVolumes are the volumes of one Machine's epoch left on an abandoned host, which orch
-// keeps listed until an operator deletes them (ADR 0109 item 7).
+// AbandonedVolumes are the volumes of one Machine's epoch left behind, which orch keeps listed
+// until an operator deletes them (ADR 0109 item 7). Role is RoleBound for the placement on an
+// abandoned host, and RoleSource for a move's stopped source copy, left on a host that answers when
+// the move's target was abandoned after the commit; Deleting is a delete of a source copy the
+// reconciler has yet to carry out there.
 type AbandonedVolumes struct {
-	Caller  string    `json:"caller"`
-	Name    string    `json:"name"`
-	ID      string    `json:"id"`
-	Host    string    `json:"host"`
-	Epoch   uint64    `json:"epoch"`
-	Volumes []string  `json:"volumes"`
-	At      time.Time `json:"at"`
+	Caller   string    `json:"caller"`
+	Name     string    `json:"name"`
+	ID       string    `json:"id"`
+	Host     string    `json:"host"`
+	Epoch    uint64    `json:"epoch"`
+	Volumes  []string  `json:"volumes"`
+	At       time.Time `json:"at"`
+	Role     string    `json:"role"`
+	Deleting bool      `json:"deleting,omitempty"`
 }
+
+// The roles of AbandonedVolumes.
+const (
+	RoleBound  = "bound"
+	RoleSource = "source"
+)
 
 // AbandonedVolumes lists the volumes left on abandoned hosts, by caller, name and epoch.
 func (c *Client) AbandonedVolumes(ctx context.Context) ([]AbandonedVolumes, error) {

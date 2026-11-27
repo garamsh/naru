@@ -149,8 +149,9 @@ func machineMove(fs *pflag.FlagSet) runner {
 	}
 }
 
-// abandonedVolumesList lists the volumes left on abandoned hosts, by the Machine and epoch each
-// belonged to.
+// abandonedVolumesList lists the volumes left behind, by the Machine and epoch each belonged to:
+// a placement on an abandoned host (bound), or a move's source copy whose target was abandoned
+// after the commit (source).
 func abandonedVolumesList(fs *pflag.FlagSet) runner {
 	o := newOrchFlags(fs)
 	return func(args []string, stdout, _ io.Writer) error {
@@ -168,16 +169,21 @@ func abandonedVolumesList(fs *pflag.FlagSet) runner {
 			return err
 		}
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "CALLER\tNAME\tHOST\tEPOCH\tVOLUMES\tAT")
+		_, _ = fmt.Fprintln(tw, "CALLER\tNAME\tHOST\tEPOCH\tROLE\tVOLUMES\tAT")
 		for _, v := range vs {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", v.Caller, v.Name, v.Host, v.Epoch, cmp.Or(strings.Join(v.Volumes, ","), "-"), v.At.Format(time.RFC3339))
+			role := v.Role
+			if v.Deleting {
+				role += " (deleting)"
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", v.Caller, v.Name, v.Host, v.Epoch, role, cmp.Or(strings.Join(v.Volumes, ","), "-"), v.At.Format(time.RFC3339))
 		}
 		return tw.Flush()
 	}
 }
 
-// abandonedVolumesDelete forgets the volumes of one Machine's epoch on an abandoned host, once the
-// operator has nothing left to recover from them.
+// abandonedVolumesDelete deletes the volumes of one Machine's epoch left behind, once the operator
+// has nothing left to recover from them: orch forgets those on an abandoned host, and deletes a
+// source copy on its host first.
 func abandonedVolumesDelete(fs *pflag.FlagSet) runner {
 	o := newOrchFlags(fs)
 	host := o.fs.String("host", "", "the abandoned host the volumes were on")
@@ -202,7 +208,7 @@ func abandonedVolumesDelete(fs *pflag.FlagSet) runner {
 		if err := cl.DeleteAbandonedVolumes(ctx, caller, name, *host, *epoch); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(stdout, "naructl: forgot the volumes of Machine %s/%s epoch %d on host %s\n", caller, name, *epoch, *host)
+		_, _ = fmt.Fprintf(stdout, "naructl: deleted the volumes of Machine %s/%s epoch %d on host %s; a source copy is deleted on its host before it leaves the list\n", caller, name, *epoch, *host)
 		return nil
 	}
 }

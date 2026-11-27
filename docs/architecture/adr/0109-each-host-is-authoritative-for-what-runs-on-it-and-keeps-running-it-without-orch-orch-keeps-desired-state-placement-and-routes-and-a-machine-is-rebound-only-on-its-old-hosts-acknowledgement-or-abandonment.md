@@ -72,11 +72,5 @@ Drafted for garamsh/naru#373 (goal 3). It decides the state behind [ADR 0108](./
 
 ## Errata
 
-- **2026-11-28.** Item 6's abandonment is built in two writes, not one transaction that also lists the host's Machines. The decision stands. garamsh/naru#384 built it:
-  - **The abandonment.** One write to the host's inventory record, guarded on the record as read, holds who, when and the attestation, and no list of the host's Machines.
-  - **The revocation.** The operator signs the signer's `revoke-host` request for that host, and orch forwards it after the write. The outcome goes on the abandonment record: `revokedAt` and the serials revoked, or the last error while none has succeeded. A repeat of the abandonment retries only the revocation.
-  - **`lost`.** The leader's Machine reconciler marks each Machine bound to the abandoned host `lost`, idempotently. When it first does, it records on the Machine the host, the epoch and the volumes left there. A leader that dies between the two writes leaves the next leader to mark them.
-  - **No window.** Placement and a move's choice of target read the abandonment from the same host record, so the write itself makes the host ineligible.
-  - **A move with the abandoned host.** The reconciler resolves it. A source abandoned before the commit leaves the Machine `lost`. A target abandoned before the commit aborts the move and frees its reservation. A target abandoned after the commit leaves the Machine `lost` on it.
-
-  Item 7's event for the volumes of an abandoned epoch is recorded once per microVM per leader, as `machine.unknown-microvm` is, and not on each pass. A pass every 5 seconds would fill the fleet's event log with it.
+- **2026-11-28.** Item 6 says the abandonment's one guarded transaction also records "the Machines on it and their volumes". A list written once cannot stay correct: a Machine created, deleted or moved after the write, or a move's commit in flight at it, would leave the list wrong, and the host record holds no lock on the Machines. So garamsh/naru#384 writes the abandonment on the host record alone. The leader's reconciler derives `lost` for each Machine bound to the host and records the host, epoch and volumes on that Machine's record. From then on `lost` is the Machine record's own: it holds when the host's record or mark is gone, as after the host's removal and re-admission. The decision stands. [machines.md](../machines.md) §State has the shape as built.
+- **2026-11-28.** Item 7's event for the volumes of an abandoned epoch is recorded once per microVM per leader, as `machine.unknown-microvm` is, and not on each pass. A pass runs every 5 seconds, and an event on each one would fill the fleet's event log.

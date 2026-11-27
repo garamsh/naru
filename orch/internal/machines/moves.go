@@ -304,12 +304,13 @@ func (r *Reconciler) allocate(ctx context.Context, p *pass, e *Entry, host strin
 	}
 	alloc := p.allocs[host]
 	alloc.Resources = of(alloc.Resources).plus(delta).resources()
+	alloc.Takes = delta.cpu > 0 || delta.memory > 0 || delta.disk > 0
 	rev, err := r.cfg.Store.Allocate(ctx, next, e.Rev, host, alloc, ev)
 	if err != nil {
 		return fmt.Errorf("write %s/%s with %s's allocation: %w", e.Caller, e.Name, host, err)
 	}
 	e.Record, e.Rev = next, rev
-	alloc.Rev = rev
+	alloc.Rev, alloc.Takes = rev, false
 	p.allocs[host] = alloc
 	return nil
 }
@@ -589,9 +590,10 @@ func (r *Reconciler) cleanUp(ctx context.Context, p *pass, e *Entry) error {
 			return r.waits(ctx, e, "a proxy does not yet route the Machine to "+e.Binding.Host)
 		}
 	}
-	// An abandoned source is reached no more: what it holds stays there, the volumes of a lost
-	// Machine listed as abandoned.
-	if !p.abandoned(src.Host) {
+	// An abandoned source is reached no more, and a lost Machine's is not deleted even on a host
+	// that answers again: what it holds stays there, listed as abandoned until an operator deletes
+	// the entry.
+	if !p.abandoned(src.Host) && !e.Move.AbandonVolumes {
 		if _, ok := p.answering(src.Host); !ok {
 			return r.waits(ctx, e, "the source "+src.Host+" does not answer; the move waits to delete the Machine's copy there")
 		}
@@ -615,19 +617,36 @@ func (r *Reconciler) cleanUp(ctx context.Context, p *pass, e *Entry) error {
 }
 
 // lostAtTarget ends a move whose target was abandoned after the commit: the Machine is lost there
-// with the volumes it was copied to, and the source's capacity is freed, its stopped copy left as
-// an older epoch until the Machine is deleted.
+// with the volumes it was copied to. The source's stopped copy holds the Machine's volumes as of
+// its stop, so it is listed as a source copy and keeps its disk allocated until an operator deletes
+// it; its CPUs and memory are freed.
 func (r *Reconciler) lostAtTarget(ctx context.Context, p *pass, e *Entry) error {
 	m := *e.Move
-	t := *m.Target
-	if err := r.allocate(ctx, p, e, m.Source.Host, amounts{}.minus(need(e.Spec)), func(rec *Record) {
+	t, src := *m.Target, m.Source
+	if err := r.allocate(ctx, p, e, src.Host, amounts{}.minus(need(e.Spec)).plus(diskOf(e.Spec)), func(rec *Record) {
 		rec.Move = nil
 		r.lose(rec, t)
+		if !slices.ContainsFunc(rec.Abandoned, func(a AbandonedEpoch) bool {
+			return a.role() == RoleSource && a.Host == src.Host && a.Epoch == src.Epoch
+		}) {
+			rec.Abandoned = append(slices.Clone(rec.Abandoned), AbandonedEpoch{Host: src.Host, Epoch: src.Epoch, Volumes: volumeNames(rec.Spec), At: r.cfg.Clock.Now().UTC(), Role: RoleSource})
+		}
 	}); err != nil {
 		return err
 	}
-	r.fleet(ctx, EventMoveLost, e.Record, map[string]string{"from": m.Source.Host, "to": t.Host, "by": m.By, "step": string(m.Step)})
+	r.fleet(ctx, EventMoveLost, e.Record, map[string]string{
+		"from": src.Host, "to": t.Host, "by": m.By, "step": string(m.Step), "sourceEpoch": strconv.FormatUint(src.Epoch, 10), "volumes": strings.Join(volumeNames(e.Spec), ","),
+	})
 	return nil
+}
+
+// volumeNames are the names of the spec's volumes, in its order.
+func volumeNames(s machineapi.Spec) []string {
+	out := make([]string, 0, len(s.Volumes))
+	for _, v := range s.Volumes {
+		out = append(out, v.Name)
+	}
+	return out
 }
 
 // abort ends a move before its commit: it deletes what the target holds of it, the copied volumes
@@ -658,8 +677,12 @@ func (r *Reconciler) endAbort(ctx context.Context, p *pass, e *Entry) error {
 		}
 	}
 	src := m.Source
+	// A move of a lost Machine, by --abandon-volumes, leaves its source lost: it is not started
+	// again, whatever its host answers.
+	srcLost := p.abandoned(src.Host) || m.AbandonVolumes
 	phase, why := e.Status.Phase, e.Status.Reason
 	_, srcAnswers := p.answering(src.Host)
+	srcAnswers = srcAnswers && !srcLost
 	if !srcAnswers {
 		// Nothing is inferred of a source that does not answer.
 		phase, why = machineapi.PhaseUnknown, ReasonNotAnswering
@@ -680,7 +703,7 @@ func (r *Reconciler) endAbort(ctx context.Context, p *pass, e *Entry) error {
 	change := func(rec *Record) {
 		rec.Move = nil
 		switch {
-		case p.abandoned(src.Host) && rec.Status.Phase != machineapi.PhaseDeleting:
+		case srcLost && rec.Status.Phase != machineapi.PhaseDeleting:
 			r.lose(rec, src)
 		case rec.Status.Phase == machineapi.PhaseMoving:
 			rec.Status.Phase, rec.Status.Reason = phase, why

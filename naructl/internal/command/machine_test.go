@@ -110,17 +110,19 @@ func TestMachineMove_AbandonVolumesSaysTheOldOnesStayListed(t *testing.T) {
 
 func TestAbandonedVolumes_ListsThemAndDeletesOneEpochs(t *testing.T) {
 	f := newFakeOrch(t)
-	f.abandoned = []orchapi.AbandonedVolumes{{Caller: "garam", Name: "web", ID: "0123456789abcdef", Host: "h-a", Epoch: 3, Volumes: []string{"data", "logs"}, At: time.Date(2026, 11, 28, 1, 2, 3, 0, time.UTC)}}
+	f.abandoned = []orchapi.AbandonedVolumes{{Caller: "garam", Name: "web", ID: "0123456789abcdef", Host: "h-a", Epoch: 3, Volumes: []string{"data", "logs"}, At: time.Date(2026, 11, 28, 1, 2, 3, 0, time.UTC), Role: orchapi.RoleBound},
+		{Caller: "garam", Name: "db", ID: "fedcba9876543210", Host: "h-b", Epoch: 2, Volumes: []string{"data"}, At: time.Date(2026, 11, 28, 1, 2, 3, 0, time.UTC), Role: orchapi.RoleSource, Deleting: true}}
 	op := newOperator(t, f, "operator")
 
 	out, err := run(t, op.args(f, "machine", "abandoned-volumes", "list")...)
 	require.NoError(t, err, out)
-	assert.Regexp(t, `CALLER\s+NAME\s+HOST\s+EPOCH\s+VOLUMES\s+AT`, out)
-	assert.Regexp(t, `garam\s+web\s+h-a\s+3\s+data,logs\s+2026-11-28T01:02:03Z\n`, out)
+	assert.Regexp(t, `CALLER\s+NAME\s+HOST\s+EPOCH\s+ROLE\s+VOLUMES\s+AT`, out)
+	assert.Regexp(t, `garam\s+web\s+h-a\s+3\s+bound\s+data,logs\s+2026-11-28T01:02:03Z\n`, out)
+	assert.Regexp(t, `garam\s+db\s+h-b\s+2\s+source \(deleting\)\s+data\s+2026-11-28T01:02:03Z\n`, out)
 
 	out, err = run(t, op.args(f, "machine", "abandoned-volumes", "delete", "garam/web", "--host", "h-a", "--epoch", "3")...)
 	require.NoError(t, err, out)
-	assert.Contains(t, out, "forgot the volumes of Machine garam/web epoch 3 on host h-a")
+	assert.Contains(t, out, "deleted the volumes of Machine garam/web epoch 3 on host h-a")
 	_, err = run(t, op.args(f, "machine", "abandoned-volumes", "delete", "garam/web", "--host", "h-a")...)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--epoch is required")

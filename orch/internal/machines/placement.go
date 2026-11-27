@@ -52,6 +52,11 @@ func need(s machineapi.Spec) amounts {
 	return amounts{int64(s.CPU), int64(s.MemoryBytes), int64(disk)}
 }
 
+// diskOf is the disk alone of what the spec takes: what a stopped copy of it keeps on its host.
+func diskOf(s machineapi.Spec) amounts {
+	return amounts{disk: need(s).disk}
+}
+
 // takes is what a microVM the host reports takes of it.
 func takes(m hostapi.MicroVM) amounts {
 	disk := m.RootDiskBytes

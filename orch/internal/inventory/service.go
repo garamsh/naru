@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/garamsh/naru/lib/orchapi"
@@ -97,6 +98,8 @@ type service struct {
 	sources *ratelimit.Limiter
 	keys    *ratelimit.Limiter
 	polls   *ratelimit.Limiter
+	// abandonedBeats are the abandoned hosts whose heartbeat this member has recorded.
+	abandonedBeats sync.Map
 }
 
 // NewService returns the service over store and signer. space is what a profile's mesh pool is

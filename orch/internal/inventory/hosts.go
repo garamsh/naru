@@ -2,7 +2,10 @@ package inventory
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
@@ -38,8 +41,28 @@ func (s *service) setDraining(ctx context.Context, by, hostID string, draining b
 }
 
 func (s *service) Heartbeat(ctx context.Context, hostID string) error {
+	h, err := s.store.GetHost(ctx, hostID)
+	if err != nil {
+		return err
+	}
+	if a := h.Abandonment; a != nil {
+		// An abandoned host that still reaches orch is the sign ADR 0109 names that its fence did
+		// not hold. Its last-seen is left as it was, and the event is recorded once per member.
+		if _, seen := s.abandonedBeats.LoadOrStore(hostID, true); !seen {
+			state := "pending: " + a.Revocation.Error
+			if a.Revocation.Revoked() {
+				state = "revoked " + strings.Join(a.Revocation.Serials, ",")
+			}
+			ev := orchapi.Event{Time: s.clock.Now(), Type: EventAbandonedHeartbeat, Subject: hostID, Detail: map[string]string{"by": a.By, "fenced": a.Fenced, "revocation": state}}
+			if err := s.store.AppendEvent(ctx, ev); err != nil {
+				s.abandonedBeats.Delete(hostID)
+				return err
+			}
+		}
+		return fmt.Errorf("%w: %s was abandoned by %s at %s", ErrAbandoned, hostID, a.By, a.At.Format(time.RFC3339))
+	}
 	now := s.clock.Now()
-	_, err := s.store.UpdateHost(ctx, hostID, func(h *Host) { h.LastSeen = now }, nil)
+	_, err = s.store.UpdateHost(ctx, hostID, func(h *Host) { h.LastSeen = now }, nil)
 	return err
 }
 

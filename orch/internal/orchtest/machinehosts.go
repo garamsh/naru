@@ -38,6 +38,7 @@ type fakeMachineHost struct {
 	down  bool
 	stale bool
 	vms   map[string]hostapi.MicroVM
+	calls int
 	disks map[string]hostapi.DiskSnapshot
 	// creates are every create asked, and graces every stop's grace.
 	creates []hostapi.CreateRequest
@@ -98,6 +99,19 @@ func (f *FakeMachineHosts) Abandon(id string) {
 // recorded.
 func (f *FakeMachineHosts) Readmit(id string) {
 	f.set(id, func(h *fakeMachineHost) { h.host.Abandoned = false })
+}
+
+// Reset makes the host as one removed, reset and admitted again under its ID: not abandoned, and
+// holding no microVM.
+func (f *FakeMachineHosts) Reset(id string) {
+	f.set(id, func(h *fakeMachineHost) { h.host.Abandoned, h.vms = false, map[string]hostapi.MicroVM{} })
+}
+
+// Remove takes the host out of the list, as orch's removal of it does.
+func (f *FakeMachineHosts) Remove(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.hosts, id)
 }
 
 // Drain sets whether the host is draining, as the inventory records it.
@@ -229,7 +243,18 @@ func (f *FakeMachineHosts) answering(id string) (*fakeMachineHost, error) {
 	if !ok || h.down {
 		return nil, fmt.Errorf("host %s does not answer", id)
 	}
+	h.calls++
 	return h, nil
+}
+
+// Calls counts the calls the host answered, every call but List.
+func (f *FakeMachineHosts) Calls(id string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if h := f.hosts[id]; h != nil {
+		return h.calls
+	}
+	return 0
 }
 
 func notFound(format string, a ...any) error {

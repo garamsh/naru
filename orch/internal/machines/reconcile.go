@@ -194,6 +194,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	cs := r.candidates(p)
 	errs := []error{r.place(ctx, p, cs), r.drain(ctx, p, cs), r.reserve(ctx, p, cs)}
 	errs = append(errs, r.unattended(ctx, p)...)
+	errs = append(errs, r.deleteCopies(ctx, p)...)
 	errs = append(errs, r.age(ctx, p)...)
 	r.dispatch(ctx, p)
 	p.mu.Lock()
@@ -269,14 +270,14 @@ func (r *Reconciler) lose(rec *Record, b Binding) {
 	was := rec.Status.Phase
 	rec.Status.Phase, rec.Status.Reason = machineapi.PhaseLost, ReasonHostLost
 	rec.OperatorReason = ReasonHostLost + ": " + b.Host + " was abandoned"
-	if was == machineapi.PhaseLost || slices.ContainsFunc(rec.Abandoned, func(a AbandonedEpoch) bool { return a.Host == b.Host && a.Epoch == b.Epoch }) {
+	if was == machineapi.PhaseLost || slices.ContainsFunc(rec.Abandoned, func(a AbandonedEpoch) bool { return a.role() == RoleBound && a.Host == b.Host && a.Epoch == b.Epoch }) {
 		return
 	}
 	volumes := make([]string, 0, len(rec.Spec.Volumes))
 	for _, v := range rec.Spec.Volumes {
 		volumes = append(volumes, v.Name)
 	}
-	rec.Abandoned = append(slices.Clone(rec.Abandoned), AbandonedEpoch{Host: b.Host, Epoch: b.Epoch, Volumes: volumes, At: r.cfg.Clock.Now().UTC()})
+	rec.Abandoned = append(slices.Clone(rec.Abandoned), AbandonedEpoch{Host: b.Host, Epoch: b.Epoch, Volumes: volumes, At: r.cfg.Clock.Now().UTC(), Role: RoleBound})
 }
 
 // answering returns the host when it answered this pass and is not abandoned: nothing is asked of
@@ -293,6 +294,12 @@ func (r *Reconciler) candidates(p *pass) []candidate {
 	for _, e := range p.entries {
 		if e.Binding != nil {
 			bound[e.Binding.MicroVM(e.ID)] = true
+		}
+		// A source copy left by a lost move is counted through the disk its host's allocation keeps.
+		for _, a := range e.Abandoned {
+			if a.role() == RoleSource {
+				bound[Binding{Host: a.Host, Epoch: a.Epoch}.MicroVM(e.ID)] = true
+			}
 		}
 		// A move's two microVMs are both counted through the allocations it holds.
 		if m := e.Move; m != nil {
@@ -319,6 +326,11 @@ func (r *Reconciler) audit(ctx context.Context, p *pass) {
 	for _, e := range p.entries {
 		if e.Binding != nil {
 			sums[e.Binding.Host] = sums[e.Binding.Host].plus(need(e.Spec))
+		}
+		for _, a := range e.Abandoned {
+			if a.role() == RoleSource {
+				sums[a.Host] = sums[a.Host].plus(diskOf(e.Spec))
+			}
 		}
 		// A move holds its target's capacity until its commit, and its source's from then until its
 		// clean up.
@@ -439,10 +451,12 @@ func (r *Reconciler) unattended(ctx context.Context, p *pass) []error {
 		case e.Binding == nil && e.Status.Phase == machineapi.PhaseDeleting:
 			errs = append(errs, r.finish(ctx, p, e))
 		case e.Move != nil || e.Binding == nil:
-		case e.Status.Phase == machineapi.PhaseDeleting && p.abandoned(e.Binding.Host):
+		case e.Status.Phase == machineapi.PhaseDeleting && (p.abandoned(e.Binding.Host) || e.lost()):
 			// Nothing on an abandoned host is reached; it comes back only reset or reinstalled.
 			errs = append(errs, r.finish(ctx, p, e))
-		case p.abandoned(e.Binding.Host):
+		case p.abandoned(e.Binding.Host) || e.lost():
+			// Lost stays lost, whatever its host answers later: the record says so, not the host's
+			// mark, which a removal of the host takes with it.
 			b := *e.Binding
 			errs = append(errs, r.set(ctx, e, func(rec *Record) { r.lose(rec, b) }))
 		case e.Status.Phase == machineapi.PhaseDeleting:
@@ -462,9 +476,14 @@ func (r *Reconciler) unattended(ctx context.Context, p *pass) []error {
 		if s.Snapshot.Snapshot.Phase != machineapi.SnapshotPending {
 			continue
 		}
-		if e := p.byID[s.Snapshot.Snapshot.MachineID]; e == nil || e.Status.Phase == machineapi.PhaseDeleting {
+		switch e := p.byID[s.Snapshot.Snapshot.MachineID]; {
+		case e == nil || e.Status.Phase == machineapi.PhaseDeleting:
 			errs = append(errs, r.setSnapshot(ctx, s, nil, func(n *Snapshot) {
 				n.Snapshot.Phase, n.Snapshot.Reason = machineapi.SnapshotFailed, ReasonMachineDeleted
+			}))
+		case e.Move == nil && e.lost():
+			errs = append(errs, r.setSnapshot(ctx, s, nil, func(n *Snapshot) {
+				n.Snapshot.Phase, n.Snapshot.Reason = machineapi.SnapshotFailed, ReasonHostLost
 			}))
 		}
 	}
@@ -500,6 +519,7 @@ type frozen struct {
 	caller, name string
 	binding      *Binding
 	abandoned    []AbandonedEpoch
+	lost         bool
 }
 
 // left is the Machine's abandoned epoch on host, if the record lists one.
@@ -522,12 +542,13 @@ func (p *pass) divide() {
 		return p.shares[host]
 	}
 	for _, e := range p.entries {
-		f := frozen{caller: e.Caller, name: e.Name, abandoned: slices.Clone(e.Abandoned)}
+		f := frozen{caller: e.Caller, name: e.Name, abandoned: slices.Clone(e.Abandoned), lost: e.lost()}
 		if e.Binding != nil {
 			b := *e.Binding
 			f.binding = &b
-			// A Machine with a move is the move's: its host's work leaves it.
-			if e.Move == nil {
+			// A Machine with a move is the move's, and a lost one is no host's: its host's work
+			// leaves both.
+			if e.Move == nil && !e.lost() {
 				of(b.Host).entries = append(of(b.Host).entries, e)
 			}
 		}
@@ -536,7 +557,7 @@ func (p *pass) divide() {
 	for i := range p.snaps {
 		s := &p.snaps[i]
 		e := p.byID[s.Snapshot.Snapshot.MachineID]
-		if s.Snapshot.Snapshot.Phase == machineapi.SnapshotPending && e != nil && e.Binding != nil && e.Status.Phase != machineapi.PhaseDeleting && e.Move == nil {
+		if s.Snapshot.Snapshot.Phase == machineapi.SnapshotPending && e != nil && e.Binding != nil && e.Status.Phase != machineapi.PhaseDeleting && e.Move == nil && !e.lost() {
 			of(e.Binding.Host).snaps = append(of(e.Binding.Host).snaps, s)
 		}
 	}

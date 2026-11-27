@@ -33,8 +33,9 @@ func (r *Reconciler) sweep(ctx context.Context, p *pass, host string) []error {
 				r.cfg.Log.Warn("a microVM is named as a Machine's that orch neither has nor removed; it is left as it is", "host", host, "microvm", vm.Name)
 				r.fleetEvent(ctx, EventUnknownMicroVM, host+"/"+vm.Name, map[string]string{"host": host, "microvm": vm.Name, "id": id, "state": vm.State})
 			}
-		case m.binding != nil && m.binding.Host == host && m.binding.Epoch == epoch:
+		case m.binding != nil && m.binding.Host == host && m.binding.Epoch == epoch && !m.lost:
 		default:
+			// An older epoch, or the current one of a lost Machine, which no longer runs here.
 			if vm.State == vmRunning || vm.State == vmPaused {
 				if _, err := r.cfg.Hosts.Stop(ctx, host, vm.Name, 0); err != nil {
 					errs = append(errs, fmt.Errorf("stop %s on %s: %w", vm.Name, host, err))

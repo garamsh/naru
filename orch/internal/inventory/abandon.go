@@ -83,6 +83,11 @@ func (s *service) revoke(ctx context.Context, by string, h Host, signed []byte) 
 		ev = orchapi.Event{Time: now, Type: EventRevocationFailed, Subject: h.ID, Detail: map[string]string{"by": by, "error": err.Error()}}
 	}
 	out, werr := s.store.UpdateHost(ctx, h.ID, func(h *Host) {
+		if h.Abandonment == nil {
+			// The host was removed and admitted again between the two writes: nothing of this
+			// abandonment is left to record the outcome on.
+			return
+		}
 		r := &h.Abandonment.Revocation
 		switch {
 		case err == nil:
@@ -93,6 +98,9 @@ func (s *service) revoke(ctx context.Context, by string, h Host, signed []byte) 
 	}, &ev)
 	if werr != nil {
 		return orchapi.Host{}, errors.Join(err, werr)
+	}
+	if out.Abandonment == nil {
+		return orchapi.Host{}, errors.Join(err, fmt.Errorf("%w: %s is no longer abandoned: it was removed and admitted again", ErrNotFound, h.ID))
 	}
 	return out.api(), err
 }

@@ -3,6 +3,9 @@ package orchd_test
 import (
 	"context"
 	"crypto"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"testing"
@@ -23,6 +26,12 @@ import (
 // admitHost enrolls and admits a host of id, as an operator does.
 func admitHost(t *testing.T, c *orchtest.Cluster, operator orchtest.Identity, id string) {
 	t.Helper()
+	admitted(t, c, operator, id)
+}
+
+// admitted is admitHost giving the host's own identity, from the certificate its poll fetches.
+func admitted(t *testing.T, c *orchtest.Cluster, operator orchtest.Identity, id string) orchtest.Identity {
+	t.Helper()
 	op, anon := c.Client(t, 0, &operator), c.Client(t, 0, nil)
 	k, err := op.CreateEnrollmentKey(t.Context(), c.Clock.Now().Add(time.Hour))
 	require.NoError(t, err)
@@ -31,6 +40,43 @@ func admitHost(t *testing.T, c *orchtest.Cluster, operator orchtest.Identity, id
 	require.NoError(t, err)
 	_, err = op.Admit(t.Context(), orchapi.AdmitRequest{HostID: id, Code: identity.PairingCode(h.pub), Statement: orchtest.Statement(t, operator, id, h.pub), Region: "kr-seoul"})
 	require.NoError(t, err)
+	st, err := anon.PollEnrollment(t.Context(), id, h.key, c.Clock.Now())
+	require.NoError(t, err)
+	block, _ := pem.Decode(st.Certificate)
+	require.NotNil(t, block)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	return orchtest.Identity{TLS: tls.Certificate{Certificate: [][]byte{cert.Raw}, PrivateKey: h.key, Leaf: cert}, Cert: cert}
+}
+
+func TestOrch_AHeartbeatOfAnAbandonedHostIsGoneAndRecordedOnce(t *testing.T) {
+	o := startOne(t, orchtest.Options{})
+	hostID := admitted(t, o.c, o.operator, "host-a")
+	beat := o.c.Client(t, 0, &hostID)
+	ctx := t.Context()
+	require.NoError(t, beat.Heartbeat(ctx), "control: an admitted host reports")
+	seen := hostByID(t, o.op, "host-a").LastSeen
+
+	o.c.Signer.FailRevoke(errors.New("signer unreachable"))
+	_, err := o.op.AbandonHost(ctx, "host-a", orchapi.AbandonRequest{Fenced: "powered off", RevokeHost: revokeHost(t, o.operator, identity.ActionRevokeHost, "host-a")})
+	require.Error(t, err)
+	o.c.Clock.Advance(time.Minute)
+	for range 2 {
+		err = beat.Heartbeat(ctx)
+		assert.Equal(t, http.StatusGone, status(err), "the host's own log says it was abandoned")
+	}
+	assert.Equal(t, seen, hostByID(t, o.op, "host-a").LastSeen, "it is not seen as reporting")
+	evs, err := o.op.Events(ctx)
+	require.NoError(t, err)
+	var beats []orchapi.Event
+	for _, e := range evs {
+		if e.Type == inventory.EventAbandonedHeartbeat {
+			beats = append(beats, e)
+		}
+	}
+	require.Len(t, beats, 1, "once, not on every heartbeat")
+	assert.Equal(t, "host-a", beats[0].Subject)
+	assert.Equal(t, "pending: the signer failed: signer unreachable", beats[0].Detail["revocation"])
 }
 
 // revokeHost is who's signed request to revoke the host of id, as naructl host abandon makes it.
@@ -179,6 +225,8 @@ func TestOrch_TheMachinesOfAnAbandonedHostAreLostAndTheirVolumesListed(t *testin
 
 	_, err = op.AbandonHost(ctx, "h-a", orchapi.AbandonRequest{Fenced: "powered off", RevokeHost: revokeHost(t, operator, identity.ActionRevokeHost, "h-a")})
 	require.NoError(t, err)
+	err = op.Remove(ctx, "h-a")
+	assert.Equal(t, http.StatusConflict, orchStatus(t, err), "a Machine is still bound to it")
 	require.Eventually(t, func() bool {
 		got, err := o.garam.Machine(ctx, "web")
 		return err == nil && got.Status.Phase == machineapi.PhaseLost
@@ -190,7 +238,7 @@ func TestOrch_TheMachinesOfAnAbandonedHostAreLostAndTheirVolumesListed(t *testin
 	listed, err := read.AbandonedVolumes(ctx)
 	require.NoError(t, err)
 	require.Len(t, listed, 1)
-	assert.Equal(t, orchapi.AbandonedVolumes{Caller: "garam", Name: "web", ID: m.ID, Host: "h-a", Epoch: 1, Volumes: []string{"data"}, At: listed[0].At}, listed[0])
+	assert.Equal(t, orchapi.AbandonedVolumes{Caller: "garam", Name: "web", ID: m.ID, Host: "h-a", Epoch: 1, Volumes: []string{"data"}, At: listed[0].At, Role: orchapi.RoleBound}, listed[0])
 
 	_, err = op.MoveMachine(ctx, "garam", "web", orchapi.MoveRequest{})
 	assert.Equal(t, http.StatusConflict, orchStatus(t, err), "a lost Machine's volumes cannot move")
@@ -211,4 +259,5 @@ func TestOrch_TheMachinesOfAnAbandonedHostAreLostAndTheirVolumesListed(t *testin
 	listed, err = read.AbandonedVolumes(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, listed)
+	require.NoError(t, op.Remove(ctx, "h-a"), "no Machine is bound to it any more")
 }
