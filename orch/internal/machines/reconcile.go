@@ -155,6 +155,9 @@ type pass struct {
 	// busy are the hosts whose earlier work still ran when the pass began to read: what it read of
 	// them may be older than that work's writes, so it gives them none.
 	busy map[string]bool
+	// moving are the Machines whose move an earlier pass left running when this pass began to read:
+	// what it read of them may be older than that move's writes, so it runs none of them.
+	moving map[string]bool
 	// shares are each host's Machines and pending snapshots, and machines every Machine as it was
 	// when the host work began, which each host's work reads while the others write their own.
 	shares   map[string]*share
@@ -175,12 +178,13 @@ type pass struct {
 func (r *Reconciler) Reconcile(ctx context.Context) error {
 	r.mu.Lock()
 	busy := maps.Clone(r.busy)
+	moving := maps.Clone(r.moving)
 	r.mu.Unlock()
 	p, err := r.observe(ctx)
 	if err != nil {
 		return err
 	}
-	p.busy = busy
+	p.busy, p.moving = busy, moving
 	r.audit(ctx, p)
 	cs := r.candidates(p)
 	errs := []error{r.place(ctx, p, cs), r.drain(ctx, p, cs), r.reserve(ctx, p, cs)}
@@ -501,7 +505,7 @@ func (r *Reconciler) dispatch(ctx context.Context, p *pass) {
 	// entry with a move is in no host's share.
 	var moves []*Entry
 	for _, e := range p.entries {
-		if e.Move != nil && (e.Move.Step != MoveRequested || e.Move.Cancel || e.Status.Phase == machineapi.PhaseDeleting) {
+		if e.Move != nil && !p.moving[e.ID] && (e.Move.Step != MoveRequested || e.Move.Cancel || e.Status.Phase == machineapi.PhaseDeleting) {
 			moves = append(moves, e)
 		}
 	}

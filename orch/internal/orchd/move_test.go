@@ -1,7 +1,10 @@
 package orchd_test
 
 import (
+	"crypto/tls"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,4 +88,33 @@ func TestOrch_RefusesAMoveOfAMachineNotPlacedAndANarrowingItsShapeContradicts(t 
 	assert.Equal(t, http.StatusUnprocessableEntity, orchStatus(t, err))
 	_, err = op.MoveMachine(ctx, "garam", "web", orchapi.MoveRequest{})
 	assert.Equal(t, http.StatusConflict, orchStatus(t, err), "a Machine on no host has nothing to move")
+}
+
+func TestOrch_TakesAMoveWithAnEmptyChunkedBodyAsAMoveWithinTheShape(t *testing.T) {
+	hosts := orchtest.NewFakeMachineHosts(
+		machines.Host{ID: "h-a", Region: "kr-seoul", Capacity: hostapi.Resources{CPU: 64, Memory: 256 << 30, Disk: 4 << 40}},
+		machines.Host{ID: "h-b", Region: "kr-seoul", Capacity: hostapi.Resources{CPU: 64, Memory: 128 << 30, Disk: 4 << 40}},
+	)
+	o := startMachineOrchWith(t, orchtest.Options{NewMachineHosts: func(inventory.Service) machines.Hosts { return hosts }, MachineInterval: time.Hour})
+	_, _, err := o.garam.CreateMachine(t.Context(), "web", machineSpec())
+	require.NoError(t, err)
+	operator := o.c.CA.Issue(t, "alice", identity.RoleOperator)
+	read := o.c.Client(t, 0, &operator)
+	require.Eventually(t, func() bool {
+		got, err := read.Machine(t.Context(), "garam", "web")
+		return err == nil && got.Binding != nil
+	}, 10*time.Second, 50*time.Millisecond)
+
+	hc := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS13, RootCAs: o.c.CA.Pool(), Certificates: []tls.Certificate{operator.TLS},
+	}}}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+o.c.Members[0].Addr()+"/v1/machines/garam/web/move", io.NopCloser(strings.NewReader("")))
+	require.NoError(t, err)
+	req.ContentLength = -1
+	resp, err := hc.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "%s", b)
+	assert.Contains(t, string(b), `"step":"requested"`)
 }

@@ -50,6 +50,13 @@ type Move struct {
 	Volumes []MovedVolume `json:"volumes,omitempty"`
 	// Cancel is an operator's cancellation, carried out before the commit.
 	Cancel bool `json:"cancel,omitempty"`
+	// Abort is the abort decided, with its reason. It is written, guarded on the record as read,
+	// before any of the abort's host calls, and from then on the move only ends: no commit follows
+	// it, and a new leader finishes it.
+	Abort string `json:"abort,omitempty"`
+	// TargetSilent is when the reserved target was first seen not answering, zero while it answers;
+	// a move whose target stays silent for targetSilence is aborted.
+	TargetSilent time.Time `json:"targetSilent,omitzero"`
 	// Reason is why the move waits, for the operator.
 	Reason string `json:"reason,omitempty"`
 }
@@ -75,6 +82,10 @@ const (
 // The limits of a drain (ADR 0110 item 7): a drain starts a move from a host with none in progress,
 // and while fewer than drainFleet are in progress in the fleet.
 const drainFleet = 2
+
+// targetSilence bounds how long a move waits, before its commit, for a target that does not
+// answer: the source is stopped meanwhile, and a drain's move has no operator watching it.
+const targetSilence = 10 * time.Minute
 
 // copyTimeout bounds one volume's export and import together. The hosts end a stream that stops
 // moving; this is the backstop for one that moves too slowly to finish.
@@ -131,7 +142,10 @@ func (m *Move) view() *orchapi.MachineMove {
 	if m == nil {
 		return nil
 	}
-	v := &orchapi.MachineMove{By: m.By, Requested: m.Requested, Shape: m.Shape, Step: string(m.Step), Source: m.Source.Host, Cancelled: m.Cancel, Reason: m.Reason}
+	v := &orchapi.MachineMove{By: m.By, Requested: m.Requested, Shape: m.Shape, Step: string(m.Step), Source: m.Source.Host, Cancelled: m.Cancel || m.Abort != "", Reason: m.Reason}
+	if m.Abort != "" {
+		v.Reason = "aborting: " + m.Abort
+	}
 	if m.Target != nil {
 		v.Target = m.Target.Host
 	}
@@ -165,7 +179,12 @@ func (r *Reconciler) drain(ctx context.Context, p *pass, cs []candidate) error {
 	}
 	var errs []error
 	for _, id := range slices.Sorted(maps.Keys(p.hosts)) {
-		if !p.hosts[id].Draining || from[id] || moving >= drainFleet {
+		if !p.hosts[id].Draining {
+			// A host drained again later holds, and says so, afresh.
+			r.held(id, "")
+			continue
+		}
+		if from[id] || moving >= drainFleet {
 			continue
 		}
 		for _, e := range p.entries {
@@ -217,7 +236,7 @@ func (r *Reconciler) reserve(ctx context.Context, p *pass, cs []candidate) error
 	var errs []error
 	for _, e := range p.entries {
 		m := e.Move
-		if m == nil || m.Step != MoveRequested || m.Cancel || e.Status.Phase == machineapi.PhaseDeleting {
+		if m == nil || m.Step != MoveRequested || m.Cancel || e.Status.Phase == machineapi.PhaseDeleting || p.moving[e.ID] {
 			continue
 		}
 		shape, err := narrowed(e.Spec.Shape, m.Shape)
@@ -301,10 +320,20 @@ func (r *Reconciler) move(ctx context.Context, p *pass, e *Entry) error {
 		before := m.Step
 		var err error
 		switch {
+		case m.Abort != "":
+			return r.endAbort(ctx, p, e)
 		case !m.Step.committed() && (m.Cancel || e.Status.Phase == machineapi.PhaseDeleting):
 			return r.abort(ctx, p, e, abortReason(m, e))
 		case ranAgain && !m.Step.committed():
 			return r.abort(ctx, p, e, ReasonSourceRanAgain)
+		case !m.Step.committed() && m.Target != nil && !answers(p, m.Target.Host):
+			return r.targetSilent(ctx, p, e)
+		case !m.Step.committed() && !m.TargetSilent.IsZero():
+			err = r.setMove(ctx, e, func(_ *Record, m *Move) { m.TargetSilent = time.Time{} })
+			if err != nil {
+				return err
+			}
+			continue
 		case m.Step == MoveRequested:
 			// reserve's: a pass reserves before its moves run.
 			return nil
@@ -334,6 +363,28 @@ func (r *Reconciler) move(ctx context.Context, p *pass, e *Entry) error {
 		}
 	}
 	return nil
+}
+
+// answers reports whether the host answered this pass.
+func answers(p *pass, host string) bool {
+	_, ok := p.answering(host)
+	return ok
+}
+
+// targetSilent records when the target was first seen silent, and aborts the move once it has
+// been silent for targetSilence.
+func (r *Reconciler) targetSilent(ctx context.Context, p *pass, e *Entry) error {
+	now := r.cfg.Clock.Now().UTC()
+	m := e.Move
+	if m.TargetSilent.IsZero() {
+		return r.setMove(ctx, e, func(_ *Record, m *Move) {
+			m.TargetSilent, m.Reason = now, "the target "+m.Target.Host+" does not answer; the move waits for it at most "+targetSilence.String()
+		})
+	}
+	if now.Sub(m.TargetSilent) < targetSilence {
+		return nil
+	}
+	return r.abort(ctx, p, e, "the target "+m.Target.Host+" did not answer for "+targetSilence.String())
 }
 
 // ReasonSourceRanAgain is why a move aborts whose source runs again after its stop, as its host's
@@ -371,8 +422,15 @@ func abortReason(m Move, e *Entry) string {
 // the acknowledgement: without it the move waits.
 func (r *Reconciler) stopSource(ctx context.Context, p *pass, e *Entry) error {
 	src := e.Move.Source
-	if _, ok := p.answering(src.Host); !ok {
+	h, ok := p.answering(src.Host)
+	if !ok {
 		return r.waits(ctx, e, "the source "+src.Host+" does not answer; the move waits for its stop")
+	}
+	if _, made := h.microVM(src.MicroVM(e.ID)); !made && !h.Stale && !p.busy[src.Host] {
+		// The source never made the Machine, as after a refused create: nothing is on its volumes,
+		// so none is copied and the target makes them new. A fresh answer from a host with no work
+		// of an earlier pass still running is the only one that shows it.
+		return r.setMove(ctx, e, func(_ *Record, m *Move) { m.Step, m.Reason = MoveCopied, "" })
 	}
 	vm, err := r.cfg.Hosts.Stop(ctx, src.Host, src.MicroVM(e.ID), min(e.StopGraceSeconds, hostapi.MaxGraceSeconds))
 	if err != nil {
@@ -449,7 +507,8 @@ func (r *Reconciler) createTarget(ctx context.Context, p *pass, e *Entry) error 
 	}
 	req.NoStart = true
 	for i := range req.Disks {
-		req.Disks[i].FromSnapshot, req.Disks[i].Imported = "", true
+		d := &req.Disks[i]
+		d.FromSnapshot, d.Imported = "", slices.ContainsFunc(e.Move.Volumes, func(v MovedVolume) bool { return v.Name == d.Name })
 	}
 	if _, err := r.cfg.Hosts.Create(ctx, t.Host, req); err != nil {
 		if refused(err) {
@@ -522,7 +581,21 @@ func (r *Reconciler) cleanUp(ctx context.Context, p *pass, e *Entry) error {
 // desired running. A target that does not answer keeps its never-started copy, which an older epoch
 // leaves for the Machine's deletion (ADR 0109 item 7).
 func (r *Reconciler) abort(ctx context.Context, p *pass, e *Entry, reason string) error {
+	if e.Move.Step.committed() {
+		return fmt.Errorf("the move of %s/%s is past its commit and is not aborted", e.Caller, e.Name)
+	}
+	// The decision is written first, guarded on the record as read: a pass that read it before an
+	// earlier pass's write moved it on makes no host call.
+	if err := r.setMove(ctx, e, func(_ *Record, m *Move) { m.Abort = reason }); err != nil {
+		return err
+	}
+	return r.endAbort(ctx, p, e)
+}
+
+// endAbort carries out the abort the record holds.
+func (r *Reconciler) endAbort(ctx context.Context, p *pass, e *Entry) error {
 	m := *e.Move
+	reason := m.Abort
 	if t := m.Target; t != nil {
 		if _, ok := p.answering(t.Host); ok {
 			if err := r.cfg.Hosts.Delete(ctx, t.Host, t.MicroVM(e.ID)); err != nil {
@@ -531,8 +604,13 @@ func (r *Reconciler) abort(ctx context.Context, p *pass, e *Entry, reason string
 		}
 	}
 	src := m.Source
-	phase := e.Status.Phase
-	if _, ok := p.answering(src.Host); ok && e.Status.Phase != machineapi.PhaseDeleting && m.Step != MoveRequested {
+	phase, why := e.Status.Phase, e.Status.Reason
+	_, srcAnswers := p.answering(src.Host)
+	if !srcAnswers {
+		// Nothing is inferred of a source that does not answer.
+		phase, why = machineapi.PhaseUnknown, ReasonNotAnswering
+	}
+	if srcAnswers && e.Status.Phase != machineapi.PhaseDeleting && m.Step != MoveRequested {
 		vm := hostapi.MicroVM{State: "stopped"}
 		if e.Spec.State != machineapi.StateStopped {
 			var err error
@@ -540,7 +618,7 @@ func (r *Reconciler) abort(ctx context.Context, p *pass, e *Entry, reason string
 				return fmt.Errorf("start %s on %s for its move's abort: %w", src.MicroVM(e.ID), src.Host, err)
 			}
 		}
-		phase = phaseOf(vm)
+		phase, why = phaseOf(vm), ""
 		if vm.State == vmCreated && e.Spec.State == machineapi.StateStopped {
 			phase = machineapi.PhaseStopped
 		}
@@ -548,7 +626,7 @@ func (r *Reconciler) abort(ctx context.Context, p *pass, e *Entry, reason string
 	change := func(rec *Record) {
 		rec.Move = nil
 		if rec.Status.Phase == machineapi.PhaseMoving {
-			rec.Status.Phase = phase
+			rec.Status.Phase, rec.Status.Reason = phase, why
 		}
 	}
 	var err error
@@ -618,7 +696,7 @@ func (s *service) CancelMove(ctx context.Context, caller, name string) (orchapi.
 			return orchapi.Machine{}, fmt.Errorf("%w: %s/%s", ErrNoMove, caller, name)
 		case r.Move.Step.committed():
 			return orchapi.Machine{}, fmt.Errorf("%w: %s/%s is past its commit and completes forward", ErrMoving, caller, name)
-		case r.Move.Cancel:
+		case r.Move.Cancel || r.Move.Abort != "":
 			return operatorView(r), nil
 		}
 		m := *r.Move

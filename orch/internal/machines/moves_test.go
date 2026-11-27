@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -405,6 +407,12 @@ func TestDrain_HoldsAtAMachineThatFitsOnNoOtherHost(t *testing.T) {
 	assert.Equal(t, "no host has 4.0 GiB of memory free; the most free is 2.0 GiB", held[0].Detail["reason"])
 	r.pass()
 	assert.Len(t, r.fleet.of(machines.EventDrainHeld), 1, "one event while the reason is the same")
+
+	r.hosts.Drain("h-a", false)
+	r.pass()
+	r.hosts.Drain("h-a", true)
+	r.pass()
+	assert.Len(t, r.fleet.of(machines.EventDrainHeld), 2, "a drain again holds afresh, with its event")
 }
 
 func TestDrain_HoldsAtMostTwoMovesInTheFleet(t *testing.T) {
@@ -460,4 +468,143 @@ func TestMove_AbortsWhenTheSourceRunsAgainAfterItsStop(t *testing.T) {
 	ev := r.fleet.of(machines.EventMoveAborted)
 	require.Len(t, ev, 1)
 	assert.Equal(t, machines.ReasonSourceRanAgain, ev[0].Detail["reason"])
+}
+
+// busyTarget refuses every import of the host, so a move waits at its copy.
+func busyTarget(r *rig, host string) {
+	r.hosts.RefuseImports(host, &hostapi.Error{Status: http.StatusServiceUnavailable, Code: hostapi.CodeBusy, Message: "busy"})
+}
+
+func TestMove_RunsNoMoveAnEarlierPassStillRanWhileThisPassRead(t *testing.T) {
+	r, m := placedOnA(t)
+	busyTarget(r, "h-b")
+	r.move(orchapi.MoveRequest{})
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet, Interval: 50 * time.Millisecond})
+	// The source's stop outlasts the pass that sent it.
+	release := r.hosts.Hang("h-a")
+	r.pass()
+	require.Equal(t, machines.MoveReserved, r.record("web").Move.Step)
+	require.Equal(t, "running", r.hosts.MicroVMs("h-a")["m-"+m.ID+"-1"].State, "control: the stop has not returned")
+
+	// The next pass lists the source running; the stop returns and the earlier pass writes it
+	// stopped, and then that the copy waits, before this pass reads the records.
+	var once sync.Once
+	r.hosts.AfterList = func() {
+		once.Do(func() {
+			release()
+			require.Eventually(t, func() bool {
+				mv := r.record("web").Move
+				return mv != nil && mv.Step == machines.MoveStopped && strings.Contains(mv.Reason, "copy")
+			}, 5*time.Second, 10*time.Millisecond)
+		})
+	}
+	r.pass()
+	r.hosts.AfterList = nil
+
+	rec := r.record("web")
+	require.NotNil(t, rec.Move, "the stale listing aborted nothing")
+	assert.Empty(t, r.fleet.of(machines.EventMoveAborted))
+	assert.Equal(t, "stopped", r.hosts.MicroVMs("h-a")["m-"+m.ID+"-1"].State, "the source was not started again")
+	r.hosts.RefuseImports("h-b", nil)
+	r.pass()
+	r.moved(m)
+}
+
+func TestMove_AnAbortWritesItsDecisionBeforeAnyHostCallAndANewLeaderEndsIt(t *testing.T) {
+	r, m := placedOnA(t)
+	r.move(orchapi.MoveRequest{})
+	old := func(n int) *machines.Reconciler {
+		return machines.NewReconciler(machines.ReconcilerConfig{Store: &killing{Store: r.store, n: n}, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet})
+	}
+	// The leader dies at the commit, leaving the target's never-started copy.
+	require.ErrorIs(t, old(5).Reconcile(t.Context()), errKilled)
+	require.Equal(t, machines.MoveCreated, r.record("web").Move.Step)
+	_, err := r.svc.CancelMove(t.Context(), "garam", "web")
+	require.NoError(t, err)
+
+	// A leader whose decision's write fails makes no host call.
+	require.ErrorIs(t, old(0).Reconcile(t.Context()), errKilled)
+	assert.Equal(t, "created", r.hosts.MicroVMs("h-b")["m-"+m.ID+"-2"].State, "the target's copy is kept")
+	assert.Equal(t, "stopped", r.hosts.MicroVMs("h-a")["m-"+m.ID+"-1"].State, "the source is not started")
+	assert.Empty(t, r.record("web").Move.Abort)
+
+	// One that writes it and dies before the end leaves the decision for the next.
+	require.ErrorIs(t, old(1).Reconcile(t.Context()), errKilled)
+	assert.Equal(t, "the operator cancelled the move", r.record("web").Move.Abort)
+	assert.Empty(t, r.hosts.MicroVMs("h-b"))
+	r.pass()
+	rec := r.record("web")
+	assert.Nil(t, rec.Move)
+	assert.Equal(t, machines.Binding{Host: "h-a", Epoch: 1}, *rec.Binding)
+	assert.Equal(t, "running", r.hosts.MicroVMs("h-a")["m-"+m.ID+"-1"].State)
+	assert.Equal(t, hostapi.Resources{}, r.allocation("h-b"))
+	assert.Len(t, r.fleet.of(machines.EventMoveAborted), 1)
+}
+
+func TestDrain_MovesAMachineItsSourceNeverMadeWithNewVolumes(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib), host("h-b", 32*gib))
+	r.hosts.Refuse("h-a", &hostapi.Error{Status: http.StatusUnprocessableEntity, Message: "image: not found"})
+	m := r.create("web", spec())
+	r.pass()
+	require.Equal(t, machineapi.PhaseFailed, r.record("web").Status.Phase)
+	require.Empty(t, r.hosts.MicroVMs("h-a"), "control: the source holds no microVM")
+	r.hosts.Drain("h-a", true)
+	r.pass()
+
+	rec := r.record("web")
+	assert.Nil(t, rec.Move, "the move did not wait for a copy of nothing")
+	assert.Equal(t, machines.Binding{Host: "h-b", Epoch: 2}, *rec.Binding)
+	assert.Equal(t, "running", r.hosts.MicroVMs("h-b")["m-"+m.ID+"-2"].State)
+	creates := r.hosts.Creates("h-b")
+	require.Len(t, creates, 1)
+	assert.False(t, creates[0].Disks[0].Imported, "the volume is made new")
+	exports, _ := r.hosts.Transfers("h-a")
+	assert.Zero(t, exports)
+}
+
+func TestMove_AnAbortWhoseSourceDoesNotAnswerShowsTheMachineUnknown(t *testing.T) {
+	r, _ := placedOnA(t)
+	busyTarget(r, "h-b")
+	r.move(orchapi.MoveRequest{})
+	r.pass()
+	r.hosts.Fail("h-a")
+	_, err := r.svc.CancelMove(t.Context(), "garam", "web")
+	require.NoError(t, err)
+	r.pass()
+
+	rec := r.record("web")
+	assert.Nil(t, rec.Move)
+	assert.Equal(t, machineapi.PhaseUnknown, rec.Status.Phase)
+	assert.Equal(t, machines.ReasonNotAnswering, rec.Status.Reason)
+}
+
+func TestMove_AbortsAMoveWhoseTargetStaysSilent(t *testing.T) {
+	r, m := placedOnA(t)
+	busyTarget(r, "h-b")
+	r.move(orchapi.MoveRequest{})
+	r.pass()
+	r.hosts.Fail("h-b")
+	r.pass()
+	mv := r.record("web").Move
+	require.NotNil(t, mv)
+	assert.False(t, mv.TargetSilent.IsZero())
+	r.hosts.Recover("h-b")
+	r.pass()
+	assert.True(t, r.record("web").Move.TargetSilent.IsZero(), "a target that answers again starts the bound afresh")
+
+	r.hosts.Fail("h-b")
+	r.pass()
+	r.clock.Advance(9 * time.Minute)
+	r.pass()
+	require.NotNil(t, r.record("web").Move, "the move waits within the bound")
+	r.clock.Advance(2 * time.Minute)
+	r.pass()
+
+	rec := r.record("web")
+	assert.Nil(t, rec.Move)
+	assert.Equal(t, "running", r.hosts.MicroVMs("h-a")["m-"+m.ID+"-1"].State, "the source runs again")
+	assert.Equal(t, hostapi.Resources{}, r.allocation("h-b"))
+	ev := r.fleet.of(machines.EventMoveAborted)
+	require.Len(t, ev, 1)
+	assert.Equal(t, "the target h-b did not answer for 10m0s", ev[0].Detail["reason"])
 }

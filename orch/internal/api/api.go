@@ -4,6 +4,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -352,8 +353,17 @@ func (h *handler) machine(w http.ResponseWriter, r *http.Request, _ identity.Ide
 // moveMachine records an operator's move; an empty body moves the Machine within its own shape.
 func (h *handler) moveMachine(w http.ResponseWriter, r *http.Request, who identity.Identity) {
 	var req orchapi.MoveRequest
-	if r.ContentLength != 0 && !decode(w, r, &req) {
+	// A body of no bytes, of a known length or chunked, is a move within the Machine's own shape.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err != nil {
+		writeError(w, r, err)
 		return
+	}
+	if len(bytes.TrimSpace(body)) > 0 {
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if !decode(w, r, &req) {
+			return
+		}
 	}
 	out, err := h.Machines.Move(r.Context(), who.Subject, r.PathValue("caller"), r.PathValue("name"), req)
 	reply(w, r, out, err)
