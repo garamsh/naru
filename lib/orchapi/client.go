@@ -193,6 +193,13 @@ func (c *Client) Drain(ctx context.Context, hostID string) (Host, error) {
 	return out, c.do(ctx, http.MethodPost, "/v1/hosts/"+url.PathEscape(hostID)+"/drain", nil, nil, &out)
 }
 
+// AbandonHost records the operator's abandonment of a fenced host and has the signer revoke it.
+// A repeat of an abandonment retries only the revocation.
+func (c *Client) AbandonHost(ctx context.Context, hostID string, r AbandonRequest) (Host, error) {
+	var out Host
+	return out, c.do(ctx, http.MethodPost, "/v1/hosts/"+url.PathEscape(hostID)+"/abandon", nil, r, &out)
+}
+
 // Undrain lets the host be placed on again.
 func (c *Client) Undrain(ctx context.Context, hostID string) (Host, error) {
 	var out Host

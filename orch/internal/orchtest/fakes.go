@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -34,6 +35,47 @@ type Signer struct {
 	tokens map[string]string
 	// renewed are the serials of the caller certificates that have renewed, each once.
 	renewed map[string]bool
+	// revokedHosts are the hosts RevokeHost revoked, in order, and failRevoke what it answers
+	// instead while it is set.
+	revokedHosts []string
+	failRevoke   error
+}
+
+// FailRevoke makes RevokeHost answer err from now on; nil makes it revoke again.
+func (s *Signer) FailRevoke(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failRevoke = err
+}
+
+// RevokedHosts returns the hosts RevokeHost revoked, in order.
+func (s *Signer) RevokedHosts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.revokedHosts)
+}
+
+// RevokeHost implements inventory.Signer: it verifies the request as the signer does, root's or an
+// operator's, and answers one revoked serial for the host.
+func (s *Signer) RevokeHost(_ context.Context, signed []byte) (identity.HostSerials, error) {
+	s.mu.Lock()
+	fail := s.failRevoke
+	s.mu.Unlock()
+	if fail != nil {
+		return identity.HostSerials{}, fail
+	}
+	id, body, err := identity.VerifyRequest(signed, identity.ActionRevokeHost, s.CA.Pool(), nil, time.Now())
+	if err != nil || (id.Role != identity.RoleOperator && id.Role != identity.RoleRoot) {
+		return identity.HostSerials{}, fmt.Errorf("%w: %v (role %q)", inventory.ErrSignerRefused, err, id.Role)
+	}
+	var req identity.HostSerialsRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return identity.HostSerials{}, err
+	}
+	s.mu.Lock()
+	s.revokedHosts = append(s.revokedHosts, req.HostID)
+	s.mu.Unlock()
+	return identity.HostSerials{HostID: req.HostID, Serials: []identity.HostSerial{{Serial: "0a" + req.HostID, Revoked: true}}}, nil
 }
 
 // Fail makes IssueHost answer err from now on; nil makes it sign again.

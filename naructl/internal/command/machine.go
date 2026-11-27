@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/spf13/pflag"
@@ -96,6 +97,7 @@ func machineMove(fs *pflag.FlagSet) runner {
 	region := o.fs.String("region", "", "the region the Machine moves to, which its shape must allow")
 	o.fs.Var(&labels, "label", "a label the target host must carry, <key>=<value>, repeatable")
 	cancelMove := o.fs.Bool("cancel", false, "abandon the move in progress, which a move past its commit refuses")
+	abandonVolumes := o.fs.Bool("abandon-volumes", false, "move a lost Machine, whose host was abandoned, with new, empty volumes")
 	return func(args []string, stdout, _ io.Writer) error {
 		if err := o.check(args, 1); err != nil {
 			return err
@@ -104,10 +106,10 @@ func machineMove(fs *pflag.FlagSet) runner {
 		if err != nil {
 			return err
 		}
-		if *cancelMove && (*region != "" || len(labels) > 0) {
-			return fmt.Errorf("--cancel takes no --region or --label")
+		if *cancelMove && (*region != "" || len(labels) > 0 || *abandonVolumes) {
+			return fmt.Errorf("--cancel takes no --region, --label or --abandon-volumes")
 		}
-		var req orchapi.MoveRequest
+		req := orchapi.MoveRequest{AbandonVolumes: *abandonVolumes}
 		if *region != "" || len(labels) > 0 {
 			l, err := attributes(labels)
 			if err != nil {
@@ -138,9 +140,75 @@ func machineMove(fs *pflag.FlagSet) runner {
 			_, _ = fmt.Fprintf(stdout, "naructl: Machine %s/%s has no move\n", m.Caller, m.Name)
 		case m.Move.Cancelled:
 			_, _ = fmt.Fprintf(stdout, "naructl: the move of Machine %s/%s is cancelled at %s\n", m.Caller, m.Name, m.Move.Step)
+		case m.Move.AbandonVolumes:
+			_, _ = fmt.Fprintf(stdout, "naructl: Machine %s/%s moves from %s with new volumes, %s; its old ones stay listed in machine abandoned-volumes list\n", m.Caller, m.Name, m.Move.Source, m.Move.Step)
 		default:
 			_, _ = fmt.Fprintf(stdout, "naructl: Machine %s/%s moves from %s, %s\n", m.Caller, m.Name, m.Move.Source, m.Move.Step)
 		}
+		return nil
+	}
+}
+
+// abandonedVolumesList lists the volumes left behind, by the Machine and epoch each belonged to:
+// a placement on an abandoned host (bound), or a move's source copy whose target was abandoned
+// after the commit (source).
+func abandonedVolumesList(fs *pflag.FlagSet) runner {
+	o := newOrchFlags(fs)
+	return func(args []string, stdout, _ io.Writer) error {
+		if err := o.check(args, 0); err != nil {
+			return err
+		}
+		_, cl, err := o.connect()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := withTimeout()
+		defer cancel()
+		vs, err := cl.AbandonedVolumes(ctx)
+		if err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "CALLER\tNAME\tHOST\tEPOCH\tROLE\tVOLUMES\tAT")
+		for _, v := range vs {
+			role := v.Role
+			if v.Deleting {
+				role += " (deleting)"
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", v.Caller, v.Name, v.Host, v.Epoch, role, cmp.Or(strings.Join(v.Volumes, ","), "-"), v.At.Format(time.RFC3339))
+		}
+		return tw.Flush()
+	}
+}
+
+// abandonedVolumesDelete deletes the volumes of one Machine's epoch left behind, once the operator
+// has nothing left to recover from them: orch forgets those on an abandoned host, and deletes a
+// source copy on its host first.
+func abandonedVolumesDelete(fs *pflag.FlagSet) runner {
+	o := newOrchFlags(fs)
+	host := o.fs.String("host", "", "the abandoned host the volumes were on")
+	epoch := o.fs.Uint64("epoch", 0, "the epoch of the Machine the volumes belonged to")
+	return func(args []string, stdout, _ io.Writer) error {
+		if err := o.check(args, 1); err != nil {
+			return err
+		}
+		caller, name, err := machineRef(args[0])
+		if err != nil {
+			return err
+		}
+		if err := require(o.fs, "host", "epoch"); err != nil {
+			return err
+		}
+		_, cl, err := o.connect()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := withTimeout()
+		defer cancel()
+		if err := cl.DeleteAbandonedVolumes(ctx, caller, name, *host, *epoch); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "naructl: deleted the volumes of Machine %s/%s epoch %d on host %s; a source copy is deleted on its host before it leaves the list\n", caller, name, *epoch, *host)
 		return nil
 	}
 }

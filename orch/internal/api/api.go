@@ -17,6 +17,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -87,6 +90,8 @@ type Machines interface {
 	// before its commit.
 	Move(ctx context.Context, by, caller, name string, req orchapi.MoveRequest) (orchapi.Machine, error)
 	CancelMove(ctx context.Context, caller, name string) (orchapi.Machine, error)
+	AbandonedVolumes(ctx context.Context) ([]orchapi.AbandonedVolumes, error)
+	DeleteAbandonedVolumes(ctx context.Context, caller, name, host string, epoch uint64) error
 }
 
 // Deps is what the handlers call.
@@ -129,6 +134,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/microvms", h.guard(auth.Read, h.microVMs))
 	mux.HandleFunc("GET /v1/machines", h.guard(auth.Read, h.machines))
 	mux.HandleFunc("GET /v1/machines/{caller}/{name}", h.guard(auth.Read, h.machine))
+	mux.HandleFunc("GET /v1/machines/abandoned-volumes", h.guard(auth.Read, h.abandonedVolumes))
+	mux.HandleFunc("DELETE /v1/machines/{caller}/{name}/abandoned-volumes/{host}/{epoch}", h.guard(auth.Attest, h.deleteAbandonedVolumes))
 	mux.HandleFunc("POST /v1/machines/{caller}/{name}/move", h.guard(auth.Operate, h.moveMachine))
 	mux.HandleFunc("DELETE /v1/machines/{caller}/{name}/move", h.guard(auth.Operate, h.cancelMove))
 	mux.HandleFunc("GET /v1/groups", h.guard(auth.Read, h.groupList))
@@ -157,6 +164,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("PUT /v1/hosts/{id}/labels", h.guard(auth.Operate, h.labels))
 	mux.HandleFunc("POST /v1/hosts/{id}/drain", h.guard(auth.Operate, h.drain))
 	mux.HandleFunc("POST /v1/hosts/{id}/undrain", h.guard(auth.Operate, h.undrain))
+	mux.HandleFunc("POST /v1/hosts/{id}/abandon", h.guard(auth.Attest, h.abandon))
 	mux.HandleFunc("DELETE /v1/hosts/{id}", h.guard(auth.Operate, h.removeHost))
 	mux.HandleFunc("GET /v1/profile", h.guard(auth.Read, h.profile))
 	mux.HandleFunc("PUT /v1/profile", h.guard(auth.Operate, h.setProfile))
@@ -289,6 +297,8 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, identity.ErrNoRevocationList), errors.Is(err, identity.ErrStaleRevocationList):
 		status, msg = http.StatusServiceUnavailable, "the revocation list is not available"
 		logger(r).Error("no revocation list", "err", err.Error())
+	case errors.Is(err, inventory.ErrAbandoned):
+		status, msg = http.StatusGone, err.Error()
 	case errors.Is(err, inventory.ErrRateLimited):
 		status, msg = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, inventory.ErrKeyRefused):
@@ -303,7 +313,8 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusUnprocessableEntity, err.Error()
 	case errors.Is(err, inventory.ErrNotFound), errors.Is(err, machines.ErrNotFound), errors.Is(err, machines.ErrNoMove):
 		status, msg = http.StatusNotFound, err.Error()
-	case errors.Is(err, machines.ErrNotPlaced), errors.Is(err, machines.ErrMoving), errors.Is(err, machines.ErrDeleting):
+	case errors.Is(err, machines.ErrNotPlaced), errors.Is(err, machines.ErrMoving), errors.Is(err, machines.ErrDeleting),
+		errors.Is(err, machines.ErrLost), errors.Is(err, machines.ErrNotLost), errors.Is(err, errAbandonedBound):
 		status, msg = http.StatusConflict, err.Error()
 	case errors.Is(err, machineapi.ErrInvalid):
 		status, msg = http.StatusUnprocessableEntity, err.Error()
@@ -367,6 +378,24 @@ func (h *handler) moveMachine(w http.ResponseWriter, r *http.Request, who identi
 	}
 	out, err := h.Machines.Move(r.Context(), who.Subject, r.PathValue("caller"), r.PathValue("name"), req)
 	reply(w, r, out, err)
+}
+
+func (h *handler) abandonedVolumes(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Machines.AbandonedVolumes(r.Context())
+	reply(w, r, out, err)
+}
+
+func (h *handler) deleteAbandonedVolumes(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	epoch, err := strconv.ParseUint(r.PathValue("epoch"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, orchapi.Error{Message: "the epoch is not a number"})
+		return
+	}
+	if err := h.Machines.DeleteAbandonedVolumes(r.Context(), r.PathValue("caller"), r.PathValue("name"), r.PathValue("host"), epoch); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) cancelMove(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
@@ -437,12 +466,59 @@ func (h *handler) drain(w http.ResponseWriter, r *http.Request, who identity.Ide
 	reply(w, r, out, err)
 }
 
+// abandon records an operator's abandonment of a fenced host. A revocation the signer refused or
+// failed is answered as the error, with the abandonment recorded.
+func (h *handler) abandon(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	var req orchapi.AbandonRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	out, err := h.Inventory.Abandon(r.Context(), who.Subject, r.PathValue("id"), req)
+	reply(w, r, out, err)
+}
+
+// abandonedBound refuses the removal of an abandoned host while any Machine is bound to it. No
+// Machine is bound to an abandoned host after the check: placement and a move's target leave it
+// out, guarded on its abandonment.
+func (h *handler) abandonedBound(ctx context.Context, id string) error {
+	hosts, err := h.Inventory.Hosts(ctx)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(hosts, func(x orchapi.Host) bool { return x.ID == id })
+	if i < 0 || hosts[i].Abandonment == nil || h.Machines == nil {
+		return nil
+	}
+	ms, err := h.Machines.All(ctx)
+	if err != nil {
+		return err
+	}
+	var bound []string
+	for _, m := range ms {
+		if m.Binding != nil && m.Binding.Host == id {
+			bound = append(bound, m.Caller+"/"+m.Name)
+		}
+	}
+	if len(bound) > 0 {
+		return fmt.Errorf("%w: %s; move each with --abandon-volumes or delete it first", errAbandonedBound, strings.Join(bound, ", "))
+	}
+	return nil
+}
+
 func (h *handler) undrain(w http.ResponseWriter, r *http.Request, who identity.Identity) {
 	out, err := h.Inventory.Undrain(r.Context(), who.Subject, r.PathValue("id"))
 	reply(w, r, out, err)
 }
 
+// errAbandonedBound is a removal of an abandoned host a Machine is still bound to: the record of
+// its abandonment is what marks that Machine lost until an operator moves or deletes it.
+var errAbandonedBound = errors.New("the host is abandoned and a Machine is still bound to it")
+
 func (h *handler) removeHost(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	if err := h.abandonedBound(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, r, err)
+		return
+	}
 	if err := h.Inventory.Remove(r.Context(), who.Subject, r.PathValue("id")); err != nil {
 		writeError(w, r, err)
 		return

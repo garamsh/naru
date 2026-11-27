@@ -501,3 +501,32 @@ func TestAProfileIsNotWrittenOverAnotherWrittenWhileItWasChecked(t *testing.T) {
 	}), "the control: the same write against the profile as it is")
 	assert.Equal(t, "pool: y", string(replaced))
 }
+
+func TestAnAbandonmentWritesTheHostsAbandonedKeyAndARemovalDeletesIt(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	kv := c.Members[0].Etcd()
+	s := invetcd.New(kv)
+	ctx := t.Context()
+	now := time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC)
+	admitPlain(t, s, "gone", now)
+	admitPlain(t, s, "kept", now)
+	present := func(id string) bool {
+		resp, err := kv.Get(ctx, invetcd.AbandonedHostPrefix+id)
+		require.NoError(t, err)
+		return resp.Count == 1
+	}
+
+	_, err := s.UpdateHost(ctx, "gone", func(h *inventory.Host) { h.LastSeen = now }, nil)
+	require.NoError(t, err)
+	assert.False(t, present("gone"), "control: a write that abandons nothing writes no key")
+	_, err = s.UpdateHost(ctx, "gone", func(h *inventory.Host) {
+		h.Abandonment = &orchapi.HostAbandonment{By: "alice", At: now, Fenced: "off"}
+	}, nil)
+	require.NoError(t, err)
+	assert.True(t, present("gone"), "written with the abandonment")
+	assert.False(t, present("kept"))
+
+	_, err = s.RemoveHost(ctx, "gone", orchapi.Event{Time: now, Type: inventory.EventRemoved, Subject: "gone"})
+	require.NoError(t, err)
+	assert.False(t, present("gone"), "deleted with the host, so one admitted again under its ID is placed on")
+}

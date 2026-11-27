@@ -69,3 +69,8 @@ Drafted for garamsh/naru#373 (goal 3). It decides the state behind [ADR 0108](./
 - An attestation proves false: an abandoned host is found running its Machines, which is the case for naru fencing through the hypervisor or BMC itself.
 - Reconcile passes take longer than `--machine-interval` at the fleet's size, or etcd's write rate for Machines approaches its quota; either reopens per-site gossip in the manner of Corrosion.
 - Moves fail more often at the copy than at any other step, which would argue for copying while the Machine runs and stopping only for the last delta.
+
+## Errata
+
+- **2026-11-28.** Item 6 says the abandonment's one guarded transaction also records "the Machines on it and their volumes". A list written once cannot stay correct: a Machine created, deleted or moved after the write, or a move's commit in flight at it, would leave the list wrong, and the host record holds no lock on the Machines. So garamsh/naru#384 writes the abandonment on the host record alone. The leader's reconciler derives `lost` for each Machine bound to the host and records the host, epoch and volumes on that Machine's record. From then on `lost` is the Machine record's own: it holds when the host's record or mark is gone, as after the host's removal and re-admission. The decision stands. [machines.md](../machines.md) §State has the shape as built.
+- **2026-11-28.** Item 7's event for the volumes of an abandoned epoch is recorded once per microVM per leader, as `machine.unknown-microvm` is, and not on each pass. A pass runs every 5 seconds, and an event on each one would fill the fleet's event log.

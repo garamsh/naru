@@ -47,6 +47,10 @@ type Service interface {
 	// move before its commit.
 	Move(ctx context.Context, by, caller, name string, req orchapi.MoveRequest) (orchapi.Machine, error)
 	CancelMove(ctx context.Context, caller, name string) (orchapi.Machine, error)
+	// AbandonedVolumes lists the volumes Machines left on abandoned hosts, and
+	// DeleteAbandonedVolumes forgets one Machine's at one epoch.
+	AbandonedVolumes(ctx context.Context) ([]orchapi.AbandonedVolumes, error)
+	DeleteAbandonedVolumes(ctx context.Context, caller, name, host string, epoch uint64) error
 }
 
 // retries bounds how often a write reads again after another write got in first.

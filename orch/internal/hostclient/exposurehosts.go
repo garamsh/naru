@@ -49,7 +49,7 @@ func DialExposureAPI(hc *http.Client, revocations *identity.RevocationList) func
 }
 
 func (h *ExposureHosts) api(ctx context.Context, id string, timeout time.Duration) (ExposureAPI, context.Context, context.CancelFunc, error) {
-	hosts, err := h.inv.Hosts(ctx)
+	hosts, err := reached(ctx, h.inv)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -99,7 +99,7 @@ func live(m hostapi.MicroVM) bool { return machineState(m.State) == groups.Machi
 // on, and whether their naru-proxy answers its health check; a host that did not answer is returned Silent, so the reconciler can tell a slow
 // holder from a gone one.
 func (h *ExposureHosts) List(ctx context.Context) ([]exposures.Host, error) {
-	admitted, err := h.inv.Hosts(ctx)
+	admitted, err := reached(ctx, h.inv)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +183,7 @@ func (h *ExposureHosts) Delete(ctx context.Context, hostID, address string) erro
 // Addresses returns the addresses of the running microVMs of the network on every host that
 // answers.
 func (h *ExposureHosts) Addresses(ctx context.Context, network string) ([]string, error) {
-	admitted, err := h.inv.Hosts(ctx)
+	admitted, err := reached(ctx, h.inv)
 	if err != nil {
 		return nil, err
 	}

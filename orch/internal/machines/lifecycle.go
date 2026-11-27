@@ -162,7 +162,7 @@ func (s *service) change(ctx context.Context, caller, name string, change func(r
 		r.Status.Generation++
 		// A placed Machine shows the state it heads for at once, in the event this change appends;
 		// one that waits for a host stays pending, and one whose host does not answer stays unknown.
-		if r.Binding != nil && r.Status.Phase != machineapi.PhaseUnknown {
+		if r.Binding != nil && r.Status.Phase != machineapi.PhaseUnknown && r.Status.Phase != machineapi.PhaseLost {
 			r.Status.Phase, r.Status.Reason = machineapi.PhaseStarting, ""
 			if r.Spec.State == machineapi.StateStopped {
 				r.Status.Phase = machineapi.PhaseStopping

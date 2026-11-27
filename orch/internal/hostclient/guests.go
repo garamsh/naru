@@ -19,7 +19,7 @@ const execMargin = time.Minute
 // guest returns the API of the admitted host, read from the inventory: a guest call is made by the
 // member that took it, which has no pass of its own.
 func (m *MachineHosts) guest(ctx context.Context, hostID string) (*hostapi.Client, error) {
-	admitted, err := m.c.inv.Hosts(ctx)
+	admitted, err := reached(ctx, m.c.inv)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read the inventory: %v", machines.ErrHostUnavailable, err)
 	}

@@ -38,6 +38,9 @@ type Host struct {
 	Labels   map[string]string
 	Reported map[string]string
 	Draining bool
+	// Abandoned is the operator's abandonment of the host, as its inventory record holds it: the
+	// host is asked nothing, nothing is placed on it, and its Machines are lost.
+	Abandoned bool
 	// Answering is whether the host answered this pass. What follows is empty when it did not.
 	Answering bool
 	// Stale is an answer that is the host's last one, given again while the probe of this pass

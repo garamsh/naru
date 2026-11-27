@@ -37,7 +37,10 @@ const (
 	PhaseMoving   Phase = "moving"
 	PhaseFailed   Phase = "failed"
 	PhaseDeleting Phase = "deleting"
-	PhaseUnknown  Phase = "unknown"
+	// PhaseLost is a Machine whose host an operator abandoned: the caller deletes it, or an
+	// operator moves it to another host with new, empty volumes.
+	PhaseLost    Phase = "lost"
+	PhaseUnknown Phase = "unknown"
 )
 
 // UnmarshalJSON reads a phase this version does not name as PhaseUnknown.
@@ -47,7 +50,7 @@ func (p *Phase) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	switch v := Phase(s); v {
-	case PhasePending, PhaseStarting, PhaseRunning, PhaseStopping, PhaseStopped, PhaseMoving, PhaseFailed, PhaseDeleting:
+	case PhasePending, PhaseStarting, PhaseRunning, PhaseStopping, PhaseStopped, PhaseMoving, PhaseFailed, PhaseDeleting, PhaseLost:
 		*p = v
 	default:
 		*p = PhaseUnknown

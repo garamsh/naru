@@ -11,14 +11,16 @@ import (
 
 // The failures a caller branches on. Each API transport maps them in one place.
 var (
-	ErrNotFound       = errors.New("not found")
-	ErrConflict       = errors.New("conflicts with what orch holds")
-	ErrInvalid        = errors.New("invalid request")
-	ErrKeyRefused     = errors.New("enrollment key refused")
-	ErrRateLimited    = errors.New("too many requests")
-	ErrCodeMismatch   = errors.New("the pairing code does not match the pending host")
-	ErrSignerRefused  = errors.New("the signer refused the admission")
-	ErrSignerFailed   = errors.New("the signer failed")
+	ErrNotFound      = errors.New("not found")
+	ErrConflict      = errors.New("conflicts with what orch holds")
+	ErrInvalid       = errors.New("invalid request")
+	ErrKeyRefused    = errors.New("enrollment key refused")
+	ErrRateLimited   = errors.New("too many requests")
+	ErrCodeMismatch  = errors.New("the pairing code does not match the pending host")
+	ErrSignerRefused = errors.New("the signer refused the request")
+	ErrSignerFailed  = errors.New("the signer failed")
+	// ErrAbandoned is a heartbeat of a host an operator abandoned.
+	ErrAbandoned      = errors.New("the host is abandoned")
 	ErrTooManyPending = errors.New("too many pending enrollments")
 	// ErrPoolFull is an admission that finds every prefix of the Machine pool given to a host.
 	ErrPoolFull = errors.New("the Machine pool has no free prefix")
@@ -49,7 +51,16 @@ const (
 	EventKeyRevoked  = "enrollment-key.revoked"
 	EventCodeRefused = "host.admission-refused"
 	EventRemoved     = "host.removed"
-	EventProfileSet  = "host-profile.set"
+	// EventAbandoned is an operator's abandonment of a fenced host, EventRevoked the signer's
+	// revocation of its certificates, and EventRevocationFailed a revocation that failed, which a
+	// repeat of the abandonment retries.
+	EventAbandoned        = "host.abandoned"
+	EventRevoked          = "host.revoked"
+	EventRevocationFailed = "host.revocation-failed"
+	// EventAbandonedHeartbeat is a heartbeat of an abandoned host, which orch refuses: the sign
+	// that its fence did not hold. One per host per member.
+	EventAbandonedHeartbeat = "host.abandoned-heartbeat"
+	EventProfileSet         = "host-profile.set"
 	// EventPrefixConflict is a Machine prefix a host reports that another host holds.
 	EventPrefixConflict = "host.prefix-conflict"
 	// EventMeshAddressUnavailable is a host the recorder could not give a mesh address, such as one
@@ -119,6 +130,8 @@ type Host struct {
 	// MeshAddress is the host's address on its tunnel, from the mesh pool; empty until orch gives it
 	// one. Its allocation in SpaceMesh is written in the same step.
 	MeshAddress string `json:"meshAddress,omitempty"`
+	// Abandonment is the operator's abandonment of the host, nil while it has none.
+	Abandonment *orchapi.HostAbandonment `json:"abandonment,omitempty"`
 	// Config is what records written before ADR 0066 carried: the naru.yaml with the profile's
 	// credential in it. It is read only so that the migration can drop it, and never written.
 	Config []byte `json:"config,omitempty"`
@@ -129,5 +142,5 @@ func (h Host) api() orchapi.Host {
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	return orchapi.Host{ID: h.ID, Region: h.Region, Labels: labels, Address: h.Address, AdmittedAt: h.AdmittedAt, LastSeen: h.LastSeen, Draining: h.Draining, MachinePrefix: h.MachinePrefix, MeshAddress: h.MeshAddress}
+	return orchapi.Host{ID: h.ID, Region: h.Region, Labels: labels, Address: h.Address, AdmittedAt: h.AdmittedAt, LastSeen: h.LastSeen, Draining: h.Draining, MachinePrefix: h.MachinePrefix, MeshAddress: h.MeshAddress, Abandonment: h.Abandonment}
 }

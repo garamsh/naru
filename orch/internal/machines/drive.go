@@ -43,10 +43,21 @@ func (r *Reconciler) drive(ctx context.Context, p *pass, e *Entry) error {
 // finish removes a deleted Machine: its microVM and disks first, when it was placed, then its
 // record, freeing its name and its host's allocation, with its deleted event and tombstone.
 func (r *Reconciler) finish(ctx context.Context, p *pass, e *Entry) error {
-	if e.Binding != nil {
+	// A lost Machine's host is not called, whatever it answers: what it holds there is the
+	// abandoned volumes', which its tombstone has a host that answers delete.
+	if e.Binding != nil && !p.abandoned(e.Binding.Host) && !e.lost() {
 		name := e.Binding.MicroVM(e.ID)
 		if err := r.cfg.Hosts.Delete(ctx, e.Binding.Host, name); err != nil {
 			return fmt.Errorf("delete %s on %s: %w", name, e.Binding.Host, err)
+		}
+	}
+	// A source copy's disk is freed with the record that kept it; the tombstone has its host delete
+	// the copy.
+	for _, a := range slices.Clone(e.Abandoned) {
+		if a.role() == RoleSource {
+			if err := r.forgetCopy(ctx, p, e, a); err != nil {
+				return err
+			}
 		}
 	}
 	p.mu.Lock()

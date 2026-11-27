@@ -112,6 +112,19 @@ func (c *Client) IssueHost(ctx context.Context, statement, csr []byte) ([]byte, 
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: out.Certificate}), nil
 }
 
+// RevokeHost forwards an operator's signed revoke-host request, which the signer verifies.
+func (c *Client) RevokeHost(ctx context.Context, signed []byte) (identity.HostSerials, error) {
+	raw, err := c.do(ctx, http.MethodPost, "/v1/revoke-host", signed)
+	if err != nil {
+		return identity.HostSerials{}, err
+	}
+	var out identity.HostSerials
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return identity.HostSerials{}, fmt.Errorf("the signer's revocation answer: %w", err)
+	}
+	return out, nil
+}
+
 // CRL returns the signed revocation list.
 func (c *Client) CRL(ctx context.Context) ([]byte, error) {
 	return c.call(ctx, http.MethodGet, "/v1/crl", nil)

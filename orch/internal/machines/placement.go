@@ -52,6 +52,11 @@ func need(s machineapi.Spec) amounts {
 	return amounts{int64(s.CPU), int64(s.MemoryBytes), int64(disk)}
 }
 
+// diskOf is the disk alone of what the spec takes: what a stopped copy of it keeps on its host.
+func diskOf(s machineapi.Spec) amounts {
+	return amounts{disk: need(s).disk}
+}
+
 // takes is what a microVM the host reports takes of it.
 func takes(m hostapi.MicroVM) amounts {
 	disk := m.RootDiskBytes
@@ -107,7 +112,7 @@ type stage struct {
 func place(id string, spec machineapi.Spec, cs []candidate, onto string) placement {
 	n := need(spec)
 	stages := []stage{
-		{func(c candidate) bool { return c.Answering }, "no host answers", nil},
+		{func(c candidate) bool { return c.Answering && !c.Abandoned }, "no host answers", nil},
 		{func(c candidate) bool { return !c.Draining }, "every host that answers is draining", nil},
 		{func(c candidate) bool { return spec.Shape.Region == "" || c.Region == spec.Shape.Region }, "no host is in the shape's region", nil},
 		{func(c candidate) bool { return carries(c.Host, spec.Shape.Labels) }, "no host carries the shape's labels", nil},

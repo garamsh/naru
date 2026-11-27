@@ -38,6 +38,7 @@ type fakeMachineHost struct {
 	down  bool
 	stale bool
 	vms   map[string]hostapi.MicroVM
+	calls int
 	disks map[string]hostapi.DiskSnapshot
 	// creates are every create asked, and graces every stop's grace.
 	creates []hostapi.CreateRequest
@@ -87,6 +88,31 @@ func NewFakeMachineHosts(hosts ...machines.Host) *FakeMachineHosts {
 // Fail makes the host stop answering, and Recover answer again; what it holds stays.
 func (f *FakeMachineHosts) Fail(id string)    { f.set(id, func(h *fakeMachineHost) { h.down = true }) }
 func (f *FakeMachineHosts) Recover(id string) { f.set(id, func(h *fakeMachineHost) { h.down = false }) }
+
+// Abandon marks the host abandoned, as its inventory record does once an operator abandons it. It
+// answers as before, so a test sees that the record alone, not the host's silence, is acted on.
+func (f *FakeMachineHosts) Abandon(id string) {
+	f.set(id, func(h *fakeMachineHost) { h.host.Abandoned = true })
+}
+
+// Readmit clears the host's abandonment, as a host removed and admitted again under its ID is
+// recorded.
+func (f *FakeMachineHosts) Readmit(id string) {
+	f.set(id, func(h *fakeMachineHost) { h.host.Abandoned = false })
+}
+
+// Reset makes the host as one removed, reset and admitted again under its ID: not abandoned, and
+// holding no microVM.
+func (f *FakeMachineHosts) Reset(id string) {
+	f.set(id, func(h *fakeMachineHost) { h.host.Abandoned, h.vms = false, map[string]hostapi.MicroVM{} })
+}
+
+// Remove takes the host out of the list, as orch's removal of it does.
+func (f *FakeMachineHosts) Remove(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.hosts, id)
+}
 
 // Drain sets whether the host is draining, as the inventory records it.
 func (f *FakeMachineHosts) Drain(id string, draining bool) {
@@ -217,7 +243,18 @@ func (f *FakeMachineHosts) answering(id string) (*fakeMachineHost, error) {
 	if !ok || h.down {
 		return nil, fmt.Errorf("host %s does not answer", id)
 	}
+	h.calls++
 	return h, nil
+}
+
+// Calls counts the calls the host answered, every call but List.
+func (f *FakeMachineHosts) Calls(id string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if h := f.hosts[id]; h != nil {
+		return h.calls
+	}
+	return 0
 }
 
 func notFound(format string, a ...any) error {
