@@ -94,10 +94,7 @@ func main() {
 		return
 	}
 
-	proxyPorts, err := proxyFlags(*proxyHealth, *proxyTLS)
-	if err == nil && *proxyAge <= 0 {
-		err = errors.New("--proxy-route-max-age must be positive")
-	}
+	proxyPorts, err := proxyFlags(*proxyHealth, *proxyTLS, *proxyAge)
 	if err != nil {
 		log.Error(err.Error())
 		os.Exit(1)

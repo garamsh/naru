@@ -462,8 +462,8 @@ func (v *validation) proxy(spec Spec) {
 		v.fail("spec.proxy.certificate", "must be the PEM of the zone's certificate, then its chain")
 	}
 	if p.RouteMaxAge != "" {
-		if d, err := time.ParseDuration(p.RouteMaxAge); err != nil || d <= 0 {
-			v.fail("spec.proxy.routeMaxAge", "must be a positive duration such as 1h, got %q", p.RouteMaxAge)
+		if d, err := time.ParseDuration(p.RouteMaxAge); err != nil || d <= 0 || d > wire.ProxyMaxRouteMaxAge {
+			v.fail("spec.proxy.routeMaxAge", "must be a positive duration such as 1h, %s at most, got %q", wire.ProxyMaxRouteMaxAge, p.RouteMaxAge)
 		}
 	}
 	if !slices.ContainsFunc(spec.Services, func(s Service) bool { return s.Name == HostdService }) {

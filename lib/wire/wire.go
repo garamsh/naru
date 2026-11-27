@@ -67,6 +67,9 @@ const (
 	// ProxyRouteMaxAge is the proxy's --route-max-age when spec.proxy.routeMaxAge is absent: how
 	// long after hostd took a table the proxy forwards on it.
 	ProxyRouteMaxAge = time.Hour
+	// ProxyMaxRouteMaxAge is the longest --route-max-age a proxy may be given: orch waits a proxy's
+	// max age out before it reuses an address, so a longer one would hold every Machine's delete.
+	ProxyMaxRouteMaxAge = 24 * time.Hour
 	// ProxyPort is the port the proxy terminates TLS on.
 	ProxyPort = "443"
 	// ProxyRedirectListen is where the proxy answers plain HTTP with a redirect to https on the

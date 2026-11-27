@@ -82,19 +82,23 @@ func TestProxyCheck_RunProbesAtOnceAndThenEveryInterval(t *testing.T) {
 }
 
 func TestProxyFlags_TakeTheHealthAddressAndTheTLSPortTogether(t *testing.T) {
-	p, err := proxyFlags("", 0)
+	p, err := proxyFlags("", 0, time.Hour)
 	require.NoError(t, err)
 	assert.Equal(t, network.ProxyPorts{}, p, "neither flag: the host runs no proxy")
-	p, err = proxyFlags("127.0.0.1:9443", 8443)
+	p, err = proxyFlags("127.0.0.1:9443", 8443, time.Hour)
 	require.NoError(t, err)
 	assert.Equal(t, network.ProxyPorts{TLS: 8443, Redirect: wire.ProxyRedirectPort}, p)
-	_, err = proxyFlags("127.0.0.1:9443", 65535)
+	_, err = proxyFlags("127.0.0.1:9443", 65535, 24*time.Hour)
 	require.NoError(t, err, "the highest port")
 	for _, c := range []struct {
 		health string
 		port   int
 	}{{"127.0.0.1:9443", 0}, {"", 8443}, {"127.0.0.1:9443", -1}, {"127.0.0.1:9443", 65536}} {
-		_, err := proxyFlags(c.health, c.port)
+		_, err := proxyFlags(c.health, c.port, time.Hour)
 		assert.Error(t, err, "health %q, port %d", c.health, c.port)
+	}
+	for _, age := range []time.Duration{0, -time.Second, 24*time.Hour + time.Second} {
+		_, err := proxyFlags("127.0.0.1:9443", 8443, age)
+		assert.Error(t, err, "a route max age of %s, which orch would wait out on every delete", age)
 	}
 }

@@ -102,6 +102,7 @@ func TestParse_ProxyRefuses(t *testing.T) {
 		{"certificate not PEM", "-----BEGIN CERTIFICATE-----", "-----BEGIN NOTHING-----", "spec.proxy.certificate"},
 		{"route max age not a duration", "routeMaxAge: 30m", "routeMaxAge: soon", "spec.proxy.routeMaxAge"},
 		{"route max age not positive", "routeMaxAge: 30m", "routeMaxAge: 0s", "spec.proxy.routeMaxAge"},
+		{"route max age above a day", "routeMaxAge: 30m", "routeMaxAge: 24h1s", "spec.proxy.routeMaxAge"},
 		{"no hostd", "    - name: naru-hostd\n      binary: /bin/naru-hostd", "    - name: other\n      binary: /bin/other", "spec.proxy"},
 		{"key file missing", "- path: /run/naru-proxy/zone.key", "- path: /run/naru-proxy/other.key", "spec.proxy"},
 		{"key file readable by others", `mode: "0600"`, `mode: "0644"`, "spec.files[0].mode"},
