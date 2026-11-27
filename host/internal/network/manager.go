@@ -341,14 +341,14 @@ func (m *Manager) reconcile(ctx context.Context, live func(context.Context) ([]n
 }
 
 // Admit takes the addresses of a microVM put on no network as a Machine's, and applies when that
-// changes anything. An address a member holds is left to its network.
+// changes anything. An address a member holds changes no rule, so apply keeps none of it.
 func (m *Manager) Admit(ctx context.Context, addrs ...netip.Addr) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	next := m.c
 	next.Machines = append([]netip.Addr(nil), m.c.Machines...)
 	for _, a := range addrs {
-		if !slices.Contains(next.Machines, a) && !slices.ContainsFunc(m.c.Members, func(x Member) bool { return x.Address == a }) {
+		if !slices.Contains(next.Machines, a) {
 			next.Machines = append(next.Machines, a)
 		}
 	}
