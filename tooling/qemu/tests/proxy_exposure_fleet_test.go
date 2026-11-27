@@ -29,13 +29,16 @@ import (
 // LAN reaches each proxy through the address: on 443, which only the holder's redirect to proxyTLS
 // takes to the proxy (it refuses the handshake for a name it has no route for, which is the
 // answer), and on 80, its redirect to https. When one host stops, both addresses are held by the
-// other within ADR 0085's grace, lease and skew.
+// other within ADR 0085's grace, lease and skew. hostd's API, which listens on every address, is not
+// reached through a leased one.
 const (
 	edgeA    = "10.78.0.80"
 	edgeB    = "10.78.0.81"
 	proxyTLS = "8443"
 	// noRoute is the alert the proxy refuses a handshake with while it has no route for the name.
 	noRoute = "unrecognized_name"
+	// hostAPI is the port of hostd's API, which listens on every address of the host (#437).
+	hostAPI = "7443"
 )
 
 // zonePair is a throwaway wildcard certificate and its key, PEM, for the proxies' zone.
@@ -117,6 +120,7 @@ func TestFleet_TwoProxyExposuresAreHeldByTwoProxyHostsAndBothByTheOneLeftWhenOne
 	targets := []string{
 		"tls://" + edgeA + ":443", "tls://" + edgeB + ":443", "http://" + edgeA + ":80", "http://" + edgeB + ":80",
 		"http://" + edgeA + ":81", "tls://" + nodeIP(2) + ":443", "tls://" + nodeIP(2) + ":" + proxyTLS,
+		"tls://" + edgeA + ":" + hostAPI, "tls://" + nodeIP(2) + ":" + hostAPI,
 	}
 	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, capture: true, userData: withProxy(t),
 		services: []node.ExtraService{
@@ -158,6 +162,8 @@ func TestFleet_TwoProxyExposuresAreHeldByTwoProxyHostsAndBothByTheOneLeftWhenOne
 	assert.Equal(t, "fail", answerOf(client, "http://"+edgeA+":81"), "the control: a port the exposure does not carry is not redirected")
 	assert.Equal(t, "fail", answerOf(client, "tls://"+nodeIP(2)+":443"), "the control: no proxy listens on 443, so 443 reached it only through the redirect")
 	assert.Equal(t, noRoute, answerOf(client, "tls://"+nodeIP(2)+":"+proxyTLS), "and the proxy answers so on its own listener")
+	assert.Equal(t, "fail", answerOf(client, "tls://"+edgeA+":"+hostAPI), "hostd's API does not answer on a leased address (#437)")
+	assert.NotContains(t, []string{"", "fail"}, answerOf(client, "tls://"+nodeIP(2)+":"+hostAPI), "the control: it answers on the host's own")
 
 	// The first host stops: both addresses are held by the other, and the client is redirected
 	// through both again.

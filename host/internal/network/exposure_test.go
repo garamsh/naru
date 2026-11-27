@@ -219,7 +219,7 @@ func TestRuleset_ProxiedTCPPortIsNotForwarded(t *testing.T) {
 	e.Ports = []network.ExposurePort{{Protocol: wire.ProtocolTCP, Port: 443, BackendPort: 30443}}
 	c.Exposures = []network.Exposure{e}
 	rules := network.Ruleset(c)
-	assert.NotContains(t, rules, "dport 443", "the proxy answers the port, no DNAT does")
+	assert.NotContains(t, rules, "dport 443 dnat", "the proxy answers the port, no DNAT does")
 	assert.NotContains(t, rules, "dport 30443")
 	assert.NotContains(t, rules, "exposure_dnat")
 
@@ -228,11 +228,58 @@ func TestRuleset_ProxiedTCPPortIsNotForwarded(t *testing.T) {
 	assert.Contains(t, network.Ruleset(c), "tcp dport 443 dnat", "control: the same exposure without the proxy is forwarded")
 }
 
+func TestRuleset_AnExposuresAddressReachesOnlyWhatTheHostServesOnIt(t *testing.T) {
+	c := twoNetworks()
+	c.LAN = "lan0"
+	c.Proxy = network.ProxyPorts{TLS: 8443, Redirect: 80}
+	proxied := web(true)
+	proxied.Address = addr("192.168.0.81")
+	toProxy := network.Exposure{Address: addr("192.168.0.82"), ToProxy: true, Ports: []network.ExposurePort{
+		{Protocol: wire.ProtocolTCP, Port: 443, BackendPort: 443}, {Protocol: wire.ProtocolTCP, Port: 80, BackendPort: 80},
+	}}
+	c.Exposures = []network.Exposure{web(false), proxied, toProxy}
+	tb := parseTable(t, network.Ruleset(c))
+	const dropped = "an exposure's address to the host"
+	for _, tc := range []struct {
+		name   string
+		p      packet
+		accept bool
+		rule   string
+	}{
+		{"hostd's API on a forwarded exposure's address", packet{in: "lan0", src: "192.168.0.9", dst: "192.168.0.80", dport: 7443}, false, dropped},
+		{"the forwarded port itself, which the DNAT would have sent on", packet{in: "lan0", src: "192.168.0.9", dst: "192.168.0.80", dport: 80}, false, dropped},
+		{"a PROXY protocol exposure's port, which hostd listens on", packet{in: "lan0", src: "192.168.0.9", dst: "192.168.0.81", dport: 80}, true, "192.168.0.81:80 served by the host"},
+		{"its forwarded UDP port's number over TCP, which nothing serves", packet{in: "lan0", src: "192.168.0.9", dst: "192.168.0.81", dport: 53}, false, dropped},
+		{"hostd's API on a PROXY protocol exposure's address", packet{in: "lan0", src: "192.168.0.9", dst: "192.168.0.81", dport: 7443}, false, dropped},
+		{"the proxy's TLS listener a proxy exposure's 443 is redirected to", packet{in: "lan0", src: "192.168.0.9", dst: "192.168.0.82", dport: 8443}, true, "192.168.0.82:8443 served by the host"},
+		{"the redirect listener its 80 is redirected to", packet{in: "lan0", src: "192.168.0.9", dst: "192.168.0.82", dport: 80}, true, "192.168.0.82:80 served by the host"},
+		{"hostd's API on a proxy exposure's address", packet{in: "lan0", src: "192.168.0.9", dst: "192.168.0.82", dport: 7443}, false, dropped},
+		{"the same from another interface", packet{in: "eth1", src: "172.16.0.9", dst: "192.168.0.82", dport: 7443}, false, dropped},
+		{"a reply on a flow the host allowed", packet{in: "lan0", src: "192.168.0.9", dst: "192.168.0.82", dport: 7443, established: true}, true, ""},
+		{"the control: hostd's API on the host's own LAN address", packet{in: "lan0", src: "192.168.0.9", dst: "192.168.0.10", dport: 7443}, true, "policy accept"},
+	} {
+		got := tb.judge("input", tc.p)
+		assert.Equal(t, tc.accept, got.accept, tc.name)
+		if tc.rule != "" {
+			assert.Equal(t, tc.rule, got.rule, tc.name)
+		}
+	}
+}
+
+func TestRuleset_NoExposureDropsNothingOnInput(t *testing.T) {
+	c := twoNetworks()
+	c.LAN = "lan0"
+	assert.NotContains(t, network.Ruleset(c), "an exposure's address")
+	c.Exposures = []network.Exposure{web(false)}
+	assert.Contains(t, network.Ruleset(c), "ip daddr { 192.168.0.80 } counter drop", "control: an exposure's address is dropped")
+}
+
 func TestRuleset_NoLANForwardsNothing(t *testing.T) {
 	c := twoNetworks()
 	c.Exposures = []network.Exposure{web(false)}
 	rules := network.Ruleset(c)
 	assert.NotContains(t, rules, "dnat")
+	assert.NotContains(t, rules, "an exposure's address")
 	c.LAN = "lan0"
 	assert.Contains(t, network.Ruleset(c), "dnat", "control: with a LAN interface it is forwarded")
 }

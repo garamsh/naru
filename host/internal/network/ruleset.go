@@ -54,7 +54,8 @@ func elementText(p netip.Prefix) string {
 // network's API endpoint. A network's traffic to another network's set, to the management prefix
 // and from a tap with a source no local member holds is dropped and counted by a rule of its own.
 // The input chain drops and counts a new connection from a tap, or from a network's member
-// arriving by the tunnel, to any address of the host.
+// arriving by the tunnel, to any address of the host, and one to an exposure's address but to a
+// port the host serves the exposure on itself.
 func Ruleset(c Config) string {
 	var b strings.Builder
 	line := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
@@ -105,6 +106,7 @@ func Ruleset(c Config) string {
 	for _, n := range nets {
 		line("\t\tip saddr @%s counter drop comment \"%s to the host\"", setName(n.Name), n.Name)
 	}
+	exposureInput(c, line)
 	line("\t}")
 
 	line("\tchain forward {")
@@ -138,6 +140,25 @@ func Ruleset(c Config) string {
 	exposureRules(c, line)
 	line("}")
 	return b.String()
+}
+
+// exposureInput writes the rules of the input chain that keep an exposure's address from reaching
+// the host's own services, which listen on every address (hostd's API among them): only the ports
+// the host serves the exposure on itself are accepted, a PROXY protocol port and a proxy
+// exposure's redirect targets, and every other flow to the address is dropped and counted. A
+// forwarded port is DNATed to a backend before the chain, so it is not seen here.
+func exposureInput(c Config, line func(string, ...any)) {
+	if c.LAN == "" || len(c.Exposures) == 0 {
+		return
+	}
+	var addrs []netip.Addr
+	for _, e := range sortedExposures(c.Exposures) {
+		addrs = append(addrs, e.Address)
+		for _, port := range e.served(c.Proxy) {
+			line("\t\tip daddr %s tcp dport %d accept comment \"%s:%d served by the host\"", e.Address, port, e.Address, port)
+		}
+	}
+	line("\t\tip daddr { %s } counter drop comment \"an exposure's address to the host\"", addrList(addrs))
 }
 
 // exposureForward writes the rules of the forward chain that let the LAN reach the backend ports
