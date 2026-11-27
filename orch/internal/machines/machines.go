@@ -60,6 +60,11 @@ type Record struct {
 	// Refused is the generation whose create the host refused; the reconciler makes no create while
 	// it is the Machine's generation.
 	Refused uint64 `json:"refused,omitempty"`
+	// Move is the move in progress, nil when there is none (ADR 0109 item 5).
+	Move *Move `json:"move,omitempty"`
+	// Epoch is the highest epoch a placement or a move of the Machine took, so the next is above it
+	// although the host that holds it does not answer.
+	Epoch uint64 `json:"epoch,omitempty"`
 }
 
 // Binding is a placement of a Machine: its host, and the epoch that counts its placements.

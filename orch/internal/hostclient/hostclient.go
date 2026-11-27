@@ -167,14 +167,23 @@ func request(spec groups.MachineSpec) (hostapi.CreateRequest, error) {
 // host is the API of the host hostID as the last List read it, with the context of one call. A
 // host that List did not read is not admitted as far as this pass goes.
 func (c *Client) host(ctx context.Context, hostID string) (*hostapi.Client, context.Context, context.CancelFunc, error) {
+	api, err := c.passed(hostID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	return api, ctx, cancel, nil
+}
+
+// passed is the API of the host as the pass's inventory recorded it.
+func (c *Client) passed(hostID string) (*hostapi.Client, error) {
 	c.mu.Lock()
 	h, ok := c.pass[hostID]
 	c.mu.Unlock()
 	if !ok {
-		return nil, nil, nil, fmt.Errorf("host %s is not admitted", hostID)
+		return nil, fmt.Errorf("host %s is not admitted", hostID)
 	}
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
-	return c.api(h), ctx, cancel, nil
+	return c.api(h), nil
 }
 
 // Create asks the host to make the microVM. The host starts it unless it is fenced; a fenced one

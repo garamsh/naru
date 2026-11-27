@@ -341,8 +341,10 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	if machineHosts != nil {
 		reconcilers = append(reconcilers, machines.NewReconciler(machines.ReconcilerConfig{
 			Store: machinesetcd.New(leaderKV), Hosts: machineHosts, Clock: d.Clock, Interval: c.MachineInterval, Reserve: c.HostReserve,
-			Wake:  func(ctx context.Context) <-chan struct{} { return machinesetcd.Watch(ctx, m.Client(), d.Log) },
-			Fleet: leaderInv, Log: d.Log,
+			Wake: func(ctx context.Context) <-chan struct{} { return machinesetcd.Watch(ctx, m.Client(), d.Log) },
+			// No proxy routes a Machine yet: a move deletes its source without waiting for routes
+			// until #387 replaces NoRoutes with the routes' delivery (orch.md §Moves).
+			Fleet: leaderInv, Routes: machines.NoRoutes, Log: d.Log,
 		}))
 	}
 	limits := c.Limits.WithDefaults()

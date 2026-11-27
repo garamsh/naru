@@ -39,8 +39,14 @@ type Service interface {
 	WriteFile(ctx context.Context, caller, name, path string, content []byte) error
 	// Events returns the caller's events after the cursor since, the whole log when since is empty.
 	Events(ctx context.Context, caller, since string) (machineapi.EventPage, error)
-	// All is every caller's Machines, for the operator API.
+	// All is every caller's Machines, and OperatorMachine one, for the operator API.
 	All(ctx context.Context) ([]orchapi.Machine, error)
+	OperatorMachine(ctx context.Context, caller, name string) (orchapi.Machine, error)
+	// Move records a move of the caller's Machine, by the operator's subject or ByDrain, which the
+	// reconciler carries out; a repeat of the move in progress answers it. CancelMove abandons the
+	// move before its commit.
+	Move(ctx context.Context, by, caller, name string, req orchapi.MoveRequest) (orchapi.Machine, error)
+	CancelMove(ctx context.Context, caller, name string) (orchapi.Machine, error)
 }
 
 // retries bounds how often a write reads again after another write got in first.

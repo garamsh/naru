@@ -43,6 +43,10 @@ type fakeOrch struct {
 	profile []byte
 	// drains are the calls "drain <id>" and "undrain <id>", in order.
 	drains []string
+	// machines are what the Machine reads answer, and moves each move sent: "move <caller>/<name>"
+	// with its request, or "cancel <caller>/<name>".
+	machines []orchapi.Machine
+	moves    []sentMove
 	// networks and deletedNetworks are what the network commands sent.
 	networks []sentNetwork
 	// pools and deletedPools are what the address-pool commands sent, and releasedExposures the "<network>/<id>" of
@@ -63,6 +67,12 @@ type fakeOrch struct {
 	restoredSHA   string
 	restoreStatus int
 	latest        []byte
+}
+
+// sentMove is a move as naructl sent it.
+type sentMove struct {
+	call string
+	req  orchapi.MoveRequest
 }
 
 // sentPool is an address pool as a PUT carried it.
@@ -292,9 +302,60 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 			_ = json.NewEncoder(w).Encode(orchapi.Host{ID: r.PathValue("id"), Draining: verb == "drain"})
 		})
 	}
+	mux.HandleFunc("GET /v1/machines", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(f.machines)
+	})
+	mux.HandleFunc("GET /v1/machines/{caller}/{name}", func(w http.ResponseWriter, r *http.Request) {
+		if m, ok := f.machine(w, r); ok {
+			_ = json.NewEncoder(w).Encode(m)
+		}
+	})
+	mux.HandleFunc("POST /v1/machines/{caller}/{name}/move", func(w http.ResponseWriter, r *http.Request) {
+		var req orchapi.MoveRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		m, ok := f.machine(w, r)
+		if !ok {
+			return
+		}
+		f.mu.Lock()
+		f.moves = append(f.moves, sentMove{call: "move " + m.Caller + "/" + m.Name, req: req})
+		f.mu.Unlock()
+		m.Move = &orchapi.MachineMove{By: "alice", Step: orchapi.MoveRequested, Source: m.Binding.Host, Shape: req.Shape}
+		_ = json.NewEncoder(w).Encode(m)
+	})
+	mux.HandleFunc("DELETE /v1/machines/{caller}/{name}/move", func(w http.ResponseWriter, r *http.Request) {
+		m, ok := f.machine(w, r)
+		if !ok {
+			return
+		}
+		f.mu.Lock()
+		f.moves = append(f.moves, sentMove{call: "cancel " + m.Caller + "/" + m.Name})
+		f.mu.Unlock()
+		m.Move = &orchapi.MachineMove{By: "alice", Step: orchapi.MoveStopped, Source: m.Binding.Host, Target: "h-b", Cancelled: true}
+		_ = json.NewEncoder(w).Encode(m)
+	})
 	f.srv = httptest.NewTLSServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// machine is the Machine the request's path names, or a 404 written.
+func (f *fakeOrch) machine(w http.ResponseWriter, r *http.Request) (orchapi.Machine, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, m := range f.machines {
+		if m.Caller == r.PathValue("caller") && m.Name == r.PathValue("name") {
+			return m, true
+		}
+	}
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(orchapi.Error{Message: "not found: no Machine " + r.PathValue("caller") + "/" + r.PathValue("name")})
+	return orchapi.Machine{}, false
 }
 
 // operator is a throwaway authority and an operator it issued a certificate to, with the person
