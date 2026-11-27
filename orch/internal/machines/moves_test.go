@@ -404,6 +404,24 @@ func TestMove_TheCommitRoutesTheMachineToTheTargetInTheWriteThatRebindsIt(t *tes
 	}
 }
 
+func TestMove_RoutesTheMachineToTheAddressTheTargetGivesItAtItsStart(t *testing.T) {
+	r, _ := placedOnA(t)
+	source := r.record("web").PrivateAddress
+	r.hosts.AddressAtStart = true
+	r.move(orchapi.MoveRequest{})
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet,
+		Routes: &fakeRoutes{},
+	})
+	r.pass()
+	rec := r.record("web")
+	require.NotNil(t, rec.Move)
+	require.Equal(t, machines.MoveStarted, rec.Move.Step, "the setup: the target started the Machine")
+	assert.False(t, rec.Move.TargetAddress.IsValid(), "the setup: the target gave no address before the start")
+	assert.True(t, rec.PrivateAddress.IsValid(), "the address the target reports at the start")
+	assert.NotEqual(t, source, rec.PrivateAddress)
+}
+
 func TestMove_NarrowsTheTargetByTheShapeAsked(t *testing.T) {
 	c := host("h-c", 16*gib)
 	c.Labels = map[string]string{"disk": "nvme"}
