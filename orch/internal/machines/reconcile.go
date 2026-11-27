@@ -74,7 +74,10 @@ type ReconcilerConfig struct {
 	Wake func(ctx context.Context) <-chan struct{}
 	// Fleet is the fleet's event log.
 	Fleet Appender
-	Log   *slog.Logger
+	// Routes tells whether every proxy routes a Machine to its binding, which a move waits for
+	// before it deletes its source; NoRoutes when nil.
+	Routes RoutesDelivered
+	Log    *slog.Logger
 }
 
 // Reconciler is the leader's Machine reconciler (ADR 0109 item 4, ADR 0110): it places each
@@ -89,6 +92,10 @@ type Reconciler struct {
 	noted map[string]bool
 	// drift is each host's last allocation mismatch in the fleet's log.
 	drift map[string]string
+	// holds is the reason each draining host's drain holds, as last logged.
+	holds map[string]string
+	// moving are the Machines, by id, whose move an earlier pass left running; a pass runs none.
+	moving map[string]bool
 }
 
 // NewReconciler returns the reconciler of cfg.
@@ -102,7 +109,10 @@ func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Reconciler{cfg: cfg, busy: map[string]bool{}, noted: map[string]bool{}, drift: map[string]string{}}
+	if cfg.Routes == nil {
+		cfg.Routes = NoRoutes
+	}
+	return &Reconciler{cfg: cfg, busy: map[string]bool{}, noted: map[string]bool{}, drift: map[string]string{}, holds: map[string]string{}, moving: map[string]bool{}}
 }
 
 // Run runs a pass every interval and after each wake until ctx ends.
@@ -172,7 +182,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	}
 	p.busy = busy
 	r.audit(ctx, p)
-	errs := []error{r.place(ctx, p)}
+	cs := r.candidates(p)
+	errs := []error{r.place(ctx, p, cs), r.drain(ctx, p, cs), r.reserve(ctx, p, cs)}
 	errs = append(errs, r.unattended(ctx, p)...)
 	errs = append(errs, r.age(ctx, p)...)
 	r.dispatch(ctx, p)
@@ -252,6 +263,13 @@ func (r *Reconciler) candidates(p *pass) []candidate {
 		if e.Binding != nil {
 			bound[e.Binding.MicroVM(e.ID)] = true
 		}
+		// A move's two microVMs are both counted through the allocations it holds.
+		if m := e.Move; m != nil {
+			bound[m.Source.MicroVM(e.ID)] = true
+			if m.Target != nil {
+				bound[m.Target.MicroVM(e.ID)] = true
+			}
+		}
 	}
 	out := make([]candidate, 0, len(p.hosts))
 	for _, id := range slices.Sorted(maps.Keys(p.hosts)) {
@@ -270,6 +288,15 @@ func (r *Reconciler) audit(ctx context.Context, p *pass) {
 	for _, e := range p.entries {
 		if e.Binding != nil {
 			sums[e.Binding.Host] = sums[e.Binding.Host].plus(need(e.Spec))
+		}
+		// A move holds its target's capacity until its commit, and its source's from then until its
+		// clean up.
+		if m := e.Move; m != nil && m.Target != nil {
+			held := m.Target.Host
+			if m.Step.committed() {
+				held = m.Source.Host
+			}
+			sums[held] = sums[held].plus(need(e.Spec))
 		}
 	}
 	hosts := map[string]bool{}
@@ -298,8 +325,7 @@ func (r *Reconciler) audit(ctx context.Context, p *pass) {
 
 // place binds each Machine that has no host and is not deleted to the one placement chooses, or
 // records why none fits.
-func (r *Reconciler) place(ctx context.Context, p *pass) error {
-	cs := r.candidates(p)
+func (r *Reconciler) place(ctx context.Context, p *pass, cs []candidate) error {
 	var errs []error
 	for _, e := range p.entries {
 		if e.Binding != nil || e.Status.Phase == machineapi.PhaseDeleting {
@@ -357,7 +383,8 @@ func (r *Reconciler) bind(ctx context.Context, p *pass, e *Entry, host string) e
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	next := e.Record
-	next.Binding = &Binding{Host: host, Epoch: p.epochs[e.ID] + 1}
+	next.Binding = &Binding{Host: host, Epoch: p.nextEpoch(e)}
+	next.Epoch = next.Binding.Epoch
 	next.Status.Reason, next.OperatorReason = "", ""
 	alloc := p.allocs[host]
 	alloc.Resources = of(alloc.Resources).plus(need(e.Spec)).resources()
@@ -380,7 +407,7 @@ func (r *Reconciler) unattended(ctx context.Context, p *pass) []error {
 		switch {
 		case e.Binding == nil && e.Status.Phase == machineapi.PhaseDeleting:
 			errs = append(errs, r.finish(ctx, p, e))
-		case e.Binding == nil || e.Status.Phase == machineapi.PhaseDeleting:
+		case e.Binding == nil || e.Status.Phase == machineapi.PhaseDeleting || e.Move != nil:
 		default:
 			if _, ok := p.answering(e.Binding.Host); ok {
 				continue
@@ -450,14 +477,17 @@ func (p *pass) divide() {
 		if e.Binding != nil {
 			b := *e.Binding
 			f.binding = &b
-			of(b.Host).entries = append(of(b.Host).entries, e)
+			// A Machine with a move is the move's: its host's work leaves it.
+			if e.Move == nil {
+				of(b.Host).entries = append(of(b.Host).entries, e)
+			}
 		}
 		p.machines[e.ID] = f
 	}
 	for i := range p.snaps {
 		s := &p.snaps[i]
 		e := p.byID[s.Snapshot.Snapshot.MachineID]
-		if s.Snapshot.Snapshot.Phase == machineapi.SnapshotPending && e != nil && e.Binding != nil && e.Status.Phase != machineapi.PhaseDeleting {
+		if s.Snapshot.Snapshot.Phase == machineapi.SnapshotPending && e != nil && e.Binding != nil && e.Status.Phase != machineapi.PhaseDeleting && e.Move == nil {
 			of(e.Binding.Host).snaps = append(of(e.Binding.Host).snaps, s)
 		}
 	}
@@ -499,6 +529,37 @@ func (r *Reconciler) dispatch(ctx context.Context, p *pass) {
 			defer p.mu.Unlock()
 			if p.late {
 				r.cfg.Log.Error("machine host work failed after its pass", "err", err.Error())
+				return
+			}
+			p.errs = append(p.errs, err)
+		}()
+	}
+	for _, e := range p.entries {
+		if e.Move == nil || e.Move.Step == MoveRequested && !e.Move.Cancel && e.Status.Phase != machineapi.PhaseDeleting {
+			continue
+		}
+		r.mu.Lock()
+		running := r.moving[e.ID]
+		r.moving[e.ID] = true
+		r.mu.Unlock()
+		if running {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := r.move(ctx, p, e)
+			r.mu.Lock()
+			delete(r.moving, e.ID)
+			r.mu.Unlock()
+			if err == nil {
+				return
+			}
+			err = fmt.Errorf("move %s/%s: %w", e.Caller, e.Name, err)
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			if p.late {
+				r.cfg.Log.Error("a move failed after its pass", "err", err.Error())
 				return
 			}
 			p.errs = append(p.errs, err)

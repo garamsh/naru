@@ -148,3 +148,22 @@ func (m *MachineHosts) vm(ctx context.Context, host string, missingOK bool, call
 	}
 	return out, err
 }
+
+// ExportDisk and ImportDisk are bounded by the caller's context alone and not by callTimeout: an
+// export reads the whole disk before it answers, and an import streams it, which for a large disk
+// outlasts five minutes; each host ends a stream that stalls.
+func (m *MachineHosts) ExportDisk(ctx context.Context, host, disk, target string) (hostapi.Export, error) {
+	api, err := m.c.passed(host)
+	if err != nil {
+		return hostapi.Export{}, err
+	}
+	return api.ExportDisk(ctx, disk, target)
+}
+
+func (m *MachineHosts) ImportDisk(ctx context.Context, host string, r hostapi.ImportRequest) (hostapi.Imported, error) {
+	api, err := m.c.passed(host)
+	if err != nil {
+		return hostapi.Imported{}, err
+	}
+	return api.ImportDisk(ctx, r)
+}

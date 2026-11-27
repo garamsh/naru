@@ -209,11 +209,7 @@ func (s *service) All(ctx context.Context) ([]orchapi.Machine, error) {
 	}
 	out := make([]orchapi.Machine, 0, len(rs))
 	for _, r := range rs {
-		m := orchapi.Machine{Caller: r.Caller, Machine: r.Machine(), Reason: r.OperatorReason}
-		if r.Binding != nil {
-			m.Binding = &orchapi.MachineBinding{Host: r.Binding.Host, Epoch: r.Binding.Epoch}
-		}
-		out = append(out, m)
+		out = append(out, operatorView(r.Record))
 	}
 	return out, nil
 }

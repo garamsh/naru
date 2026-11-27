@@ -83,6 +83,10 @@ type Store interface {
 	// placements never both take the last of a host.
 	// It returns the revision it wrote at, the record's and the allocation's.
 	Bind(ctx context.Context, r Record, rev int64, alloc Allocation) (int64, error)
+	// Allocate writes r, and ev when it is not nil, with the host's allocation of a new sum, while r
+	// is still the one written at rev and the allocation the one read; ErrRaced otherwise. A move
+	// holds and frees its target's and its source's capacity so. It returns the revision it wrote at.
+	Allocate(ctx context.Context, r Record, rev int64, host string, alloc Allocation, ev *machineapi.Event) (int64, error)
 	// Remove deletes r and frees its id and name, appending ev, writes its tombstone, dated by ev,
 	// and writes its host's allocation's new sum when alloc is not nil, while r and the allocation
 	// are still the ones read; ErrRaced otherwise.

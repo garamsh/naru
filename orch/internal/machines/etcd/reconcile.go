@@ -117,6 +117,22 @@ func (s *Store) Bind(ctx context.Context, r machines.Record, rev int64, alloc ma
 		clientv3.OpPut(key, encode(r)), clientv3.OpPut(allocationKey(r.Binding.Host), encode(alloc.Resources)))
 }
 
+func (s *Store) Allocate(ctx context.Context, r machines.Record, rev int64, host string, alloc machines.Allocation, ev *machineapi.Event) (int64, error) {
+	key := machineKey(r.Caller, r.Name)
+	ops := []clientv3.Op{clientv3.OpPut(key, encode(r)), clientv3.OpPut(allocationKey(host), encode(alloc.Resources))}
+	if ev != nil {
+		ops = append(ops, eventOp(r.Caller, *ev))
+	}
+	at, err := s.guarded(ctx, []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", rev), allocationGuard(host, alloc.Rev)}, ops...)
+	if err != nil {
+		return 0, err
+	}
+	if ev != nil {
+		s.trim(ctx, r.Caller)
+	}
+	return at, nil
+}
+
 func (s *Store) Remove(ctx context.Context, r machines.Record, rev int64, alloc *machines.Allocation, ev machineapi.Event) (int64, error) {
 	key := machineKey(r.Caller, r.Name)
 	cmps := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", rev)}

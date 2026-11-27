@@ -23,6 +23,11 @@ type Hosts interface {
 	// same disk again is the snapshot taken.
 	SnapshotDisk(ctx context.Context, host, microVM, disk, name string) error
 	DeleteDiskSnapshot(ctx context.Context, host, name string) error
+	// ExportDisk asks the host for a grant to its disk, <microVM>.<volume>, that the host target
+	// fetches once.
+	ExportDisk(ctx context.Context, host, disk, target string) (hostapi.Export, error)
+	// ImportDisk has the host fetch a disk from another host's export and make it.
+	ImportDisk(ctx context.Context, host string, r hostapi.ImportRequest) (hostapi.Imported, error)
 }
 
 // Host is an admitted host as the reconciler sees it in one pass.

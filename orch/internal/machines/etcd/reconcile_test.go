@@ -310,3 +310,48 @@ func TestWatch_OpensAClosedWatchAgainAndWakes(t *testing.T) {
 	require.NoError(t, s.Create(t.Context(), r, 0, event(r, time.Now())))
 	w.woken("a Machine's create on the watch opened again", 5*time.Second)
 }
+
+// A move's write of its record and another host's allocation commits both or neither, guarded on
+// the record and on that allocation as read.
+func TestAllocate_WritesTheRecordAndTheHostsAllocationTogether(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	r := record("garam", "web", "0123456789abcdef")
+	require.NoError(t, s.Create(ctx, r, 0, event(r, time.Now())))
+	_, rev, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	take := hostapi.Resources{CPU: 2, Memory: 4 << 30, Disk: 30 << 30}
+
+	r.Move = &machines.Move{By: "alice", Step: machines.MoveReserved, Source: machines.Binding{Host: "h-a", Epoch: 1}, Target: &machines.Binding{Host: "h-b", Epoch: 2}}
+	r.Epoch = 2
+	moving := r
+	moving.Status.Phase = machineapi.PhaseMoving
+	ev := event(moving, time.Now())
+	at, err := s.Allocate(ctx, moving, rev, "h-b", machines.Allocation{Resources: take}, &ev)
+	require.NoError(t, err)
+	got, gotRev, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	assert.Equal(t, at, gotRev)
+	assert.Equal(t, moving.Move, got.Move, "the move is recorded")
+	assert.Equal(t, uint64(2), got.Epoch)
+	allocs, err := s.Allocations(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, take, allocs["h-b"].Resources, "with the target's allocation")
+	evs, _, err := s.Events(ctx, "garam", nil)
+	require.NoError(t, err)
+	assert.Equal(t, machineapi.PhaseMoving, evs[len(evs)-1].Status.Phase, "and its event")
+
+	// The record changed since it was read: neither is written.
+	_, err = s.Allocate(ctx, got, rev, "h-b", machines.Allocation{Resources: hostapi.Resources{}, Rev: allocs["h-b"].Rev}, nil)
+	require.ErrorIs(t, err, machines.ErrRaced)
+	// The allocation changed since it was read: neither is written.
+	got.Move = nil
+	_, err = s.Allocate(ctx, got, gotRev, "h-b", machines.Allocation{Resources: hostapi.Resources{}}, nil)
+	require.ErrorIs(t, err, machines.ErrRaced)
+	after, _, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	assert.NotNil(t, after.Move, "the record is as it was")
+	allocs, err = s.Allocations(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, take, allocs["h-b"].Resources, "and so is the allocation")
+}

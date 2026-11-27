@@ -21,11 +21,13 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/machineapi"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/auth"
 	"github.com/garamsh/naru/orch/internal/exposures"
 	"github.com/garamsh/naru/orch/internal/groupsvc"
 	"github.com/garamsh/naru/orch/internal/inventory"
+	"github.com/garamsh/naru/orch/internal/machines"
 	"github.com/garamsh/naru/orch/internal/restore"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
@@ -79,6 +81,11 @@ type Exposures interface {
 // Machines is what the operator API reads of the Machine API's records.
 type Machines interface {
 	All(ctx context.Context) ([]orchapi.Machine, error)
+	OperatorMachine(ctx context.Context, caller, name string) (orchapi.Machine, error)
+	// Move records a move of the caller's Machine by the subject by, and CancelMove abandons it
+	// before its commit.
+	Move(ctx context.Context, by, caller, name string, req orchapi.MoveRequest) (orchapi.Machine, error)
+	CancelMove(ctx context.Context, caller, name string) (orchapi.Machine, error)
 }
 
 // Deps is what the handlers call.
@@ -120,6 +127,9 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/events", h.guard(auth.Read, h.events))
 	mux.HandleFunc("GET /v1/microvms", h.guard(auth.Read, h.microVMs))
 	mux.HandleFunc("GET /v1/machines", h.guard(auth.Read, h.machines))
+	mux.HandleFunc("GET /v1/machines/{caller}/{name}", h.guard(auth.Read, h.machine))
+	mux.HandleFunc("POST /v1/machines/{caller}/{name}/move", h.guard(auth.Operate, h.moveMachine))
+	mux.HandleFunc("DELETE /v1/machines/{caller}/{name}/move", h.guard(auth.Operate, h.cancelMove))
 	mux.HandleFunc("GET /v1/groups", h.guard(auth.Read, h.groupList))
 	mux.HandleFunc("GET /v1/groups/{name}", h.guard(auth.Read, h.groupGet))
 	mux.HandleFunc("PUT /v1/groups/{name}", h.guard(auth.Operate, h.groupApply))
@@ -290,8 +300,12 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusNotImplemented, err.Error()
 	case errors.Is(err, exposures.ErrUnprocessable):
 		status, msg = http.StatusUnprocessableEntity, err.Error()
-	case errors.Is(err, inventory.ErrNotFound):
+	case errors.Is(err, inventory.ErrNotFound), errors.Is(err, machines.ErrNotFound), errors.Is(err, machines.ErrNoMove):
 		status, msg = http.StatusNotFound, err.Error()
+	case errors.Is(err, machines.ErrNotPlaced), errors.Is(err, machines.ErrMoving), errors.Is(err, machines.ErrDeleting):
+		status, msg = http.StatusConflict, err.Error()
+	case errors.Is(err, machineapi.ErrInvalid):
+		status, msg = http.StatusUnprocessableEntity, err.Error()
 	case errors.Is(err, restore.ErrRejected):
 		status, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, snapshot.ErrNoSnapshot):
@@ -327,6 +341,26 @@ func (h *handler) hosts(w http.ResponseWriter, r *http.Request, _ identity.Ident
 // machines lists every caller's Machines, with no secret of any.
 func (h *handler) machines(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
 	out, err := h.Machines.All(r.Context())
+	reply(w, r, out, err)
+}
+
+func (h *handler) machine(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Machines.OperatorMachine(r.Context(), r.PathValue("caller"), r.PathValue("name"))
+	reply(w, r, out, err)
+}
+
+// moveMachine records an operator's move; an empty body moves the Machine within its own shape.
+func (h *handler) moveMachine(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	var req orchapi.MoveRequest
+	if r.ContentLength != 0 && !decode(w, r, &req) {
+		return
+	}
+	out, err := h.Machines.Move(r.Context(), who.Subject, r.PathValue("caller"), r.PathValue("name"), req)
+	reply(w, r, out, err)
+}
+
+func (h *handler) cancelMove(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Machines.CancelMove(r.Context(), r.PathValue("caller"), r.PathValue("name"))
 	reply(w, r, out, err)
 }
 

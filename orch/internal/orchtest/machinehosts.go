@@ -2,6 +2,8 @@ package orchtest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"net/http"
@@ -50,6 +52,21 @@ type fakeMachineHost struct {
 	volumes   map[string]map[string][]byte
 	snapFiles map[string]map[string][]byte
 	execs     []hostapi.ExecRequest
+	// grants are the host's exports not yet fetched, imported the disks imports made that no
+	// microVM holds yet (keyed <microVM>.<disk>), and refuseImports answers every import when not
+	// nil.
+	grants        map[string]fakeGrant
+	imported      map[string]map[string][]byte
+	refuseImports error
+	// exports and imports count the calls asked.
+	exports, imports int
+}
+
+// fakeGrant is one export: the disk's files, for the host by ID.
+type fakeGrant struct {
+	target string
+	files  map[string][]byte
+	sha    string
 }
 
 var _ machines.Hosts = (*FakeMachineHosts)(nil)
@@ -61,6 +78,7 @@ func NewFakeMachineHosts(hosts ...machines.Host) *FakeMachineHosts {
 		f.hosts[h.ID] = &fakeMachineHost{
 			host: h, vms: map[string]hostapi.MicroVM{}, disks: map[string]hostapi.DiskSnapshot{},
 			roots: map[string]map[string][]byte{}, volumes: map[string]map[string][]byte{}, snapFiles: map[string]map[string][]byte{},
+			grants: map[string]fakeGrant{}, imported: map[string]map[string][]byte{},
 		}
 	}
 	return f
@@ -69,6 +87,11 @@ func NewFakeMachineHosts(hosts ...machines.Host) *FakeMachineHosts {
 // Fail makes the host stop answering, and Recover answer again; what it holds stays.
 func (f *FakeMachineHosts) Fail(id string)    { f.set(id, func(h *fakeMachineHost) { h.down = true }) }
 func (f *FakeMachineHosts) Recover(id string) { f.set(id, func(h *fakeMachineHost) { h.down = false }) }
+
+// Drain sets whether the host is draining, as the inventory records it.
+func (f *FakeMachineHosts) Drain(id string, draining bool) {
+	f.set(id, func(h *fakeMachineHost) { h.host.Draining = draining })
+}
 
 // Stale makes List give the host's answer as one its probe repeated, as a host that missed one
 // probe is given.
@@ -219,6 +242,9 @@ func (f *FakeMachineHosts) Create(_ context.Context, host string, r hostapi.Crea
 		if d.FromSnapshot != "" && h.disks[d.FromSnapshot].Name == "" {
 			return hostapi.MicroVM{}, notFound("no disk snapshot %s", d.FromSnapshot)
 		}
+		if _, ok := h.imported[r.Name+"."+d.Name]; d.Imported && !ok {
+			return hostapi.MicroVM{}, &hostapi.Error{Status: http.StatusUnprocessableEntity, Message: "no imported disk " + r.Name + "." + d.Name}
+		}
 	}
 	vm := hostapi.MicroVM{
 		Name: r.Name, MachineID: r.Name, State: "running", ImageDigest: r.Image, CPU: r.CPU, Memory: r.Memory,
@@ -231,6 +257,10 @@ func (f *FakeMachineHosts) Create(_ context.Context, host string, r hostapi.Crea
 	h.roots[r.Name] = map[string][]byte{}
 	for _, d := range r.Disks {
 		h.volumes[r.Name+"/"+d.Name] = maps.Clone(h.snapFiles[d.FromSnapshot])
+		if d.Imported {
+			h.volumes[r.Name+"/"+d.Name] = h.imported[r.Name+"."+d.Name]
+			delete(h.imported, r.Name+"."+d.Name)
+		}
 		if h.volumes[r.Name+"/"+d.Name] == nil {
 			h.volumes[r.Name+"/"+d.Name] = map[string][]byte{}
 		}
@@ -297,6 +327,7 @@ func (f *FakeMachineHosts) Delete(ctx context.Context, host, microVM string) err
 	}
 	delete(h.vms, microVM)
 	delete(h.roots, microVM)
+	maps.DeleteFunc(h.imported, func(k string, _ map[string][]byte) bool { return strings.HasPrefix(k, microVM+".") })
 	return nil
 }
 
@@ -426,4 +457,85 @@ func (f *FakeMachineHosts) Execs(id string) []hostapi.ExecRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.hosts[id].execs)
+}
+
+// RefuseImports makes the host answer every import with err; nil stops it.
+func (f *FakeMachineHosts) RefuseImports(id string, err error) {
+	f.set(id, func(h *fakeMachineHost) { h.refuseImports = err })
+}
+
+// Transfers returns how many exports and imports the host was asked.
+func (f *FakeMachineHosts) Transfers(id string) (exports, imports int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hosts[id].exports, f.hosts[id].imports
+}
+
+// filesDigest is the SHA-256 the fake gives a disk: over its files' paths and contents in order.
+func filesDigest(files map[string][]byte) string {
+	h := sha256.New()
+	for _, k := range slices.Sorted(maps.Keys(files)) {
+		fmt.Fprintf(h, "%d:%s%d:", len(k), k, len(files[k]))
+		h.Write(files[k])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ExportDisk grants the target one fetch of the disk <microVM>.<disk>, which a running microVM's
+// disk is not, as hostd refuses a disk a running Machine holds.
+func (f *FakeMachineHosts) ExportDisk(_ context.Context, host, disk, target string) (hostapi.Export, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h, err := f.answering(host)
+	if err != nil {
+		return hostapi.Export{}, err
+	}
+	h.exports++
+	microVM, name, _ := strings.Cut(disk, ".")
+	vm, ok := h.vms[microVM]
+	i := slices.IndexFunc(vm.Disks, func(d hostapi.DiskSpec) bool { return d.Name == name })
+	if !ok || i < 0 {
+		return hostapi.Export{}, notFound("no disk %s", disk)
+	}
+	if vm.State == "running" || vm.State == "paused" {
+		return hostapi.Export{}, &hostapi.Error{Status: http.StatusConflict, Message: "the disk " + disk + " is held by a " + vm.State + " microVM"}
+	}
+	files := maps.Clone(h.volumes[microVM+"/"+name])
+	g := fakeGrant{target: target, files: files, sha: filesDigest(files)}
+	grant := fmt.Sprintf("%064x", len(h.grants)+h.exports)
+	h.grants[grant] = g
+	return hostapi.Export{Grant: grant, SizeBytes: vm.Disks[i].SizeBytes, Filesystem: hostapi.FilesystemExt4, SHA256: g.sha, ExpiresAt: time.Now().Add(hostapi.GrantSeconds * time.Second)}, nil
+}
+
+// ImportDisk fetches the source's grant once, as only its target may, and makes the disk; the same
+// disk of the same digest again is success.
+func (f *FakeMachineHosts) ImportDisk(_ context.Context, host string, r hostapi.ImportRequest) (hostapi.Imported, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h, err := f.answering(host)
+	if err != nil {
+		return hostapi.Imported{}, err
+	}
+	h.imports++
+	if h.refuseImports != nil {
+		return hostapi.Imported{}, h.refuseImports
+	}
+	out := hostapi.Imported{Name: r.Name, SizeBytes: r.SizeBytes, Filesystem: r.Filesystem, SHA256: r.SHA256}
+	if have, ok := h.imported[r.Name]; ok && filesDigest(have) == r.SHA256 {
+		return out, nil
+	}
+	src, err := f.answering(r.SourceHost)
+	if err != nil {
+		return hostapi.Imported{}, &hostapi.Error{Status: http.StatusServiceUnavailable, Code: hostapi.CodeSourceUnavailable, Message: err.Error()}
+	}
+	g, ok := src.grants[r.Grant]
+	delete(src.grants, r.Grant)
+	if !ok || g.target != host {
+		return hostapi.Imported{}, &hostapi.Error{Status: http.StatusConflict, Code: hostapi.CodeGrantRefused, Message: "the source refused the grant"}
+	}
+	if g.sha != r.SHA256 {
+		return hostapi.Imported{}, &hostapi.Error{Status: http.StatusConflict, Code: hostapi.CodeDigestMismatch, Message: "the stream's digest is not the request's"}
+	}
+	h.imported[r.Name] = maps.Clone(g.files)
+	return out, nil
 }
