@@ -381,7 +381,7 @@ func TestMove_TheCommitRoutesTheMachineToTheTargetInTheWriteThatRebindsIt(t *tes
 	watch := r.kv.Watch(t.Context(), machinesetcd.MachinePrefix, clientv3.WithPrefix(), clientv3.WithRev(now.Header.Revision+1))
 	r.pass()
 	require.Equal(t, "h-b", r.record("web").Binding.Host, "the setup: the pass committed the move")
-	rebound := false
+	rebound, commit := false, int64(0)
 	for !rebound {
 		var resp clientv3.WatchResponse
 		select {
@@ -397,11 +397,14 @@ func TestMove_TheCommitRoutesTheMachineToTheTargetInTheWriteThatRebindsIt(t *tes
 				assert.NotEqual(t, source, rec.PrivateAddress, "the first write bound to the target no longer names the source's address")
 				assert.Equal(t, rec.Move.TargetAddress, rec.PrivateAddress, "but the target's")
 				assert.True(t, rec.PrivateAddress.IsValid())
-				rebound = true
+				rebound, commit = true, ev.Kv.ModRevision
 				break
 			}
 		}
 	}
+	routed := r.record("web").Move.Routed
+	require.NotNil(t, routed, "the clean up recorded what it waits on")
+	assert.GreaterOrEqual(t, routed.Rev, commit, "a revision at or after the commit, whose tables no longer route the Machine to the source")
 }
 
 func TestMove_RoutesTheMachineToTheAddressTheTargetGivesItAtItsStart(t *testing.T) {
