@@ -624,10 +624,11 @@ func TestRoutes_WatchLoadsTheTableHostdWritesWithoutBeingAsked(t *testing.T) {
 	t.Cleanup(func() { cancel(); wg.Wait() })
 
 	f.write(5, "", httpRoute(nameA, machineA, b.port), httpRoute(nameB, machineB, b.port))
-	require.Eventually(t, func() bool { return health(t, f).Revision == 5 }, 5*time.Second, 10*time.Millisecond)
+	// The revision file is written after the table is loaded, so it is what is waited on.
+	require.Eventually(t, func() bool { return revisionFile(t, f) == "5" }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, int64(5), health(t, f).Revision)
 	resp, _ := f.get(f.client(true), nameB)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "5", revisionFile(t, f))
 }
 
 func TestProxy_AnswersAMachineThatDoesNotAnswer502(t *testing.T) {
