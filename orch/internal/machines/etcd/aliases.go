@@ -105,25 +105,23 @@ func (s *Store) PutCaller(ctx context.Context, c machines.Caller) error {
 	return err
 }
 
-// Routing reads every Machine and every alias at one revision of the store, which it returns: what
-// the routing table of that revision is made from.
+// Routing reads every Machine and every alias in one transaction, so at one revision of the store,
+// which it returns: what the routing table of that revision is made from.
 func (s *Store) Routing(ctx context.Context) ([]machines.Record, []machines.Alias, int64, error) {
-	m, err := s.kv.Get(ctx, MachinePrefix, clientv3.WithPrefix())
+	resp, err := s.kv.Txn(ctx).Then(
+		clientv3.OpGet(MachinePrefix, clientv3.WithPrefix()),
+		clientv3.OpGet(AliasPrefix, clientv3.WithPrefix()),
+	).Commit()
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	rev := m.Header.Revision
-	a, err := s.kv.Get(ctx, AliasPrefix, clientv3.WithPrefix(), clientv3.WithRev(rev))
+	recs, err := decode[machines.Record]((*clientv3.GetResponse)(resp.Responses[0].GetResponseRange()))
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	recs, err := decode[machines.Record](m)
+	aliases, err := decode[machines.Alias]((*clientv3.GetResponse)(resp.Responses[1].GetResponseRange()))
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	aliases, err := decode[machines.Alias](a)
-	if err != nil {
-		return nil, nil, 0, err
-	}
-	return recs, aliases, rev, nil
+	return recs, aliases, resp.Header.Revision, nil
 }

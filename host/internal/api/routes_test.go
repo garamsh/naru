@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestRoutes_TheHostWritesTheTableForItsProxyAndAnswersTheRevisionTheProxyLoa
 	e := startRoutes(t)
 	require.NoError(t, e.nets.SetPeers(t.Context(), netip.MustParseAddr("10.99.0.2"), nil))
 
-	code, _, answer := e.put(t, table(7, *e.now, route("a.m.example")))
+	code, _, answer := e.put(t, table(7, e.now.Add(-time.Second), route("a.m.example")))
 	require.Equal(t, 200, code)
 	assert.Equal(t, int64(0), answer.Loaded, "the proxy has loaded no table yet")
 	f := e.written(t)
@@ -171,9 +172,9 @@ func TestRoutes_TheProxysRevisionFileIsNotFollowedAndIsBounded(t *testing.T) {
 	assert.Error(t, err, "a link in the proxy's directory is not followed")
 
 	require.NoError(t, os.Remove(e.routes.RevisionFile))
-	require.NoError(t, os.WriteFile(e.routes.RevisionFile, []byte(strconv.Itoa(1)+string(make([]byte, maxRevisionFile))), 0o644))
+	require.NoError(t, os.WriteFile(e.routes.RevisionFile, []byte(strconv.Itoa(1)+strings.Repeat(" ", maxRevisionFile)), 0o644))
 	_, err = e.routes.proxyLoaded()
-	assert.Error(t, err, "longer than a revision")
+	assert.Error(t, err, "longer than a revision, though it holds one among the spaces")
 
 	require.NoError(t, os.WriteFile(e.routes.RevisionFile, []byte("12\n"), 0o644))
 	got, err := e.routes.proxyLoaded()
