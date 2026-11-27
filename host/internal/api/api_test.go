@@ -88,6 +88,27 @@ func (a authority) issueSubject(t *testing.T, subject pkix.Name, server bool) (t
 	return pair, certPEM, keyPEM
 }
 
+// issueName is issueSubject for a host's pair: for serving and for clients, naming name.
+func (a authority) issueName(t *testing.T, subject pkix.Name, name string) (tls.Certificate, []byte, []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: subject, DNSNames: []string{name},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, a.cert, &key.PublicKey, a.key)
+	require.NoError(t, err)
+	kder, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder})
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	require.NoError(t, err)
+	return pair, certPEM, keyPEM
+}
+
 type env struct {
 	rt       *fakeRuntime
 	addr     string

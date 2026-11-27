@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -78,6 +79,14 @@ type Deps struct {
 	// serves once a reset has cleared the data disk is revoked: the pair of the configuration, as
 	// the rotated pair is on the disk the reset clears. Nil means no check is made.
 	CheckPair func(context.Context) error
+	// Importer fetches a disk from another host's export. Nil means the host cannot: POST
+	// /v1/disks/import is 501.
+	Importer *Importer
+	// Now is the clock a grant's life is read on; nil is time.Now.
+	Now func() time.Time
+	// StreamIdle is how long a disk's stream between hosts may not move before it is ended; 0 is
+	// 2 minutes.
+	StreamIdle time.Duration
 }
 
 // Server is the host API.
@@ -85,6 +94,7 @@ type Server struct {
 	deps     Deps
 	requests *prometheus.CounterVec
 	tokens   leaderTokens
+	grants   grants
 }
 
 // New returns a Server, whose metrics are registered on deps.Metrics.
@@ -119,6 +129,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/microvms/{name}/disks/{disk}/snapshot", s.snapshotDisk)
 	mux.HandleFunc("GET /v1/disk-snapshots", s.listDiskSnapshots)
 	mux.HandleFunc("DELETE /v1/disk-snapshots/{name}", s.deleteDiskSnapshot)
+	mux.HandleFunc("POST /v1/disks/{name}/export", s.exportDisk)
+	mux.HandleFunc("GET "+hostapi.ExportPathPrefix+"{grant}", s.fetchExport)
+	mux.HandleFunc("POST /v1/disks/import", s.importDisk)
 	mux.HandleFunc("PUT /v1/networks/{name}", s.putNetwork)
 	mux.HandleFunc("GET /v1/networks", s.listNetworks)
 	mux.HandleFunc("GET /v1/networks/{name}", s.getNetwork)
@@ -134,11 +147,15 @@ func (s *Server) Handler() http.Handler {
 }
 
 // authorised answers 403 to a client whose role does not cover the method, or the read of a guest's
-// file.
+// file. The fetch of an export is the handler's to check: a host's certificate, which has no role
+// here, is the one that reaches it.
 func (s *Server) authorised(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		need := Reader
-		if r.Method != http.MethodGet && r.Method != http.MethodHead || guestRead(r) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, hostapi.ExportPathPrefix):
+			need = None
+		case r.Method != http.MethodGet && r.Method != http.MethodHead || guestRead(r):
 			need = Provisioner
 		}
 		if roleOf(clientCertificate(r)) < need {

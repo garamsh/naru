@@ -71,7 +71,7 @@ func validate(r hostapi.CreateRequest) (plan, []string, string) {
 	seen := map[string]bool{}
 	for i, d := range r.Disks {
 		if !dnsLabel.MatchString(d.Name) || seen[d.Name] || d.SizeBytes == 0 ||
-			d.MountPath != "" && !mountable(d.MountPath) || d.FromSnapshot != "" && !dnsLabel.MatchString(d.FromSnapshot) {
+			d.MountPath != "" && !mountable(d.MountPath) || d.FromSnapshot != "" && (d.Imported || !dnsLabel.MatchString(d.FromSnapshot)) {
 			bad(fmt.Sprintf("disks[%d]", i))
 		}
 		seen[d.Name] = true
