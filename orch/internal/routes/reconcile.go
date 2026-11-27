@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,7 +14,7 @@ import (
 )
 
 // DefaultMaxAge is how long a proxy forwards on a table after its host took it, the proxy's own
-// default (--route-max-age).
+// default (--route-max-age), which a host that reports none is taken to have.
 const DefaultMaxAge = time.Hour
 
 // DefaultInterval is the pause between pushes when Config.Interval is zero, the network
@@ -28,26 +29,37 @@ type Source interface {
 // Hosts is the host API as the push needs it.
 type Hosts interface {
 	// Proxies are the admitted hosts that answer and report a proxy.
-	Proxies(ctx context.Context) ([]string, error)
+	Proxies(ctx context.Context) ([]Proxy, error)
 	// Admitted are the IDs of every admitted host, answering or not.
 	Admitted(ctx context.Context) ([]string, error)
 	// Push puts the table to the host, and returns the revision its proxy has loaded.
 	Push(ctx context.Context, host string, t hostapi.RoutesRequest) (int64, error)
 }
 
-// Ack is the highest revision a host answered its proxy had loaded, and when the leader had it.
+// Proxy is a host that reports a proxy, and the proxy's --route-max-age as the host reports it;
+// zero when it reports none.
+type Proxy struct {
+	ID     string
+	MaxAge time.Duration
+}
+
+// Ack is the highest revision a host answered its proxy had loaded, when the leader had it, and the
+// longest max age the host reported for its proxy.
 type Ack struct {
-	Loaded int64     `json:"loaded"`
-	At     time.Time `json:"at"`
+	Loaded int64         `json:"loaded"`
+	At     time.Time     `json:"at"`
+	MaxAge time.Duration `json:"maxAge"`
 }
 
 // Acks keeps each proxy host's Ack, under /naru/orch/route-acks/<host>.
 type Acks interface {
 	Acks(ctx context.Context) (map[string]Ack, error)
-	// Track records an Ack of revision 0 for a host that has none, before the host is first sent
-	// a table, so the hosts a delete waits on include every one that may hold a table.
-	Track(ctx context.Context, host string) error
-	// Raise keeps a as the host's Ack when it is above the one kept.
+	// Track records an Ack of revision 0 for a host that has none, and raises the kept MaxAge to
+	// maxAge, before the host is sent a table, so the hosts a delete waits on include every one that
+	// may hold a table, each with the longest its proxy may forward on one.
+	Track(ctx context.Context, host string, maxAge time.Duration) error
+	// Raise keeps a's Loaded and At as the host's when Loaded is above the one kept, and the kept
+	// MaxAge.
 	Raise(ctx context.Context, host string, a Ack) error
 }
 
@@ -59,14 +71,12 @@ type Config struct {
 	// Zone is the zone of the stable names, orch's --machine-zone.
 	Zone  string
 	Clock machines.Clock
-	// Interval is the pause between pushes, orch's --network-interval; Wake, when not nil, returns
-	// a channel that is sent on after each write that may change the table, for a push at once.
+	// Interval is the pause between pushes, orch's --network-interval, DefaultInterval when zero;
+	// Wake, when not nil, returns a channel that is sent on after each write that may change the
+	// table, for a push at once.
 	Interval time.Duration
 	Wake     func(ctx context.Context) <-chan struct{}
-	// MaxAge is the proxies' --route-max-age; DefaultMaxAge when zero. Interval is DefaultInterval
-	// when zero.
-	MaxAge time.Duration
-	Log    *slog.Logger
+	Log      *slog.Logger
 }
 
 // Reconciler is the leader's push of the routing table.
@@ -80,9 +90,6 @@ type Reconciler struct {
 
 // New returns the reconciler of cfg.
 func New(cfg Config) *Reconciler {
-	if cfg.MaxAge <= 0 {
-		cfg.MaxAge = DefaultMaxAge
-	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = DefaultInterval
 	}
@@ -138,8 +145,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (r *Reconciler) push(ctx context.Context, host string, rev int64, routes []hostapi.Route) error {
-	if err := r.cfg.Acks.Track(ctx, host); err != nil {
+func (r *Reconciler) push(ctx context.Context, p Proxy, rev int64, routes []hostapi.Route) error {
+	host := p.ID
+	if err := r.cfg.Acks.Track(ctx, host, cmp.Or(p.MaxAge, DefaultMaxAge)); err != nil {
 		return fmt.Errorf("track %s: %w", host, err)
 	}
 	pctx, cancel := context.WithTimeout(ctx, hostapi.MaxRouteDelay)
@@ -173,8 +181,9 @@ func (r *Reconciler) logDropped(dropped []Dropped) {
 
 // Delivered reports whether no proxy forwards on a table older than rev, which was committed at or
 // before at: every admitted host that may hold a table has acknowledged rev or above, or, for one
-// that has not, MaxAge and hostapi.RouteAllowance have passed since at, after which it forwards on
-// no table taken before rev (ADR 0112 item 6). A host removed from the inventory leaves the set.
+// that has not, the longest max age it reported for its proxy and hostapi.RouteAllowance have
+// passed since at, after which it forwards on no table taken before rev (ADR 0112 item 6). A host
+// removed from the inventory leaves the set.
 func (r *Reconciler) Delivered(ctx context.Context, rev int64, at time.Time) (bool, error) {
 	acks, err := r.cfg.Acks.Acks(ctx)
 	if err != nil {
@@ -184,9 +193,13 @@ func (r *Reconciler) Delivered(ctx context.Context, rev int64, at time.Time) (bo
 	if err != nil {
 		return false, err
 	}
-	expired := !r.cfg.Clock.Now().Before(at.Add(r.cfg.MaxAge + hostapi.RouteAllowance))
+	now := r.cfg.Clock.Now()
 	for _, h := range admitted {
-		if a, ok := acks[h]; ok && a.Loaded < rev && !expired {
+		a, ok := acks[h]
+		if !ok || a.Loaded >= rev {
+			continue
+		}
+		if now.Before(at.Add(cmp.Or(a.MaxAge, DefaultMaxAge) + hostapi.RouteAllowance)) {
 			return false, nil
 		}
 	}

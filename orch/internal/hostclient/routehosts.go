@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/identity"
@@ -38,16 +39,20 @@ func DialRouteAPI(hc *http.Client, revocations *identity.RevocationList) func(id
 	}
 }
 
-// Proxies are the admitted hosts whose GET /v1/host answers and reports a proxy, healthy or not:
-// one that is not healthy may still forward, and takes the table that stops it.
-func (h *RouteHosts) Proxies(ctx context.Context) ([]string, error) {
+// Proxies are the admitted hosts whose GET /v1/host answers and reports a proxy, healthy or not
+// (one that is not healthy may still forward, and takes the table that stops it), each with the
+// max age it reports for its proxy.
+func (h *RouteHosts) Proxies(ctx context.Context) ([]routes.Proxy, error) {
 	admitted, err := h.inv.Hosts(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return probeAll(ctx, admitted, func(ctx context.Context, a orchapi.Host) (string, bool) {
+	return probeAll(ctx, admitted, func(ctx context.Context, a orchapi.Host) (routes.Proxy, bool) {
 		info, err := h.dial(a.ID, a.Address).Host(ctx)
-		return a.ID, err == nil && info.Proxy != nil
+		if err != nil || info.Proxy == nil {
+			return routes.Proxy{}, false
+		}
+		return routes.Proxy{ID: a.ID, MaxAge: time.Duration(info.Proxy.RouteMaxAgeSeconds) * time.Second}, true
 	}), nil
 }
 

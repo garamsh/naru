@@ -84,10 +84,7 @@ type Config struct {
 	// reconciler places, taken as given.
 	MachineInterval time.Duration
 	HostReserve     machines.Reserve
-	// RouteMaxAge is the proxies' --route-max-age, which a deleted Machine's address waits out for
-	// a proxy that has not acknowledged a table without it; it defaults to routes.DefaultMaxAge.
-	RouteMaxAge time.Duration
-	Limits      inventory.Config
+	Limits          inventory.Config
 	// Restore, when the data directory holds no etcd member, starts no etcd: the member serves only
 	// PUT /v1/restore until a snapshot is restored into it. With a member in the directory it is
 	// ignored.
@@ -353,7 +350,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	if d.NewRouteHosts != nil {
 		push := routes.New(routes.Config{
 			Source: machineStore, Hosts: d.NewRouteHosts(svc), Acks: routesetcd.New(leaderKV), Zone: c.MachineZone, Clock: d.Clock,
-			Interval: cmp.Or(c.NetworkInterval, netrec.DefaultInterval), MaxAge: c.RouteMaxAge, Log: d.Log,
+			Interval: cmp.Or(c.NetworkInterval, netrec.DefaultInterval), Log: d.Log,
 			Wake: func(ctx context.Context) <-chan struct{} { return machinesetcd.WatchRouting(ctx, m.Client(), d.Log) },
 		})
 		reconcilers, gate = append(reconcilers, push), push

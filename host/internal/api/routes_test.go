@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/netip"
 	"os"
@@ -178,4 +179,18 @@ func TestRoutes_TheProxysRevisionFileIsNotFollowedAndIsBounded(t *testing.T) {
 	got, err := e.routes.proxyLoaded()
 	require.NoError(t, err)
 	assert.Equal(t, int64(12), got, "control")
+}
+
+func TestHost_ReportsTheProxysMaxAgeRoundedUpToASecond(t *testing.T) {
+	rt := &Routes{File: filepath.Join(t.TempDir(), "routes.json"), GID: -1, MaxAge: 90*time.Minute + time.Millisecond}
+	e := startEnvRevoking(t, netip.MustParseAddr("10.1.0.1"), true, nil, func(d *Deps) {
+		d.Routes = rt
+		d.ProxyHealthy = func(context.Context) bool { return true }
+	})
+	code, b := e.do(t, e.as(t, ReaderOrganization), "GET", "/v1/host", nil)
+	require.Equal(t, 200, code, string(b))
+	var h hostapi.Host
+	require.NoError(t, json.Unmarshal(b, &h))
+	require.NotNil(t, h.Proxy)
+	assert.Equal(t, int64(90*60+1), h.Proxy.RouteMaxAgeSeconds, "a proxy may forward up to the millisecond past 90 minutes, so orch waits the whole second")
 }

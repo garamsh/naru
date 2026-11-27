@@ -15,6 +15,7 @@ import (
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/hostclient"
+	"github.com/garamsh/naru/orch/internal/routes"
 )
 
 // hostServer answers GET /v1/host with the proxy given, or with none when it is empty, and PUT
@@ -39,7 +40,7 @@ func hostServer(t *testing.T, proxy string, loaded int64, got *hostapi.RoutesReq
 
 func TestRouteHosts_PushesToTheHostsThatReportAProxyAndAnswersWhatTheyLoaded(t *testing.T) {
 	var gotP1, gotM1 hostapi.RoutesRequest
-	p1, c1 := hostServer(t, `,"proxy":{"healthy":false}`, 41, &gotP1)
+	p1, c1 := hostServer(t, `,"proxy":{"healthy":false,"routeMaxAgeSeconds":5400}`, 41, &gotP1)
 	m1, c2 := hostServer(t, "", 0, &gotM1)
 	clients := map[string]hostclient.RouteAPI{p1: c1, m1: c2}
 	inv := &invFake{hosts: []orchapi.Host{{ID: "p1", Address: p1}, {ID: "m1", Address: m1}}}
@@ -47,7 +48,8 @@ func TestRouteHosts_PushesToTheHostsThatReportAProxyAndAnswersWhatTheyLoaded(t *
 
 	proxies, err := h.Proxies(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, []string{"p1"}, proxies, "a proxy that is not healthy still takes the table that stops it")
+	assert.Equal(t, []routes.Proxy{{ID: "p1", MaxAge: 90 * time.Minute}}, proxies,
+		"a proxy that is not healthy still takes the table that stops it, and its max age goes with it")
 	admitted, err := h.Admitted(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"p1", "m1"}, admitted)

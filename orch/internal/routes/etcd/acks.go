@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
@@ -40,32 +41,47 @@ func (s *Store) Acks(ctx context.Context) (map[string]routes.Ack, error) {
 	return out, nil
 }
 
-func (s *Store) Track(ctx context.Context, host string) error {
-	key := AckPrefix + host
-	_, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).Then(clientv3.OpPut(key, encode(routes.Ack{}))).Commit()
-	return err
+// Track creates the host's ack at revision 0 when it has none, and raises its MaxAge to maxAge
+// when that is above the kept one.
+func (s *Store) Track(ctx context.Context, host string, maxAge time.Duration) error {
+	return s.change(ctx, host, func(kept routes.Ack) (routes.Ack, bool) {
+		kept.MaxAge = max(kept.MaxAge, maxAge)
+		return kept, true
+	})
 }
 
-// Raise writes a when it is above the kept ack, guarded on the kept one's revision so that two
-// writes never lower it.
+// Raise keeps a's Loaded and At when Loaded is above the kept one's, and the kept MaxAge.
 func (s *Store) Raise(ctx context.Context, host string, a routes.Ack) error {
+	return s.change(ctx, host, func(kept routes.Ack) (routes.Ack, bool) {
+		if a.Loaded <= kept.Loaded {
+			return kept, false
+		}
+		a.MaxAge = max(kept.MaxAge, a.MaxAge)
+		return a, true
+	})
+}
+
+// change writes what f makes of the kept ack (the zero Ack when there is none), when f says to
+// and it differs, guarded on the kept one's revision so that two writes never lower an ack.
+func (s *Store) change(ctx context.Context, host string, f func(routes.Ack) (routes.Ack, bool)) error {
 	key := AckPrefix + host
 	resp, err := s.kv.Get(ctx, key)
 	if err != nil {
 		return err
 	}
+	var kept routes.Ack
 	var rev int64
 	if len(resp.Kvs) == 1 {
-		var kept routes.Ack
 		if err := json.Unmarshal(resp.Kvs[0].Value, &kept); err != nil {
 			return fmt.Errorf("ack %s: %w", key, err)
 		}
-		if a.Loaded <= kept.Loaded {
-			return nil
-		}
 		rev = resp.Kvs[0].ModRevision
 	}
-	_, err = s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", rev)).Then(clientv3.OpPut(key, encode(a))).Commit()
+	next, ok := f(kept)
+	if !ok || (rev != 0 && next == kept) {
+		return nil
+	}
+	_, err = s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", rev)).Then(clientv3.OpPut(key, encode(next))).Commit()
 	return err
 }
 

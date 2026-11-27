@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 )
 
 // The data disk and the programs the image carries.
@@ -63,6 +64,9 @@ const (
 	ProxyRevisionFile = ProxyRunDir + "/revision"
 	// ProxyHealthAddr is where the proxy answers GET /healthz, on the host's loopback.
 	ProxyHealthAddr = "127.0.0.1:7480"
+	// ProxyRouteMaxAge is the proxy's --route-max-age when spec.proxy.routeMaxAge is absent: how
+	// long after hostd took a table the proxy forwards on it.
+	ProxyRouteMaxAge = time.Hour
 	// ProxyPort is the port the proxy terminates TLS on.
 	ProxyPort = "443"
 	// ProxyRedirectListen is where the proxy answers plain HTTP with a redirect to https on the

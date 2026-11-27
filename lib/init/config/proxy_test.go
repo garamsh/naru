@@ -50,8 +50,8 @@ func TestParse_ProxyRunsNaruProxyAsItsUserAbleToBindPort443(t *testing.T) {
 		"--health-addr=127.0.0.1:7480", "--redirect-listen=0.0.0.0:80", "--route-max-age=30m",
 	}, p.Args)
 	h := service(t, cfg, "naru-hostd")
-	assert.Subset(t, h.Args, []string{"--proxy-health-addr=127.0.0.1:7480", "--proxy-tls-port=443"},
-		"hostd asks the proxy's health, and redirects a proxy exposure's 443 to the first wildcard listener's port")
+	assert.Subset(t, h.Args, []string{"--proxy-health-addr=127.0.0.1:7480", "--proxy-tls-port=443", "--proxy-route-max-age=30m"},
+		"hostd asks the proxy's health, redirects a proxy exposure's 443 to the first wildcard listener's port, and reports the proxy's max age")
 	assert.Equal(t, &config.User{UID: 6003, GID: 6003}, p.User)
 	assert.True(t, p.BindLowPorts)
 	assert.Equal(t, uint64(2*4096+1024), p.OpenFiles, "two descriptors for each connection the proxy holds, and room for the rest")
@@ -80,8 +80,8 @@ func TestParse_ProxyListensOn443WhenNoAddressIsGiven(t *testing.T) {
 	require.NoError(t, err)
 	args := service(t, cfg, "naru-proxy").Args
 	assert.Contains(t, args, "--listen=0.0.0.0:443")
-	for _, a := range args {
-		assert.NotContains(t, a, "--route-max-age", "the proxy's own default")
+	for _, a := range append(args, service(t, cfg, "naru-hostd").Args...) {
+		assert.NotContains(t, a, "route-max-age", "the proxy's own default, which hostd's is too")
 	}
 }
 

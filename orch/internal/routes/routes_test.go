@@ -100,11 +100,13 @@ func (s *fakeSource) Routing(context.Context) ([]machines.Record, []machines.Ali
 	return s.recs, nil, s.rev, nil
 }
 
-// fakeHosts is the hosts: proxies take each table and answer loaded, others is admitted with no
-// proxy, and a host in refuse refuses every push.
+// fakeHosts is the hosts: proxies take each table and answer loaded, reporting the max age in
+// maxAge (none when absent), others is admitted with no proxy, and a host in refuse refuses every
+// push.
 type fakeHosts struct {
 	mu       sync.Mutex
 	proxies  []string
+	maxAge   map[string]time.Duration
 	admitted []string
 	loaded   map[string]int64
 	pushed   map[string][]hostapi.RoutesRequest
@@ -112,10 +114,14 @@ type fakeHosts struct {
 	deadline map[string]time.Duration
 }
 
-func (h *fakeHosts) Proxies(context.Context) ([]string, error) {
+func (h *fakeHosts) Proxies(context.Context) ([]routes.Proxy, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]string(nil), h.proxies...), nil
+	out := make([]routes.Proxy, len(h.proxies))
+	for i, p := range h.proxies {
+		out[i] = routes.Proxy{ID: p, MaxAge: h.maxAge[p]}
+	}
+	return out, nil
 }
 
 func (h *fakeHosts) Admitted(context.Context) ([]string, error) {
@@ -150,11 +156,11 @@ func newRig(t *testing.T) *rig {
 	kv := orchtest.Start(t, orchtest.Options{Members: 1}).Members[0].Etcd()
 	r := &rig{
 		src: &fakeSource{recs: []machines.Record{machine("00000000000000aa", "10.200.0.5", machineapi.PhaseRunning)}, rev: 40},
-		hosts: &fakeHosts{proxies: []string{"p1", "p2"}, admitted: []string{"p1", "p2", "m1"}, loaded: map[string]int64{},
+		hosts: &fakeHosts{proxies: []string{"p1", "p2"}, admitted: []string{"p1", "p2", "m1"}, maxAge: map[string]time.Duration{}, loaded: map[string]int64{},
 			pushed: map[string][]hostapi.RoutesRequest{}, refuse: map[string]error{}, deadline: map[string]time.Duration{}},
 		acks: routesetcd.New(kv), clock: orchtest.NewClock(),
 	}
-	r.push = routes.New(routes.Config{Source: r.src, Hosts: r.hosts, Acks: r.acks, Zone: zone, Clock: r.clock, MaxAge: time.Hour})
+	r.push = routes.New(routes.Config{Source: r.src, Hosts: r.hosts, Acks: r.acks, Zone: zone, Clock: r.clock})
 	return r
 }
 
@@ -183,6 +189,7 @@ func TestReconcile_PutsTheWholeTableToEveryProxyHostAndKeepsWhatEachLoaded(t *te
 	assert.Equal(t, int64(40), acks["p1"].Loaded)
 	assert.Equal(t, int64(31), acks["p2"].Loaded, "the revision the proxy loaded, which may be behind")
 	assert.True(t, acks["p1"].At.Equal(r.clock.Now()))
+	assert.Equal(t, routes.DefaultMaxAge, acks["p1"].MaxAge, "a host that reports no max age is taken to have the proxy's default")
 	assert.NotContains(t, acks, "m1")
 
 	r.hosts.loaded["p2"] = 12
@@ -198,7 +205,7 @@ func TestReconcile_AHostThatRefusesIsTrackedAndTheOthersAreServed(t *testing.T) 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "p1")
 	acks := r.acked(t)
-	assert.Equal(t, routes.Ack{}, acks["p1"], "tracked before its push, so a delete waits on it")
+	assert.Equal(t, routes.Ack{MaxAge: routes.DefaultMaxAge}, acks["p1"], "tracked before its push, so a delete waits on it")
 	assert.Equal(t, int64(40), acks["p2"].Loaded, "the control: the other host is served")
 }
 
@@ -219,14 +226,18 @@ func TestDelivered_WaitsForEveryAdmittedProxyHostOrTheMaxAgeAndTheAllowance(t *t
 	assert.True(t, ok, "every proxy host has loaded a table at or above it")
 }
 
-func TestDelivered_AHostThatDoesNotAcknowledgeIsWaitedOutByTheMaxAgeAndTheAllowance(t *testing.T) {
+func TestDelivered_AHostThatDoesNotAcknowledgeIsWaitedOutByTheLongestMaxAgeItReportedAndTheAllowance(t *testing.T) {
 	r := newRig(t)
 	at := r.clock.Now()
 	r.hosts.loaded["p1"] = 40
 	r.hosts.refuse["p2"] = errors.New("no answer")
+	r.hosts.maxAge["p2"] = 2 * time.Hour
 	_ = r.push.Reconcile(t.Context())
+	r.hosts.maxAge["p2"] = 30 * time.Minute
+	_ = r.push.Reconcile(t.Context())
+	assert.Equal(t, 2*time.Hour, r.acked(t)["p2"].MaxAge, "a proxy restarted with a shorter max age may still forward on a table its longer one kept")
 
-	r.clock.Advance(time.Hour + hostapi.RouteAllowance - time.Millisecond)
+	r.clock.Advance(2*time.Hour + hostapi.RouteAllowance - time.Millisecond)
 	ok, err := r.push.Delivered(t.Context(), 40, at)
 	require.NoError(t, err)
 	assert.False(t, ok, "p2 may still forward on a table it took up to the allowance after it was sent")

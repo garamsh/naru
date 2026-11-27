@@ -34,6 +34,8 @@ type Routes struct {
 	GID  int
 	// RevisionFile is where the proxy writes the revision it has loaded.
 	RevisionFile string
+	// MaxAge is the proxy's --route-max-age, which GET /v1/host reports.
+	MaxAge time.Duration
 
 	mu sync.Mutex
 	// taken is the revision of the last table written, read from File at the first push.
