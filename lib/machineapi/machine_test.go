@@ -25,6 +25,8 @@ func TestPhase_AnUnknownPhaseReadsAsUnknown(t *testing.T) {
 	assert.Equal(t, machineapi.PhaseUnknown, s.Phase)
 	require.NoError(t, json.Unmarshal([]byte(`{"phase":"moving"}`), &s))
 	assert.Equal(t, machineapi.PhaseMoving, s.Phase, "a phase the version names is read as it is")
+	require.NoError(t, json.Unmarshal([]byte(`{"phase":"lost"}`), &s))
+	assert.Equal(t, machineapi.PhaseLost, s.Phase)
 
 	var snap machineapi.Snapshot
 	require.NoError(t, json.Unmarshal([]byte(`{"phase":"archived"}`), &snap))

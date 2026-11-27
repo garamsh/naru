@@ -86,3 +86,22 @@ func TestRequest(t *testing.T) {
 		assert.ErrorIs(t, err, identity.ErrRequestSignature)
 	})
 }
+
+func TestReadRequest_GivesTheActionAndBodyOfARequestItDoesNotVerify(t *testing.T) {
+	foreign := newCA(t)
+	cert, key := foreign.issue(t, "root", 12, now.Add(time.Hour), "root")
+	signed, err := identity.SignRequest(identity.ActionRevokeHost, identity.HostSerialsRequest{HostID: "host-a"}, now.Add(time.Minute), key, cert)
+	require.NoError(t, err)
+
+	action, raw, err := identity.ReadRequest(signed)
+	require.NoError(t, err)
+	assert.Equal(t, identity.ActionRevokeHost, action)
+	var got identity.HostSerialsRequest
+	require.NoError(t, json.Unmarshal(raw, &got))
+	assert.Equal(t, "host-a", got.HostID)
+	_, _, err = identity.VerifyRequest(signed, identity.ActionRevokeHost, newCA(t).pool, nil, now)
+	require.Error(t, err, "control: the request is one no authority here verifies")
+
+	_, _, err = identity.ReadRequest([]byte("not a request"))
+	assert.Error(t, err)
+}

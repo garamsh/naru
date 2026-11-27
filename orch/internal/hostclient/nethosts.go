@@ -50,7 +50,7 @@ func NewNetHosts(inv Inventory, dial func(id, addr string) NetAPI) *NetHosts {
 
 // List returns every admitted host with the address of its API.
 func (h *NetHosts) List(ctx context.Context) ([]netrec.Host, error) {
-	admitted, err := h.inv.Hosts(ctx)
+	admitted, err := reached(ctx, h.inv)
 	if err != nil {
 		return nil, err
 	}

@@ -26,6 +26,11 @@ type Service interface {
 	// Drain and Undrain set whether the groups engine may place on the host and keep members on it.
 	Drain(ctx context.Context, by, hostID string) (orchapi.Host, error)
 	Undrain(ctx context.Context, by, hostID string) (orchapi.Host, error)
+	// Abandon records the operator's abandonment of a host it fenced, in one guarded write on the
+	// host's record, and then forwards the operator's signed revoke-host request to the signer,
+	// recording its outcome on the record. A repeat of an abandonment changes only the revocation's
+	// outcome, so it retries a revocation that failed.
+	Abandon(ctx context.Context, by, hostID string, req orchapi.AbandonRequest) (orchapi.Host, error)
 	// Heartbeat records that the admitted host hostID is alive.
 	Heartbeat(ctx context.Context, hostID string) error
 	Hosts(ctx context.Context) ([]orchapi.Host, error)

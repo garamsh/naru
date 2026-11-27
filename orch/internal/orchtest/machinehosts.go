@@ -88,6 +88,18 @@ func NewFakeMachineHosts(hosts ...machines.Host) *FakeMachineHosts {
 func (f *FakeMachineHosts) Fail(id string)    { f.set(id, func(h *fakeMachineHost) { h.down = true }) }
 func (f *FakeMachineHosts) Recover(id string) { f.set(id, func(h *fakeMachineHost) { h.down = false }) }
 
+// Abandon marks the host abandoned, as its inventory record does once an operator abandons it. It
+// answers as before, so a test sees that the record alone, not the host's silence, is acted on.
+func (f *FakeMachineHosts) Abandon(id string) {
+	f.set(id, func(h *fakeMachineHost) { h.host.Abandoned = true })
+}
+
+// Readmit clears the host's abandonment, as a host removed and admitted again under its ID is
+// recorded.
+func (f *FakeMachineHosts) Readmit(id string) {
+	f.set(id, func(h *fakeMachineHost) { h.host.Abandoned = false })
+}
+
 // Drain sets whether the host is draining, as the inventory records it.
 func (f *FakeMachineHosts) Drain(id string, draining bool) {
 	f.set(id, func(h *fakeMachineHost) { h.host.Draining = draining })

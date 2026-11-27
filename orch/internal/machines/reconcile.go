@@ -33,6 +33,7 @@ const (
 // The reasons a caller reads in a Machine's status.
 const (
 	ReasonNotAnswering    = "the Machine's host does not answer"
+	ReasonHostLost        = "the Machine's host was lost"
 	ReasonSnapshotPending = "the snapshot is not ready"
 	ReasonSnapshotGone    = "the snapshot was deleted"
 	ReasonSnapshotFailed  = "the snapshot failed"
@@ -51,6 +52,10 @@ const (
 	// EventUnknownMicroVM is a microVM named as a Machine's whose id has neither a record nor a
 	// tombstone: it is left as it is, disks and all (ADR 0109 item 7). One per microVM per leader.
 	EventUnknownMicroVM = "machine.unknown-microvm"
+	// EventAbandonedVolumesFound is the microVM of an abandoned epoch found on a host that answers
+	// again, its volumes kept until an operator deletes them (ADR 0109 item 7). One per microVM per
+	// leader.
+	EventAbandonedVolumesFound = "machine.abandoned-volumes-found"
 	// EventUnknownDiskSnapshot is a disk snapshot named as a snapshot's whose id has neither a
 	// snapshot nor a deletion: it is left as it is. One per disk snapshot per leader.
 	EventUnknownDiskSnapshot = "machine.unknown-disk-snapshot"
@@ -254,9 +259,31 @@ func (r *Reconciler) observe(ctx context.Context) (*pass, error) {
 }
 
 // answering returns the host, when it is admitted and answered this pass.
+// abandoned reports whether the operator abandoned the host.
+func (p *pass) abandoned(id string) bool { return p.hosts[id].Abandoned }
+
+// lose shows the Machine lost with its volumes left at the binding on an abandoned host. The
+// volumes are recorded as it becomes lost, once: a pass over a Machine already lost, whose
+// abandoned volumes an operator may have deleted, records none again.
+func (r *Reconciler) lose(rec *Record, b Binding) {
+	was := rec.Status.Phase
+	rec.Status.Phase, rec.Status.Reason = machineapi.PhaseLost, ReasonHostLost
+	rec.OperatorReason = ReasonHostLost + ": " + b.Host + " was abandoned"
+	if was == machineapi.PhaseLost || slices.ContainsFunc(rec.Abandoned, func(a AbandonedEpoch) bool { return a.Host == b.Host && a.Epoch == b.Epoch }) {
+		return
+	}
+	volumes := make([]string, 0, len(rec.Spec.Volumes))
+	for _, v := range rec.Spec.Volumes {
+		volumes = append(volumes, v.Name)
+	}
+	rec.Abandoned = append(slices.Clone(rec.Abandoned), AbandonedEpoch{Host: b.Host, Epoch: b.Epoch, Volumes: volumes, At: r.cfg.Clock.Now().UTC()})
+}
+
+// answering returns the host when it answered this pass and is not abandoned: nothing is asked of
+// an abandoned host, whatever it answers.
 func (p *pass) answering(id string) (Host, bool) {
 	h, ok := p.hosts[id]
-	return h, ok && h.Answering
+	return h, ok && h.Answering && !h.Abandoned
 }
 
 // candidates are the admitted hosts with their accounts: a microVM of a current binding is counted
@@ -411,7 +438,14 @@ func (r *Reconciler) unattended(ctx context.Context, p *pass) []error {
 		switch {
 		case e.Binding == nil && e.Status.Phase == machineapi.PhaseDeleting:
 			errs = append(errs, r.finish(ctx, p, e))
-		case e.Binding == nil || e.Status.Phase == machineapi.PhaseDeleting || e.Move != nil:
+		case e.Move != nil || e.Binding == nil:
+		case e.Status.Phase == machineapi.PhaseDeleting && p.abandoned(e.Binding.Host):
+			// Nothing on an abandoned host is reached; it comes back only reset or reinstalled.
+			errs = append(errs, r.finish(ctx, p, e))
+		case p.abandoned(e.Binding.Host):
+			b := *e.Binding
+			errs = append(errs, r.set(ctx, e, func(rec *Record) { r.lose(rec, b) }))
+		case e.Status.Phase == machineapi.PhaseDeleting:
 		default:
 			if _, ok := p.answering(e.Binding.Host); ok {
 				continue
@@ -465,6 +499,17 @@ type share struct {
 type frozen struct {
 	caller, name string
 	binding      *Binding
+	abandoned    []AbandonedEpoch
+}
+
+// left is the Machine's abandoned epoch on host, if the record lists one.
+func (f frozen) left(host string, epoch uint64) (AbandonedEpoch, bool) {
+	for _, a := range f.abandoned {
+		if a.Host == host && a.Epoch == epoch {
+			return a, true
+		}
+	}
+	return AbandonedEpoch{}, false
 }
 
 // divide gives each host its share of the pass, and freezes every Machine.
@@ -477,7 +522,7 @@ func (p *pass) divide() {
 		return p.shares[host]
 	}
 	for _, e := range p.entries {
-		f := frozen{caller: e.Caller, name: e.Name}
+		f := frozen{caller: e.Caller, name: e.Name, abandoned: slices.Clone(e.Abandoned)}
 		if e.Binding != nil {
 			b := *e.Binding
 			f.binding = &b
@@ -511,7 +556,8 @@ func (r *Reconciler) dispatch(ctx context.Context, p *pass) {
 	}
 	var wg sync.WaitGroup
 	for _, id := range slices.Sorted(maps.Keys(p.hosts)) {
-		if !p.hosts[id].Answering {
+		// An abandoned host is given no work, whatever it answers: its Machines are lost.
+		if !p.hosts[id].Answering || p.hosts[id].Abandoned {
 			continue
 		}
 		r.mu.Lock()

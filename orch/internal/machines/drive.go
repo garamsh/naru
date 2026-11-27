@@ -43,7 +43,7 @@ func (r *Reconciler) drive(ctx context.Context, p *pass, e *Entry) error {
 // finish removes a deleted Machine: its microVM and disks first, when it was placed, then its
 // record, freeing its name and its host's allocation, with its deleted event and tombstone.
 func (r *Reconciler) finish(ctx context.Context, p *pass, e *Entry) error {
-	if e.Binding != nil {
+	if e.Binding != nil && !p.abandoned(e.Binding.Host) {
 		name := e.Binding.MicroVM(e.ID)
 		if err := r.cfg.Hosts.Delete(ctx, e.Binding.Host, name); err != nil {
 			return fmt.Errorf("delete %s on %s: %w", name, e.Binding.Host, err)

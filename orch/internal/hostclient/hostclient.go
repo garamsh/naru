@@ -55,7 +55,7 @@ func (c *Client) api(h orchapi.Host) *hostapi.Client {
 // List returns every admitted host. A host that does not answer is listed as not ready. The
 // hosts it read are the ones the calls that follow, until the next List, reach.
 func (c *Client) List(ctx context.Context) ([]groups.Host, error) {
-	admitted, err := c.inv.Hosts(ctx)
+	admitted, err := reached(ctx, c.inv)
 	if err != nil {
 		return nil, err
 	}

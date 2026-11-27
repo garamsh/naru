@@ -69,3 +69,14 @@ Drafted for garamsh/naru#373 (goal 3). It decides the state behind [ADR 0108](./
 - An attestation proves false: an abandoned host is found running its Machines, which is the case for naru fencing through the hypervisor or BMC itself.
 - Reconcile passes take longer than `--machine-interval` at the fleet's size, or etcd's write rate for Machines approaches its quota; either reopens per-site gossip in the manner of Corrosion.
 - Moves fail more often at the copy than at any other step, which would argue for copying while the Machine runs and stopping only for the last delta.
+
+## Errata
+
+- **2026-11-28.** Item 6's abandonment is built in two writes, not one transaction that also lists the host's Machines. The decision stands. garamsh/naru#384 built it:
+  - **The abandonment.** One write to the host's inventory record, guarded on the record as read, holds who, when and the attestation, and no list of the host's Machines.
+  - **The revocation.** The operator signs the signer's `revoke-host` request for that host, and orch forwards it after the write. The outcome goes on the abandonment record: `revokedAt` and the serials revoked, or the last error while none has succeeded. A repeat of the abandonment retries only the revocation.
+  - **`lost`.** The leader's Machine reconciler marks each Machine bound to the abandoned host `lost`, idempotently. When it first does, it records on the Machine the host, the epoch and the volumes left there. A leader that dies between the two writes leaves the next leader to mark them.
+  - **No window.** Placement and a move's choice of target read the abandonment from the same host record, so the write itself makes the host ineligible.
+  - **A move with the abandoned host.** The reconciler resolves it. A source abandoned before the commit leaves the Machine `lost`. A target abandoned before the commit aborts the move and frees its reservation. A target abandoned after the commit leaves the Machine `lost` on it.
+
+  Item 7's event for the volumes of an abandoned epoch is recorded once per microVM per leader, as `machine.unknown-microvm` is, and not on each pass. A pass every 5 seconds would fill the fleet's event log with it.

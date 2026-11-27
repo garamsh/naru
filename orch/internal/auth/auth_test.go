@@ -132,16 +132,16 @@ func TestAListSignedByAnotherKeyIsNotTaken(t *testing.T) {
 
 func TestAllowedByRole(t *testing.T) {
 	tests := []struct {
-		role                              identity.Role
-		read, operate, administer, report bool
+		role                                      identity.Role
+		read, operate, administer, report, attest bool
 	}{
-		{identity.RoleRoot, true, true, true, false},
-		{identity.RoleOperator, true, true, false, false},
-		{identity.RoleAutomation, true, true, false, false},
-		{identity.RoleReader, true, false, false, false},
-		{identity.RoleHost, false, false, false, true},
-		{identity.RoleOrch, false, false, false, false},
-		{identity.RoleCaller, false, false, false, false},
+		{identity.RoleRoot, true, true, true, false, true},
+		{identity.RoleOperator, true, true, false, false, true},
+		{identity.RoleAutomation, true, true, false, false, false},
+		{identity.RoleReader, true, false, false, false, false},
+		{identity.RoleHost, false, false, false, true, false},
+		{identity.RoleOrch, false, false, false, false, false},
+		{identity.RoleCaller, false, false, false, false, false},
 	}
 	for _, tt := range tests {
 		who := identity.Identity{Role: tt.role}
@@ -149,15 +149,16 @@ func TestAllowedByRole(t *testing.T) {
 		require.Equal(t, tt.operate, auth.Allowed(who, auth.Operate), "%s operate", tt.role)
 		require.Equal(t, tt.administer, auth.Allowed(who, auth.Administer), "%s administer", tt.role)
 		require.Equal(t, tt.report, auth.Allowed(who, auth.Report), "%s report", tt.role)
+		require.Equal(t, tt.attest, auth.Allowed(who, auth.Attest), "%s attest", tt.role)
 	}
-	for _, a := range []auth.Action{auth.Read, auth.Operate, auth.Administer, auth.Report} {
+	for _, a := range []auth.Action{auth.Read, auth.Operate, auth.Administer, auth.Report, auth.Attest} {
 		require.False(t, auth.Allowed(identity.Identity{}, a), "no role, action %d", a)
 	}
 }
 
 func TestTheExposerRoleThatNaruNoLongerIssuesMayDoNothing(t *testing.T) {
 	exposer := identity.Identity{Role: identity.Role("exposer"), Subject: "exposer.a"}
-	for _, a := range []auth.Action{auth.Read, auth.Operate, auth.Administer, auth.Report} {
+	for _, a := range []auth.Action{auth.Read, auth.Operate, auth.Administer, auth.Report, auth.Attest} {
 		require.False(t, auth.Allowed(exposer, a), "exposer, action %d", a)
 	}
 }

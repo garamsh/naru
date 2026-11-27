@@ -107,7 +107,7 @@ type stage struct {
 func place(id string, spec machineapi.Spec, cs []candidate, onto string) placement {
 	n := need(spec)
 	stages := []stage{
-		{func(c candidate) bool { return c.Answering }, "no host answers", nil},
+		{func(c candidate) bool { return c.Answering && !c.Abandoned }, "no host answers", nil},
 		{func(c candidate) bool { return !c.Draining }, "every host that answers is draining", nil},
 		{func(c candidate) bool { return spec.Shape.Region == "" || c.Region == spec.Shape.Region }, "no host is in the shape's region", nil},
 		{func(c candidate) bool { return carries(c.Host, spec.Shape.Labels) }, "no host carries the shape's labels", nil},

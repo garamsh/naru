@@ -7,6 +7,8 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/garamsh/naru/lib/hostapi"
@@ -50,6 +52,9 @@ type Move struct {
 	Volumes []MovedVolume `json:"volumes,omitempty"`
 	// Cancel is an operator's cancellation, carried out before the commit.
 	Cancel bool `json:"cancel,omitempty"`
+	// AbandonVolumes is a move of a lost Machine: nothing is stopped or copied, and the target
+	// makes the volumes new, the old ones staying on the abandoned host (ADR 0109 item 6).
+	AbandonVolumes bool `json:"abandonVolumes,omitempty"`
 	// Abort is the abort decided, with its reason. It is written, guarded on the record as read,
 	// before any of the abort's host calls, and from then on the move only ends: no commit follows
 	// it, and a new leader finishes it.
@@ -74,6 +79,11 @@ const (
 	EventMoved = "machine.moved"
 	// EventMoveAborted is a move abandoned before its commit; the Machine stays on its source.
 	EventMoveAborted = "machine.move-aborted"
+	// EventMoveLost is a move whose target was abandoned after its commit: the Machine is lost
+	// there, and the source's stopped copy is left as an older epoch.
+	EventMoveLost = "machine.move-lost"
+	// EventVolumesAbandoned is a lost Machine moved with new volumes, naming those left behind.
+	EventVolumesAbandoned = "machine.volumes-abandoned"
 	// EventDrainHeld is a draining host's Machine that fits on no other host: it stays, and the drain
 	// of its host holds there. One per change.
 	EventDrainHeld = "machine.drain-held"
@@ -110,6 +120,13 @@ var ErrMoving = errors.New("the Machine has a move in progress")
 // ErrNoMove is a cancellation of a Machine that has no move.
 var ErrNoMove = errors.New("the Machine has no move in progress")
 
+// ErrLost is a move of a lost Machine that does not abandon its volumes, and ErrNotLost one that
+// abandons the volumes of a Machine that is not lost.
+var (
+	ErrLost    = errors.New("the Machine's host was abandoned")
+	ErrNotLost = errors.New("only a lost Machine's volumes are abandoned")
+)
+
 // narrowed is the Machine's shape with the move's narrowing added; a narrowing that contradicts the
 // shape is a FieldError.
 func narrowed(s machineapi.Shape, n *orchapi.MoveShape) (machineapi.Shape, error) {
@@ -142,7 +159,7 @@ func (m *Move) view() *orchapi.MachineMove {
 	if m == nil {
 		return nil
 	}
-	v := &orchapi.MachineMove{By: m.By, Requested: m.Requested, Shape: m.Shape, Step: string(m.Step), Source: m.Source.Host, Cancelled: m.Cancel || m.Abort != "", Reason: m.Reason}
+	v := &orchapi.MachineMove{By: m.By, Requested: m.Requested, Shape: m.Shape, Step: string(m.Step), Source: m.Source.Host, Cancelled: m.Cancel || m.Abort != "", AbandonVolumes: m.AbandonVolumes, Reason: m.Reason}
 	if m.Abort != "" {
 		v.Reason = "aborting: " + m.Abort
 	}
@@ -324,6 +341,12 @@ func (r *Reconciler) move(ctx context.Context, p *pass, e *Entry) error {
 			return r.endAbort(ctx, p, e)
 		case !m.Step.committed() && (m.Cancel || e.Status.Phase == machineapi.PhaseDeleting):
 			return r.abort(ctx, p, e, abortReason(m, e))
+		case !m.Step.committed() && !m.AbandonVolumes && p.abandoned(m.Source.Host):
+			return r.abort(ctx, p, e, "the source "+m.Source.Host+" was abandoned")
+		case !m.Step.committed() && m.Target != nil && p.abandoned(m.Target.Host):
+			return r.abort(ctx, p, e, "the target "+m.Target.Host+" was abandoned")
+		case m.Step.committed() && p.abandoned(m.Target.Host):
+			return r.lostAtTarget(ctx, p, e)
 		case ranAgain && !m.Step.committed():
 			return r.abort(ctx, p, e, ReasonSourceRanAgain)
 		case !m.Step.committed() && m.Target != nil && !answers(p, m.Target.Host):
@@ -422,6 +445,10 @@ func abortReason(m Move, e *Entry) string {
 // the acknowledgement: without it the move waits.
 func (r *Reconciler) stopSource(ctx context.Context, p *pass, e *Entry) error {
 	src := e.Move.Source
+	if e.Move.AbandonVolumes {
+		// The source is abandoned: there is nothing to stop, and nothing is copied.
+		return r.setMove(ctx, e, func(_ *Record, m *Move) { m.Step, m.Reason = MoveCopied, "" })
+	}
 	h, ok := p.answering(src.Host)
 	if !ok {
 		return r.waits(ctx, e, "the source "+src.Host+" does not answer; the move waits for its stop")
@@ -562,17 +589,44 @@ func (r *Reconciler) cleanUp(ctx context.Context, p *pass, e *Entry) error {
 			return r.waits(ctx, e, "a proxy does not yet route the Machine to "+e.Binding.Host)
 		}
 	}
-	if _, ok := p.answering(src.Host); !ok {
-		return r.waits(ctx, e, "the source "+src.Host+" does not answer; the move waits to delete the Machine's copy there")
-	}
-	if err := r.cfg.Hosts.Delete(ctx, src.Host, src.MicroVM(e.ID)); err != nil {
-		return fmt.Errorf("delete %s on %s after its move: %w", src.MicroVM(e.ID), src.Host, err)
+	// An abandoned source is reached no more: what it holds stays there, the volumes of a lost
+	// Machine listed as abandoned.
+	if !p.abandoned(src.Host) {
+		if _, ok := p.answering(src.Host); !ok {
+			return r.waits(ctx, e, "the source "+src.Host+" does not answer; the move waits to delete the Machine's copy there")
+		}
+		if err := r.cfg.Hosts.Delete(ctx, src.Host, src.MicroVM(e.ID)); err != nil {
+			return fmt.Errorf("delete %s on %s after its move: %w", src.MicroVM(e.ID), src.Host, err)
+		}
 	}
 	m := *e.Move
 	if err := r.allocate(ctx, p, e, src.Host, amounts{}.minus(need(e.Spec)), func(rec *Record) { rec.Move = nil }); err != nil {
 		return err
 	}
 	r.fleet(ctx, EventMoved, e.Record, map[string]string{"from": src.Host, "to": e.Binding.Host, "by": m.By})
+	if m.AbandonVolumes {
+		volumes := make([]string, 0, len(e.Spec.Volumes))
+		for _, v := range e.Spec.Volumes {
+			volumes = append(volumes, v.Name)
+		}
+		r.fleet(ctx, EventVolumesAbandoned, e.Record, map[string]string{"host": src.Host, "epoch": strconv.FormatUint(src.Epoch, 10), "volumes": strings.Join(volumes, ",")})
+	}
+	return nil
+}
+
+// lostAtTarget ends a move whose target was abandoned after the commit: the Machine is lost there
+// with the volumes it was copied to, and the source's capacity is freed, its stopped copy left as
+// an older epoch until the Machine is deleted.
+func (r *Reconciler) lostAtTarget(ctx context.Context, p *pass, e *Entry) error {
+	m := *e.Move
+	t := *m.Target
+	if err := r.allocate(ctx, p, e, m.Source.Host, amounts{}.minus(need(e.Spec)), func(rec *Record) {
+		rec.Move = nil
+		r.lose(rec, t)
+	}); err != nil {
+		return err
+	}
+	r.fleet(ctx, EventMoveLost, e.Record, map[string]string{"from": m.Source.Host, "to": t.Host, "by": m.By, "step": string(m.Step)})
 	return nil
 }
 
@@ -625,7 +679,10 @@ func (r *Reconciler) endAbort(ctx context.Context, p *pass, e *Entry) error {
 	}
 	change := func(rec *Record) {
 		rec.Move = nil
-		if rec.Status.Phase == machineapi.PhaseMoving {
+		switch {
+		case p.abandoned(src.Host) && rec.Status.Phase != machineapi.PhaseDeleting:
+			r.lose(rec, src)
+		case rec.Status.Phase == machineapi.PhaseMoving:
 			rec.Status.Phase, rec.Status.Reason = phase, why
 		}
 	}
@@ -657,17 +714,22 @@ func (s *service) Move(ctx context.Context, by, caller, name string, req orchapi
 		if _, err := narrowed(r.Spec.Shape, req.Shape); err != nil {
 			return orchapi.Machine{}, err
 		}
+		lost := r.Status.Phase == machineapi.PhaseLost
 		switch {
 		case r.Status.Phase == machineapi.PhaseDeleting:
 			return orchapi.Machine{}, fmt.Errorf("%w: %s/%s", ErrDeleting, caller, name)
-		case r.Move != nil && !r.Move.Cancel && sameShape(r.Move.Shape, req.Shape):
+		case r.Move != nil && !r.Move.Cancel && r.Move.Abort == "" && sameShape(r.Move.Shape, req.Shape) && r.Move.AbandonVolumes == req.AbandonVolumes:
 			return operatorView(r), nil
 		case r.Move != nil:
 			return orchapi.Machine{}, fmt.Errorf("%w: %s/%s, %s by %s", ErrMoving, caller, name, r.Move.Step, r.Move.By)
 		case r.Binding == nil:
 			return orchapi.Machine{}, fmt.Errorf("%w: %s/%s", ErrNotPlaced, caller, name)
+		case lost && !req.AbandonVolumes:
+			return orchapi.Machine{}, fmt.Errorf("%w: %s/%s is lost with its host %s; move it with --abandon-volumes, which gives it new, empty volumes", ErrLost, caller, name, r.Binding.Host)
+		case !lost && req.AbandonVolumes:
+			return orchapi.Machine{}, fmt.Errorf("%w: %s/%s is not lost; its volumes are moved with it", ErrNotLost, caller, name)
 		}
-		r.Move = &Move{By: by, Requested: s.clock.Now().UTC(), Shape: req.Shape, Step: MoveRequested, Source: *r.Binding}
+		r.Move = &Move{By: by, Requested: s.clock.Now().UTC(), Shape: req.Shape, Step: MoveRequested, Source: *r.Binding, AbandonVolumes: req.AbandonVolumes}
 		if _, err := s.store.Update(ctx, r, rev, nil); err == nil {
 			return operatorView(r), nil
 		} else if !errors.Is(err, ErrRaced) {

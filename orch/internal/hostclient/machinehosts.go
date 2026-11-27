@@ -56,7 +56,11 @@ func (m *MachineHosts) List(ctx context.Context) ([]machines.Host, error) {
 	out := make([]machines.Host, len(admitted))
 	var wg sync.WaitGroup
 	for i, h := range admitted {
-		out[i] = machines.Host{ID: h.ID, Region: h.Region, Labels: h.Labels, Draining: h.Draining}
+		out[i] = machines.Host{ID: h.ID, Region: h.Region, Labels: h.Labels, Draining: h.Draining, Abandoned: h.Abandonment != nil}
+		if h.Abandonment != nil {
+			// An abandoned host is fenced and revoked: it is not asked, and answers nothing.
+			continue
+		}
 		wg.Go(func() {
 			fresh := false
 			r, err := m.reports.get(h.ID, func() (report, error) {

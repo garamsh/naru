@@ -12,7 +12,7 @@ var _ inventory.PrefixHosts = (*Client)(nil)
 // MachinePrefixes returns the Machine prefixes each admitted host reports in GET /v1/host. A host
 // that does not answer is left out.
 func (c *Client) MachinePrefixes(ctx context.Context) (map[string][]string, error) {
-	admitted, err := c.inv.Hosts(ctx)
+	admitted, err := reached(ctx, c.inv)
 	if err != nil {
 		return nil, err
 	}

@@ -258,6 +258,12 @@ func SignRequest(action string, body any, expiresAt time.Time, key crypto.Signer
 	return signedrequest.Sign(action, body, expiresAt, key, cert)
 }
 
+// ReadRequest returns the action and the body of a signed request without verifying it, for orch,
+// which forwards an operator's request to the signer that verifies it.
+func ReadRequest(data []byte) (action string, body json.RawMessage, err error) {
+	return signedrequest.Read(data)
+}
+
 // VerifyRequest checks that the attached certificate chains to roots for client authentication,
 // is not on crl, and signed a request for action that has not expired at now. It returns the
 // signer's Identity and the body, which the caller decodes and whose role it checks.

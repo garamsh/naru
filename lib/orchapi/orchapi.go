@@ -30,6 +30,38 @@ type Host struct {
 	// MeshAddress is the host's own address on its tunnel, from the profile's mesh pool (ADR 0113
 	// item 1). It is empty until orch gives the host one.
 	MeshAddress string `json:"meshAddress,omitempty"`
+	// Abandonment is the operator's abandonment of the host, absent while it has none (ADR 0109
+	// item 6): its Machines are lost, and it is in no peer list.
+	Abandonment *HostAbandonment `json:"abandonment,omitempty"`
+}
+
+// HostAbandonment is who abandoned a host, when, how they say they fenced it, and where the
+// revocation of its certificates stands.
+type HostAbandonment struct {
+	By         string         `json:"by"`
+	At         time.Time      `json:"at"`
+	Fenced     string         `json:"fenced"`
+	Revocation HostRevocation `json:"revocation"`
+}
+
+// HostRevocation is the outcome of the abandonment's revocation at the signer: RevokedAt and the
+// serials the signer revoked once it did, and until then the last error, which a repeat of the
+// abandonment retries.
+type HostRevocation struct {
+	RevokedAt time.Time `json:"revokedAt,omitzero"`
+	Serials   []string  `json:"serials,omitempty"`
+	Error     string    `json:"error,omitempty"`
+}
+
+// Revoked reports whether the signer revoked the host's certificates.
+func (r HostRevocation) Revoked() bool { return !r.RevokedAt.IsZero() }
+
+// AbandonRequest is the body of POST /v1/hosts/{id}/abandon: how the operator fenced the host
+// (powered it off, or confirmed it is off), and the operator's signed revoke-host request for it,
+// which orch forwards to the signer.
+type AbandonRequest struct {
+	Fenced     string `json:"fenced"`
+	RevokeHost []byte `json:"revokeHost"`
 }
 
 // Pending is an enrollment waiting for a person's admission. Code is orch's own computation from

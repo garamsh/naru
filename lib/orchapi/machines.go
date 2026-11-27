@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/garamsh/naru/lib/machineapi"
@@ -46,8 +47,10 @@ type MachineMove struct {
 	Source    string     `json:"source"`
 	Target    string     `json:"target,omitempty"`
 	// Cancelled is a cancellation asked for and not yet carried out.
-	Cancelled bool   `json:"cancelled,omitempty"`
-	Reason    string `json:"reason,omitempty"`
+	Cancelled bool `json:"cancelled,omitempty"`
+	// AbandonVolumes is a move of a lost Machine with new, empty volumes.
+	AbandonVolumes bool   `json:"abandonVolumes,omitempty"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 // MoveShape narrows where a move may go: a region, and labels a host must carry, beside the
@@ -60,6 +63,33 @@ type MoveShape struct {
 // MoveRequest is the body of POST /v1/machines/{caller}/{name}/move.
 type MoveRequest struct {
 	Shape *MoveShape `json:"shape,omitempty"`
+	// AbandonVolumes moves a lost Machine, whose host was abandoned, with new, empty volumes in
+	// place of the ones left on that host; it is refused for any other Machine (ADR 0109 item 6).
+	AbandonVolumes bool `json:"abandonVolumes,omitempty"`
+}
+
+// AbandonedVolumes are the volumes of one Machine's epoch left on an abandoned host, which orch
+// keeps listed until an operator deletes them (ADR 0109 item 7).
+type AbandonedVolumes struct {
+	Caller  string    `json:"caller"`
+	Name    string    `json:"name"`
+	ID      string    `json:"id"`
+	Host    string    `json:"host"`
+	Epoch   uint64    `json:"epoch"`
+	Volumes []string  `json:"volumes"`
+	At      time.Time `json:"at"`
+}
+
+// AbandonedVolumes lists the volumes left on abandoned hosts, by caller, name and epoch.
+func (c *Client) AbandonedVolumes(ctx context.Context) ([]AbandonedVolumes, error) {
+	var out []AbandonedVolumes
+	return out, c.do(ctx, http.MethodGet, "/v1/machines/abandoned-volumes", nil, nil, &out)
+}
+
+// DeleteAbandonedVolumes forgets the volumes the caller's Machine name left at the epoch on the
+// abandoned host, which is to come back only reset or reinstalled.
+func (c *Client) DeleteAbandonedVolumes(ctx context.Context, caller, name, host string, epoch uint64) error {
+	return c.do(ctx, http.MethodDelete, machinePath(caller, name)+"/abandoned-volumes/"+url.PathEscape(host)+"/"+strconv.FormatUint(epoch, 10), nil, nil, nil)
 }
 
 // ByDrain is who a drain's moves are by.

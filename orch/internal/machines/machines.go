@@ -65,6 +65,18 @@ type Record struct {
 	// Epoch is the highest epoch a placement or a move of the Machine took, so the next is above it
 	// although the host that holds it does not answer.
 	Epoch uint64 `json:"epoch,omitempty"`
+	// Abandoned are the epochs of the Machine whose volumes are left on an abandoned host, kept until
+	// an operator deletes them (ADR 0109 item 7).
+	Abandoned []AbandonedEpoch `json:"abandoned,omitempty"`
+}
+
+// AbandonedEpoch is a placement of the Machine on a host that was abandoned, and the volumes it
+// left there.
+type AbandonedEpoch struct {
+	Host    string    `json:"host"`
+	Epoch   uint64    `json:"epoch"`
+	Volumes []string  `json:"volumes"`
+	At      time.Time `json:"at"`
 }
 
 // Binding is a placement of a Machine: its host, and the epoch that counts its placements.

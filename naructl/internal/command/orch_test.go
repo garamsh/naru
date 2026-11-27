@@ -47,6 +47,11 @@ type fakeOrch struct {
 	// with its request, or "cancel <caller>/<name>".
 	machines []orchapi.Machine
 	moves    []sentMove
+	// abandons are the hosts and requests POST /v1/hosts/{id}/abandon carried, abandoned what GET
+	// /v1/machines/abandoned-volumes answers, and deletedVolumes each delete's path after /v1/machines/.
+	abandons       []sentAbandon
+	abandoned      []orchapi.AbandonedVolumes
+	deletedVolumes []string
 	// networks and deletedNetworks are what the network commands sent.
 	networks []sentNetwork
 	// pools and deletedPools are what the address-pool commands sent, and releasedExposures the "<network>/<id>" of
@@ -73,6 +78,12 @@ type fakeOrch struct {
 type sentMove struct {
 	call string
 	req  orchapi.MoveRequest
+}
+
+// sentAbandon is an abandonment as naructl sent it.
+type sentAbandon struct {
+	host string
+	req  orchapi.AbandonRequest
 }
 
 // sentPool is an address pool as a PUT carried it.
@@ -302,6 +313,30 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 			_ = json.NewEncoder(w).Encode(orchapi.Host{ID: r.PathValue("id"), Draining: verb == "drain"})
 		})
 	}
+	mux.HandleFunc("POST /v1/hosts/{id}/abandon", func(w http.ResponseWriter, r *http.Request) {
+		var req orchapi.AbandonRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		f.abandons = append(f.abandons, sentAbandon{host: r.PathValue("id"), req: req})
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(orchapi.Host{ID: r.PathValue("id"), Abandonment: &orchapi.HostAbandonment{
+			By: "alice", Fenced: req.Fenced, Revocation: orchapi.HostRevocation{Error: "signer unreachable"},
+		}})
+	})
+	mux.HandleFunc("GET /v1/machines/abandoned-volumes", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(f.abandoned)
+	})
+	mux.HandleFunc("DELETE /v1/machines/{caller}/{name}/abandoned-volumes/{host}/{epoch}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.deletedVolumes = append(f.deletedVolumes, r.PathValue("caller")+"/"+r.PathValue("name")+"/"+r.PathValue("host")+"/"+r.PathValue("epoch"))
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /v1/machines", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -325,7 +360,7 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 		f.mu.Lock()
 		f.moves = append(f.moves, sentMove{call: "move " + m.Caller + "/" + m.Name, req: req})
 		f.mu.Unlock()
-		m.Move = &orchapi.MachineMove{By: "alice", Step: orchapi.MoveRequested, Source: m.Binding.Host, Shape: req.Shape}
+		m.Move = &orchapi.MachineMove{By: "alice", Step: orchapi.MoveRequested, Source: m.Binding.Host, Shape: req.Shape, AbandonVolumes: req.AbandonVolumes}
 		_ = json.NewEncoder(w).Encode(m)
 	})
 	mux.HandleFunc("DELETE /v1/machines/{caller}/{name}/move", func(w http.ResponseWriter, r *http.Request) {

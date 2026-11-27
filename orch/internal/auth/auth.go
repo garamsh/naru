@@ -22,6 +22,9 @@ const (
 	Administer
 	// Report is a host's heartbeat.
 	Report
+	// Attest abandons a fenced host on a person's word that it is off (ADR 0109 item 6), which
+	// automation does not give.
+	Attest
 )
 
 // Allowed reports whether who's role may do the action.
@@ -36,6 +39,8 @@ func Allowed(who identity.Identity, a Action) bool {
 		return r == identity.RoleRoot
 	case Report:
 		return r == identity.RoleHost
+	case Attest:
+		return r == identity.RoleOperator || r == identity.RoleRoot
 	}
 	return false
 }

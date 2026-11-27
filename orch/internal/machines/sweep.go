@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // sweep reaches the microVMs on the host named as the reconciler names them that no current
 // binding names. One of a removed Machine, which its tombstone names, is deleted with its disks;
-// one of an older epoch of a live Machine is stopped and left with its disks, with an event; one
+// one of an older epoch of a live Machine is stopped and left with its disks, with an event, and
+// one of an epoch the record lists abandoned is reported once per leader, its disks kept; one
 // whose id has neither a record nor a tombstone, as after an etcd restore, is left as it is, with
 // an event: a missing record is no deleted Machine (ADR 0109 item 7).
 func (r *Reconciler) sweep(ctx context.Context, p *pass, host string) []error {
@@ -32,12 +34,19 @@ func (r *Reconciler) sweep(ctx context.Context, p *pass, host string) []error {
 				r.fleetEvent(ctx, EventUnknownMicroVM, host+"/"+vm.Name, map[string]string{"host": host, "microvm": vm.Name, "id": id, "state": vm.State})
 			}
 		case m.binding != nil && m.binding.Host == host && m.binding.Epoch == epoch:
-		case vm.State == vmRunning || vm.State == vmPaused:
-			if _, err := r.cfg.Hosts.Stop(ctx, host, vm.Name, 0); err != nil {
-				errs = append(errs, fmt.Errorf("stop %s on %s: %w", vm.Name, host, err))
-				continue
+		default:
+			if vm.State == vmRunning || vm.State == vmPaused {
+				if _, err := r.cfg.Hosts.Stop(ctx, host, vm.Name, 0); err != nil {
+					errs = append(errs, fmt.Errorf("stop %s on %s: %w", vm.Name, host, err))
+					continue
+				}
+				r.fleetEvent(ctx, EventOlderEpoch, m.caller+"/"+m.name, map[string]string{"host": host, "microvm": vm.Name, "id": id})
 			}
-			r.fleetEvent(ctx, EventOlderEpoch, m.caller+"/"+m.name, map[string]string{"host": host, "microvm": vm.Name, "id": id})
+			if a, ok := m.left(host, epoch); ok && r.note(host, "abandoned/"+vm.Name) {
+				r.fleetEvent(ctx, EventAbandonedVolumesFound, m.caller+"/"+m.name, map[string]string{
+					"host": host, "microvm": vm.Name, "id": id, "epoch": strconv.FormatUint(epoch, 10), "volumes": strings.Join(a.Volumes, ","),
+				})
+			}
 		}
 	}
 	return errs

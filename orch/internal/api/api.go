@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -87,6 +88,8 @@ type Machines interface {
 	// before its commit.
 	Move(ctx context.Context, by, caller, name string, req orchapi.MoveRequest) (orchapi.Machine, error)
 	CancelMove(ctx context.Context, caller, name string) (orchapi.Machine, error)
+	AbandonedVolumes(ctx context.Context) ([]orchapi.AbandonedVolumes, error)
+	DeleteAbandonedVolumes(ctx context.Context, caller, name, host string, epoch uint64) error
 }
 
 // Deps is what the handlers call.
@@ -129,6 +132,8 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/microvms", h.guard(auth.Read, h.microVMs))
 	mux.HandleFunc("GET /v1/machines", h.guard(auth.Read, h.machines))
 	mux.HandleFunc("GET /v1/machines/{caller}/{name}", h.guard(auth.Read, h.machine))
+	mux.HandleFunc("GET /v1/machines/abandoned-volumes", h.guard(auth.Read, h.abandonedVolumes))
+	mux.HandleFunc("DELETE /v1/machines/{caller}/{name}/abandoned-volumes/{host}/{epoch}", h.guard(auth.Attest, h.deleteAbandonedVolumes))
 	mux.HandleFunc("POST /v1/machines/{caller}/{name}/move", h.guard(auth.Operate, h.moveMachine))
 	mux.HandleFunc("DELETE /v1/machines/{caller}/{name}/move", h.guard(auth.Operate, h.cancelMove))
 	mux.HandleFunc("GET /v1/groups", h.guard(auth.Read, h.groupList))
@@ -157,6 +162,7 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("PUT /v1/hosts/{id}/labels", h.guard(auth.Operate, h.labels))
 	mux.HandleFunc("POST /v1/hosts/{id}/drain", h.guard(auth.Operate, h.drain))
 	mux.HandleFunc("POST /v1/hosts/{id}/undrain", h.guard(auth.Operate, h.undrain))
+	mux.HandleFunc("POST /v1/hosts/{id}/abandon", h.guard(auth.Attest, h.abandon))
 	mux.HandleFunc("DELETE /v1/hosts/{id}", h.guard(auth.Operate, h.removeHost))
 	mux.HandleFunc("GET /v1/profile", h.guard(auth.Read, h.profile))
 	mux.HandleFunc("PUT /v1/profile", h.guard(auth.Operate, h.setProfile))
@@ -303,7 +309,8 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusUnprocessableEntity, err.Error()
 	case errors.Is(err, inventory.ErrNotFound), errors.Is(err, machines.ErrNotFound), errors.Is(err, machines.ErrNoMove):
 		status, msg = http.StatusNotFound, err.Error()
-	case errors.Is(err, machines.ErrNotPlaced), errors.Is(err, machines.ErrMoving), errors.Is(err, machines.ErrDeleting):
+	case errors.Is(err, machines.ErrNotPlaced), errors.Is(err, machines.ErrMoving), errors.Is(err, machines.ErrDeleting),
+		errors.Is(err, machines.ErrLost), errors.Is(err, machines.ErrNotLost):
 		status, msg = http.StatusConflict, err.Error()
 	case errors.Is(err, machineapi.ErrInvalid):
 		status, msg = http.StatusUnprocessableEntity, err.Error()
@@ -367,6 +374,24 @@ func (h *handler) moveMachine(w http.ResponseWriter, r *http.Request, who identi
 	}
 	out, err := h.Machines.Move(r.Context(), who.Subject, r.PathValue("caller"), r.PathValue("name"), req)
 	reply(w, r, out, err)
+}
+
+func (h *handler) abandonedVolumes(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.Machines.AbandonedVolumes(r.Context())
+	reply(w, r, out, err)
+}
+
+func (h *handler) deleteAbandonedVolumes(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	epoch, err := strconv.ParseUint(r.PathValue("epoch"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, orchapi.Error{Message: "the epoch is not a number"})
+		return
+	}
+	if err := h.Machines.DeleteAbandonedVolumes(r.Context(), r.PathValue("caller"), r.PathValue("name"), r.PathValue("host"), epoch); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) cancelMove(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
@@ -434,6 +459,17 @@ func (h *handler) labels(w http.ResponseWriter, r *http.Request, who identity.Id
 
 func (h *handler) drain(w http.ResponseWriter, r *http.Request, who identity.Identity) {
 	out, err := h.Inventory.Drain(r.Context(), who.Subject, r.PathValue("id"))
+	reply(w, r, out, err)
+}
+
+// abandon records an operator's abandonment of a fenced host. A revocation the signer refused or
+// failed is answered as the error, with the abandonment recorded.
+func (h *handler) abandon(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	var req orchapi.AbandonRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	out, err := h.Inventory.Abandon(r.Context(), who.Subject, r.PathValue("id"), req)
 	reply(w, r, out, err)
 }
 

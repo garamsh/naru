@@ -95,3 +95,18 @@ func Open(data []byte, action string, roots *x509.CertPool, now time.Time) ([][]
 	}
 	return chains, req.Body, nil
 }
+
+// Read returns the action and the body of a signed request without checking its certificate or
+// its signature, for a party that only forwards it to the one that checks them: what it reads
+// tells it whether the request is the one it means to forward, never whether it is authorised.
+func Read(data []byte) (action string, body json.RawMessage, err error) {
+	var s signed
+	if err := json.Unmarshal(data, &s); err != nil {
+		return "", nil, fmt.Errorf("parse signed request: %w", err)
+	}
+	var req request
+	if err := json.Unmarshal(s.Request, &req); err != nil {
+		return "", nil, fmt.Errorf("parse request: %w", err)
+	}
+	return req.Action, req.Body, nil
+}
