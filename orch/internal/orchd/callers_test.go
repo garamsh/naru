@@ -35,13 +35,13 @@ func TestOrch_GrantsACallerAliasDomainsThatAreDNSNamesApartFromTheZone(t *testin
 		"example.test":     "a domain the zone is in",
 	} {
 		_, err := op.ApplyCaller(ctx, "garam", orchapi.CallerSpec{AliasDomains: []string{"c.example", domain}})
-		assert.Equal(t, http.StatusBadRequest, status(err), "%s: %v", what, err)
+		assert.Equal(t, http.StatusUnprocessableEntity, status(err), "%s: %v", what, err)
 		if err != nil {
 			assert.Contains(t, err.Error(), "aliasDomains[1]", what)
 		}
 	}
 	_, err = op.ApplyCaller(ctx, "Garam", orchapi.CallerSpec{})
-	assert.Equal(t, http.StatusBadRequest, status(err), "a caller's name is a DNS label")
+	assert.Equal(t, http.StatusUnprocessableEntity, status(err), "a caller's name is a DNS label")
 	_, err = o.c.Client(t, 0, &bob).ApplyCaller(ctx, "garam", orchapi.CallerSpec{})
 	assert.Equal(t, http.StatusForbidden, status(err), "a reader grants nothing")
 
