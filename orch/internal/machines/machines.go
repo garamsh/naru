@@ -8,6 +8,7 @@ package machines
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -69,6 +70,19 @@ type Record struct {
 	// Abandoned are the epochs of the Machine whose volumes are left on an abandoned host, kept until
 	// an operator deletes them (ADR 0109 item 7).
 	Abandoned []AbandonedEpoch `json:"abandoned,omitempty"`
+	// PrivateAddress is the address the Machine's host gave its microVM, which its routes name;
+	// invalid until the host reports one.
+	PrivateAddress netip.Addr `json:"privateAddress,omitzero"`
+	// Unrouted is when the routing table stopped naming PrivateAddress, set once the Machine is
+	// deleting; its microVM is deleted only when every proxy has stopped forwarding to it.
+	Unrouted *Unrouted `json:"unrouted,omitempty"`
+}
+
+// Unrouted is the first revision of orch's store at which the routing table no longer names a
+// Machine's address, and a time at or after its commit by the leader's clock (ADR 0112 item 6).
+type Unrouted struct {
+	Rev int64     `json:"rev"`
+	At  time.Time `json:"at"`
 }
 
 // AbandonedEpoch is a copy of the Machine's volumes left behind, at an epoch on a host: the

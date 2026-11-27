@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -345,6 +346,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 			// No proxy routes a Machine yet: a move deletes its source without waiting for routes
 			// until #387 replaces NoRoutes with the routes' delivery (orch.md §Moves).
 			Fleet: leaderInv, Routes: machines.NoRoutes, Log: d.Log,
+			MeshPool: func(ctx context.Context) (netip.Prefix, error) { return inventory.MeshPool(ctx, invStore) },
 		}))
 	}
 	limits := c.Limits.WithDefaults()

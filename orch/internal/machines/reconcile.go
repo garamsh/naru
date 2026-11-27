@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/netip"
 	"reflect"
 	"slices"
 	"sync"
@@ -83,6 +84,9 @@ type ReconcilerConfig struct {
 	// before it deletes its source; NoRoutes when nil.
 	Routes RoutesDelivered
 	Log    *slog.Logger
+	// MeshPool reads the mesh pool, the hosts' own addresses, which alone reach a Machine's services
+	// (ADR 0112 item 7); nil, or the zero prefix, creates a Machine that admits nothing.
+	MeshPool func(ctx context.Context) (netip.Prefix, error)
 }
 
 // Reconciler is the leader's Machine reconciler (ADR 0109 item 4, ADR 0110): it places each
@@ -157,6 +161,8 @@ type pass struct {
 	tombstones map[string]Tombstone
 	// epochs is the highest epoch of each id among the microVMs the hosts report.
 	epochs map[string]uint64
+	// mesh is the mesh pool, the source a Machine's services admit.
+	mesh netip.Prefix
 	// busy are the hosts whose earlier work still ran when the pass began to read: what it read of
 	// them may be older than that work's writes, so it gives them none.
 	busy map[string]bool
@@ -231,6 +237,11 @@ func (r *Reconciler) observe(ctx context.Context) (*pass, error) {
 	p := &pass{
 		hosts: map[string]Host{}, byID: map[string]*Entry{}, snaps: snaps, bySnapshot: map[string]map[string]*SnapshotEntry{},
 		snapByID: map[string]*SnapshotEntry{}, deletions: map[string]Deletion{}, tombstones: tombs, epochs: map[string]uint64{}, allocs: allocs,
+	}
+	if r.cfg.MeshPool != nil {
+		if p.mesh, err = r.cfg.MeshPool(ctx); err != nil {
+			return nil, fmt.Errorf("read the mesh pool: %w", err)
+		}
 	}
 	for _, h := range hosts {
 		p.hosts[h.ID] = h

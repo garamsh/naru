@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -179,6 +180,56 @@ func TestReconcile_RunsAMachineOnAHostAsItsRecordAsks(t *testing.T) {
 
 	r.pass()
 	assert.Len(t, r.hosts.Creates("h-a"), 1, "a pass over a running Machine changes nothing")
+}
+
+func TestReconcile_AMachinesServicesAdmitTheMeshPoolToTheirPortsAlone(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	mesh := netip.MustParsePrefix("10.99.0.0/24")
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet,
+		MeshPool: func(context.Context) (netip.Prefix, error) { return mesh, nil },
+	})
+	s := spec()
+	s.Services = []machineapi.Service{{Name: "web", Port: 8080, Protocol: machineapi.ServiceHTTP}, {Name: "db", Port: 5432, Protocol: machineapi.ServiceTCP}}
+	r.create("web", s)
+	r.create("quiet", spec())
+	r.pass()
+
+	creates := r.hosts.Creates("h-a")
+	require.Len(t, creates, 2)
+	byName := map[string]hostapi.CreateRequest{}
+	for _, c := range creates {
+		byName[c.Name] = c
+	}
+	web := byName[machines.Binding{Epoch: 1}.MicroVM(r.record("web").ID)]
+	assert.Equal(t, []hostapi.Rule{
+		{Prefix: "10.99.0.0/24", Protocol: "tcp", Ports: []hostapi.PortRange{{First: 8080, Last: 8080}}},
+		{Prefix: "10.99.0.0/24", Protocol: "tcp", Ports: []hostapi.PortRange{{First: 5432, Last: 5432}}},
+	}, web.NetworkPolicy.Ingress, "each service's port from the mesh pool, TCP for http and tcp alike")
+	assert.Equal(t, spec().NetworkPolicy.Egress[0].Prefix, web.NetworkPolicy.Egress[0].Prefix, "egress is the caller's")
+	quiet := byName[machines.Binding{Epoch: 1}.MicroVM(r.record("quiet").ID)]
+	assert.Empty(t, quiet.NetworkPolicy.Ingress, "a Machine with no service admits nothing")
+}
+
+func TestReconcile_AMachineWithNoMeshPoolAdmitsNothing(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	s := spec()
+	s.Services = []machineapi.Service{{Name: "web", Port: 8080, Protocol: machineapi.ServiceHTTP}}
+	r.create("web", s)
+	r.pass()
+	creates := r.hosts.Creates("h-a")
+	require.Len(t, creates, 1)
+	assert.Empty(t, creates[0].NetworkPolicy.Ingress, "mvmd's empty policy blocks every source")
+}
+
+func TestReconcile_RecordsTheAddressTheHostGaveTheMicroVM(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	r.create("web", spec())
+	r.pass()
+	rec := r.record("web")
+	vm := r.hosts.MicroVMs("h-a")[rec.Binding.MicroVM(rec.ID)]
+	require.Len(t, vm.Addresses, 1)
+	assert.Equal(t, netip.MustParseAddr(vm.Addresses[0]), rec.PrivateAddress, "the address a route names")
 }
 
 func TestReconcile_StopsAndStartsTheMicroVMToTheDesiredState(t *testing.T) {

@@ -31,6 +31,8 @@ type FakeMachineHosts struct {
 	DeleteDelay time.Duration
 	// AfterList, when not nil, runs once each List has taken its answer, before it returns it.
 	AfterList func()
+	// made counts the microVMs made, each given the address 10.200.0.<made> as mvmd gives one.
+	made int
 }
 
 type fakeMachineHost struct {
@@ -283,9 +285,11 @@ func (f *FakeMachineHosts) Create(_ context.Context, host string, r hostapi.Crea
 			return hostapi.MicroVM{}, &hostapi.Error{Status: http.StatusUnprocessableEntity, Message: "no imported disk " + r.Name + "." + d.Name}
 		}
 	}
+	f.made++
 	vm := hostapi.MicroVM{
 		Name: r.Name, MachineID: r.Name, State: "running", ImageDigest: r.Image, CPU: r.CPU, Memory: r.Memory,
 		RootDiskBytes: r.RootDiskBytes, Disks: r.Disks, NetworkPolicy: r.NetworkPolicy,
+		Addresses: []string{fmt.Sprintf("10.200.%d.%d", f.made/250, 1+f.made%250)},
 	}
 	if r.NoStart {
 		vm.State = "created"
