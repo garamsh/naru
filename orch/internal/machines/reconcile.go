@@ -497,6 +497,14 @@ func (p *pass) divide() {
 // at most an interval.
 func (r *Reconciler) dispatch(ctx context.Context, p *pass) {
 	p.divide()
+	// The moves are chosen before any host's work begins, which writes the entries it holds; an
+	// entry with a move is in no host's share.
+	var moves []*Entry
+	for _, e := range p.entries {
+		if e.Move != nil && (e.Move.Step != MoveRequested || e.Move.Cancel || e.Status.Phase == machineapi.PhaseDeleting) {
+			moves = append(moves, e)
+		}
+	}
 	var wg sync.WaitGroup
 	for _, id := range slices.Sorted(maps.Keys(p.hosts)) {
 		if !p.hosts[id].Answering {
@@ -534,10 +542,7 @@ func (r *Reconciler) dispatch(ctx context.Context, p *pass) {
 			p.errs = append(p.errs, err)
 		}()
 	}
-	for _, e := range p.entries {
-		if e.Move == nil || e.Move.Step == MoveRequested && !e.Move.Cancel && e.Status.Phase != machineapi.PhaseDeleting {
-			continue
-		}
+	for _, e := range moves {
 		r.mu.Lock()
 		running := r.moving[e.ID]
 		r.moving[e.ID] = true
