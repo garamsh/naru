@@ -104,7 +104,7 @@ func (f *flaky) MicroVMs(context.Context) ([]netrec.MicroVM, error) {
 	return []netrec.MicroVM{{Name: "vm"}}, f.check()
 }
 func (f *flaky) PutNetwork(context.Context, string, netrec.NetworkState) error { return nil }
-func (f *flaky) PutPeers(context.Context, string, []netrec.Peer) error         { return nil }
+func (f *flaky) PutPeers(context.Context, string, string, []netrec.Peer) error { return nil }
 func (f *flaky) Networks(context.Context) ([]string, error)                    { return nil, nil }
 func (f *flaky) DeleteNetwork(context.Context, string) error                   { return nil }
 

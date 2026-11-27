@@ -28,6 +28,8 @@ type Host struct {
 	ID          string
 	Address     string
 	MeshAddress string
+	// Proxy is the operator's grant of the proxy role (ADR 0119).
+	Proxy bool
 }
 
 // Tunnel is what a host reports of its tunnel: the key and port peers dial, and the prefixes it
@@ -74,8 +76,9 @@ type Hosts interface {
 	MicroVMs(ctx context.Context, hostID string) ([]MicroVM, error)
 	// PutNetwork declares the network on the host, replacing what it held under the name.
 	PutNetwork(ctx context.Context, hostID, name string, n NetworkState) error
-	// PutPeers replaces the host's whole list of peers and its own mesh address.
-	PutPeers(ctx context.Context, hostID, meshAddress string, peers []Peer) error
+	// PutPeers replaces the host's whole list of peers, its own mesh address and the mesh pool, the
+	// hosts' addresses of which only a proxy peer's reach its microVMs (ADR 0119).
+	PutPeers(ctx context.Context, hostID, meshAddress, meshPool string, peers []Peer) error
 	// Networks returns the names of the networks the host holds.
 	Networks(ctx context.Context, hostID string) ([]string, error)
 	// DeleteNetwork removes the network from the host.
@@ -91,6 +94,9 @@ type Networks interface {
 type Config struct {
 	Hosts    Hosts
 	Networks Networks
+	// MeshPool reads the mesh pool, which each pass puts to the hosts with their peers; nil, or the
+	// zero prefix, puts none.
+	MeshPool func(ctx context.Context) (netip.Prefix, error)
 	Interval time.Duration
 	Log      *slog.Logger
 }
@@ -99,6 +105,7 @@ type Config struct {
 type Reconciler struct {
 	hosts    Hosts
 	networks Networks
+	meshPool func(ctx context.Context) (netip.Prefix, error)
 	interval time.Duration
 	log      *slog.Logger
 }
@@ -108,7 +115,7 @@ func New(c Config) *Reconciler {
 	if c.Interval <= 0 {
 		c.Interval = DefaultInterval
 	}
-	return &Reconciler{hosts: c.Hosts, networks: c.Networks, interval: c.Interval, log: c.Log}
+	return &Reconciler{hosts: c.Hosts, networks: c.Networks, meshPool: c.MeshPool, interval: c.Interval, log: c.Log}
 }
 
 // Run reconciles every interval until ctx ends, and returns ctx's error. A pass that fails is
@@ -146,6 +153,16 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list networks: %w", err)
 	}
+	var pool string
+	if r.meshPool != nil {
+		p, err := r.meshPool(ctx)
+		if err != nil {
+			return fmt.Errorf("read the mesh pool: %w", err)
+		}
+		if p.IsValid() {
+			pool = p.String()
+		}
+	}
 	seen := r.observe(ctx, hosts)
 	var errs []error
 	var mu sync.Mutex
@@ -154,7 +171,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := r.apply(ctx, o, seen, nets); err != nil {
+			if err := r.apply(ctx, o, seen, nets, pool); err != nil {
 				mu.Lock()
 				errs = append(errs, err)
 				mu.Unlock()
@@ -200,7 +217,7 @@ func (r *Reconciler) observe(ctx context.Context, hosts []Host) []observed {
 
 // apply tells one host the networks and the peers, and removes the networks it holds that orch
 // does not keep.
-func (r *Reconciler) apply(ctx context.Context, self observed, all []observed, nets []orchapi.Network) error {
+func (r *Reconciler) apply(ctx context.Context, self observed, all []observed, nets []orchapi.Network, pool string) error {
 	var errs []error
 	for _, n := range nets {
 		st := NetworkState{Prefix: n.Prefix, APIEndpoint: n.APIEndpoint, RemoteMembers: remoteMembers(self.host.ID, n.Name, all)}
@@ -208,7 +225,7 @@ func (r *Reconciler) apply(ctx context.Context, self observed, all []observed, n
 			errs = append(errs, fmt.Errorf("host %s: network %s: %w", self.host.ID, n.Name, err))
 		}
 	}
-	if err := r.hosts.PutPeers(ctx, self.host.ID, self.host.MeshAddress, peers(self.host.ID, all)); err != nil {
+	if err := r.hosts.PutPeers(ctx, self.host.ID, self.host.MeshAddress, pool, peers(self.host.ID, all)); err != nil {
 		errs = append(errs, fmt.Errorf("host %s: peers: %w", self.host.ID, err))
 	}
 	held, err := r.hosts.Networks(ctx, self.host.ID)
@@ -275,7 +292,8 @@ func peers(self string, all []observed) []Peer {
 		prefixes := slices.Clone(o.tunnel.MachinePrefixes)
 		sort.Strings(prefixes)
 		out = append(out, Peer{Name: o.host.ID, PublicKey: o.tunnel.PublicKey, Endpoint: endpoint(o.host.Address, o.tunnel.ListenPort), Prefixes: slices.Compact(prefixes), MeshAddress: o.host.MeshAddress,
-			Proxy: o.tunnel.Proxy && o.host.MeshAddress != ""})
+			// The operator's grant, not the host's report alone, makes a peer a proxy (ADR 0119).
+			Proxy: o.tunnel.Proxy && o.host.Proxy && o.host.MeshAddress != ""})
 	}
 	return out
 }

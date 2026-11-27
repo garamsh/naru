@@ -63,7 +63,9 @@ func (n *netHosts) DeleteNetwork(_ context.Context, id, name string) error {
 	return nil
 }
 
-func (n *netHosts) PutPeers(context.Context, string, string, []netrec.Peer) error { return nil }
+func (n *netHosts) PutPeers(context.Context, string, string, string, []netrec.Peer) error {
+	return nil
+}
 
 func (n *netHosts) told(id, name string) (netrec.NetworkState, bool) {
 	n.mu.Lock()

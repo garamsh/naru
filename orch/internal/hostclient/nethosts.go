@@ -20,7 +20,7 @@ type NetAPI interface {
 	Tunnel(ctx context.Context) (netrec.Tunnel, error)
 	MicroVMs(ctx context.Context) ([]netrec.MicroVM, error)
 	PutNetwork(ctx context.Context, name string, n netrec.NetworkState) error
-	PutPeers(ctx context.Context, meshAddress string, peers []netrec.Peer) error
+	PutPeers(ctx context.Context, meshAddress, meshPool string, peers []netrec.Peer) error
 	Networks(ctx context.Context) ([]string, error)
 	DeleteNetwork(ctx context.Context, name string) error
 }
@@ -57,7 +57,7 @@ func (h *NetHosts) List(ctx context.Context) ([]netrec.Host, error) {
 	out := make([]netrec.Host, len(admitted))
 	pass := make(map[string]orchapi.Host, len(admitted))
 	for i, a := range admitted {
-		out[i] = netrec.Host{ID: a.ID, Address: a.Address, MeshAddress: a.MeshAddress}
+		out[i] = netrec.Host{ID: a.ID, Address: a.Address, MeshAddress: a.MeshAddress, Proxy: a.Proxy}
 		pass[a.ID] = a
 	}
 	h.mu.Lock()
@@ -136,13 +136,13 @@ func (h *NetHosts) DeleteNetwork(ctx context.Context, id, name string) error {
 }
 
 // PutPeers replaces the host's peers and its mesh address.
-func (h *NetHosts) PutPeers(ctx context.Context, id, meshAddress string, peers []netrec.Peer) error {
+func (h *NetHosts) PutPeers(ctx context.Context, id, meshAddress, meshPool string, peers []netrec.Peer) error {
 	a, ctx, cancel, err := h.api(ctx, id, callTimeout)
 	if err != nil {
 		return err
 	}
 	defer cancel()
-	return a.PutPeers(ctx, meshAddress, peers)
+	return a.PutPeers(ctx, meshAddress, meshPool, peers)
 }
 
 // hostNet is NetAPI over lib/hostapi.
@@ -188,12 +188,12 @@ func (n hostNet) PutNetwork(ctx context.Context, name string, s netrec.NetworkSt
 	return err
 }
 
-func (n hostNet) PutPeers(ctx context.Context, meshAddress string, peers []netrec.Peer) error {
+func (n hostNet) PutPeers(ctx context.Context, meshAddress, meshPool string, peers []netrec.Peer) error {
 	out := make([]hostapi.Peer, len(peers))
 	for i, p := range peers {
 		out[i] = hostapi.Peer{Name: p.Name, PublicKey: p.PublicKey, Endpoint: p.Endpoint, Prefixes: p.Prefixes, MeshAddress: p.MeshAddress, Proxy: p.Proxy}
 	}
-	_, err := n.api.SetPeers(ctx, hostapi.PeersRequest{MeshAddress: meshAddress, Peers: out})
+	_, err := n.api.SetPeers(ctx, hostapi.PeersRequest{MeshAddress: meshAddress, MeshPool: meshPool, Peers: out})
 	return err
 }
 
