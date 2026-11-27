@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -273,10 +274,11 @@ func (m *Manager) Attach(ctx context.Context, x Member) error {
 		}
 	}
 	next.Members = append(next.Members, x)
+	next.Machines = slices.DeleteFunc(slices.Clone(m.c.Machines), func(a netip.Addr) bool { return a == x.Address })
 	return m.apply(ctx, next)
 }
 
-// Detach drops the member of address a, and applies. An absent one is not an error.
+// Detach drops the member or the Machine of address a, and applies. An absent one is not an error.
 func (m *Manager) Detach(ctx context.Context, a netip.Addr) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -287,13 +289,25 @@ func (m *Manager) Detach(ctx context.Context, a netip.Addr) error {
 			next.Members = append(next.Members, o)
 		}
 	}
+	next.Machines = slices.DeleteFunc(slices.Clone(m.c.Machines), func(x netip.Addr) bool { return x == a })
 	return m.apply(ctx, next)
 }
 
-// Reconcile drops the members whose address no machine of the host holds, and applies. live lists the
-// addresses of the host's machines; it is called with the Manager locked, so an Attach is either
-// before it and seen, or after and kept. A failure of live changes nothing.
+// Reconcile drops the members and the Machines whose address no machine of the host holds, and
+// applies. live lists the addresses of the host's machines; it is called with the Manager locked, so
+// an Attach or an Admit is either before it and seen, or after and kept. A failure of live changes
+// nothing.
 func (m *Manager) Reconcile(ctx context.Context, live func(context.Context) ([]netip.Addr, error)) error {
+	return m.reconcile(ctx, live, false)
+}
+
+// Adopt is Reconcile that also takes every address no member holds as a Machine's, for the pass at
+// start, before the API serves, when no microVM is between its create and its Attach.
+func (m *Manager) Adopt(ctx context.Context, live func(context.Context) ([]netip.Addr, error)) error {
+	return m.reconcile(ctx, live, true)
+}
+
+func (m *Manager) reconcile(ctx context.Context, live func(context.Context) ([]netip.Addr, error), adopt bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	addrs, err := live(ctx)
@@ -305,11 +319,41 @@ func (m *Manager) Reconcile(ctx context.Context, live func(context.Context) ([]n
 		held[a] = true
 	}
 	next := m.c
-	next.Members = nil
+	next.Members, next.Machines = nil, nil
+	member := map[netip.Addr]bool{}
 	for _, x := range m.c.Members {
 		if held[x.Address] {
 			next.Members = append(next.Members, x)
+			member[x.Address] = true
 		}
+	}
+	machine := map[netip.Addr]bool{}
+	for _, a := range m.c.Machines {
+		machine[a] = true
+	}
+	for _, a := range addrs {
+		if !member[a] && (machine[a] || adopt) {
+			next.Machines = append(next.Machines, a)
+			machine[a] = false
+		}
+	}
+	return m.apply(ctx, next)
+}
+
+// Admit takes the addresses of a microVM put on no network as a Machine's, and applies when that
+// changes anything. An address a member holds is left to its network.
+func (m *Manager) Admit(ctx context.Context, addrs ...netip.Addr) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	next := m.c
+	next.Machines = append([]netip.Addr(nil), m.c.Machines...)
+	for _, a := range addrs {
+		if !slices.Contains(next.Machines, a) && !slices.ContainsFunc(m.c.Members, func(x Member) bool { return x.Address == a }) {
+			next.Machines = append(next.Machines, a)
+		}
+	}
+	if len(next.Machines) == len(m.c.Machines) {
+		return nil
 	}
 	return m.apply(ctx, next)
 }
@@ -491,6 +535,7 @@ func stateOf(c Config) string {
 	raw, _ := json.Marshal(struct {
 		state
 		Exposures []Exposure
-	}{state{Networks: nets, Members: members, Peers: peers, Mesh: c.Mesh, MeshPool: c.MeshPool}, exposures})
+		Machines  []netip.Prefix
+	}{state{Networks: nets, Members: members, Peers: peers, Mesh: c.Mesh, MeshPool: c.MeshPool}, exposures, c.machines()})
 	return string(raw)
 }

@@ -516,6 +516,13 @@ func (s *Server) startMicroVM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A microVM made without a start may have had no address before it: a Machine's is admitted now.
+	if _, member := s.memberOf(m); !member {
+		if err := s.admit(ctx, m); err != nil {
+			s.fail(w, err)
+			return
+		}
+	}
 	s.answerMicroVM(ctx, w, m)
 }
 

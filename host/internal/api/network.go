@@ -22,6 +22,7 @@ type Networks interface {
 	Network(name string) (network.Network, bool)
 	Networks() []network.Network
 	Attach(ctx context.Context, m network.Member) error
+	Admit(ctx context.Context, addrs ...netip.Addr) error
 	Detach(ctx context.Context, a netip.Addr) error
 	SetPeers(ctx context.Context, mesh netip.Addr, pool netip.Prefix, peers []network.Peer) error
 	Peers() []network.Peer
@@ -56,11 +57,11 @@ func (s *Server) checkNetwork(w http.ResponseWriter, name string) bool {
 	return true
 }
 
-// attach puts the microVM on the named network, by the address mvmd gave it. It does nothing for a
-// request with no network.
+// attach puts the microVM on the named network, by the address mvmd gave it. A microVM on no
+// network is a Machine's, which is admitted to leave by the egress from its own address.
 func (s *Server) attach(ctx context.Context, name string, m mvmd.Machine) error {
 	if name == "" {
-		return nil
+		return s.admit(ctx, m)
 	}
 	if len(m.Addresses) == 0 {
 		return errors.New("mvmd gave the microVM no address")
@@ -70,6 +71,24 @@ func (s *Server) attach(ctx context.Context, name string, m mvmd.Machine) error 
 		return err
 	}
 	return s.deps.Networks.Attach(ctx, network.Member{Network: name, Address: a})
+}
+
+// admit takes the addresses of a microVM on no network as a Machine's. A host without networks has
+// no forward chain to admit it to.
+func (s *Server) admit(ctx context.Context, m mvmd.Machine) error {
+	if s.deps.Networks == nil {
+		return nil
+	}
+	var addrs []netip.Addr
+	for _, x := range m.Addresses {
+		if a, err := netip.ParseAddr(x); err == nil {
+			addrs = append(addrs, a)
+		}
+	}
+	if len(addrs) == 0 {
+		return nil
+	}
+	return s.deps.Networks.Admit(ctx, addrs...)
 }
 
 // memberOf returns the membership of the Machine, by any address it has.

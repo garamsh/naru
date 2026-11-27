@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"flag"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -715,4 +716,115 @@ func TestManager_KeepsTheMeshPoolAcrossARestart(t *testing.T) {
 	again := newManager(&fakeRunner{}, &fakeTunnel{}, state)
 	require.NoError(t, again.Load(ctx))
 	assert.Equal(t, pfx("10.99.0.0/24"), again.MeshPool(), "a restarted host drops the pool before orch's next pass")
+}
+
+func TestRuleset_AMachineLeavesByTheEgressFromItsOwnAddressAndReachesNoNetwork(t *testing.T) {
+	c := twoNetworks()
+	c.Machines = []netip.Addr{addr("10.0.0.9"), addr("10.0.0.3")}
+	tb := parseTable(t, network.Ruleset(c))
+	for _, tc := range []struct {
+		name   string
+		p      packet
+		accept bool
+		rule   string
+	}{
+		{"the Machine's own address to the egress", packet{in: "tap9", out: "eth0", src: "10.0.0.9", dst: "1.1.1.1"}, true, "a Machine's egress"},
+		{"another address from the Machine's tap", packet{in: "tap9", out: "eth0", src: "10.0.0.77", dst: "1.1.1.1"}, false, "forged source"},
+		{"the Machine to a network's member", packet{in: "tap9", out: "tap1", src: "10.0.0.9", dst: "10.0.0.3"}, false, "a Machine to a network"},
+		{"the Machine to a network's remote prefix", packet{in: "tap9", out: "wg-naru", src: "10.0.0.9", dst: "10.8.2.5"}, false, "a Machine to a network"},
+		{"the Machine to management", packet{in: "tap9", out: "eth0", src: "10.0.0.9", dst: "172.16.0.9"}, false, "a Machine to management"},
+		{"the Machine to another host's Machine by the tunnel", packet{in: "tap9", out: "wg-naru", src: "10.0.0.9", dst: "10.77.4.2"}, false, "policy drop"},
+		{"a network's member keeps its network's rules, though it is listed as a Machine", packet{in: "tap1", out: "eth0", src: "10.0.0.3", dst: "1.1.1.1"}, true, "a egress"},
+		{"control: a network's member to the egress", packet{in: "tap2", out: "eth0", src: "10.0.0.4", dst: "1.1.1.1"}, true, "b egress"},
+	} {
+		got := tb.judge("forward", tc.p)
+		assert.Equal(t, tc.accept, got.accept, tc.name)
+		assert.Equal(t, tc.rule, got.rule, tc.name)
+	}
+	assert.False(t, tb.judge("input", packet{in: "tap9", src: "10.0.0.9", dst: "10.0.0.1"}).accept, "a Machine reaches no address of the host")
+}
+
+func TestRuleset_AMachineWithNoNetworkDeclaredLeavesByTheEgress(t *testing.T) {
+	c := network.Config{Machines: []netip.Addr{addr("10.0.0.9")}, Management: pfx("172.16.0.0/24"), TapPrefix: "tap", Egress: "eth0"}
+	tb := parseTable(t, network.Ruleset(c))
+	got := tb.judge("forward", packet{in: "tap9", out: "eth0", src: "10.0.0.9", dst: "1.1.1.1"})
+	assert.True(t, got.accept, got.rule)
+	got = tb.judge("forward", packet{in: "tap9", out: "eth0", src: "10.0.0.8", dst: "1.1.1.1"})
+	assert.Equal(t, verdict{false, "forged source"}, got, "control: another address from a tap")
+	c.Egress = ""
+	got = parseTable(t, network.Ruleset(c)).judge("forward", packet{in: "tap9", out: "eth0", src: "10.0.0.9", dst: "1.1.1.1"})
+	assert.Equal(t, verdict{false, "policy drop"}, got, "no egress interface, no egress")
+}
+
+func TestManager_AdmitsAMachineAndForgetsItWhenItsMicroVMIsGone(t *testing.T) {
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	ctx := context.Background()
+	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16")}))
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
+	live := func(addrs ...string) func(context.Context) ([]netip.Addr, error) {
+		return func(context.Context) ([]netip.Addr, error) {
+			var out []netip.Addr
+			for _, a := range addrs {
+				out = append(out, addr(a))
+			}
+			return out, nil
+		}
+	}
+
+	require.NoError(t, m.Admit(ctx, addr("10.0.0.9"), addr("10.0.0.3")))
+	tb := parseTable(t, f.table)
+	assert.Equal(t, []netip.Prefix{pfx("10.0.0.9/32")}, tb.sets["machines"], "a member's address is left to its network")
+	before := len(f.calls)
+	require.NoError(t, m.Admit(ctx, addr("10.0.0.9")))
+	assert.Len(t, f.calls, before, "admitted again, nothing changes")
+
+	require.NoError(t, m.Reconcile(ctx, live("10.0.0.3", "10.0.0.9", "10.0.0.5")))
+	assert.Equal(t, []netip.Prefix{pfx("10.0.0.9/32")}, parseTable(t, f.table).sets["machines"],
+		"a pass after the start adopts no microVM: one between its create and its Attach is a network's")
+	require.NoError(t, m.Reconcile(ctx, live("10.0.0.3")))
+	assert.NotContains(t, parseTable(t, f.table).sets, "machines", "a Machine whose microVM is gone leaves the set")
+
+	require.NoError(t, m.Admit(ctx, addr("10.0.0.9")))
+	require.NoError(t, m.Detach(ctx, addr("10.0.0.9")))
+	assert.NotContains(t, parseTable(t, f.table).sets, "machines", "a deleted Machine's microVM leaves it")
+	require.NoError(t, m.Admit(ctx, addr("10.0.0.9")))
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.9")}))
+	tb = parseTable(t, f.table)
+	assert.NotContains(t, tb.sets, "machines", "an address put on a network is its network's")
+	assert.Contains(t, tb.sets["net_a"], pfx("10.0.0.9/32"))
+}
+
+func TestManager_AdoptTakesTheMicroVMsOnNoNetworkAsMachines(t *testing.T) {
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	ctx := context.Background()
+	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16")}))
+	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
+	require.NoError(t, m.Adopt(ctx, func(context.Context) ([]netip.Addr, error) {
+		return []netip.Addr{addr("10.0.0.3"), addr("10.0.0.9")}, nil
+	}))
+	assert.Equal(t, []netip.Prefix{pfx("10.0.0.9/32")}, parseTable(t, f.table).sets["machines"], "every microVM but the members")
+	assert.Equal(t, []network.Member{{Network: "a", Address: addr("10.0.0.3")}}, m.Members())
+}
+
+func TestReconciler_AdoptsAtTheFirstPassThatSucceedsAndNotAfter(t *testing.T) {
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, "")
+	ctx := context.Background()
+	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16")}))
+	addrs, fail := []netip.Addr{addr("10.0.0.9")}, true
+	r := &network.Reconciler{Manager: m, Timeout: time.Second, Log: slog.Default(), Addresses: func(context.Context) ([]netip.Addr, error) {
+		if fail {
+			return nil, errors.New("mvmd is down")
+		}
+		return addrs, nil
+	}}
+	require.Error(t, r.Once(ctx))
+	fail = false
+	require.NoError(t, r.Once(ctx))
+	assert.Equal(t, []netip.Prefix{pfx("10.0.0.9/32")}, parseTable(t, f.table).sets["machines"], "the first pass that lists the machines adopts")
+	addrs = append(addrs, addr("10.0.0.5"))
+	require.NoError(t, r.Once(ctx))
+	assert.Equal(t, []netip.Prefix{pfx("10.0.0.9/32")}, parseTable(t, f.table).sets["machines"], "a later pass does not")
 }
