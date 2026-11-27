@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,12 +36,44 @@ type fleet struct {
 	clock  *clock
 	byID   map[string]*env
 	orch   tls.Certificate
-	// idle is each host's Deps.StreamIdle.
-	idle time.Duration
+	// idle, rate and transfers are each host's Deps.StreamIdle, MinStreamRate and Transfers, and
+	// addrs the addresses of hosts the fleet does not serve; logs is what every host logs.
+	idle      time.Duration
+	rate      uint64
+	rates     map[string]uint64
+	transfers int
+	addrs     map[string]string
+	logs      *syncBuffer
+}
+
+// rateOf is the host's MinStreamRate: its own, else the fleet's.
+func (f *fleet) rateOf(id string) uint64 {
+	if r, ok := f.rates[id]; ok {
+		return r
+	}
+	return f.rate
+}
+
+// syncBuffer is a log the hosts write from their own goroutines.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 func newFleet(t *testing.T) *fleet {
-	f := &fleet{hosts: newAuthority(t, "naru-host-ca"), orchCA: newAuthority(t, "naru-orch-ca"), clock: &clock{t: time.Now()}, byID: map[string]*env{}}
+	f := &fleet{rates: map[string]uint64{}, hosts: newAuthority(t, "naru-host-ca"), orchCA: newAuthority(t, "naru-orch-ca"), clock: &clock{t: time.Now()}, byID: map[string]*env{}, addrs: map[string]string{}, logs: &syncBuffer{}}
 	f.orch, _, _ = f.orchCA.issueSubject(t, pkix.Name{CommonName: "orch", OrganizationalUnit: []string{string(identity.RoleOrch)}}, false)
 	return f
 }
@@ -74,14 +108,17 @@ func (f *fleet) start(t *testing.T, id string) *env {
 	roots.AddCert(f.hosts.cert)
 	srv := New(Deps{
 		Runtime: e.rt, HostFile: write("host.json", []byte(`{}`)), InitFile: filepath.Join(dir, "init.json"),
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: prometheus.NewRegistry(), LeaderTokenFile: filepath.Join(dir, "leader-token"),
-		Now: f.clock.now, StreamIdle: f.idle,
+		Log: slog.New(slog.NewTextHandler(f.logs, nil)), Metrics: prometheus.NewRegistry(), LeaderTokenFile: filepath.Join(dir, "leader-token"),
+		Now: f.clock.now, StreamIdle: f.idle, MinStreamRate: f.rateOf(id), Transfers: f.transfers,
 		Importer: &Importer{
 			Pair:  func() (*tls.Certificate, error) { return &pair, nil },
 			Roots: roots,
 			Address: func(host string) (string, error) {
 				if h, ok := f.byID[host]; ok {
 					return h.addr, nil
+				}
+				if a, ok := f.addrs[host]; ok {
+					return a, nil
 				}
 				return "", io.ErrUnexpectedEOF
 			},
@@ -284,7 +321,7 @@ func TestDiskCopy_AnImportOfAnotherDigestThanTheSourcesIsADigestMismatch(t *test
 	assert.False(t, tgt.holds("m-abc-2.data"))
 }
 
-func TestDiskCopy_BytesThatDoNotHashToTheDigestLeaveNoDisk(t *testing.T) {
+func TestDiskCopy_BytesThatDoNotHashToTheDigestAreAStreamRefusedAndLeaveNoDisk(t *testing.T) {
 	_, src, tgt, orch, disk := copyFixture(t)
 	x := exportOf(t, src, orch, disk)
 	// The source's own digest agrees with the export; the bytes on the wire do not.
@@ -294,7 +331,7 @@ func TestDiskCopy_BytesThatDoNotHashToTheDigestLeaveNoDisk(t *testing.T) {
 
 	code, eb := importOf(t, tgt, orch, x)
 	assert.Equal(t, http.StatusConflict, code)
-	assert.Equal(t, hostapi.CodeDigestMismatch, eb.Code, eb.Error)
+	assert.Equal(t, hostapi.CodeStreamRefused, eb.Code, eb.Error)
 	assert.False(t, tgt.holds("m-abc-2.data"))
 }
 
@@ -375,7 +412,8 @@ func TestDiskCopy_AnImporterlessHostAnswers501(t *testing.T) {
 func stalled(t *testing.T, at int) (tgt *env, orch *http.Client, x hostapi.Export) {
 	t.Helper()
 	f := newFleet(t)
-	f.idle = 200 * time.Millisecond
+	// A rate of a byte a second puts the deadline as a whole weeks away: only the idle bound ends it.
+	f.idle, f.rate = 200*time.Millisecond, 1
 	src, tgt := f.start(t, "h-src"), f.start(t, "h-tgt")
 	orch = src.clientOf(f.orch)
 	disk := stoppedDisk(src, "m-abc-1", "data", 4<<20, strings.Repeat("x", 2<<20))
@@ -430,4 +468,238 @@ func TestDiskCopy_AnImportOfAnotherFilesystemThanTheSourcesIsRefused(t *testing.
 	assert.Equal(t, http.StatusConflict, code)
 	assert.Equal(t, hostapi.CodeDigestMismatch, eb.Code, eb.Error)
 	assert.False(t, tgt.holds("m-abc-2.data"))
+}
+
+func TestDiskCopy_NeitherALogNorAnImportsErrorHoldsAGrant(t *testing.T) {
+	f, src, tgt, orch, disk := copyFixture(t)
+	x := exportOf(t, src, orch, disk)
+	code, _ := importOf(t, tgt, orch, x)
+	require.Equal(t, http.StatusOK, code)
+
+	y := exportOf(t, src, orch, disk)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	f.addrs["h-closed"] = ln.Addr().String()
+	require.NoError(t, ln.Close())
+	code, body := tgt.do(t, orch, "POST", "/v1/disks/import", hostapi.ImportRequest{
+		Name: "m-abc-3.data", SourceHost: "h-closed", Grant: y.Grant, SizeBytes: y.SizeBytes, Filesystem: y.Filesystem, SHA256: y.SHA256,
+	})
+	require.Equal(t, http.StatusServiceUnavailable, code, string(body))
+
+	assert.NotContains(t, string(body), y.Grant, "the import's error names no grant")
+	assert.Contains(t, string(body), grantTag(y.Grant), "it names the grant by its tag")
+	logs := f.logs.String()
+	assert.Contains(t, logs, hostapi.ExportPathPrefix+grantTag(x.Grant), "the fetch is logged by the grant's tag")
+	for _, g := range []string{x.Grant, y.Grant} {
+		assert.NotContains(t, logs, g, "no log holds a grant")
+	}
+}
+
+func TestDiskCopy_AStreamThatOpensWithAnExtentPutsNoBytesInTheError(t *testing.T) {
+	_, src, tgt, orch, disk := copyFixture(t)
+	x := exportOf(t, src, orch, disk)
+	src.rt.mu.Lock()
+	src.rt.extentFirst = map[string]bool{disk: true}
+	src.rt.mu.Unlock()
+
+	code, eb := importOf(t, tgt, orch, x)
+	assert.Equal(t, http.StatusConflict, code)
+	assert.Equal(t, hostapi.CodeDigestMismatch, eb.Code)
+	assert.Contains(t, eb.Error, "an extent of 23 bytes at 0")
+	assert.NotContains(t, eb.Error, "written before the move", "the disk's bytes are not in the error")
+	assert.False(t, tgt.holds("m-abc-2.data"))
+}
+
+func TestDiskCopy_ACertificateThatNamesTheHostOnlyInItsDNSNamesDoesNotFetch(t *testing.T) {
+	f, src, _, orch, disk := copyFixture(t)
+	x := exportOf(t, src, orch, disk)
+	pair, _, _ := f.hosts.issueName(t, pkix.Name{CommonName: "h-other", OrganizationalUnit: []string{string(identity.RoleHost)}}, "h-tgt")
+
+	code, _ := src.do(t, src.clientOf(pair), "GET", hostapi.ExportPathPrefix+x.Grant, nil)
+	assert.Equal(t, http.StatusForbidden, code, "the grant's host is the certificate's common name, which the signer sets")
+}
+
+func TestDiskCopy_TwoFetchesOfAGrantAtOnceServeOne(t *testing.T) {
+	f, src, _, orch, disk := copyFixture(t)
+	x := exportOf(t, src, orch, disk)
+	target := src.clientOf(f.hostPair(t, "h-tgt"))
+	codes := make(chan int, 2)
+	start := make(chan struct{})
+	for range 2 {
+		go func() {
+			<-start
+			code, _ := src.do(t, target, "GET", hostapi.ExportPathPrefix+x.Grant, nil)
+			codes <- code
+		}()
+	}
+	close(start)
+	got := []int{<-codes, <-codes}
+	assert.ElementsMatch(t, []int{http.StatusOK, http.StatusGone}, got)
+}
+
+// hold runs n calls of do, each of which takes one of the host's transfers until the test ends, and
+// returns once they all hold it.
+func hold(t *testing.T, n int, started func() int, do func(ctx context.Context)) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	t.Cleanup(func() { cancel(); wg.Wait() })
+	for range n {
+		wg.Go(func() { do(ctx) })
+	}
+	require.Eventually(t, func() bool { return started() >= n }, 5*time.Second, 10*time.Millisecond)
+}
+
+// bounded sends the request and requires an answer within 5 s: a call the bound does not refuse
+// would wait on the stalled ones.
+func bounded(t *testing.T, c *http.Client, method, url string, body any) (int, []byte) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		require.NoError(t, err)
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, rd)
+	require.NoError(t, err)
+	resp, err := c.Do(req)
+	require.NoError(t, err, "the call beyond the bound was not answered")
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b
+}
+
+// within sends the request under ctx and ignores its outcome.
+func within(ctx context.Context, c *http.Client, method, url string, body any) {
+	b, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(b))
+	if err != nil {
+		return
+	}
+	if resp, err := c.Do(req); err == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+}
+
+// reads counts the ReadDisk calls of the disk the fake made.
+func (f *fakeRuntime) reads(disk string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if c == "readDisk "+disk {
+			n++
+		}
+	}
+	return n
+}
+
+func TestDiskCopy_ExportsReadingBeyondTheBoundAreBusy(t *testing.T) {
+	_, src, _, orch, disk := copyFixture(t)
+	src.rt.mu.Lock()
+	src.rt.stallAt = map[string]int{disk: 0}
+	src.rt.mu.Unlock()
+	hold(t, 2, func() int { return src.rt.reads(disk) }, func(ctx context.Context) {
+		within(ctx, orch, "POST", "https://"+src.addr+"/v1/disks/"+disk+"/export", hostapi.ExportRequest{Host: "h-tgt"})
+	})
+
+	code, body := bounded(t, orch, "POST", "https://"+src.addr+"/v1/disks/"+disk+"/export", hostapi.ExportRequest{Host: "h-tgt"})
+	assert.Equal(t, http.StatusServiceUnavailable, code)
+	assert.Equal(t, hostapi.CodeBusy, codeOf(t, body).Code)
+}
+
+func TestDiskCopy_FetchesBeyondTheBoundAreBusyAndLeaveTheGrantUnspent(t *testing.T) {
+	f, src, _, orch, disk := copyFixture(t)
+	var grants []string
+	for range 3 {
+		grants = append(grants, exportOf(t, src, orch, disk).Grant)
+	}
+	before := src.rt.reads(disk)
+	src.rt.mu.Lock()
+	src.rt.stallAt = map[string]int{disk: 1}
+	src.rt.mu.Unlock()
+	target := src.clientOf(f.hostPair(t, "h-tgt"))
+	i := 0
+	hold(t, 2, func() int { return src.rt.reads(disk) - before }, func(ctx context.Context) {
+		src.rt.mu.Lock()
+		g := grants[i]
+		i++
+		src.rt.mu.Unlock()
+		within(ctx, target, "GET", "https://"+src.addr+hostapi.ExportPathPrefix+g, nil)
+	})
+
+	code, body := bounded(t, target, "GET", "https://"+src.addr+hostapi.ExportPathPrefix+grants[2], nil)
+	assert.Equal(t, http.StatusServiceUnavailable, code)
+	assert.Equal(t, hostapi.CodeBusy, codeOf(t, body).Code)
+	src.rt.mu.Lock()
+	delete(src.rt.stallAt, disk)
+	src.rt.mu.Unlock()
+}
+
+func TestDiskCopy_ImportsBeyondTheBoundAreBusy(t *testing.T) {
+	f := newFleet(t)
+	f.transfers = 1
+	src, tgt := f.start(t, "h-src"), f.start(t, "h-tgt")
+	orch := src.clientOf(f.orch)
+	disk := stoppedDisk(src, "m-abc-1", "data", 1<<20, "written before the move")
+	x, y := exportOf(t, src, orch, disk), exportOf(t, src, orch, disk)
+	before := src.rt.reads(disk)
+	src.rt.mu.Lock()
+	src.rt.stallAt = map[string]int{disk: 1}
+	src.rt.mu.Unlock()
+	hold(t, 1, func() int { return src.rt.reads(disk) - before }, func(ctx context.Context) {
+		within(ctx, orch, "POST", "https://"+tgt.addr+"/v1/disks/import", hostapi.ImportRequest{
+			Name: "m-abc-2.data", SourceHost: "h-src", Grant: x.Grant, SizeBytes: x.SizeBytes, Filesystem: x.Filesystem, SHA256: x.SHA256,
+		})
+	})
+
+	code, body := bounded(t, orch, "POST", "https://"+tgt.addr+"/v1/disks/import", hostapi.ImportRequest{
+		Name: "m-abc-3.data", SourceHost: "h-src", Grant: y.Grant, SizeBytes: y.SizeBytes, Filesystem: y.Filesystem, SHA256: y.SHA256,
+	})
+	assert.Equal(t, http.StatusServiceUnavailable, code)
+	assert.Equal(t, hostapi.CodeBusy, codeOf(t, body).Code)
+}
+
+// trickling is a fleet whose source sends 3 MiB in parts of 64 KiB, one each 100 ms: the source's
+// buffer of 1 MiB goes out every 1.6 s, within the idle bound of 2 s, and the whole takes 4.8 s,
+// past a deadline of the idle bound alone; rates are the hosts' MinStreamRate.
+func trickling(t *testing.T, src, tgt uint64) {
+	t.Helper()
+	f := newFleet(t)
+	f.idle = 2 * time.Second
+	f.rates["h-src"], f.rates["h-tgt"] = src, tgt
+	s, tg := f.start(t, "h-src"), f.start(t, "h-tgt")
+	orch := s.clientOf(f.orch)
+	disk := stoppedDisk(s, "m-abc-1", "data", 4<<20, strings.Repeat("x", 3<<20))
+	x := exportOf(t, s, orch, disk)
+	s.rt.mu.Lock()
+	s.rt.trickle = map[string]time.Duration{disk: 100 * time.Millisecond}
+	s.rt.mu.Unlock()
+	endsUnavailable(t, tg, orch, x)
+}
+
+func TestDiskCopy_AnImportFromASourceThatTricklesEndsAtItsDeadline(t *testing.T) {
+	// The target's deadline is the idle bound; the source's weeks away.
+	trickling(t, 1, 1<<30)
+}
+
+func TestDiskCopy_AFetchThatTricklesEndsAtTheSourcesDeadline(t *testing.T) {
+	trickling(t, 1<<30, 1)
+}
+
+func TestDiskCopy_AnImportOfADiskWhoseMicroVMStartedSinceItsExportIsSourceUnavailable(t *testing.T) {
+	_, src, tgt, orch, disk := copyFixture(t)
+	x := exportOf(t, src, orch, disk)
+	src.rt.mu.Lock()
+	m := src.rt.machines["m-abc-1"]
+	m.State = mvmd.StateRunning
+	src.rt.machines["m-abc-1"] = m
+	src.rt.mu.Unlock()
+
+	code, eb := importOf(t, tgt, orch, x)
+	assert.Equal(t, http.StatusServiceUnavailable, code)
+	assert.Equal(t, hostapi.CodeSourceUnavailable, eb.Code, "the grant was good; the source could not read the disk: %s", eb.Error)
 }

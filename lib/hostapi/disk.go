@@ -21,11 +21,18 @@ const (
 	// CodeGrantRefused: 409, an import whose source refused the fetch: the grant is unknown,
 	// expired, already fetched, or names another host.
 	CodeGrantRefused = "grant-refused"
-	// CodeDigestMismatch: 409, an import whose bytes, or the source's digest of them, are not of
-	// the SHA-256 the import named. The target holds no disk of it.
+	// CodeDigestMismatch: 409, an import whose source's header or digest is not the size,
+	// filesystem or SHA-256 the import named. The target holds no disk of it.
 	CodeDigestMismatch = "digest-mismatch"
-	// CodeSourceUnavailable: 503, an import whose source the target could not reach.
+	// CodeStreamRefused: 409, an import whose stream mvmd refused: bytes that do not hash to the
+	// SHA-256, or extents out of order or past the size, which mvmd does not tell apart. The target
+	// holds no disk of it, and a new copy may pass.
+	CodeStreamRefused = "stream-refused"
+	// CodeSourceUnavailable: 503, an import whose source the target could not reach, whose stream
+	// was cut, or that refused the fetch for another reason than the grant.
 	CodeSourceUnavailable = "source-unavailable"
+	// CodeBusy: 503, an export, a fetch or an import beyond the host's bound of transfers at once.
+	CodeBusy = "busy"
 )
 
 // ExportPathPrefix is where a source serves an export's stream to the host its grant names:

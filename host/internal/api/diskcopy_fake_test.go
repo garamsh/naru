@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/garamsh/naru/host/internal/mvmd"
 )
@@ -43,7 +44,7 @@ func (f *fakeRuntime) ReadDisk(ctx context.Context, id string, sink func(mvmd.Di
 			return fmt.Errorf("%w: disk %s is held by the %s Machine %s", mvmd.ErrPrecondition, id, m.State, m.ID)
 		}
 	}
-	b, fs, n, corrupt, truncate := f.diskBytes(id), f.filesystems[id], len(f.data[id]), f.corrupt[id], f.truncate[id]
+	b, fs, n, corrupt, truncate, extentFirst, trickle := f.diskBytes(id), f.filesystems[id], len(f.data[id]), f.corrupt[id], f.truncate[id], f.extentFirst[id], f.trickle[id]
 	stall, stalls := f.stallAt[id]
 	if fs == "" {
 		fs = mvmd.FilesystemExt4
@@ -57,6 +58,16 @@ func (f *fakeRuntime) ReadDisk(ctx context.Context, id string, sink func(mvmd.Di
 			data = append([]byte{data[0] ^ 0xff}, data[1:]...)
 		}
 		parts = append(parts, mvmd.DiskExtent{Offset: 0, Data: data})
+		if trickle > 0 {
+			// The extent goes 64 KiB at a time, each after the pause.
+			parts = parts[:1]
+			for i := 0; i < len(data); i += 64 << 10 {
+				parts = append(parts, mvmd.DiskExtent{Offset: uint64(i), Data: data[i:min(i+64<<10, len(data))]})
+			}
+		}
+	}
+	if extentFirst && len(parts) > 1 {
+		parts[0], parts[1] = parts[1], parts[0]
 	}
 	if !truncate {
 		parts = append(parts, mvmd.DiskDigest(digest))
@@ -68,6 +79,13 @@ func (f *fakeRuntime) ReadDisk(ctx context.Context, id string, sink func(mvmd.Di
 		if stalls && i == stall {
 			<-ctx.Done()
 			return ctx.Err()
+		}
+		if _, ok := p.(mvmd.DiskExtent); ok && trickle > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(trickle):
+			}
 		}
 		if err := sink(p); err != nil {
 			return err

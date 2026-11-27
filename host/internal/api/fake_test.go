@@ -63,6 +63,10 @@ type fakeRuntime struct {
 	// ends; truncate makes it end a disk's stream without its digest.
 	stallAt  map[string]int
 	truncate map[string]bool
+	// extentFirst makes ReadDisk send a disk's first extent before its header, and trickle its
+	// extents 64 KiB each, after this pause.
+	extentFirst map[string]bool
+	trickle     map[string]time.Duration
 }
 
 // fakeExec is an exec the fake runs: its output and record, and done, closed once it ended.

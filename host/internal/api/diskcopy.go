@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -39,6 +41,12 @@ const (
 	// defaultStreamIdle ends a disk's stream between hosts on which nothing moved for this long: a
 	// source whose write to the target, or a target whose read from the source, does not progress.
 	defaultStreamIdle = 2 * time.Minute
+	// defaultMinStreamRate is the slowest a disk's stream may go on average: a stream ends at the
+	// idle bound plus its disk's size at this rate, so a source that trickles does not hold it.
+	defaultMinStreamRate = 1 << 20
+	// defaultTransfers bounds each of the host's exports reading a disk, the fetches it serves and
+	// its imports, at once; a call beyond it is 503 busy.
+	defaultTransfers = 2
 )
 
 var (
@@ -100,7 +108,9 @@ func (gs *grants) add(g *grant, now time.Time) (string, bool, error) {
 }
 
 // take returns the grant for a fetch by the certificate cert at now, marking it fetched; else the
-// status and message of the refusal. A grant for another host is refused and left as it was.
+// status and message of the refusal. A grant for another host is refused and left as it was. The
+// host is the certificate's common name, which the signer sets to the host ID it admitted; a DNS or
+// IP name the host's request chose is not compared.
 func (gs *grants) take(id string, cert *x509.Certificate, now time.Time) (*grant, int, string) {
 	gs.mu.Lock()
 	defer gs.mu.Unlock()
@@ -108,7 +118,7 @@ func (gs *grants) take(id string, cert *x509.Certificate, now time.Time) (*grant
 	switch {
 	case !ok:
 		return nil, http.StatusNotFound, "this host holds no such grant"
-	case cert.VerifyHostname(g.host) != nil:
+	case cert.Subject.CommonName != g.host:
 		return nil, http.StatusForbidden, "the grant is for another host"
 	case !now.Before(g.export.ExpiresAt):
 		delete(gs.by, id)
@@ -134,6 +144,67 @@ func (s *Server) now() time.Time {
 	return time.Now()
 }
 
+func (s *Server) minStreamRate() uint64 {
+	if s.deps.MinStreamRate > 0 {
+		return s.deps.MinStreamRate
+	}
+	return defaultMinStreamRate
+}
+
+// streamDeadline is the most a disk's stream of size bytes may take as a whole.
+func (s *Server) streamDeadline(size uint64) time.Duration {
+	return s.streamIdle() + time.Duration(size/s.minStreamRate())*time.Second
+}
+
+// slots bounds one kind of transfer: a call takes a slot or is refused at once.
+type slots struct {
+	once sync.Once
+	ch   chan struct{}
+}
+
+func (sl *slots) take(n int) bool {
+	sl.once.Do(func() { sl.ch = make(chan struct{}, n) })
+	select {
+	case sl.ch <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (sl *slots) give() { <-sl.ch }
+
+func (s *Server) transfers() int {
+	if s.deps.Transfers > 0 {
+		return s.deps.Transfers
+	}
+	return defaultTransfers
+}
+
+// busy answers a transfer beyond the host's bound.
+func busy(w http.ResponseWriter, what string, n int) {
+	writeJSON(w, http.StatusServiceUnavailable, hostapi.ErrorBody{Error: fmt.Sprintf("the host runs %d %s at once, its bound; try again", n, what), Code: hostapi.CodeBusy})
+}
+
+// grantTag names a grant where a log or an error may: the first 8 hex digits of its SHA-256.
+func grantTag(g string) string {
+	sum := sha256.Sum256([]byte(g))
+	return hex.EncodeToString(sum[:4])
+}
+
+// describe is a part of a disk's stream by its kind and place, with none of the disk's bytes.
+func describe(p mvmd.DiskPart) string {
+	switch p := p.(type) {
+	case mvmd.DiskHeader:
+		return fmt.Sprintf("a header of %d bytes, filesystem %s", p.SizeBytes, p.Filesystem)
+	case mvmd.DiskExtent:
+		return fmt.Sprintf("an extent of %d bytes at %d", len(p.Data), p.Offset)
+	case mvmd.DiskDigest:
+		return "the digest " + string(p)
+	}
+	return "no part"
+}
+
 // diskRef reports whether name is a microVM's disk identifier, <microVM>.<disk>.
 func diskRef(name string) bool {
 	vm, disk, ok := strings.Cut(name, ".")
@@ -157,6 +228,11 @@ func (s *Server) exportDisk(w http.ResponseWriter, r *http.Request) {
 		invalid(w, "host")
 		return
 	}
+	if !s.reading.take(s.transfers()) {
+		busy(w, "exports reading a disk", s.transfers())
+		return
+	}
+	defer s.reading.give()
 	var e hostapi.Export
 	err := s.deps.Runtime.ReadDisk(r.Context(), name, func(p mvmd.DiskPart) error {
 		switch p := p.(type) {
@@ -203,15 +279,23 @@ func (s *Server) fetchExport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, hostapi.ErrorBody{Error: "this host holds no such grant"})
 		return
 	}
+	// A fetch the host is too busy for leaves the grant unspent, for a fetch later in its life.
+	if !s.fetching.take(s.transfers()) {
+		busy(w, "fetches", s.transfers())
+		return
+	}
+	defer s.fetching.give()
 	g, status, msg := s.grants.take(id, cert, s.now())
 	if g == nil {
 		writeJSON(w, status, hostapi.ErrorBody{Error: msg})
 		return
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.streamDeadline(g.export.SizeBytes))
+	defer cancel()
 	out := bufio.NewWriterSize(w, 1<<20)
 	rc := http.NewResponseController(w)
 	started := false
-	err := s.deps.Runtime.ReadDisk(r.Context(), g.disk, func(p mvmd.DiskPart) error {
+	err := s.deps.Runtime.ReadDisk(ctx, g.disk, func(p mvmd.DiskPart) error {
 		if err := rc.SetWriteDeadline(time.Now().Add(s.streamIdle())); err != nil {
 			return err
 		}
@@ -234,7 +318,7 @@ func (s *Server) fetchExport(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 	default:
 		// The status is sent, and the stream ends without its digest, which the target refuses.
-		s.deps.Log.Error("an export's stream ended short", "disk", g.disk, "host", g.host, "err", err.Error())
+		s.deps.Log.Error("an export's stream ended short", "disk", g.disk, "host", g.host, "grant", grantTag(id), "err", err.Error())
 	}
 }
 
@@ -273,7 +357,12 @@ func (s *Server) importDisk(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotImplemented, hostapi.ErrorBody{Error: "this host was started with no pair or mesh to fetch another host's disk with"})
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
+	if !s.importing.take(s.transfers()) {
+		busy(w, "imports", s.transfers())
+		return
+	}
+	defer s.importing.give()
+	ctx, cancel := context.WithTimeout(r.Context(), s.streamDeadline(req.SizeBytes))
 	defer cancel()
 	body, err := s.fetchFrom(ctx, req.SourceHost, req.Grant)
 	if err != nil {
@@ -289,7 +378,7 @@ func (s *Server) importDisk(w http.ResponseWriter, r *http.Request) {
 	}
 	h := mvmd.DiskHeader{SizeBytes: req.SizeBytes, Filesystem: req.Filesystem}
 	if got, ok := first.(mvmd.DiskHeader); !ok || got != h {
-		s.failImport(w, digestError{fmt.Errorf("the source's stream opens with %+v and not the header %+v", first, h)})
+		s.failImport(w, digestError{fmt.Errorf("the source's stream opens with %s and not %s", describe(first), describe(h))})
 		return
 	}
 	err = s.deps.Runtime.CreateDiskFromStream(ctx, req.Name, h, func(send func(mvmd.DiskPart) error) error {
@@ -305,7 +394,7 @@ func (s *Server) importDisk(w http.ResponseWriter, r *http.Request) {
 				}
 			case mvmd.DiskDigest:
 				if string(p) != req.SHA256 {
-					return digestError{fmt.Errorf("the source's digest is %q and not %s", p, req.SHA256)}
+					return digestError{fmt.Errorf("the source's digest is %s and not %s", p, req.SHA256)}
 				}
 				if err := send(p); err != nil {
 					return err
@@ -349,13 +438,23 @@ func (s *Server) fetchFrom(ctx context.Context, source, grant string) (io.ReadCl
 	resp, err := (&http.Client{Transport: tr}).Do(req)
 	if err != nil {
 		tr.CloseIdleConnections()
-		return nil, sourceError{err}
+		// A *url.Error names the URL, which holds the grant.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, sourceError{fmt.Errorf("fetch the grant %s from %s at %s: %w", grantTag(grant), source, addr, err)}
 	}
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		_ = resp.Body.Close()
 		tr.CloseIdleConnections()
-		return nil, grantError{fmt.Errorf("the source answered %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))}
+		err := fmt.Errorf("the source answered %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+		switch resp.StatusCode {
+		case http.StatusForbidden, http.StatusNotFound, http.StatusGone:
+			return nil, grantError{err}
+		}
+		return nil, sourceError{err}
 	}
 	return closeBoth{resp.Body, tr}, nil
 }
@@ -393,9 +492,12 @@ type (
 	digestError struct{ error }
 )
 
-// failImport answers an import's failure: the source unreachable or its stream cut is 503, a fetch
-// the source refused 409 grant-refused, a stream of other bytes than the request named, by the
-// source's digest or by mvmd's, 409 digest-mismatch; the rest as any mvmd call's.
+// failImport answers an import's failure: the source unreachable, its stream cut or its refusal of
+// the fetch for another reason than the grant is 503 source-unavailable; a fetch the source refused
+// for its grant 409 grant-refused; a source whose header or digest is not the request's 409
+// digest-mismatch; a stream mvmd refused, for bytes that do not hash to the digest or extents out of
+// order or past the size, which mvmd does not tell apart, 409 stream-refused; the rest as any mvmd
+// call's.
 func (s *Server) failImport(w http.ResponseWriter, err error) {
 	var (
 		se sourceError
@@ -407,8 +509,10 @@ func (s *Server) failImport(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusServiceUnavailable, hostapi.ErrorBody{Error: err.Error(), Code: hostapi.CodeSourceUnavailable})
 	case errors.As(err, &ge):
 		writeJSON(w, http.StatusConflict, hostapi.ErrorBody{Error: err.Error(), Code: hostapi.CodeGrantRefused})
-	case errors.As(err, &de), errors.Is(err, mvmd.ErrInvalid):
+	case errors.As(err, &de):
 		writeJSON(w, http.StatusConflict, hostapi.ErrorBody{Error: err.Error(), Code: hostapi.CodeDigestMismatch})
+	case errors.Is(err, mvmd.ErrInvalid):
+		writeJSON(w, http.StatusConflict, hostapi.ErrorBody{Error: err.Error(), Code: hostapi.CodeStreamRefused})
 	default:
 		s.fail(w, err)
 	}
