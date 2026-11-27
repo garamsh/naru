@@ -47,8 +47,11 @@ func TestParse_ProxyRunsNaruProxyAsItsUserAbleToBindPort443(t *testing.T) {
 	assert.Equal(t, []string{
 		"--listen=0.0.0.0:443,192.168.0.40:8443", "--cert=/run/naru-proxy/zone.crt", "--key=/run/naru-proxy/zone.key",
 		"--routes-file=/var/lib/naru/proxy-routes/routes.json", "--revision-file=/run/naru-proxy/revision",
-		"--health-addr=127.0.0.1:7480", "--route-max-age=30m",
+		"--health-addr=127.0.0.1:7480", "--redirect-listen=0.0.0.0:80", "--route-max-age=30m",
 	}, p.Args)
+	h := service(t, cfg, "naru-hostd")
+	assert.Subset(t, h.Args, []string{"--proxy-health-addr=127.0.0.1:7480", "--proxy-tls-port=443"},
+		"hostd asks the proxy's health, and redirects a proxy exposure's 443 to the first wildcard listener's port")
 	assert.Equal(t, &config.User{UID: 6003, GID: 6003}, p.User)
 	assert.True(t, p.BindLowPorts)
 	assert.Equal(t, uint64(2*4096+1024), p.OpenFiles, "two descriptors for each connection the proxy holds, and room for the rest")
@@ -82,9 +85,20 @@ func TestParse_ProxyListensOn443WhenNoAddressIsGiven(t *testing.T) {
 	}
 }
 
+func TestParse_ProxyRedirectsAProxyExposuresTLSToTheFirstWildcardListener(t *testing.T) {
+	doc := strings.Replace(proxyDoc(t), `["0.0.0.0:443", "192.168.0.40:8443"]`, `["192.168.0.40:8443", "0.0.0.0:9443", "0.0.0.0:10443"]`, 1)
+	cfg, err := config.Parse([]byte(doc))
+	require.NoError(t, err)
+	assert.Contains(t, service(t, cfg, "naru-hostd").Args, "--proxy-tls-port=9443",
+		"not the first entry, whose address the redirect does not reach, but the first on 0.0.0.0")
+}
+
 func TestParse_ProxyRefuses(t *testing.T) {
 	tests := []struct{ name, from, to, field string }{
 		{"listen not an address", `"192.168.0.40:8443"`, `"proxy.example:8443"`, "spec.proxy.listen[1]"},
+		{"listen on the redirect's port", `"192.168.0.40:8443"`, `"192.168.0.40:80"`, "spec.proxy.listen[1]"},
+		{"listen on no wildcard address", `"0.0.0.0:443"`, `"192.168.0.41:443"`, "spec.proxy.listen"},
+		{"listen on the IPv6 wildcard alone", `"0.0.0.0:443"`, `"[::]:443"`, "spec.proxy.listen"},
 		{"certificate not PEM", "-----BEGIN CERTIFICATE-----", "-----BEGIN NOTHING-----", "spec.proxy.certificate"},
 		{"route max age not a duration", "routeMaxAge: 30m", "routeMaxAge: soon", "spec.proxy.routeMaxAge"},
 		{"route max age not positive", "routeMaxAge: 30m", "routeMaxAge: 0s", "spec.proxy.routeMaxAge"},
@@ -163,5 +177,8 @@ func TestParse_TheProxyServiceAndCertificateGoWithTheSection(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, cfg.Spec.Services, 1)
 	assert.Equal(t, "naru-hostd", cfg.Spec.Services[0].Name)
+	for _, a := range cfg.Spec.Services[0].Args {
+		assert.NotContains(t, a, "--proxy-", "hostd's proxy flags go with the section")
+	}
 	assert.Empty(t, cfg.Spec.Files)
 }

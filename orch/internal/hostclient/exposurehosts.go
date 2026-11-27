@@ -95,8 +95,8 @@ func probeAll[T any](ctx context.Context, admitted []orchapi.Host, f func(ctx co
 // no backend and its host no place for an address on its network.
 func live(m hostapi.MicroVM) bool { return machineState(m.State) == groups.MachineRunning }
 
-// List returns the admitted hosts with their LAN interface and the networks they run a live
-// microVM on; a host that did not answer is returned Silent, so the reconciler can tell a slow
+// List returns the admitted hosts with their LAN interface, the networks they run a live microVM
+// on, and whether their naru-proxy answers its health check; a host that did not answer is returned Silent, so the reconciler can tell a slow
 // holder from a gone one.
 func (h *ExposureHosts) List(ctx context.Context) ([]exposures.Host, error) {
 	admitted, err := h.inv.Hosts(ctx)
@@ -132,7 +132,8 @@ func (h *ExposureHosts) List(ctx context.Context) ([]exposures.Host, error) {
 		for net := range members {
 			sort.Strings(members[net])
 		}
-		return exposures.Host{ID: a.ID, LAN: info.LANInterface, Networks: nets, Members: members}, true
+		proxy := info.Proxy != nil && info.Proxy.Healthy
+		return exposures.Host{ID: a.ID, LAN: info.LANInterface, Networks: nets, Members: members, Proxy: proxy}, true
 	}), nil
 }
 
@@ -147,7 +148,7 @@ func (h *ExposureHosts) Put(ctx context.Context, hostID, address string, l expos
 	for i, p := range l.Ports {
 		ports[i] = hostapi.ExposurePort{Protocol: p.Protocol, Port: p.Port, BackendPort: p.BackendPort}
 	}
-	_, err = c.PutExposure(ctx, address, hostapi.ExposureRequest{Network: l.Network, Ports: ports, Backends: l.Backends, ProxyProtocol: l.ProxyProtocol, LeaseSeconds: l.Seconds})
+	_, err = c.PutExposure(ctx, address, hostapi.ExposureRequest{ToProxy: l.ToProxy, Network: l.Network, Ports: ports, Backends: l.Backends, ProxyProtocol: l.ProxyProtocol, LeaseSeconds: l.Seconds})
 	return err
 }
 

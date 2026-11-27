@@ -1,6 +1,6 @@
 # ADR 0112: a Machine is reached by a stable name through naru-proxy, which terminates TLS, reads the routes orch pushes to its host and forwards over the mesh, amending ADR 0085 items 3, 5 and 6
 
-> Status: accepted
+> Status: accepted; item 8's "Several addresses" superseded in part by [ADR 0117](./0117-proxy-exposures-are-spread-over-the-proxy-hosts-one-address-to-a-host-while-there-are-hosts-enough-superseding-adr-0112-item-8s-several-addresses-in-part.md)
 > Date: 2026-11-24
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
@@ -94,3 +94,12 @@ What the decision leaves open, settled where `naru-proxy` was built (garamsh/nar
 - **The revision file** is `/run/naru-proxy/revision`, the revision the proxy has loaded, which hostd reads and answers orch with (item 5's acknowledgement). The directory is the proxy's, so hostd (garamsh/naru#387) reads it with `O_NOFOLLOW` and a bound on its size.
 - **A route that does not check is dropped alone,** by `lib/hostapi`'s `Route.Check`, which orch's alias and hostd's `PUT /v1/routes` apply first. A drop removes a name and never adds an address, so it keeps item 6, and one tenant's bad alias does not stop every other name.
 - **Connections are bounded** at 4096 at once and 128 from one address, as hostd's exposure proxy is, with an open-file limit to match, and a client's connection is closed when it has carried nothing in either direction for 5 minutes.
+
+## Note, 2026-11-25: the proxy exposure
+
+What item 8 leaves open, settled where the proxy exposure was built (garamsh/naru#388):
+
+- **The record.** A proxy exposure is kept as an exposure record with no network and no backends, under the key segment `-proxy`, which no network's name (a DNS label) can be, so its id is apart from every network's. It takes its address and claim, under the address-space guard, as a network's exposure does, so the two kinds never share an address, and it is capped at 64 by a count of its own. `GET /v1/exposures` lists only the networks'.
+- **Any pool.** A pool still lists at least one network, as ADR 0085 item 3 has it; a proxy exposure draws from any pool whatever its networks, and a pool is not replaced to leave out, or deleted under, an address one holds.
+- **Candidacy.** hostd reads the proxy's `GET /healthz` at each `GET /v1/host`, with a 1 s bound, and reports `proxy.healthy`; orch's reconciler takes a host that answered, has a LAN interface and reports it healthy. A host that runs no proxy reports no `proxy` and refuses the lease with 409.
+- **The redirect.** Port 443 is redirected to the port of `spec.proxy.listen`'s first entry on `0.0.0.0`, which init passes hostd as `--proxy-tls-port` and without which it refuses the section, since the redirect sends a flow to the address of the interface it came in on, and port 80 to a listener of the proxy's own on `0.0.0.0:80`, which answers 308 to `https://` on the same host, path and query. A `listen` entry on port 80 is refused. The redirect listener's connections count against the proxy's limits.

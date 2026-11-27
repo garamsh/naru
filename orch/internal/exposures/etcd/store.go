@@ -51,9 +51,22 @@ func marshal(v any) string {
 	return string(b)
 }
 
+// proxySegment stands for the network in the keys, the claim and the count of a proxy exposure,
+// which has none (ADR 0112 item 8). No network's name, a DNS label, begins with a hyphen.
+const proxySegment = "-proxy"
+
+// segment is the network's part of an exposure's keys.
+func segment(network string) string {
+	if network == "" {
+		return proxySegment
+	}
+	return network
+}
+
 func claimKey(r exposures.Record) string    { return ClaimPrefix + r.Pool + "/" + r.Address }
-func claimValue(r exposures.Record) string  { return r.Network + "/" + r.ID }
-func exposureKey(network, id string) string { return ExposurePrefix + network + "/" + id }
+func claimValue(r exposures.Record) string  { return segment(r.Network) + "/" + r.ID }
+func exposureKey(network, id string) string { return ExposurePrefix + segment(network) + "/" + id }
+func countKey(network string) string        { return CountPrefix + segment(network) }
 
 // PutPool writes p only while the stored pool is still prev, or absent when prev is nil, and
 // while no address of the pool has been claimed since check saw the claims and no network or pool
@@ -110,6 +123,9 @@ func decodeClaim(key, value []byte) (exposures.Claim, error) {
 	network, id, ok := strings.Cut(string(value), "/")
 	if !ok {
 		return exposures.Claim{}, fmt.Errorf("claim %s: value %q is not network/id", key, value)
+	}
+	if network == proxySegment {
+		network = ""
 	}
 	return exposures.Claim{Address: path.Base(string(key)), Network: network, ID: id}, nil
 }
@@ -175,7 +191,7 @@ func (s *Store) ListPools(ctx context.Context) ([]orchapi.AddressPool, error) {
 // while neither the exposure nor the claim exists, the pool is the one given and the count is the
 // one read.
 func (s *Store) CreateExposure(ctx context.Context, r exposures.Record, pool orchapi.AddressPool, limit int) error {
-	key, count := exposureKey(r.Network, r.ID), CountPrefix+r.Network
+	key, count := exposureKey(r.Network, r.ID), countKey(r.Network)
 	for range retries {
 		n, cond, err := s.count(ctx, count)
 		if err != nil {
@@ -269,7 +285,7 @@ func decodeRecord(key, value []byte) (exposures.Record, error) {
 // transaction that holds only while r is still the stored record. An exposure that is gone is not
 // an error; one that changed is inventory.ErrConflict.
 func (s *Store) DeleteExposure(ctx context.Context, r exposures.Record) error {
-	key, count := exposureKey(r.Network, r.ID), CountPrefix+r.Network
+	key, count := exposureKey(r.Network, r.ID), countKey(r.Network)
 	for range retries {
 		n, cond, err := s.count(ctx, count)
 		if err != nil {

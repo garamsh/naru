@@ -1,12 +1,14 @@
 package exposures
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"sort"
 	"sync"
@@ -41,17 +43,21 @@ const (
 // which of an exposure's backends run on a given network on this host; a host that runs none of
 // an exposure's backends on the exposure's network is no candidate for it. Silent is an admitted
 // host that did not answer this pass: it is no candidate for a new address, and keeps the ones
-// it holds for SilentGrace.
+// it holds for SilentGrace. Proxy is a host whose naru-proxy answered its health check, the only
+// candidate for a proxy exposure (ADR 0112 item 8).
 type Host struct {
 	ID       string
 	LAN      string
 	Networks []string
 	Members  map[string][]string
 	Silent   bool
+	Proxy    bool
 }
 
-// Lease is what a host is told to hold.
+// Lease is what a host is told to hold. ToProxy is a proxy exposure's, which has no network and
+// no backends: the host redirects its ports to its own naru-proxy.
 type Lease struct {
+	ToProxy       bool
 	Network       string
 	Ports         []orchapi.ExposurePort
 	Backends      []string
@@ -140,21 +146,163 @@ func (r *Reconciler) Run(ctx context.Context) error {
 // amended by #296). Members is keyed by network so a backend address on one network cannot match
 // a microVM of the same address on a different network.
 func Choose(address, network string, backends []string, hosts []Host) (string, bool) {
-	best, bestScore := "", uint64(0)
+	return rendezvous(address, hosts, func(h Host) bool {
+		return slices.Contains(h.Networks, network) &&
+			slices.ContainsFunc(backends, func(b string) bool { return slices.Contains(h.Members[network], b) })
+	})
+}
+
+// rendezvous returns the candidate of the highest hash of address and its ID, a candidate being a
+// host that answered, has a LAN interface and that eligible accepts.
+func rendezvous(address string, hosts []Host, eligible func(Host) bool) (string, bool) {
+	ranked := rank(address, hosts, eligible)
+	if len(ranked) == 0 {
+		return "", false
+	}
+	return ranked[0], true
+}
+
+// rank returns the candidates for address, highest hash of address and ID first, ties by ID.
+func rank(address string, hosts []Host, eligible func(Host) bool) []string {
+	type scored struct {
+		id    string
+		score uint64
+	}
+	var c []scored
 	for _, h := range hosts {
-		if h.Silent || h.LAN == "" || !slices.Contains(h.Networks, network) {
+		if h.Silent || h.LAN == "" || !eligible(h) {
 			continue
 		}
-		if !slices.ContainsFunc(backends, func(b string) bool { return slices.Contains(h.Members[network], b) }) {
-			continue
+		c = append(c, scored{h.ID, score(address, h.ID)})
+	}
+	slices.SortFunc(c, func(a, b scored) int {
+		if a.score != b.score {
+			return cmp.Compare(b.score, a.score)
 		}
-		sum := sha256.Sum256([]byte(address + "\x00" + h.ID))
-		if s := binary.BigEndian.Uint64(sum[:8]); best == "" || s > bestScore || s == bestScore && h.ID < best {
-			best, bestScore = h.ID, s
+		return cmp.Compare(a.id, b.id)
+	})
+	out := make([]string, len(c))
+	for i, s := range c {
+		out[i] = s.id
+	}
+	return out
+}
+
+// score is the rendezvous hash of address on the host id: the higher, the more the address prefers
+// the host.
+func score(address, id string) uint64 {
+	sum := sha256.Sum256([]byte(address + "\x00" + id))
+	return binary.BigEndian.Uint64(sum[:8])
+}
+
+// SpreadProxies returns the host each proxy exposure's address is to be held on, among the hosts
+// that answered, have a LAN interface and whose proxy is healthy (ADR 0117). kept are the addresses
+// that stay where they are, on a silent holder, which is no candidate for the rest. The rest are
+// assigned in rounds over every pair of an address and a candidate, highest score first: in each
+// round every candidate takes at most one more address, so the addresses are spread evenly, and
+// each takes the best candidate left in its round. The result depends on the addresses and the
+// candidates alone, and an address added displaces another only where its own pair scores higher.
+// An address with no candidate is left out.
+func SpreadProxies(addresses []string, kept map[string]string, hosts []Host) map[string]string {
+	out := map[string]string{}
+	var rest []string
+	for _, a := range addresses {
+		if h, ok := kept[a]; ok {
+			out[a] = h
+		} else {
+			rest = append(rest, a)
 		}
 	}
-	return best, best != ""
+	var candidates []string
+	for _, h := range hosts {
+		if !h.Silent && h.LAN != "" && h.Proxy {
+			candidates = append(candidates, h.ID)
+		}
+	}
+	if len(candidates) == 0 {
+		return out
+	}
+	type pair struct {
+		address, host string
+		score         uint64
+	}
+	pairs := make([]pair, 0, len(rest)*len(candidates))
+	for _, a := range rest {
+		for _, h := range candidates {
+			pairs = append(pairs, pair{a, h, score(a, h)})
+		}
+	}
+	slices.SortFunc(pairs, func(x, y pair) int {
+		if x.score != y.score {
+			return cmp.Compare(y.score, x.score)
+		}
+		if c := compareAddresses(x.address, y.address); c != 0 {
+			return c
+		}
+		return cmp.Compare(x.host, y.host)
+	})
+	// A round that places nothing has placed every address.
+	for placed := true; placed; {
+		placed = false
+		took := map[string]bool{}
+		for _, p := range pairs {
+			if _, done := out[p.address]; done || took[p.host] {
+				continue
+			}
+			out[p.address], took[p.host], placed = p.host, true, true
+		}
+	}
+	return out
 }
+
+// compareAddresses orders two addresses as IP addresses, numerically, and as text when either does
+// not parse.
+func compareAddresses(a, b string) int {
+	x, errX := netip.ParseAddr(a)
+	y, errY := netip.ParseAddr(b)
+	if errX != nil || errY != nil {
+		return cmp.Compare(a, b)
+	}
+	return x.Compare(y)
+}
+
+// placement is the host each exposure of recs is to be held on this pass, by recordKey; an
+// exposure that is left out has no candidate. A network's exposure is placed by Choose and a proxy
+// exposure by SpreadProxies, and either stays on a holder that is silent: slow, not known gone, so
+// it is renewed where it is, and not moved and moved back. It is one sequential stage before the
+// concurrent pass, so each proxy exposure is placed knowing where the others are.
+func placement(recs []Record, hosts []Host) map[string]string {
+	out := map[string]string{}
+	var proxies []string
+	kept := map[string]string{}
+	byAddress := map[string]Record{}
+	for _, rec := range recs {
+		if rec.Phase == PhaseReleasing {
+			continue
+		}
+		stays := rec.Host != "" && silent(hosts, rec.Host)
+		if rec.Network == "" {
+			proxies = append(proxies, rec.Address)
+			byAddress[rec.Address] = rec
+			if stays {
+				kept[rec.Address] = rec.Host
+			}
+			continue
+		}
+		if stays {
+			out[recordKey(rec)] = rec.Host
+		} else if h, ok := Choose(rec.Address, rec.Network, rec.Backends, hosts); ok {
+			out[recordKey(rec)] = h
+		}
+	}
+	for a, h := range SpreadProxies(proxies, kept, hosts) {
+		out[recordKey(byAddress[a])] = h
+	}
+	return out
+}
+
+// recordKey names an exposure among every network's and the proxy exposures.
+func recordKey(rec Record) string { return rec.Network + "/" + rec.ID }
 
 // localBackends returns the backends from the exposure that run on h's network, by intersection
 // with h.Members[network].
@@ -199,6 +347,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		live[n.Name] = true
 	}
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].ID < hosts[j].ID })
+	placed := placement(recs, hosts)
 	var errs []error
 	var mu sync.Mutex
 	fail := func(err error) {
@@ -211,7 +360,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := r.one(ctx, hosts, live[rec.Network], rec); err != nil {
+			// A proxy exposure is of no network, so no network's deletion frees it.
+			want, ok := placed[recordKey(rec)]
+			if err := r.one(ctx, hosts, rec.Network == "" || live[rec.Network], rec, want, ok); err != nil {
 				fail(fmt.Errorf("exposure %s: %w", rec.ID, err))
 			}
 		}()
@@ -306,7 +457,7 @@ func (r *Reconciler) refuse(ctx context.Context, rec Record) error {
 	err := forbidden("owner %q is not the operator", rec.Owner)
 	reason := "stored before ADR 0114 or ADR 0102: delete it, and apply it again as the operator's (" + err.Error() + ")"
 	r.log.Error("exposure not leased", "exposure", rec.ID, "network", rec.Network, "reason", reason)
-	key := rec.Network + "/" + rec.ID
+	key := recordKey(rec)
 	r.mu.Lock()
 	first := !r.refused[key]
 	r.refused[key] = true
@@ -320,7 +471,9 @@ func (r *Reconciler) refuse(ctx context.Context, rec Record) error {
 	return err
 }
 
-func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, rec Record) error {
+// one serves rec on this pass: it frees it when it is released or its network is gone, and
+// otherwise moves it to want, ok false when it has no candidate, and renews it there.
+func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, rec Record, want string, ok bool) error {
 	start := r.clock.Now()
 	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
@@ -332,10 +485,6 @@ func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, re
 	}
 	if err := r.refuse(ctx, rec); err != nil {
 		return nil // nothing is leased for it, so no host is asked for what it will refuse on every pass
-	}
-	want, ok := Choose(rec.Address, rec.Network, rec.Backends, hosts)
-	if rec.Host != "" && silent(hosts, rec.Host) {
-		want, ok = rec.Host, true // slow, not known gone: renewed where it is, and not moved and moved back
 	}
 	next := rec
 	if rec.Host != "" && rec.Host != want {
@@ -375,7 +524,7 @@ func (r *Reconciler) one(ctx context.Context, hosts []Host, networkLive bool, re
 	if err := r.store.UpdateExposure(ctx, next, rec); err != nil {
 		return err
 	}
-	l := Lease{Network: rec.Network, Ports: rec.Ports, Backends: local, ProxyProtocol: rec.ProxyProtocol, Seconds: LeaseSeconds}
+	l := Lease{ToProxy: rec.Network == "", Network: rec.Network, Ports: rec.Ports, Backends: local, ProxyProtocol: rec.ProxyProtocol, Seconds: LeaseSeconds}
 	if err := r.hosts.Put(ctx, want, rec.Address, l); err != nil {
 		return fmt.Errorf("lease on host %s: %w", want, err)
 	}

@@ -53,6 +53,10 @@ type fakeOrch struct {
 	deletedNetworks   []string
 	// declared is each "<network>/<id>" an exposure apply sent, with its spec.
 	declared map[string]orchapi.ExposureSpec
+	// proxies is each id a proxy exposure apply sent, with its spec, and releasedProxies the id of
+	// each proxy exposure delete.
+	proxies         map[string]orchapi.ProxyExposureSpec
+	releasedProxies []string
 	// restored is the body and the hash header of the last PUT /v1/restore, and restoreStatus the
 	// status it is answered with (zero is 204). latest is what GET /v1/snapshots/latest returns.
 	restored      []byte
@@ -168,6 +172,32 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 	})
 	mux.HandleFunc("GET /v1/address-pools", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode([]orchapi.AddressPool{{Name: "lan", CIDRs: []string{"192.168.0.80/29"}, Networks: []string{"lab"}}})
+	})
+	mux.HandleFunc("PUT /v1/proxy-exposures/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var spec orchapi.ProxyExposureSpec
+		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		if f.proxies == nil {
+			f.proxies = map[string]orchapi.ProxyExposureSpec{}
+		}
+		f.proxies[r.PathValue("id")] = spec
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(orchapi.ProxyExposure{ID: r.PathValue("id"), Pool: spec.Pool, Address: spec.RequestedAddress, Ports: spec.Ports, Phase: orchapi.ExposurePending})
+	})
+	mux.HandleFunc("GET /v1/proxy-exposures/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(orchapi.ProxyExposure{ID: r.PathValue("id"), Pool: "edge", Address: "192.168.1.80", Ports: []int{443}, Host: "h1", Phase: orchapi.ExposureAnnounced})
+	})
+	mux.HandleFunc("GET /v1/proxy-exposures", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]orchapi.ProxyExposure{{ID: "web", Pool: "edge", Address: "192.168.1.80", Ports: []int{443, 80}, Host: "h1", Phase: orchapi.ExposureAnnounced}})
+	})
+	mux.HandleFunc("DELETE /v1/proxy-exposures/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.releasedProxies = append(f.releasedProxies, r.PathValue("id"))
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("DELETE /v1/address-pools/{name}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()

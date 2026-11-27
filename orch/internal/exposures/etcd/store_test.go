@@ -95,6 +95,36 @@ func TestAnIdIsKeptUnderItsNetwork(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestAProxyExposureIsKeptApartFromEveryNetworkAndCountedOnItsOwn(t *testing.T) {
+	etcd := orchtest.Start(t, orchtest.Options{Members: 1}).Members[0].Etcd()
+	s := exposuresetcd.New(etcd)
+	ctx := t.Context()
+	require.NoError(t, s.PutPool(ctx, lan, nil, noCheck))
+	require.NoError(t, s.CreateExposure(ctx, recOn("", "web", "192.168.0.80"), lan, 1))
+	require.NoError(t, s.CreateExposure(ctx, recOn("a", "web", "192.168.0.81"), lan, 1), "a network's id and count are its own")
+	require.ErrorIs(t, s.CreateExposure(ctx, recOn("", "db", "192.168.0.82"), lan, 1), exposures.ErrFull, "the proxy exposures' own count")
+	require.ErrorIs(t, s.CreateExposure(ctx, recOn("b", "db", "192.168.0.80"), lan, limit), inventory.ErrConflict, "one claim space")
+	p, err := s.GetExposure(ctx, "", "web")
+	require.NoError(t, err)
+	require.Equal(t, "192.168.0.80", p.Address)
+	require.Empty(t, p.Network)
+	for _, key := range []string{exposuresetcd.ExposurePrefix + "-proxy/web", exposuresetcd.CountPrefix + "-proxy"} {
+		got, err := etcd.Get(ctx, key)
+		require.NoError(t, err)
+		require.Len(t, got.Kvs, 1, "%s: the stored layout orch.md names, which an upgrade keeps reading", key)
+	}
+
+	// The claim reads back as the proxy exposure's, with no network, so a pool's check tells it apart.
+	var claims []exposures.Claim
+	require.ErrorIs(t, s.PutPool(ctx, lan, &lan, func(c []exposures.Claim) error { claims = c; return inventory.ErrConflict }), inventory.ErrConflict)
+	require.ElementsMatch(t, []exposures.Claim{{Address: "192.168.0.80", ID: "web"}, {Address: "192.168.0.81", Network: "a", ID: "web"}}, claims)
+
+	require.NoError(t, s.DeleteExposure(ctx, p))
+	_, err = s.GetExposure(ctx, "a", "web")
+	require.NoError(t, err, "control: the network's web stays")
+	require.NoError(t, s.CreateExposure(ctx, recOn("", "db", "192.168.0.80"), lan, 1), "the count and the claim went with the record")
+}
+
 func TestConcurrentCreatesOfOneAddressHaveOneWinner(t *testing.T) {
 	s := withPool(t)
 	var won atomic.Int32

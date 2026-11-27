@@ -65,6 +65,10 @@ const (
 	ProxyHealthAddr = "127.0.0.1:7480"
 	// ProxyPort is the port the proxy terminates TLS on.
 	ProxyPort = "443"
+	// ProxyRedirectListen is where the proxy answers plain HTTP with a redirect to https on the
+	// same name, and ProxyRedirectPort its port, which a proxy exposure's port 80 reaches.
+	ProxyRedirectListen = "0.0.0.0:80"
+	ProxyRedirectPort   = 80
 )
 
 // ProxyMaxConns bounds the client connections naru-proxy holds at once, and ProxyMaxPerSource

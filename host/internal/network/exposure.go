@@ -28,7 +28,26 @@ var (
 	// ErrInvalid is an exposure that is malformed: a port or a BackendPort outside
 	// 1 to 65535, a repeated port, no backend, or a UDP port with the PROXY protocol.
 	ErrInvalid = errors.New("the exposure is invalid")
+	// ErrNoProxy is a proxy exposure on a host that runs no naru-proxy.
+	ErrNoProxy = errors.New("the host runs no naru-proxy")
 )
+
+// ProxyPorts are the host's naru-proxy's listeners a proxy exposure reaches: TLS the one its 443
+// is redirected to, and Redirect the one its 80 is, which answers with a redirect to https.
+type ProxyPorts struct {
+	TLS, Redirect uint16
+}
+
+// Runs reports whether the host runs a proxy.
+func (p ProxyPorts) Runs() bool { return p.TLS != 0 }
+
+// target is the proxy's port an exposure's port is redirected to: 443 to TLS, 80 to Redirect.
+func (p ProxyPorts) target(port int) uint16 {
+	if port == 80 {
+		return p.Redirect
+	}
+	return p.TLS
+}
 
 // ExposurePort is a port of an exposure: the port on the address and the BackendPort it goes to
 // on the backends. Which ports a caller may name is orch's policy (ADR 0102); the host forwards what its lease says.
@@ -41,17 +60,24 @@ type ExposurePort struct {
 // Exposure is a lease on a LAN address: the host owns the address and forwards its ports to the
 // backends, the Nodes of Network, until Deadline (ADR 0085 items 5 and 6). With Proxy the TCP ports
 // go through hostd's proxy, which writes a PROXY protocol v2 header, and are not forwarded by DNAT.
+// With ToProxy it is a proxy exposure's (ADR 0112 item 8): no network and no backends, and its
+// ports, TCP 443 and 80, are redirected to the host's own naru-proxy.
 type Exposure struct {
 	Address  netip.Addr     `json:"address"`
 	Network  string         `json:"network"`
 	Ports    []ExposurePort `json:"ports"`
 	Backends []netip.Addr   `json:"backends"`
 	Proxy    bool           `json:"proxy,omitempty"`
+	ToProxy  bool           `json:"toProxy,omitempty"`
 	Deadline time.Time      `json:"deadline"`
 }
 
-// forwarded returns the ports DNAT carries: all of them, or the UDP ones of an exposure with Proxy.
+// forwarded returns the ports DNAT carries: all of them, or the UDP ones of an exposure with Proxy,
+// and none of a proxy exposure's.
 func (e Exposure) forwarded() []ExposurePort {
+	if e.ToProxy {
+		return nil
+	}
 	var out []ExposurePort
 	for _, p := range e.Ports {
 		if !e.Proxy || p.Protocol != wire.ProtocolTCP {
@@ -117,6 +143,9 @@ func (e Exposure) Validate() error {
 	if !e.Address.Is4() {
 		return fmt.Errorf("%w: the address is not IPv4", ErrInvalid)
 	}
+	if e.ToProxy {
+		return e.validateToProxy()
+	}
 	if len(e.Ports) == 0 || len(e.Backends) == 0 {
 		return fmt.Errorf("%w: it needs a port and a backend", ErrInvalid)
 	}
@@ -145,6 +174,25 @@ func (e Exposure) Validate() error {
 	return nil
 }
 
+// validateToProxy refuses a proxy exposure that names a network, a backend or the PROXY protocol,
+// or a port other than TCP 443 and 80 with its BackendPort equal to it; 443 is required.
+func (e Exposure) validateToProxy() error {
+	if e.Network != "" || len(e.Backends) > 0 || e.Proxy {
+		return fmt.Errorf("%w: a proxy exposure has no network, no backends and no PROXY protocol", ErrInvalid)
+	}
+	seen := map[int]bool{}
+	for _, p := range e.Ports {
+		if p.Protocol != wire.ProtocolTCP || p.Port != 443 && p.Port != 80 || p.BackendPort != p.Port || seen[p.Port] {
+			return fmt.Errorf("%w: a proxy exposure's ports are TCP 443 and 80, each once, to the same port", ErrInvalid)
+		}
+		seen[p.Port] = true
+	}
+	if !seen[443] {
+		return fmt.Errorf("%w: a proxy exposure has port 443", ErrInvalid)
+	}
+	return nil
+}
+
 // checkExposure refuses an exposure whose address or backends the host must not serve.
 func (m *Manager) checkExposure(e Exposure) error { return checkExposure(m.Base, m.c, e) }
 
@@ -155,6 +203,12 @@ func checkExposure(base, c Config, e Exposure) error {
 	if err := e.Validate(); err != nil {
 		return err
 	}
+	if e.ToProxy {
+		if !base.Proxy.Runs() {
+			return ErrNoProxy
+		}
+		return checkReserved(c, e.Address)
+	}
 	var n *Network
 	for i := range c.Networks {
 		if c.Networks[i].Name == e.Network {
@@ -164,19 +218,28 @@ func checkExposure(base, c Config, e Exposure) error {
 	if n == nil {
 		return ErrUnknownNetwork
 	}
-	for _, o := range c.Networks {
-		if o.Prefix.Contains(e.Address) || slices.ContainsFunc(o.Remote, func(p netip.Prefix) bool { return p.Contains(e.Address) }) {
-			return ErrReserved
-		}
-	}
-	for _, x := range c.Members {
-		if x.Address == e.Address {
-			return ErrReserved
-		}
+	if err := checkReserved(c, e.Address); err != nil {
+		return err
 	}
 	for _, b := range e.Backends {
 		if !isAttached(c, *n, b) {
 			return fmt.Errorf("%w: %s", ErrBackend, b)
+		}
+	}
+	return nil
+}
+
+// checkReserved refuses an address of the host's networks or their members, which the host would
+// answer for on the LAN.
+func checkReserved(c Config, a netip.Addr) error {
+	for _, o := range c.Networks {
+		if o.Prefix.Contains(a) || slices.ContainsFunc(o.Remote, func(p netip.Prefix) bool { return p.Contains(a) }) {
+			return ErrReserved
+		}
+	}
+	for _, x := range c.Members {
+		if x.Address == a {
+			return ErrReserved
 		}
 	}
 	return nil

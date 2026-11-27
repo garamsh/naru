@@ -21,11 +21,17 @@ type ExposurePort struct {
 // and removes all three LeaseSeconds after the last renewal. ProxyProtocol is "v2" or empty; with
 // v2 the host writes a PROXY protocol v2 header before the payload of each TCP connection and
 // refuses a UDP port.
+//
+// With ToProxy the lease is a proxy exposure's (ADR 0112 item 8): the host redirects the ports to
+// its own naru-proxy instead, 443 to its TLS listener and 80 to its redirect listener. Network,
+// Backends and ProxyProtocol are then empty, and each port is TCP 443 or 80 with BackendPort equal
+// to it. A host that runs no proxy refuses it with 409.
 type ExposureRequest struct {
 	Network       string         `json:"network"`
 	Ports         []ExposurePort `json:"ports"`
 	Backends      []string       `json:"backends"`
 	ProxyProtocol string         `json:"proxyProtocol,omitempty"`
+	ToProxy       bool           `json:"toProxy,omitempty"`
 	LeaseSeconds  int            `json:"leaseSeconds"`
 }
 

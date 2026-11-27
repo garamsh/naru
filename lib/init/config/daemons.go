@@ -213,6 +213,19 @@ func (p Proxy) listen() []string {
 	return p.Listen
 }
 
+// tlsPort is the port of the first listen address on 0.0.0.0, which a proxy exposure's port 443
+// is redirected to on the host (ADR 0112 item 8): the redirect sends a flow to the address of the
+// interface it came in on, which only a wildcard listener is sure to have. It is 0 when there is
+// none, which Parse refuses.
+func (p Proxy) tlsPort() uint16 {
+	for _, l := range p.listen() {
+		if ap, err := netip.ParseAddrPort(l); err == nil && ap.Addr() == netip.IPv4Unspecified() {
+			return ap.Port()
+		}
+	}
+	return 0
+}
+
 // Metrics is where init and the daemons it starts serve /metrics.
 type Metrics struct {
 	// Listen is an IP address; each listener's port is fixed, by the constants above.
@@ -434,9 +447,16 @@ func (v *validation) proxy(spec Spec) {
 		return
 	}
 	for i, l := range p.listen() {
-		if _, err := netip.ParseAddrPort(l); err != nil {
+		ap, err := netip.ParseAddrPort(l)
+		switch {
+		case err != nil:
 			v.fail(fmt.Sprintf("spec.proxy.listen[%d]", i), "must be an IP address and a port, got %q", l)
+		case ap.Port() == wire.ProxyRedirectPort:
+			v.fail(fmt.Sprintf("spec.proxy.listen[%d]", i), "must not be port %d, where the proxy answers plain HTTP with a redirect to https", wire.ProxyRedirectPort)
 		}
+	}
+	if p.tlsPort() == 0 {
+		v.fail("spec.proxy.listen", "must have an address on 0.0.0.0, which a proxy exposure's port 443 is redirected to")
 	}
 	if !pemOf(p.Certificate, "CERTIFICATE") {
 		v.fail("spec.proxy.certificate", "must be the PEM of the zone's certificate, then its chain")
@@ -569,7 +589,7 @@ func (v *validation) hostNetwork(spec Spec) {
 // hostdOwned are the flags of naru-hostd that init writes, from spec.host.network and
 // spec.metrics. A stored configuration holds them in the service's args, so Parse removes them
 // and writes the ones the sections give: the flags follow the sections.
-var hostdOwned = []string{"management-prefix", "egress-interface", "tunnel-port", "metrics-addr", "orch-url", "orch-ca-sha256", "enroll-key-file", "revocation-public-key", "revocation-max-age", "revocation-signer-socket", "revocation-seed"}
+var hostdOwned = []string{"management-prefix", "egress-interface", "tunnel-port", "metrics-addr", "orch-url", "orch-ca-sha256", "enroll-key-file", "revocation-public-key", "revocation-max-age", "revocation-signer-socket", "revocation-seed", "proxy-health-addr", "proxy-tls-port"}
 
 func (v *validation) hostdArgs(services []Service) {
 	for i, s := range services {
@@ -624,6 +644,9 @@ func derive(cfg NodeConfig) NodeConfig {
 			if spec.Metrics != nil {
 				s.Args = append(s.Args, "--metrics-addr="+net.JoinHostPort(spec.Metrics.Listen, strconv.Itoa(HostdMetricsPort)))
 			}
+			if p := spec.Proxy; p != nil {
+				s.Args = append(s.Args, "--proxy-health-addr="+wire.ProxyHealthAddr, "--proxy-tls-port="+strconv.Itoa(int(p.tlsPort())))
+			}
 		}
 		services = append(services, s)
 	}
@@ -658,6 +681,7 @@ func proxyService(p Proxy) (Service, File) {
 	args := []string{
 		"--listen=" + strings.Join(p.listen(), ","), "--cert=" + ProxyCertFile, "--key=" + ProxyKeyFile,
 		"--routes-file=" + wire.ProxyRoutesFile, "--revision-file=" + wire.ProxyRevisionFile, "--health-addr=" + wire.ProxyHealthAddr,
+		"--redirect-listen=" + wire.ProxyRedirectListen,
 	}
 	if p.RouteMaxAge != "" {
 		args = append(args, "--route-max-age="+p.RouteMaxAge)

@@ -91,6 +91,9 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 	if out.Mvmd.Kernels == nil {
 		out.Mvmd.Kernels = []mvmd.Kernel{}
 	}
+	if s.deps.ProxyHealthy != nil {
+		out.Proxy = &hostapi.ProxyStatus{Healthy: s.deps.ProxyHealthy(ctx)}
+	}
 	out.Mvmd.BootSets = hostBootSets(rt.BootSets)
 	out.Mvmd.MachinePrefixes = append([]string{}, rt.MachinePrefixes...)
 	out.Free = hostapi.Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateAvailableBytes}

@@ -72,6 +72,9 @@ type Config struct {
 	LAN string
 	// Exposures are the leases the host holds; the ruleset forwards their ports.
 	Exposures []Exposure
+	// Proxy is the host's naru-proxy, which a proxy exposure's ports are redirected to; its zero
+	// value means the host runs none, and refuses a proxy exposure.
+	Proxy ProxyPorts
 	// At is the time the leases' time left is counted from: the instant the ruleset is made.
 	At time.Time
 }

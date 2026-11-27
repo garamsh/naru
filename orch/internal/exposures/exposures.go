@@ -34,6 +34,9 @@ const (
 	EventPoolDeleted     = "address-pool.deleted"
 	EventExposureApplied = "exposure.applied"
 	EventExposureDeleted = "exposure.deleted"
+
+	EventProxyExposureApplied = "proxy-exposure.applied"
+	EventProxyExposureDeleted = "proxy-exposure.deleted"
 )
 
 // Limits bound what one network may hold (ADR 0085 item 7).
@@ -234,7 +237,10 @@ func (s *Service) ApplyPool(ctx context.Context, by, name string, spec orchapi.A
 			for _, x := range cidrs {
 				in = in || x.Contains(a)
 			}
-			if !in || !slices.Contains(nets, c.Network) {
+			switch {
+			case c.Network == "" && !in:
+				return fmt.Errorf("%w: proxy exposure %s holds %s, which the new pool does not hold", inventory.ErrConflict, c.ID, c.Address)
+			case c.Network != "" && (!in || !slices.Contains(nets, c.Network)):
 				return fmt.Errorf("%w: exposure %s holds %s of network %s, which the new pool does not hold", inventory.ErrConflict, c.ID, c.Address, c.Network)
 			}
 		}
@@ -401,7 +407,12 @@ func (s *Service) ApplyExposure(ctx context.Context, by, network, id string, spe
 	if !errors.Is(err, inventory.ErrNotFound) {
 		return orchapi.Exposure{}, err
 	}
-	return s.create(ctx, by, id, spec, pool)
+	r := Record{Exposure: orchapi.Exposure{
+		ID: id, Network: spec.Network, Owner: orchapi.OwnerOperator, Pool: pool.Name, Ports: spec.Ports,
+		Backends: slices.Clone(spec.Backends), ProxyProtocol: spec.ProxyProtocol, Phase: orchapi.ExposurePending,
+	}}
+	r, err = s.create(ctx, by, r, spec.RequestedAddress, pool, MaxExposuresPerNetwork)
+	return r.Exposure, err
 }
 
 // update changes the ports, backends and proxy protocol of cur. The reconciler rewrites the record
@@ -435,14 +446,17 @@ func (s *Service) update(ctx context.Context, by string, cur Record, spec orchap
 	return orchapi.Exposure{}, err
 }
 
-func (s *Service) create(ctx context.Context, by, id string, spec orchapi.ExposureSpec, pool orchapi.AddressPool) (orchapi.Exposure, error) {
+// create gives r an address of pool, requested when it is in the pool and free, else the lowest
+// free one, and stores it with its claim, while its network, or the proxy exposures, hold fewer
+// than limit.
+func (s *Service) create(ctx context.Context, by string, r Record, requested string, pool orchapi.AddressPool, limit int) (Record, error) {
 	cidrs, err := parseCIDRs(pool.CIDRs)
 	if err != nil {
-		return orchapi.Exposure{}, err
+		return Record{}, err
 	}
 	recs, err := s.store.ListExposures(ctx)
 	if err != nil {
-		return orchapi.Exposure{}, err
+		return Record{}, err
 	}
 	taken := map[netip.Addr]bool{}
 	for _, r := range recs {
@@ -451,17 +465,17 @@ func (s *Service) create(ctx context.Context, by, id string, spec orchapi.Exposu
 		}
 	}
 	var addr netip.Addr
-	if spec.RequestedAddress != "" {
-		a, err := netip.ParseAddr(spec.RequestedAddress)
+	if requested != "" {
+		a, err := netip.ParseAddr(requested)
 		in := false
 		for _, c := range cidrs {
 			in = in || err == nil && c.Contains(a)
 		}
 		if !in {
-			return orchapi.Exposure{}, unprocessable("requested address %q is not in pool %s", spec.RequestedAddress, pool.Name)
+			return Record{}, unprocessable("requested address %q is not in pool %s", requested, pool.Name)
 		}
 		if taken[a] {
-			return orchapi.Exposure{}, fmt.Errorf("%w: address %s is held", inventory.ErrConflict, a)
+			return Record{}, fmt.Errorf("%w: address %s is held", inventory.ErrConflict, a)
 		}
 		addr = a
 	} else {
@@ -473,25 +487,40 @@ func (s *Service) create(ctx context.Context, by, id string, spec orchapi.Exposu
 			}
 		}
 		if !addr.IsValid() {
-			return orchapi.Exposure{}, fmt.Errorf("%w: pool %s has no free address", inventory.ErrConflict, pool.Name)
+			return Record{}, fmt.Errorf("%w: pool %s has no free address", inventory.ErrConflict, pool.Name)
 		}
 	}
-	r := Record{Exposure: orchapi.Exposure{
-		ID: id, Network: spec.Network, Owner: orchapi.OwnerOperator, Pool: pool.Name, Address: addr.String(), Ports: spec.Ports,
-		Backends: slices.Clone(spec.Backends), ProxyProtocol: spec.ProxyProtocol, Phase: orchapi.ExposurePending,
-	}}
+	r.Address = addr.String()
 	// The claim in the same transaction is what keeps two requests from one address, the pool
 	// check keeps a create from landing in a pool that was replaced or deleted meanwhile, and the
 	// limit is counted there too: a lost race is a conflict, and the caller's next try plans from
 	// what the store holds.
-	err = s.store.CreateExposure(ctx, r, pool, MaxExposuresPerNetwork)
+	err = s.store.CreateExposure(ctx, r, pool, limit)
 	if errors.Is(err, ErrFull) {
-		return orchapi.Exposure{}, fmt.Errorf("%w: network %s holds %d exposures", inventory.ErrConflict, spec.Network, MaxExposuresPerNetwork)
+		if r.Network == "" {
+			return Record{}, fmt.Errorf("%w: there are %d proxy exposures", inventory.ErrConflict, limit)
+		}
+		return Record{}, fmt.Errorf("%w: network %s holds %d exposures", inventory.ErrConflict, r.Network, limit)
 	}
 	if err != nil {
-		return orchapi.Exposure{}, err
+		return Record{}, err
 	}
-	return r.Exposure, s.event(ctx, EventExposureApplied, by, r)
+	return r, s.event(ctx, eventApplied(r), by, r)
+}
+
+// eventApplied and eventDeleted are the event types of an apply and a delete of r.
+func eventApplied(r Record) string {
+	if r.Network == "" {
+		return EventProxyExposureApplied
+	}
+	return EventExposureApplied
+}
+
+func eventDeleted(r Record) string {
+	if r.Network == "" {
+		return EventProxyExposureDeleted
+	}
+	return EventExposureDeleted
 }
 
 func (s *Service) event(ctx context.Context, typ, by string, r Record) error {
@@ -517,7 +546,8 @@ func (s *Service) Exposure(ctx context.Context, network, id string) (orchapi.Exp
 	return r.Exposure, nil
 }
 
-// AllExposures lists every network's exposures, those being released included.
+// AllExposures lists every network's exposures, those being released included. A proxy
+// exposure is ProxyExposures's.
 func (s *Service) AllExposures(ctx context.Context) ([]orchapi.Exposure, error) {
 	recs, err := s.store.ListExposures(ctx)
 	if err != nil {
@@ -525,7 +555,9 @@ func (s *Service) AllExposures(ctx context.Context) ([]orchapi.Exposure, error) 
 	}
 	out := []orchapi.Exposure{}
 	for _, r := range recs {
-		out = append(out, r.Exposure)
+		if r.Network != "" {
+			out = append(out, r.Exposure)
+		}
 	}
 	return out, nil
 }
@@ -544,6 +576,11 @@ func (s *Service) DeleteExposure(ctx context.Context, by, network, id string) er
 	if !idRe.MatchString(id) {
 		return bad("exposure id %q is not valid", id)
 	}
+	return s.release(ctx, by, network, id)
+}
+
+// release marks the exposure of network, "" for a proxy exposure, as being released.
+func (s *Service) release(ctx context.Context, by, network, id string) error {
 	var err error
 	for range deleteTries {
 		var cur Record
@@ -557,7 +594,7 @@ func (s *Service) DeleteExposure(ctx context.Context, by, network, id string) er
 		next := cur
 		next.Phase = PhaseReleasing
 		if err = s.store.UpdateExposure(ctx, next, cur); err == nil {
-			return s.event(ctx, EventExposureDeleted, by, cur)
+			return s.event(ctx, eventDeleted(cur), by, cur)
 		}
 		if !errors.Is(err, inventory.ErrConflict) {
 			return err
