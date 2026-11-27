@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -78,6 +79,19 @@ type Deps struct {
 	// serves once a reset has cleared the data disk is revoked: the pair of the configuration, as
 	// the rotated pair is on the disk the reset clears. Nil means no check is made.
 	CheckPair func(context.Context) error
+	// Importer fetches a disk from another host's export. Nil means the host cannot: POST
+	// /v1/disks/import is 501.
+	Importer *Importer
+	// Now is the clock a grant's life is read on; nil is time.Now.
+	Now func() time.Time
+	// StreamIdle is how long a disk's stream between hosts may not move before it is ended; 0 is
+	// 2 minutes.
+	StreamIdle time.Duration
+	// MinStreamRate is the slowest, in bytes a second, a disk's stream may go on average; 0 is 1 MiB.
+	MinStreamRate uint64
+	// Transfers bounds each of the exports reading a disk, the fetches served and the imports the host
+	// runs at once; 0 is 2.
+	Transfers int
 }
 
 // Server is the host API.
@@ -85,6 +99,9 @@ type Server struct {
 	deps     Deps
 	requests *prometheus.CounterVec
 	tokens   leaderTokens
+	grants   grants
+	// reading, fetching and importing bound the disk transfers the host runs at once.
+	reading, fetching, importing slots
 }
 
 // New returns a Server, whose metrics are registered on deps.Metrics.
@@ -119,6 +136,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/microvms/{name}/disks/{disk}/snapshot", s.snapshotDisk)
 	mux.HandleFunc("GET /v1/disk-snapshots", s.listDiskSnapshots)
 	mux.HandleFunc("DELETE /v1/disk-snapshots/{name}", s.deleteDiskSnapshot)
+	mux.HandleFunc("POST /v1/disks/{name}/export", s.exportDisk)
+	mux.HandleFunc("GET "+hostapi.ExportPathPrefix+"{grant}", s.fetchExport)
+	mux.HandleFunc("POST /v1/disks/import", s.importDisk)
 	mux.HandleFunc("PUT /v1/networks/{name}", s.putNetwork)
 	mux.HandleFunc("GET /v1/networks", s.listNetworks)
 	mux.HandleFunc("GET /v1/networks/{name}", s.getNetwork)
@@ -134,11 +154,15 @@ func (s *Server) Handler() http.Handler {
 }
 
 // authorised answers 403 to a client whose role does not cover the method, or the read of a guest's
-// file.
+// file. The fetch of an export is the handler's to check: a host's certificate, which has no role
+// here, is the one that reaches it.
 func (s *Server) authorised(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		need := Reader
-		if r.Method != http.MethodGet && r.Method != http.MethodHead || guestRead(r) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, hostapi.ExportPathPrefix):
+			need = None
+		case r.Method != http.MethodGet && r.Method != http.MethodHead || guestRead(r):
 			need = Provisioner
 		}
 		if roleOf(clientCertificate(r)) < need {
@@ -153,7 +177,7 @@ func (s *Server) recovering(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
-				s.deps.Log.Error("host API handler panicked", "method", r.Method, "path", r.URL.Path, "panic", v)
+				s.deps.Log.Error("host API handler panicked", "method", r.Method, "path", loggedPath(r), "panic", v)
 				writeJSON(w, http.StatusInternalServerError, hostapi.ErrorBody{Error: "internal error"})
 			}
 		}()
@@ -169,11 +193,20 @@ func (s *Server) logged(next http.Handler) http.Handler {
 		start := time.Now()
 		defer func() {
 			s.observe(r.Pattern, rec.status)
-			s.deps.Log.Info("host API request", "trace_id", traceID(), "method", r.Method, "path", r.URL.Path,
+			s.deps.Log.Info("host API request", "trace_id", traceID(), "method", r.Method, "path", loggedPath(r),
 				"status", rec.status, "subject", clientCertificate(r).Subject.String(), "duration", time.Since(start).String())
 		}()
 		next.ServeHTTP(rec, r)
 	})
+}
+
+// loggedPath is the request's path as a log may hold it: an export's fetch names its grant, which
+// the log names by the first 8 hex digits of its SHA-256 only.
+func loggedPath(r *http.Request) string {
+	if g, ok := strings.CutPrefix(r.URL.Path, hostapi.ExportPathPrefix); ok {
+		return hostapi.ExportPathPrefix + grantTag(g)
+	}
+	return r.URL.Path
 }
 
 func traceID() string {

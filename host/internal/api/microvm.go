@@ -150,9 +150,12 @@ func (s *Server) createMicroVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.attach(ctx, req.Network, m); err != nil {
-		ids := make([]string, 0, len(sizes))
-		for id := range sizes {
-			ids = append(ids, id)
+		// An imported disk is not this request's to remove: the import made it.
+		var ids []string
+		for _, d := range p.disks {
+			if !d.Imported {
+				ids = append(ids, diskID(p.create.ID, d.Name))
+			}
 		}
 		// The microVM runs unless it is fenced or asked not started, and mvmd deletes only a Machine
 		// that does not.
@@ -179,8 +182,14 @@ func (s *Server) provision(ctx context.Context, p plan) (mvmd.Machine, map[strin
 	}
 	sizes := map[string]uint64{}
 	var made []string
+	if err := s.takeImported(ctx, p, sizes); err != nil {
+		return mvmd.Machine{}, nil, err
+	}
 	for _, d := range p.disks {
 		id := diskID(p.create.ID, d.Name)
+		if d.Imported {
+			continue
+		}
 		// The OS form's data disk has no file system: the Node's init formats a blank one as its
 		// data disk, and refuses the boot of one mvmd has made ext4 with no label and no verity.
 		create := rt.CreateDisk
@@ -280,6 +289,35 @@ const cleanupTimeout = 30 * time.Second
 // cancelled, and an undo run in its context would fail at once and leave what it made.
 func cleanupContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(parent), cleanupTimeout)
+}
+
+// takeImported checks that the host holds each disk the plan names imported, at its size and with
+// no holder, and records its size. It makes nothing, so a failure leaves nothing to remove.
+func (s *Server) takeImported(ctx context.Context, p plan, sizes map[string]uint64) error {
+	if !slices.ContainsFunc(p.disks, func(d hostapi.DiskSpec) bool { return d.Imported }) {
+		return nil
+	}
+	disks, err := s.deps.Runtime.ListDisks(ctx)
+	if err != nil {
+		return err
+	}
+	for _, d := range p.disks {
+		if !d.Imported {
+			continue
+		}
+		id := diskID(p.create.ID, d.Name)
+		i := slices.IndexFunc(disks, func(h mvmd.Disk) bool { return h.ID == id })
+		switch {
+		case i < 0:
+			return fmt.Errorf("%w: the host holds no imported disk %s", mvmd.ErrConflict, id)
+		case disks[i].SizeBytes != d.SizeBytes:
+			return fmt.Errorf("%w: the imported disk %s is %d bytes, not %d", mvmd.ErrConflict, id, disks[i].SizeBytes, d.SizeBytes)
+		case disks[i].Holder != "":
+			return fmt.Errorf("%w: the imported disk %s is attached to %s", mvmd.ErrConflict, id, disks[i].Holder)
+		}
+		sizes[id] = d.SizeBytes
+	}
+	return nil
 }
 
 // dropMade deletes what a request made that did not end in a started Machine: the Machine, when

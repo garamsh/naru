@@ -141,6 +141,11 @@ type DiskSpec struct {
 	// FromSnapshot names a disk snapshot (POST /v1/microvms/{name}/disks/{disk}/snapshot) the disk
 	// starts as a copy of, at least its size. A request field only: a microVM's disks do not show it.
 	FromSnapshot string `json:"fromSnapshot,omitempty"`
+	// Imported names a disk an import made on this host (POST /v1/disks/import) under the
+	// microVM's disk identifier, <microVM>.<name>, which the microVM takes as it is: no disk is made.
+	// A host that holds no such disk, or holds it at another size or attached, refuses the create
+	// with 409. Not with FromSnapshot. A request field only.
+	Imported bool `json:"imported,omitempty"`
 }
 
 // File is a file placed in an image-form microVM before its entrypoint runs, at every start.

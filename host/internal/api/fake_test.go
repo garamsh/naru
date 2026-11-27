@@ -52,6 +52,21 @@ type fakeRuntime struct {
 	// guest is each Machine's guest files, and execs the execs started, by ID.
 	guest map[string]map[string][]byte
 	execs map[string]*fakeExec
+	// data is each disk's bytes from offset 0, zero past them; filesystems and digests are what an
+	// import made a disk with.
+	data        map[string][]byte
+	filesystems map[string]string
+	digests     map[string]string
+	// corrupt makes ReadDisk send other bytes than a disk's under its true digest.
+	corrupt map[string]bool
+	// stallAt makes ReadDisk send a disk's parts before the index and then nothing until its call
+	// ends; truncate makes it end a disk's stream without its digest.
+	stallAt  map[string]int
+	truncate map[string]bool
+	// extentFirst makes ReadDisk send a disk's first extent before its header, and trickle its
+	// extents 64 KiB each, after this pause.
+	extentFirst map[string]bool
+	trickle     map[string]time.Duration
 }
 
 // fakeExec is an exec the fake runs: its output and record, and done, closed once it ended.
@@ -76,6 +91,7 @@ func newFake() *fakeRuntime {
 		bootSets: map[string]mvmd.BootSet{}, bootFiles: map[string][2][]byte{},
 		created: map[string]mvmd.Create{}, diskSnapshots: map[string]mvmd.DiskSnapshot{}, diskFrom: map[string]string{},
 		guest: map[string]map[string][]byte{}, execs: map[string]*fakeExec{},
+		data: map[string][]byte{}, filesystems: map[string]string{}, digests: map[string]string{},
 		info: mvmd.Info{
 			APIVersion: "v1alpha2", Driver: "fake", CPUs: 8, MemoryBytes: 1 << 33, StateTotalBytes: 100, StateAvailableBytes: 60,
 			MachinePrefixes: []string{"10.1.0.0/24"},

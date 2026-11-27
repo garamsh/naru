@@ -55,6 +55,12 @@ func TestClient_EachCallSendsItsMethodPathAndBody(t *testing.T) {
 		}, "POST", "/v1/microvms/web/stop", `{"graceSeconds":30}`, hostapi.MicroVM{}},
 		{"start", func(c *hostapi.Client) error { _, err := c.StartMicroVM(ctx, "web"); return err }, "POST", "/v1/microvms/web/start", "", hostapi.MicroVM{}},
 		{"delete", func(c *hostapi.Client) error { return c.DeleteMicroVM(ctx, "web") }, "DELETE", "/v1/microvms/web", "", nil},
+		{"export disk", func(c *hostapi.Client) error { _, err := c.ExportDisk(ctx, "m-a-1.data", "h-2"); return err },
+			"POST", "/v1/disks/m-a-1.data/export", `{"host":"h-2"}`, hostapi.Export{Grant: "g"}},
+		{"import disk", func(c *hostapi.Client) error {
+			_, err := c.ImportDisk(ctx, hostapi.ImportRequest{Name: "m-a-2.data", SourceHost: "h-1", Grant: "g", SizeBytes: 8, Filesystem: "ext4", SHA256: "s"})
+			return err
+		}, "POST", "/v1/disks/import", `{"name":"m-a-2.data","sourceHost":"h-1","grant":"g","sizeBytes":8,"filesystem":"ext4","sha256":"s"}`, hostapi.Imported{}},
 		{"renew", func(c *hostapi.Client) error {
 			_, err := c.RenewFence(ctx, "web", hostapi.FenceRequest{LengthSeconds: 60, Renewal: 2})
 			return err

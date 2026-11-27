@@ -48,6 +48,37 @@ type Disk struct {
 	Holder    string
 }
 
+// The filesystems of a disk, as a disk stream's header names them.
+const (
+	FilesystemExt4 = "ext4"
+	FilesystemNone = "none"
+)
+
+// DiskHeader opens a disk's stream: the size of the disk and what it holds, FilesystemExt4 or
+// FilesystemNone.
+type DiskHeader struct {
+	SizeBytes  uint64
+	Filesystem string
+}
+
+// DiskExtent is a run of a disk's bytes at Offset. A stream's extents ascend and do not overlap,
+// and a byte no extent covers is zero.
+type DiskExtent struct {
+	Offset uint64
+	Data   []byte
+}
+
+// DiskPart is one message of a disk's stream: a DiskHeader, then DiskExtents, then the DiskDigest
+// that ends it.
+type DiskPart interface{ diskPart() }
+
+// DiskDigest is the SHA-256 in hex of a disk's whole size, holes counted as zeros.
+type DiskDigest string
+
+func (DiskHeader) diskPart() {}
+func (DiskExtent) diskPart() {}
+func (DiskDigest) diskPart() {}
+
 // Attachment is a disk of a Machine, and where the guest mounts it; empty mounts nothing.
 type Attachment struct {
 	ID        string
@@ -259,6 +290,15 @@ type Runtime interface {
 	CreateRawDisk(ctx context.Context, id string, sizeBytes uint64, contents []byte) error
 	DeleteDisk(ctx context.Context, id string) error
 	ListDisks(ctx context.Context) ([]Disk, error)
+	// ReadDisk passes the disk's stream to sink, part by part: a disk no Machine holds, or a
+	// Created or Stopped Machine's (ErrPrecondition otherwise). sink's error ends the read and is
+	// returned as it is.
+	ReadDisk(ctx context.Context, id string, sink func(DiskPart) error) error
+	// CreateDiskFromStream creates the disk of the header from the extents and then the digest
+	// that parts sends, in order. mvmd publishes it only when the bytes hash to the digest; a
+	// mismatch is ErrInvalid and leaves no disk. The same ID, header and digest again is success.
+	// An error parts returns ends the stream with no disk and is returned as it is.
+	CreateDiskFromStream(ctx context.Context, id string, h DiskHeader, parts func(send func(DiskPart) error) error) error
 	// CreateMachine creates the Machine under a request ID of its own, so a repeat of the same
 	// parameters is mvmd's original outcome and other parameters are ErrConflict.
 	CreateMachine(ctx context.Context, c Create) (Machine, error)
