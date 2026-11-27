@@ -69,8 +69,8 @@ func (r *Reconciler) finish(ctx context.Context, p *pass, e *Entry) error {
 	return nil
 }
 
-// create makes the Machine's microVM on its host. The host API starts every microVM it creates, so
-// one desired stopped runs until converge stops it (#434), and shows stopping meanwhile.
+// create makes the Machine's microVM on its host: started when it is desired running, and left
+// created, never booted, when it is desired stopped.
 func (r *Reconciler) create(ctx context.Context, p *pass, e *Entry) error {
 	b := *e.Binding
 	req, err := r.request(p, e)
@@ -79,14 +79,13 @@ func (r *Reconciler) create(ctx context.Context, p *pass, e *Entry) error {
 			rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = machineapi.PhaseFailed, err.Error(), err.Error()
 		})
 	}
-	phase := machineapi.PhaseStarting
-	if e.Spec.State == machineapi.StateStopped {
-		phase = machineapi.PhaseStopping
-	}
-	if err := r.set(ctx, e, func(rec *Record) {
-		rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = phase, "", ""
-	}); err != nil {
-		return err
+	req.NoStart = e.Spec.State == machineapi.StateStopped
+	if !req.NoStart {
+		if err := r.set(ctx, e, func(rec *Record) {
+			rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = machineapi.PhaseStarting, "", ""
+		}); err != nil {
+			return err
+		}
 	}
 	vm, err := r.cfg.Hosts.Create(ctx, b.Host, req)
 	if refused(err) {
@@ -165,8 +164,13 @@ func (r *Reconciler) converge(ctx context.Context, e *Entry, vm hostapi.MicroVM)
 	if err != nil {
 		return fmt.Errorf("%s on %s: %w", name, b.Host, err)
 	}
+	phase := phaseOf(vm)
+	if vm.State == vmCreated && e.Spec.State == machineapi.StateStopped {
+		// Made and never started, as a Machine desired stopped is.
+		phase = machineapi.PhaseStopped
+	}
 	return r.set(ctx, e, func(rec *Record) {
-		rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = phaseOf(vm), "", ""
+		rec.Status.Phase, rec.Status.Reason, rec.OperatorReason = phase, "", ""
 		rec.Status.ObservedGeneration = rec.Status.Generation
 	})
 }

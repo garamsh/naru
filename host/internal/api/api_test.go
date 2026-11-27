@@ -377,6 +377,27 @@ func TestCreate_StartsAMachineAnEarlierAttemptLeftCreated(t *testing.T) {
 	assert.Contains(t, string(b), `"state":"running"`)
 }
 
+func TestCreate_NoStartLeavesTheMicroVMCreatedAndARepeatLeavesItSo(t *testing.T) {
+	e := start(t)
+	c := e.as(t, ProvisionerOrganization)
+	body := createBody()
+	body["noStart"] = true
+	code, b := e.do(t, c, "POST", "/v1/microvms", body)
+	require.Equal(t, 201, code, string(b))
+	assert.Contains(t, string(b), `"state":"created"`)
+	assert.Equal(t, "created", e.rt.machines["web"].State)
+	assert.NotContains(t, e.rt.calls, "start web", "no start reached mvmd")
+
+	code, b = e.do(t, c, "POST", "/v1/microvms", body)
+	require.Equal(t, 200, code, string(b))
+	assert.Contains(t, string(b), `"state":"created"`, "a repeat leaves it created")
+	assert.NotContains(t, e.rt.calls, "start web")
+
+	code, b = e.do(t, c, "POST", "/v1/microvms", createBody())
+	require.Equal(t, 200, code, "the same microVM without the field, not another body: %s", b)
+	assert.Contains(t, string(b), `"state":"running"`, "control: a create without it starts the microVM")
+}
+
 func TestCreate_Validation(t *testing.T) {
 	e := start(t)
 	c := e.as(t, ProvisionerOrganization)

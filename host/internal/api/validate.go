@@ -31,7 +31,9 @@ var (
 type plan struct {
 	repository string
 	create     mvmd.Create
-	disks      []hostapi.DiskSpec
+	// noStart leaves the Machine created, as a fenced one is.
+	noStart bool
+	disks   []hostapi.DiskSpec
 	// userData is the seed's user-data; only the OS form has one.
 	userData []byte
 }
