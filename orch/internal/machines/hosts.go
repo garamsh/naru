@@ -6,10 +6,11 @@ import (
 	"github.com/garamsh/naru/lib/hostapi"
 )
 
-// Hosts is the host API as the reconciler needs it. Every call but List names an admitted host by
-// its ID; a microVM or disk snapshot that is already gone answers nil to Delete, DeleteDiskSnapshot
-// and Stop.
+// Hosts is the host API as the reconciler needs it, and the guest calls the Machine API makes
+// through it. Every call but List names an admitted host by its ID; a microVM or disk snapshot that
+// is already gone answers nil to Delete, DeleteDiskSnapshot and Stop.
 type Hosts interface {
+	Guests
 	// List returns every admitted host, with what each that answers reports.
 	List(ctx context.Context) ([]Host, error)
 	// Create makes the microVM and starts it, and returns it as it then is.

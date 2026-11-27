@@ -664,9 +664,16 @@ func reply(w http.ResponseWriter, r *http.Request, v any, err error) {
 	writeJSON(w, http.StatusOK, v)
 }
 
-// Serve runs the API on l, a listener that already speaks TLS, until ctx ends.
-func Serve(ctx context.Context, l net.Listener, h http.Handler) error {
-	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 2 * time.Minute}
+// The longest a request's body may take to arrive, and its answer to be written, on orch's API.
+const (
+	ReadTimeout  = 30 * time.Second
+	WriteTimeout = 60 * time.Second
+)
+
+// Serve runs h on l, a listener that already speaks TLS, until ctx ends: a request's body must
+// arrive within read and its answer be written within write.
+func Serve(ctx context.Context, l net.Listener, h http.Handler, read, write time.Duration) error {
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: read, WriteTimeout: write, IdleTimeout: 2 * time.Minute}
 	done := make(chan struct{})
 	go func() {
 		<-ctx.Done()

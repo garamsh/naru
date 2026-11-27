@@ -34,7 +34,7 @@ func Isolation(t *testing.T, c Config) {
 	for what, call := range map[string]func(cl *machineapi.Client) error{
 		"read": func(cl *machineapi.Client) error { _, err := cl.Machine(ctx, name); return err },
 		"exec": func(cl *machineapi.Client) error {
-			_, err := cl.Exec(ctx, name, machineapi.ExecRequest{Command: []string{"cat"}})
+			_, err := cl.Exec(ctx, name, machineapi.ExecRequest{Command: []string{"cat", file}})
 			return err
 		},
 		"file read":     func(cl *machineapi.Client) error { _, err := cl.ReadFile(ctx, name, file); return err },

@@ -16,9 +16,6 @@ const CallerRole = "caller"
 // maxBody bounds a request body: a spec's files hold at most 1 MiB, base64 in JSON.
 const maxBody = 4 << 20
 
-// maxFile bounds the content of a guest file a PUT writes.
-const maxFile = 16 << 20
-
 func (f *Fake) routes() {
 	m := http.NewServeMux()
 	p := machineapi.PathPrefix
@@ -69,9 +66,9 @@ func (f *Fake) routes() {
 		return http.StatusOK, raw(b), err
 	}))
 	m.HandleFunc("PUT "+p+"machines/{name}/files", f.handle(func(c string, r *http.Request) (int, any, error) {
-		b, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxFile))
+		b, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, machineapi.MaxGuestBytes))
 		if err != nil {
-			return 0, nil, refuse(http.StatusRequestEntityTooLarge, machineapi.CodeInvalid, "the file is larger than %d bytes", maxFile)
+			return 0, nil, refuse(http.StatusRequestEntityTooLarge, machineapi.CodeInvalid, "the file is larger than %d bytes", machineapi.MaxGuestBytes)
 		}
 		return http.StatusNoContent, nil, f.writeFile(c, r.PathValue("name"), r.URL.Query().Get("path"), b)
 	}))

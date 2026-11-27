@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/machineapi"
 	"github.com/garamsh/naru/orch/internal/hostclient"
 	"github.com/garamsh/naru/orch/internal/machines"
 )
@@ -126,4 +127,56 @@ func TestMachineHostsMarksAnAnswerItRepeatsStale(t *testing.T) {
 	hosts, err = m.List(t.Context())
 	require.NoError(t, err)
 	assert.False(t, hosts[0].Stale)
+}
+
+func TestMachineHostsReachesAGuestFromAMemberThatListedNoHost(t *testing.T) {
+	h := newHost(t)
+	m := hostclient.NewMachineHosts(inventory{{ID: "h", Address: h.addr()}}, &http.Client{Transport: &http.Transport{TLSClientConfig: insecure()}}, nil)
+	ctx := t.Context()
+	const vm = "m-0123456789abcdef-1"
+
+	out, err := m.Exec(ctx, "h", vm, hostapi.ExecRequest{Command: []string{"cat", "/data/a"}, TimeoutSeconds: 30})
+	require.NoError(t, err)
+	assert.Equal(t, hostapi.ExecResult{ExitCode: 137, Signal: 9, TimedOut: true, Stdout: []byte("out"), Stderr: []byte{}}, out, "the host's result as it is")
+	assert.JSONEq(t, `{"command":["cat","/data/a"],"timeoutSeconds":30}`, string(h.body("POST /v1/microvms/"+vm+"/exec")))
+
+	b, err := m.ReadFile(ctx, "h", vm, "/data/a b")
+	require.NoError(t, err)
+	assert.Equal(t, "content", string(b))
+	assert.Equal(t, "path=%2Fdata%2Fa+b", h.query("GET /v1/microvms/"+vm+"/files"))
+
+	require.NoError(t, m.WriteFile(ctx, "h", vm, "/data/a", []byte("raw")))
+	assert.Equal(t, "raw", string(h.body("PUT /v1/microvms/"+vm+"/files")), "the content, as it is")
+	assert.Equal(t, "path=%2Fdata%2Fa", h.query("PUT /v1/microvms/"+vm+"/files"))
+}
+
+func TestMachineHostsNamesTheHostsAnswerToAGuestCall(t *testing.T) {
+	const key = "GET /v1/microvms/m-0123456789abcdef-1/files"
+	for _, c := range []struct {
+		status int
+		code   string
+		want   error
+	}{
+		{409, hostapi.CodeNotRunning, machines.ErrNotRunning},
+		{404, "", machines.ErrNotRunning},
+		{404, hostapi.CodeFileNotFound, machines.ErrFileNotFound},
+		{413, "", machines.ErrTooLarge},
+		{422, "", machineapi.ErrInvalid},
+		{409, "", machines.ErrHostUnavailable},
+		{502, "", machines.ErrHostUnavailable},
+	} {
+		h := newHost(t)
+		h.status[key], h.codes[key] = c.status, c.code
+		m := hostclient.NewMachineHosts(inventory{{ID: "h", Address: h.addr()}}, &http.Client{Transport: &http.Transport{TLSClientConfig: insecure()}}, nil)
+		_, err := m.ReadFile(t.Context(), "h", "m-0123456789abcdef-1", "/data/a")
+		assert.ErrorIs(t, err, c.want, "%d %q", c.status, c.code)
+	}
+
+	h := newHost(t)
+	m := hostclient.NewMachineHosts(inventory{{ID: "h", Address: h.addr()}}, &http.Client{Transport: &http.Transport{TLSClientConfig: insecure()}}, nil)
+	_, err := m.ReadFile(t.Context(), "other", "m-0123456789abcdef-1", "/data/a")
+	assert.ErrorIs(t, err, machines.ErrHostUnavailable, "a host the inventory does not hold")
+	h.srv.Close()
+	_, err = m.ReadFile(t.Context(), "h", "m-0123456789abcdef-1", "/data/a")
+	assert.ErrorIs(t, err, machines.ErrHostUnavailable, "a host that does not answer")
 }

@@ -32,6 +32,11 @@ type Service interface {
 	Snapshot(ctx context.Context, caller, name string) (machineapi.Snapshot, error)
 	Snapshots(ctx context.Context, caller string) ([]machineapi.Snapshot, error)
 	DeleteSnapshot(ctx context.Context, caller, name string) error
+	// Exec runs a command in the running Machine's guest, and ReadFile and WriteFile read and
+	// replace one of its files, whole, through the Machine's host.
+	Exec(ctx context.Context, caller, name string, r machineapi.ExecRequest) (machineapi.ExecResult, error)
+	ReadFile(ctx context.Context, caller, name, path string) ([]byte, error)
+	WriteFile(ctx context.Context, caller, name, path string, content []byte) error
 	// Events returns the caller's events after the cursor since, the whole log when since is empty.
 	Events(ctx context.Context, caller, since string) (machineapi.EventPage, error)
 	// All is every caller's Machines, for the operator API.
@@ -46,11 +51,14 @@ type service struct {
 	clock Clock
 	// zone is the zone of the stable names, such as "m.garam.sh".
 	zone string
+	// guests reaches the Machines' guests; nil on a member that reaches no host.
+	guests Guests
 }
 
-// NewService returns the Service over store, giving each Machine its stable name under zone.
-func NewService(store Store, clock Clock, zone string) Service {
-	return &service{store: store, clock: clock, zone: zone}
+// NewService returns the Service over store, giving each Machine its stable name under zone and
+// reaching its guest through guests, which may be nil on a member that reaches no host.
+func NewService(store Store, clock Clock, zone string, guests Guests) Service {
+	return &service{store: store, clock: clock, zone: zone, guests: guests}
 }
 
 // event is the record's status as an event of its caller's log.

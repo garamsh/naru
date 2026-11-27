@@ -59,9 +59,9 @@ func TestClient_EachCallSendsItsMethodPathAndBody(t *testing.T) {
 		{"snapshots", func(c *machineapi.Client) error { _, err := c.Snapshots(ctx); return err }, "GET", "/machines/v1alpha1/snapshots", "", ""},
 		{"snapshot delete", func(c *machineapi.Client) error { return c.DeleteSnapshot(ctx, "s") }, "DELETE", "/machines/v1alpha1/snapshots/s", "", ""},
 		{"exec", func(c *machineapi.Client) error {
-			_, err := c.Exec(ctx, "web", machineapi.ExecRequest{Command: []string{"cat"}, Stdin: []byte("hi"), TimeoutSeconds: 5})
+			_, err := c.Exec(ctx, "web", machineapi.ExecRequest{Command: []string{"cat", "/data/a"}, TimeoutSeconds: 5})
 			return err
-		}, "POST", "/machines/v1alpha1/machines/web/exec", "", `{"command":["cat"],"stdin":"aGk=","timeoutSeconds":5}`},
+		}, "POST", "/machines/v1alpha1/machines/web/exec", "", `{"command":["cat","/data/a"],"timeoutSeconds":5}`},
 		{"file read", func(c *machineapi.Client) error { _, err := c.ReadFile(ctx, "web", "/data/a b"); return err }, "GET", "/machines/v1alpha1/machines/web/files", "path=%2Fdata%2Fa+b", ""},
 		{"file write", func(c *machineapi.Client) error { return c.WriteFile(ctx, "web", "/data/a", []byte("raw")) }, "PUT", "/machines/v1alpha1/machines/web/files", "path=%2Fdata%2Fa", "raw"},
 		{"events", func(c *machineapi.Client) error { _, err := c.Events(ctx, "42"); return err }, "GET", "/machines/v1alpha1/events", "since=42", ""},

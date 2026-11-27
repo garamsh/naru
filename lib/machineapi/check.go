@@ -66,6 +66,17 @@ func CheckPath(p string) error {
 	return nil
 }
 
+// Check refuses an exec with an empty command or a timeout above MaxExecSeconds, with a FieldError.
+func (r ExecRequest) Check() error {
+	switch {
+	case len(r.Command) == 0 || r.Command[0] == "":
+		return invalid("command", "is empty")
+	case r.TimeoutSeconds > MaxExecSeconds:
+		return invalid("timeoutSeconds", "is %d; at most %d", r.TimeoutSeconds, MaxExecSeconds)
+	}
+	return nil
+}
+
 // Check refuses a stop whose grace is above MaxGraceSeconds, with a FieldError.
 func (r StopRequest) Check() error {
 	if r.GraceSeconds > MaxGraceSeconds {

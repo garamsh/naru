@@ -11,8 +11,9 @@ import (
 	"strings"
 )
 
-// maxResponse bounds a response body the client reads.
-const maxResponse = 16 << 20
+// maxResponse bounds a response body the client reads: an exec's MaxGuestBytes of output, base64
+// in JSON, with room for the rest of its answer.
+const maxResponse = 2 * MaxGuestBytes
 
 // Error is a refusal or failure the host API answered: its status, and the message and the fields
 // it names. Read it with errors.As.
@@ -65,33 +66,40 @@ func (c *Client) send(ctx context.Context, method, path string, in, out any) (in
 
 // exchange sends body, whatever it is, and decodes a JSON answer into out when it is not nil.
 func (c *Client) exchange(ctx context.Context, method, path string, body io.Reader, contentType string, out any) (int, error) {
+	status, data, err := c.fetch(ctx, method, path, body, contentType)
+	if err != nil || out == nil || len(data) == 0 {
+		return status, err
+	}
+	return status, json.Unmarshal(data, out)
+}
+
+// fetch sends body and returns the answer's body, whatever it is. An answer of 400 or above is an
+// *Error.
+func (c *Client) fetch(ctx context.Context, method, path string, body io.Reader, contentType string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
 	if err != nil {
-		return resp.StatusCode, err
+		return resp.StatusCode, nil, err
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
 		var eb ErrorBody
 		if json.Unmarshal(data, &eb) != nil || eb.Error == "" {
 			eb.Error = http.StatusText(resp.StatusCode)
 		}
-		return resp.StatusCode, &Error{Status: resp.StatusCode, Message: eb.Error, Fields: eb.Fields, Code: eb.Code}
+		return resp.StatusCode, nil, &Error{Status: resp.StatusCode, Message: eb.Error, Fields: eb.Fields, Code: eb.Code}
 	}
-	if out == nil || len(data) == 0 {
-		return resp.StatusCode, nil
-	}
-	return resp.StatusCode, json.Unmarshal(data, out)
+	return resp.StatusCode, data, nil
 }
 
 func microVMPath(name string) string { return "/v1/microvms/" + url.PathEscape(name) }
@@ -275,4 +283,27 @@ func (c *Client) ResumeSnapshot(ctx context.Context, name string, r ResumeReques
 	var m MicroVM
 	err := c.do(ctx, http.MethodPost, snapshotPath(name)+"/resume", r, &m)
 	return m, err
+}
+
+// Exec runs r.Command in the running microVM and returns its result, whole.
+func (c *Client) Exec(ctx context.Context, microVM string, r ExecRequest) (ExecResult, error) {
+	var out ExecResult
+	err := c.do(ctx, http.MethodPost, microVMPath(microVM)+"/exec", r, &out)
+	return out, err
+}
+
+// ReadFile returns the content of the file at guestPath in the running microVM.
+func (c *Client) ReadFile(ctx context.Context, microVM, guestPath string) ([]byte, error) {
+	_, data, err := c.fetch(ctx, http.MethodGet, filesPath(microVM, guestPath), nil, "")
+	return data, err
+}
+
+// WriteFile replaces the file at guestPath in the running microVM with content, whole.
+func (c *Client) WriteFile(ctx context.Context, microVM, guestPath string, content []byte) error {
+	_, _, err := c.fetch(ctx, http.MethodPut, filesPath(microVM, guestPath), bytes.NewReader(content), "application/octet-stream")
+	return err
+}
+
+func filesPath(microVM, guestPath string) string {
+	return microVMPath(microVM) + "/files?" + url.Values{"path": {guestPath}}.Encode()
 }

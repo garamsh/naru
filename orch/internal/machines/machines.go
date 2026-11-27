@@ -31,6 +31,14 @@ var (
 	ErrCursorExpired = errors.New("the cursor is older than the log keeps")
 	// ErrBadCursor is a cursor the log never gave.
 	ErrBadCursor = errors.New("not a cursor of the log")
+	// ErrNotRunning is an exec or a file call to a Machine that does not run.
+	ErrNotRunning = errors.New("the Machine is not running")
+	// ErrFileNotFound is a file call to a running Machine whose guest has no file at the path.
+	ErrFileNotFound = errors.New("the guest has no such file")
+	// ErrTooLarge is an exec's output or a guest file above machineapi.MaxGuestBytes.
+	ErrTooLarge = errors.New("larger than the most a guest call carries")
+	// ErrHostUnavailable is a guest call the Machine's host did not answer.
+	ErrHostUnavailable = errors.New("the Machine's host did not answer")
 )
 
 // Record is a Machine as orch stores it, under /naru/orch/machines/<caller>/<name>: the spec as

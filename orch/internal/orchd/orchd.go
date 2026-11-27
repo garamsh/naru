@@ -110,8 +110,8 @@ type Deps struct {
 	// the admission of a joined host waits for every admitted host's prefix.
 	NewPrefixHosts func(inv inventory.Service) inventory.PrefixHosts
 	// NewMachineHosts returns the Machine reconciler's view of the hosts. With it the leader places
-	// the Machine API's Machines on hosts and runs them there; without it every Machine stays
-	// pending.
+	// the Machine API's Machines on hosts and runs them there, and every member reaches their
+	// guests; without it every Machine stays pending.
 	NewMachineHosts func(inv inventory.Service) machines.Hosts
 	// BootSets, with NewBootSetHosts, turns on the adding of the boot sets the groups' node
 	// versions need to the hosts that lack them. The leader runs it beside the groups engine.
@@ -234,7 +234,7 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	o.wg.Add(1)
 	go func() {
 		defer o.wg.Done()
-		if err := api.Serve(runCtx, l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { o.handler.Load().ServeHTTP(w, r) })); err != nil {
+		if err := api.Serve(runCtx, l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { o.handler.Load().ServeHTTP(w, r) }), api.ReadTimeout, api.WriteTimeout); err != nil {
 			d.Log.Error("api stopped", "err", err.Error())
 		}
 	}()
@@ -243,7 +243,7 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 		o.wg.Add(1)
 		go func() {
 			defer o.wg.Done()
-			if err := api.Serve(runCtx, machineL, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { o.machineHandler.Load().ServeHTTP(w, r) })); err != nil {
+			if err := api.Serve(runCtx, machineL, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { o.machineHandler.Load().ServeHTTP(w, r) }), machineserver.ReadTimeout, machineserver.WriteTimeout); err != nil {
 				d.Log.Error("machine api stopped", "err", err.Error())
 			}
 		}()
@@ -331,10 +331,16 @@ func (o *Orchd) assemble(m *member.Member) bool {
 		}))
 	}
 	machineStore := machinesetcd.New(m.Client())
-	machineSvc := machines.NewService(machineStore, d.Clock, c.MachineZone)
+	var machineHosts machines.Hosts
+	var guests machines.Guests
 	if d.NewMachineHosts != nil {
+		machineHosts = d.NewMachineHosts(svc)
+		guests = machineHosts
+	}
+	machineSvc := machines.NewService(machineStore, d.Clock, c.MachineZone, guests)
+	if machineHosts != nil {
 		reconcilers = append(reconcilers, machines.NewReconciler(machines.ReconcilerConfig{
-			Store: machinesetcd.New(leaderKV), Hosts: d.NewMachineHosts(svc), Clock: d.Clock, Interval: c.MachineInterval, Reserve: c.HostReserve,
+			Store: machinesetcd.New(leaderKV), Hosts: machineHosts, Clock: d.Clock, Interval: c.MachineInterval, Reserve: c.HostReserve,
 			Wake:  func(ctx context.Context) <-chan struct{} { return machinesetcd.Watch(ctx, m.Client(), d.Log) },
 			Fleet: leaderInv, Log: d.Log,
 		}))

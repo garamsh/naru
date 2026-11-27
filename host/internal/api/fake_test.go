@@ -49,6 +49,18 @@ type fakeRuntime struct {
 	graces        []time.Duration
 	diskSnapshots map[string]mvmd.DiskSnapshot
 	diskFrom      map[string]string
+	// guest is each Machine's guest files, and execs the execs started, by ID.
+	guest map[string]map[string][]byte
+	execs map[string]*fakeExec
+}
+
+// fakeExec is an exec the fake runs: its output and record, and done, closed once it ended.
+type fakeExec struct {
+	command []string
+	output  []mvmd.Chunk
+	record  mvmd.ExecRecord
+	done    chan struct{}
+	signals []int32
 }
 
 // step records a call that changes mvmd and returns the error a test set for it.
@@ -63,6 +75,7 @@ func newFake() *fakeRuntime {
 		fences: map[string]mvmd.Deadline{}, snapshots: map[string]mvmd.Snapshot{},
 		bootSets: map[string]mvmd.BootSet{}, bootFiles: map[string][2][]byte{},
 		created: map[string]mvmd.Create{}, diskSnapshots: map[string]mvmd.DiskSnapshot{}, diskFrom: map[string]string{},
+		guest: map[string]map[string][]byte{}, execs: map[string]*fakeExec{},
 		info: mvmd.Info{
 			APIVersion: "v1alpha2", Driver: "fake", CPUs: 8, MemoryBytes: 1 << 33, StateTotalBytes: 100, StateAvailableBytes: 60,
 			MachinePrefixes: []string{"10.1.0.0/24"},
@@ -503,5 +516,137 @@ func (f *fakeRuntime) RemoveBootSet(_ context.Context, name string) error {
 	}
 	delete(f.bootSets, name)
 	delete(f.bootFiles, name)
+	return nil
+}
+
+// Exec runs a command of the fake's own: "cat" answers the guest files it names, "absent" does not
+// start, "kill" ends by SIGTERM, "flood" writes 17 MiB and exits, "stop" is cut short, and any
+// other runs until a signal ends it.
+func (f *fakeRuntime) Exec(_ context.Context, machineID, execID string, command []string) (mvmd.ExecRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m, ok := f.machines[machineID]; !ok || m.State != mvmd.StateRunning {
+		return mvmd.ExecRecord{}, fmt.Errorf("%w: %s is not running", mvmd.ErrPrecondition, machineID)
+	}
+	if err := f.step("exec " + machineID); err != nil {
+		return mvmd.ExecRecord{}, err
+	}
+	x := &fakeExec{command: command, done: make(chan struct{})}
+	f.execs[execID] = x
+	out := func(stderr bool, b []byte) {
+		var at uint64
+		if n := len(x.output); n > 0 {
+			at = x.output[n-1].Offset + uint64(len(x.output[n-1].Data))
+		}
+		x.output = append(x.output, mvmd.Chunk{Stderr: stderr, Offset: at, Data: b})
+	}
+	switch command[0] {
+	case "absent":
+		x.record = mvmd.ExecRecord{Status: mvmd.ExecNotStarted, Reason: "absent: no such file"}
+		close(x.done)
+		return x.record, nil
+	case "cat":
+		x.record.Status = mvmd.ExecExited
+		for _, p := range command[1:] {
+			if b, ok := f.guest[machineID][p]; ok {
+				out(false, b)
+			} else {
+				out(true, []byte("cat: "+p+": No such file or directory\n"))
+				x.record.ExitCode = 1
+			}
+		}
+		close(x.done)
+	case "kill":
+		x.record = mvmd.ExecRecord{Status: mvmd.ExecExited, TermSignal: 15}
+		close(x.done)
+	case "flood":
+		for range 17 {
+			out(false, make([]byte, 1<<20))
+		}
+		x.record.Status = mvmd.ExecExited
+		close(x.done)
+	case "stop":
+		x.record = mvmd.ExecRecord{Status: mvmd.ExecCutShort, Reason: "the Machine stopped"}
+		close(x.done)
+	default:
+		out(false, []byte("started\n"))
+	}
+	return mvmd.ExecRecord{Status: mvmd.ExecStarted}, nil
+}
+
+func (f *fakeRuntime) ReadExecOutput(ctx context.Context, _, execID string, after uint64, sink func(mvmd.Chunk) error) (mvmd.ExecRecord, error) {
+	f.mu.Lock()
+	x, ok := f.execs[execID]
+	f.mu.Unlock()
+	if !ok {
+		return mvmd.ExecRecord{}, mvmd.ErrNotFound
+	}
+	for _, c := range x.output {
+		if c.Offset < after {
+			continue
+		}
+		if err := sink(c); err != nil {
+			return mvmd.ExecRecord{}, err
+		}
+	}
+	select {
+	case <-x.done:
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return x.record, nil
+	case <-ctx.Done():
+		return mvmd.ExecRecord{}, ctx.Err()
+	}
+}
+
+func (f *fakeRuntime) SignalExec(_ context.Context, _, execID string, signal int32) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	x, ok := f.execs[execID]
+	if !ok {
+		return mvmd.ErrNotFound
+	}
+	x.signals = append(x.signals, signal)
+	select {
+	case <-x.done:
+		return fmt.Errorf("%w: the command has ended", mvmd.ErrPrecondition)
+	default:
+	}
+	x.record = mvmd.ExecRecord{Status: mvmd.ExecExited, TermSignal: signal}
+	close(x.done)
+	return nil
+}
+
+func (f *fakeRuntime) ReadFile(_ context.Context, machineID, path string, sink func([]byte) error) error {
+	f.mu.Lock()
+	b, ok := f.guest[machineID][path]
+	f.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("%w: %s", mvmd.ErrNotFound, path)
+	}
+	for len(b) > 0 {
+		n := min(len(b), 1<<20)
+		if err := sink(b[:n]); err != nil {
+			return err
+		}
+		b = b[n:]
+	}
+	return nil
+}
+
+func (f *fakeRuntime) WriteFile(_ context.Context, machineID, path string, content io.Reader) error {
+	b, err := io.ReadAll(content)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.step("write " + machineID + " " + path); err != nil {
+		return err
+	}
+	if f.guest[machineID] == nil {
+		f.guest[machineID] = map[string][]byte{}
+	}
+	f.guest[machineID][path] = b
 	return nil
 }

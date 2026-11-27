@@ -70,7 +70,7 @@ func newRig(t *testing.T, hosts ...machines.Host) *rig {
 	t.Helper()
 	kv := orchtest.Start(t, orchtest.Options{Members: 1}).Members[0].Etcd()
 	r := &rig{t: t, store: machinesetcd.New(kv), kv: kv, hosts: orchtest.NewFakeMachineHosts(hosts...), clock: orchtest.NewClock(), fleet: &fleetLog{}}
-	r.svc = machines.NewService(r.store, r.clock, "m.example.test")
+	r.svc = machines.NewService(r.store, r.clock, "m.example.test", r.hosts)
 	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
 		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet,
 	})

@@ -37,9 +37,9 @@ type Options struct {
 	LogSize int
 	// LogAge is how old an event the log keeps. Zero is 7 days.
 	LogAge time.Duration
-	// Exec runs a command in a guest. Nil runs "cat", which answers stdin on stdout, and answers
-	// exit code 127 to any other command.
-	Exec func(command []string, stdin []byte) machineapi.ExecResult
+	// Exec runs a command in a guest whose files are files. Nil runs "cat", which answers the
+	// files it names on stdout, and answers exit code 127 to any other command.
+	Exec func(command []string, files map[string][]byte) machineapi.ExecResult
 }
 
 // Fake is the in-memory Machine API. It is an http.Handler, served over mutual TLS: the caller is
@@ -109,11 +109,20 @@ func New(o Options) *Fake {
 	return f
 }
 
-func cat(command []string, stdin []byte) machineapi.ExecResult {
-	if slices.Equal(command, []string{"cat"}) {
-		return machineapi.ExecResult{Stdout: stdin, Stderr: []byte{}}
+func cat(command []string, files map[string][]byte) machineapi.ExecResult {
+	if command[0] != "cat" {
+		return machineapi.ExecResult{ExitCode: 127, Stdout: []byte{}, Stderr: fmt.Appendf(nil, "%s: not found\n", command[0])}
 	}
-	return machineapi.ExecResult{ExitCode: 127, Stdout: []byte{}, Stderr: fmt.Appendf(nil, "%s: not found\n", command)}
+	out := machineapi.ExecResult{Stdout: []byte{}, Stderr: []byte{}}
+	for _, p := range command[1:] {
+		b, ok := files[p]
+		if !ok {
+			out.ExitCode, out.Stderr = 1, fmt.Appendf(out.Stderr, "cat: %s: No such file or directory\n", p)
+			continue
+		}
+		out.Stdout = append(out.Stdout, b...)
+	}
+	return out
 }
 
 // refusal is an answer of the API that is not a success.
@@ -343,16 +352,20 @@ func (f *Fake) running(caller, name string) (*machine, error) {
 }
 
 func (f *Fake) exec(caller, name string, r machineapi.ExecRequest) (machineapi.ExecResult, error) {
-	if len(r.Command) == 0 {
-		return machineapi.ExecResult{}, refuse(http.StatusUnprocessableEntity, machineapi.CodeInvalid, "command: is empty")
+	if err := r.Check(); err != nil {
+		return machineapi.ExecResult{}, refuse(http.StatusUnprocessableEntity, machineapi.CodeInvalid, "%v", err)
 	}
 	f.mu.Lock()
-	_, err := f.running(caller, name)
+	mc, err := f.running(caller, name)
+	var files map[string][]byte
+	if err == nil {
+		files = maps.Clone(mc.files)
+	}
 	f.mu.Unlock()
 	if err != nil {
 		return machineapi.ExecResult{}, err
 	}
-	return f.o.Exec(r.Command, r.Stdin), nil
+	return f.o.Exec(r.Command, files), nil
 }
 
 func (f *Fake) readFile(caller, name, p string) ([]byte, error) {

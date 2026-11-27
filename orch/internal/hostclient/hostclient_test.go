@@ -33,12 +33,13 @@ type fakeHost struct {
 	status   map[string]int
 	codes    map[string]string
 	tokens   map[string]string
+	queries  map[string]string
 	srv      *httptest.Server
 }
 
 func newHost(t *testing.T) *fakeHost {
 	t.Helper()
-	f := &fakeHost{bodies: map[string][]byte{}, status: map[string]int{}, codes: map[string]string{}, tokens: map[string]string{}}
+	f := &fakeHost{bodies: map[string][]byte{}, status: map[string]int{}, codes: map[string]string{}, tokens: map[string]string{}, queries: map[string]string{}}
 	f.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -46,6 +47,7 @@ func newHost(t *testing.T) *fakeHost {
 		f.requests = append(f.requests, key)
 		f.bodies[key], _ = io.ReadAll(r.Body)
 		f.tokens[key] = r.Header.Get(wire.LeaderTokenHeader)
+		f.queries[key] = r.URL.RawQuery
 		if st := f.status[key]; st != 0 {
 			w.WriteHeader(st)
 			_, _ = w.Write([]byte(`{"error":"nope","code":"` + f.codes[key] + `"}`))
@@ -64,6 +66,10 @@ func newHost(t *testing.T) *fakeHost {
 			_, _ = w.Write([]byte(`{"name":"db-1","fenceLapsedAt":"2026-11-14T01:02:03Z"}`))
 		case "POST /v1/microvms/db-1/fence":
 			_, _ = w.Write([]byte(`{"phase":"armed"}`))
+		case "POST /v1/microvms/m-0123456789abcdef-1/exec":
+			_, _ = w.Write([]byte(`{"exitCode":137,"signal":9,"timedOut":true,"stdout":"b3V0","stderr":""}`))
+		case "GET /v1/microvms/m-0123456789abcdef-1/files":
+			_, _ = w.Write([]byte("content"))
 		default:
 			w.WriteHeader(http.StatusCreated)
 		}
@@ -78,6 +84,12 @@ func (f *fakeHost) body(key string) []byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.bodies[key]
+}
+
+func (f *fakeHost) query(key string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.queries[key]
 }
 
 func (f *fakeHost) saw(key string) bool {
