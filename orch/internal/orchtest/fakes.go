@@ -39,6 +39,91 @@ type Signer struct {
 	// instead while it is set.
 	revokedHosts []string
 	failRevoke   error
+	// retired are the serials that signed a RetireHost, in order, and failRenew what RenewHost
+	// answers instead while it is set.
+	retired   []string
+	failRenew error
+}
+
+// FailRenew makes RenewHost answer err from now on; nil makes it issue again.
+func (s *Signer) FailRenew(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failRenew = err
+}
+
+// verifyHost verifies a request a host signed for action, as the signer does.
+func (s *Signer) verifyHost(signed []byte, action string) (identity.Identity, []byte, error) {
+	data, err := s.CA.CRL()
+	if err != nil {
+		return identity.Identity{}, nil, err
+	}
+	crl, err := identity.VerifyCRL(s.CA.RevocationKey(), data)
+	if err != nil {
+		return identity.Identity{}, nil, err
+	}
+	who, raw, err := identity.VerifyRequest(signed, action, s.CA.Pool(), crl, time.Now())
+	if err != nil || who.Role != identity.RoleHost {
+		return identity.Identity{}, nil, fmt.Errorf("%w: not a host's %s: %v", inventory.ErrSignerRefused, action, err)
+	}
+	return who, raw, nil
+}
+
+// RenewHost issues a host certificate for a renewal the host signed, under its own key, as
+// naru-signer's POST /v1/host-renew does. A test's certificates live hours, so every one is due.
+func (s *Signer) RenewHost(_ context.Context, signed []byte) (identity.Issued, error) {
+	s.mu.Lock()
+	fail := s.failRenew
+	s.mu.Unlock()
+	if fail != nil {
+		return identity.Issued{}, fail
+	}
+	who, raw, err := s.verifyHost(signed, identity.ActionRenewHost)
+	if err != nil {
+		return identity.Issued{}, err
+	}
+	var req identity.HostRenewal
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return identity.Issued{}, err
+	}
+	csr, err := x509.ParseCertificateRequest(req.CSR)
+	if err != nil {
+		return identity.Issued{}, fmt.Errorf("%w: %v", signer.ErrInvalid, err)
+	}
+	if k, ok := csr.PublicKey.(interface{ Equal(crypto.PublicKey) bool }); !ok || !k.Equal(who.PublicKey) {
+		return identity.Issued{}, fmt.Errorf("%w: a host renews under its own key", signer.ErrInvalid)
+	}
+	cert, der, err := s.CA.sign(who.Subject, string(identity.RoleHost), csr.PublicKey, who.IPAddresses)
+	if err != nil {
+		return identity.Issued{}, err
+	}
+	return identity.Issued{Certificate: der, Serial: identity.SerialOf(cert), NotAfter: cert.NotAfter}, nil
+}
+
+// RetireHost records the serial that signed a host's retire, as naru-signer's POST
+// /v1/host-retire revokes every other.
+func (s *Signer) RetireHost(_ context.Context, signed []byte) error {
+	who, _, err := s.verifyHost(signed, identity.ActionRetireOwnHost)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.retired = append(s.retired, who.Serial)
+	return nil
+}
+
+// Retired returns the serials that signed a RetireHost, in order.
+func (s *Signer) Retired() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.retired)
+}
+
+// Authorities answers the one test authority as each of the signer's three.
+func (s *Signer) Authorities(context.Context) (identity.Authorities, error) {
+	raw := s.CA.cert.Raw
+	return identity.Authorities{Host: raw, Operator: raw, Orch: raw, RevocationKey: s.CA.RevocationKey()}, nil
 }
 
 // FailRevoke makes RevokeHost answer err from now on; nil makes it revoke again.
