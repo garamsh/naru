@@ -341,3 +341,26 @@ func mustKey(t *testing.T) *ecdsa.PrivateKey {
 	require.NoError(t, err)
 	return k
 }
+
+func TestARetireKeptForACertificateARotationReplacedIsDroppedNotSigned(t *testing.T) {
+	r := newRenewal(t)
+	r.clock.set(r.first.NotAfter.Add(-time.Hour))
+	r.f.mu.Lock()
+	r.f.failRetire = true
+	r.f.mu.Unlock()
+	require.Error(t, r.a.Check(t.Context()), "the retire failed and is kept")
+
+	// An operator rotates the host to another pair, of an hour, before the retire is tried again.
+	r.clock.set(time.Time{})
+	cert, key := r.f.pairFor("host-a", 30)
+	_, err := r.a.Rotate(t.Context(), cert, key)
+	require.NoError(t, err)
+	r.f.mu.Lock()
+	r.f.failRetire, r.f.notDue = false, true // the rotated pair is due, and the signer holds it not due
+	r.f.mu.Unlock()
+	require.NoError(t, r.a.Check(t.Context()))
+	_, retired, _ := r.state()
+	assert.Empty(t, retired, "the pair the retire was kept for is not the host's any more, and the operator's rotation revokes the rest")
+	_, err = os.Stat(filepath.Join(r.dir, "host.retire"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "and the retire is dropped")
+}
