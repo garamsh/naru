@@ -744,6 +744,28 @@ func TestRuleset_AMachineLeavesByTheEgressFromItsOwnAddressAndReachesNoNetwork(t
 	assert.False(t, tb.judge("input", packet{in: "tap9", src: "10.0.0.9", dst: "10.0.0.1"}).accept, "a Machine reaches no address of the host")
 }
 
+func TestRuleset_AMachineReachesNothingOnItsHost(t *testing.T) {
+	c := twoNetworks()
+	c.Machines = []netip.Addr{addr("10.0.0.9")}
+	tb := parseTable(t, network.Ruleset(c))
+	for _, tc := range []struct {
+		name string
+		p    packet
+		want verdict
+	}{
+		{"hostd's API on the host's LAN address", packet{in: "tap9", src: "10.0.0.9", dst: "172.16.0.5", dport: 7443}, verdict{false, "microVM to the host"}},
+		{"a DNS server on the tap's gateway", packet{in: "tap9", src: "10.0.0.9", dst: "10.0.0.1", dport: 53}, verdict{false, "microVM to the host"}},
+		{"control: a network's member to hostd's API", packet{in: "tap1", src: "10.0.0.3", dst: "172.16.0.5", dport: 7443}, verdict{false, "microVM to the host"}},
+		{"control: the LAN to hostd's API", packet{in: "eth0", src: "172.16.0.9", dst: "172.16.0.5", dport: 7443}, verdict{true, ""}},
+	} {
+		got := tb.judge("input", tc.p)
+		assert.Equal(t, tc.want.accept, got.accept, tc.name)
+		if !tc.want.accept {
+			assert.Equal(t, tc.want.rule, got.rule, tc.name)
+		}
+	}
+}
+
 func TestRuleset_AMachineWithNoNetworkDeclaredLeavesByTheEgress(t *testing.T) {
 	c := network.Config{Machines: []netip.Addr{addr("10.0.0.9")}, Management: pfx("172.16.0.0/24"), TapPrefix: "tap", Egress: "eth0"}
 	tb := parseTable(t, network.Ruleset(c))
