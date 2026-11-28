@@ -25,7 +25,7 @@ import (
 
 // Options configure a Fake.
 type Options struct {
-	// Zone is the zone stable names and aliases are under, such as "m.garam.sh".
+	// Zone is the zone of the stable names, such as "garam.run", where no alias is taken.
 	Zone string
 	// AliasDomains are the domains outside the zone each caller may publish aliases in, as an
 	// operator grants them.
@@ -166,7 +166,7 @@ func newID() string {
 }
 
 func (f *Fake) address(id string) machineapi.Address {
-	return machineapi.Address{Name: id + "." + f.o.Zone}
+	return machineapi.Address{Name: machineapi.StableName(id, "", f.o.Zone)}
 }
 
 // capabilities are what v1alpha1's implementation offers every Machine (ADR 0108 item 8).
@@ -506,23 +506,17 @@ func (f *Fake) deleteSnapshot(caller, name string) error {
 }
 
 func (f *Fake) putAlias(caller, hostname string, r machineapi.AliasRequest) (machineapi.Alias, bool, error) {
-	inZone, err := machineapi.AliasInZone(hostname, f.o.Zone)
+	if err := machineapi.CheckAliasHostname(hostname, f.o.Zone); err != nil {
+		return machineapi.Alias{}, false, refuse(http.StatusUnprocessableEntity, machineapi.CodeInvalid, "%v", err)
+	}
+	if !slices.ContainsFunc(f.o.AliasDomains[caller], func(d string) bool { return machineapi.InDomain(hostname, d) }) {
+		return machineapi.Alias{}, false, refuse(http.StatusForbidden, machineapi.CodeAliasDomainNotGranted, "%s is in no domain granted to the caller", hostname)
+	}
+	cert, err := machineapi.CheckAliasCertificate(hostname, r.Certificate, r.Key, time.Now())
 	if err != nil {
 		return machineapi.Alias{}, false, refuse(http.StatusUnprocessableEntity, machineapi.CodeInvalid, "%v", err)
 	}
-	read := machineapi.Alias{Hostname: hostname, Machine: r.Machine, Service: r.Service}
-	switch {
-	case inZone && (r.Certificate != "" || r.Key != ""):
-		return machineapi.Alias{}, false, refuse(http.StatusUnprocessableEntity, machineapi.CodeInvalid, "an alias in the zone %s takes no certificate or key", f.o.Zone)
-	case !inZone && !slices.ContainsFunc(f.o.AliasDomains[caller], func(d string) bool { return machineapi.InDomain(hostname, d) }):
-		return machineapi.Alias{}, false, refuse(http.StatusForbidden, machineapi.CodeAliasDomainNotGranted, "%s is outside the zone and in no domain granted to the caller", hostname)
-	case !inZone:
-		cert, err := machineapi.CheckAliasCertificate(hostname, r.Certificate, r.Key, time.Now())
-		if err != nil {
-			return machineapi.Alias{}, false, refuse(http.StatusUnprocessableEntity, machineapi.CodeInvalid, "%v", err)
-		}
-		read.Certificate, read.Key = &cert, machineapi.Redacted
-	}
+	read := machineapi.Alias{Hostname: hostname, Machine: r.Machine, Service: r.Service, Certificate: &cert, Key: machineapi.Redacted}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	held := f.aliases[hostname]

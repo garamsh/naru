@@ -22,7 +22,7 @@ func Create(t *testing.T, c Config) {
 	m := create(t, c.Caller, name, c.Spec)
 	assert.Equal(t, name, m.Name)
 	assert.True(t, machineapi.IsMachineID(m.ID), "the id %q is 16 lowercase hexadecimal digits", m.ID)
-	assert.Equal(t, m.ID+"."+c.Zone, m.Status.Address.Name, "the address is the stable name")
+	assert.Equal(t, "m-"+m.ID+"."+c.Zone, m.Status.Address.Name, "the address is the stable name, one label of the Machine prefix")
 	assert.Equal(t, machineapi.StateRunning, m.Spec.State, "an absent state is running")
 	assert.Equal(t, machineapi.PhasePending, m.Status.Phase, "a create records the Machine, and placement follows")
 	assert.NotZero(t, m.Status.Generation)

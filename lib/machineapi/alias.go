@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// AliasRequest is the body of PUT .../aliases/{hostname}: the caller's Machine and the service the
-// hostname reaches, the default service when Service is empty. An alias outside the zone carries
-// a PEM certificate for the hostname and its PEM key; one inside the zone carries neither.
+// AliasRequest is the body of PUT .../aliases/{hostname}: the caller's Machine, the service the
+// hostname reaches, the default service when Service is empty, and a PEM certificate for the
+// hostname with its PEM key.
 type AliasRequest struct {
 	Machine     string `json:"machine"`
 	Service     string `json:"service,omitempty"`
@@ -36,38 +36,25 @@ type AliasCertificate struct {
 	NotAfter time.Time `json:"notAfter"`
 }
 
-// ErrAliasForm is the refusal of a hostname the zone's rules do not admit.
-var ErrAliasForm = errors.New("not an alias the zone admits")
+// ErrAliasForm is the refusal of a hostname naru does not take as an alias.
+var ErrAliasForm = errors.New("not a hostname naru takes as an alias")
 
-// AliasInZone reports whether hostname is an alias inside zone, and refuses with ErrAliasForm one
-// that is not a lowercase DNS name or, inside the zone, is not one label, is 16 hexadecimal digits
-// (a Machine's id) or holds "--" (a service's name) (ADR 0112 item 3).
-func AliasInZone(hostname, zone string) (bool, error) {
-	labels := strings.Split(hostname, ".")
+// CheckAliasHostname refuses with ErrAliasForm a hostname that is not a lowercase DNS name or is in
+// zone. In the zone naru answers only Machines' stable names: the zone is shared, and a policy for
+// other names in it is the zone's, not naru's (ADR 0120).
+func CheckAliasHostname(hostname, zone string) error {
 	if len(hostname) > 253 {
-		return false, fmt.Errorf("%w: %q is longer than 253 characters", ErrAliasForm, hostname)
+		return fmt.Errorf("%w: %q is longer than 253 characters", ErrAliasForm, hostname)
 	}
-	for _, l := range labels {
+	for _, l := range strings.Split(hostname, ".") {
 		if CheckName(l) != nil {
-			return false, fmt.Errorf("%w: %q is not a lowercase DNS name", ErrAliasForm, hostname)
+			return fmt.Errorf("%w: %q is not a lowercase DNS name", ErrAliasForm, hostname)
 		}
 	}
-	if hostname == zone {
-		return false, fmt.Errorf("%w: %q is the zone itself", ErrAliasForm, hostname)
+	if InDomain(hostname, zone) {
+		return fmt.Errorf("%w: %q is in the zone %s, where naru takes no alias", ErrAliasForm, hostname, zone)
 	}
-	label, ok := strings.CutSuffix(hostname, "."+zone)
-	if !ok {
-		return false, nil
-	}
-	switch {
-	case strings.Contains(label, "."):
-		return true, fmt.Errorf("%w: %q is more than one label under %s", ErrAliasForm, hostname, zone)
-	case IsMachineID(label):
-		return true, fmt.Errorf("%w: %q is a Machine's stable name", ErrAliasForm, label)
-	case strings.Contains(label, "--"):
-		return true, fmt.Errorf("%w: %q holds \"--\", which names a service", ErrAliasForm, label)
-	}
-	return true, nil
+	return nil
 }
 
 // InDomain reports whether hostname is domain or a name under it.

@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +81,7 @@ func TestSpecCheck_NamesTheFieldAtFault(t *testing.T) {
 		{"spec.files[0].mode", func(s *machineapi.Spec) { s.Files[0].Mode = 0o17777 }},
 		{"spec.files[0].sizeBytes", func(s *machineapi.Spec) { s.Files[0].SizeBytes = 1 }},
 		{"spec.services[0].name", func(s *machineapi.Spec) { s.Services[0].Name = "web--1" }},
+		{"spec.services[0].name", func(s *machineapi.Spec) { s.Services[0].Name = strings.Repeat("a", machineapi.MaxServiceName+1) }},
 		{"spec.services[0].protocol", func(s *machineapi.Spec) { s.Services[0].Protocol = "udp" }},
 		{"spec.services[0].port", func(s *machineapi.Spec) { s.Services[0].Port = 0 }},
 		{"spec.networkPolicy.egress[0].prefix", func(s *machineapi.Spec) { s.NetworkPolicy.Egress[0].Prefix = "10.0.0.1/8" }},
@@ -119,17 +121,20 @@ func TestRedact_AnswersNoEnvValueAndNoFileContent(t *testing.T) {
 	assert.Equal(t, []byte("x"), s.Files[0].Content)
 }
 
-func TestAliasInZone_FollowsTheZonesRules(t *testing.T) {
-	const zone = "m.example.test"
-	for host, inZone := range map[string]bool{"app." + zone: true, "app.workspaces.example.test": false} {
-		got, err := machineapi.AliasInZone(host, zone)
-		require.NoError(t, err, host)
-		assert.Equal(t, inZone, got, host)
+func TestCheckAliasHostname_RefusesEveryNameInTheZone(t *testing.T) {
+	const zone = "garam.example"
+	require.NoError(t, machineapi.CheckAliasHostname("app.workspaces.example.test", zone), "control: a name outside the zone")
+	for _, host := range []string{"app." + zone, "m-0123456789abcdef." + zone, "a.b." + zone, zone, "App.workspaces.example.test", "a_b.example.test", ""} {
+		assert.ErrorIs(t, machineapi.CheckAliasHostname(host, zone), machineapi.ErrAliasForm, host)
 	}
-	for _, host := range []string{"0123456789abcdef." + zone, "web--app." + zone, "a.b." + zone, zone, "App." + zone, "a_b.example.test", ""} {
-		_, err := machineapi.AliasInZone(host, zone)
-		assert.ErrorIs(t, err, machineapi.ErrAliasForm, host)
-	}
+}
+
+func TestStableName_IsOneLabelOfTheMachinePrefix(t *testing.T) {
+	assert.Equal(t, "m-0123456789abcdef.garam.run", machineapi.StableName("0123456789abcdef", "", "garam.run"))
+	assert.Equal(t, "m-api--0123456789abcdef.garam.run", machineapi.StableName("0123456789abcdef", "api", "garam.run"))
+	longest := strings.Repeat("a", machineapi.MaxServiceName)
+	label, _, _ := strings.Cut(machineapi.StableName("0123456789abcdef", longest, "garam.run"), ".")
+	assert.Len(t, label, 63, "the longest service's name is one DNS label")
 }
 
 func TestCheckAliasCertificate_RefusesAPairThatDoesNotServeTheHostname(t *testing.T) {

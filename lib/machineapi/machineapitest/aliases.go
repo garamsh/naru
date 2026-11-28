@@ -20,65 +20,69 @@ import (
 	"github.com/garamsh/naru/lib/machineapi"
 )
 
-// Aliases checks that an alias is unique across callers, follows the zone's rules inside it, needs
-// a granted domain and its own certificate outside it, never answers its key, and goes with its
-// Machine.
+// Aliases checks that an alias is unique across callers, is never in the zone, needs a granted
+// domain and its own certificate, never answers its key, and goes with its Machine.
 func Aliases(t *testing.T, c Config) {
 	c = c.check(t)
 	require.NotEmpty(t, c.AliasDomain, "Config.AliasDomain")
+	require.NotEmpty(t, c.SharedAliasDomain, "Config.SharedAliasDomain")
 	ctx := t.Context()
 	name, theirs := unique("aliases"), unique("aliases-theirs")
 	create(t, c.Caller, name, c.Spec)
 	create(t, c.Other, theirs, c.Spec)
-	put := func(cl *machineapi.Client, host string, r machineapi.AliasRequest) (machineapi.Alias, bool, error) {
+	// put publishes host with a certificate for it, the same pair for the same host, so a repeat is
+	// the same request.
+	pairs := map[string][2]string{}
+	put := func(cl *machineapi.Client, host, machine, service string) (machineapi.Alias, bool, error) {
 		t.Cleanup(func() { _ = cl.DeleteAlias(context.Background(), host) })
-		return cl.PutAlias(ctx, host, r)
+		p, ok := pairs[host]
+		if !ok {
+			p[0], p[1] = certificate(t, host)
+			pairs[host] = p
+		}
+		return cl.PutAlias(ctx, host, machineapi.AliasRequest{Machine: machine, Service: service, Certificate: p[0], Key: p[1]})
 	}
 
-	host := unique("alias") + "." + c.Zone
-	a, created, err := put(c.Caller, host, machineapi.AliasRequest{Machine: name})
-	require.NoError(t, err, "an alias in the zone")
+	host := unique("alias") + "." + c.SharedAliasDomain
+	a, created, err := put(c.Caller, host, name, "")
+	require.NoError(t, err, "an alias in a granted domain")
 	assert.True(t, created)
-	assert.Equal(t, machineapi.Alias{Hostname: host, Machine: name, Service: c.Spec.Services[0].Name}, a, "of the default service, with no certificate")
-	_, created, err = put(c.Caller, host, machineapi.AliasRequest{Machine: name})
+	assert.Equal(t, []any{host, name, c.Spec.Services[0].Name, machineapi.Redacted}, []any{a.Hostname, a.Machine, a.Service, a.Key}, "of the default service")
+	_, created, err = put(c.Caller, host, name, "")
 	require.NoError(t, err, "the same alias again")
 	assert.False(t, created, "answers 200")
-	_, _, err = put(c.Other, host, machineapi.AliasRequest{Machine: theirs})
+	_, _, err = put(c.Other, host, theirs, "")
 	refused(t, err, http.StatusConflict, machineapi.CodeAliasTaken, "another caller's hostname")
-	_, created, err = put(c.Other, unique("alias")+"."+c.Zone, machineapi.AliasRequest{Machine: theirs})
+	_, created, err = put(c.Other, unique("alias")+"."+c.SharedAliasDomain, theirs, "")
 	require.NoError(t, err, "the other caller's own hostname")
 	assert.True(t, created)
 
 	for what, h := range map[string]string{
-		"a Machine's stable name": "0123456789abcdef." + c.Zone,
-		"a service's form":        "web--" + unique("alias") + "." + c.Zone,
-		"two labels":              "a." + unique("alias") + "." + c.Zone,
+		"a name in the zone":      unique("alias") + "." + c.Zone,
+		"a Machine's stable name": machineapi.StableName("0123456789abcdef", "", c.Zone),
 		"the zone itself":         c.Zone,
-		"upper case":              strings.ToUpper(unique("alias")) + "." + c.Zone,
+		"upper case":              strings.ToUpper(unique("alias")) + "." + c.SharedAliasDomain,
 	} {
-		_, _, err = put(c.Caller, h, machineapi.AliasRequest{Machine: name})
+		_, _, err = put(c.Caller, h, name, "")
 		refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeInvalid, "an alias of "+what)
 	}
-	_, _, err = put(c.Caller, unique("alias")+"."+c.Zone, machineapi.AliasRequest{Machine: name, Service: "conformance-absent"})
+	_, _, err = put(c.Caller, unique("alias")+"."+c.SharedAliasDomain, name, "conformance-absent")
 	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeInvalid, "a service the Machine has not")
-	_, _, err = put(c.Caller, unique("alias")+"."+c.Zone, machineapi.AliasRequest{Machine: unique("absent")})
+	_, _, err = put(c.Caller, unique("alias")+"."+c.SharedAliasDomain, unique("absent"), "")
 	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeMachineNotFound, "an alias of no Machine")
 
 	outside := unique("alias") + "." + c.AliasDomain
-	cert, key := certificate(t, outside)
-	_, _, err = put(c.Caller, unique("alias")+".conformance.invalid", machineapi.AliasRequest{Machine: name, Certificate: cert, Key: key})
+	_, _, err = put(c.Caller, unique("alias")+".conformance.invalid", name, "")
 	refused(t, err, http.StatusForbidden, machineapi.CodeAliasDomainNotGranted, "a domain granted to no caller")
-	_, _, err = put(c.Other, outside, machineapi.AliasRequest{Machine: theirs, Certificate: cert, Key: key})
+	_, _, err = put(c.Other, outside, theirs, "")
 	refused(t, err, http.StatusForbidden, machineapi.CodeAliasDomainNotGranted, "a domain granted to another caller")
-	_, _, err = put(c.Caller, outside, machineapi.AliasRequest{Machine: name})
-	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeInvalid, "an alias outside the zone without a certificate")
+	t.Cleanup(func() { _ = c.Caller.DeleteAlias(context.Background(), outside) })
+	_, _, err = c.Caller.PutAlias(ctx, outside, machineapi.AliasRequest{Machine: name})
+	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeInvalid, "an alias without a certificate")
 	wrong, wrongKey := certificate(t, "other."+c.AliasDomain)
-	_, _, err = put(c.Caller, outside, machineapi.AliasRequest{Machine: name, Certificate: wrong, Key: wrongKey})
+	_, _, err = c.Caller.PutAlias(ctx, outside, machineapi.AliasRequest{Machine: name, Certificate: wrong, Key: wrongKey})
 	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeInvalid, "a certificate of another name")
-	zoneCert, zoneKey := certificate(t, host)
-	_, _, err = put(c.Caller, unique("alias")+"."+c.Zone, machineapi.AliasRequest{Machine: name, Certificate: zoneCert, Key: zoneKey})
-	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeInvalid, "a certificate for an alias in the zone")
-	a, created, err = put(c.Caller, outside, machineapi.AliasRequest{Machine: name, Certificate: cert, Key: key})
+	a, created, err = put(c.Caller, outside, name, "")
 	require.NoError(t, err, "an alias in the granted domain with its certificate")
 	assert.True(t, created)
 	got, err := c.Caller.Alias(ctx, outside)
@@ -95,7 +99,7 @@ func Aliases(t *testing.T, c Config) {
 		_, err = c.Caller.Alias(ctx, h)
 		refused(t, err, http.StatusNotFound, machineapi.CodeNotFound, "an alias of a deleted Machine")
 	}
-	_, created, err = put(c.Other, host, machineapi.AliasRequest{Machine: theirs})
+	_, created, err = put(c.Other, host, theirs, "")
 	require.NoError(t, err, "a hostname freed by its Machine's delete")
 	assert.True(t, created)
 }
