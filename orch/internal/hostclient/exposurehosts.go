@@ -132,7 +132,9 @@ func (h *ExposureHosts) List(ctx context.Context) ([]exposures.Host, error) {
 		for net := range members {
 			sort.Strings(members[net])
 		}
-		proxy := info.Proxy != nil && info.Proxy.Healthy
+		// A proxy is a candidate only on a host that holds the operator's grant, as only such a host
+		// is sent the table (ADR 0119).
+		proxy := a.Proxy && info.Proxy != nil && info.Proxy.Healthy
 		return exposures.Host{ID: a.ID, LAN: info.LANInterface, Networks: nets, Members: members, Proxy: proxy}, true
 	}), nil
 }
