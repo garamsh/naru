@@ -130,7 +130,9 @@ func JoinHostID(publicKeyDER []byte) string {
 	return "h-" + hex.EncodeToString(sum[:])[:16]
 }
 
-// join enrolls the host and hands the configuration over, unless an earlier run did.
+// join enrolls the host and hands the configuration over, unless an earlier run did. A host that
+// holds its certificate and no configuration, as a crash between the two writes leaves it, asks
+// for the configuration by a poll: its admission spent the key, so an enrollment is refused.
 func (a *Agent) join(ctx context.Context, key *ecdsa.PrivateKey, cert *tls.Certificate) error {
 	if cert != nil {
 		if _, err := os.Stat(a.c.JoinConfigFile); err == nil {
@@ -142,6 +144,11 @@ func (a *Agent) join(ctx context.Context, key *ecdsa.PrivateKey, cert *tls.Certi
 		return err
 	}
 	a.c.HostID = JoinHostID(pub)
+	if cert != nil {
+		if st, err := a.pollAdmitted(ctx, key); err == nil && len(st.Config) > 0 {
+			return writeFileAtomic(a.c.JoinConfigFile, st.Config, 0o600, "")
+		}
+	}
 	for {
 		if a.c.Address, err = AddressToward(a.c.OrchURL); err == nil {
 			break
@@ -295,7 +302,14 @@ func (a *Agent) enroll(ctx context.Context, key *ecdsa.PrivateKey) (*tls.Certifi
 			break
 		}
 		if refused(err) {
-			return nil, nil, fmt.Errorf("orch refused the enrollment: %w", err)
+			// An enrollment whose answer was lost and whose host was admitted meanwhile is refused,
+			// because the admission spent the key: the poll, which proves the host's key, answers it.
+			admitted, perr := a.pollAdmitted(ctx, key)
+			if perr != nil {
+				return nil, nil, fmt.Errorf("orch refused the enrollment: %w", err)
+			}
+			st = admitted
+			break
 		}
 		a.c.Log.Warn("enrollment failed, retrying", "err", err.Error())
 		if !sleep(ctx, a.c.PollEvery) {
@@ -334,6 +348,23 @@ func (a *Agent) enroll(ctx context.Context, key *ecdsa.PrivateKey) (*tls.Certifi
 		return nil, nil, errors.New("the certificate orch issued is not usable for this host's key")
 	}
 	return cert, st.Config, nil
+}
+
+// pollAdmitted asks orch once, with the host's proof, for the status of an admitted host, and is an
+// error for any other answer.
+func (a *Agent) pollAdmitted(ctx context.Context, key *ecdsa.PrivateKey) (orchapi.EnrollStatus, error) {
+	cl, err := a.client(nil)
+	if err != nil {
+		return orchapi.EnrollStatus{}, err
+	}
+	st, err := cl.PollEnrollment(ctx, a.c.HostID, key, a.c.Now())
+	if err != nil {
+		return orchapi.EnrollStatus{}, err
+	}
+	if st.State != orchapi.StateAdmitted {
+		return orchapi.EnrollStatus{}, fmt.Errorf("orch answered the poll with %s", st.State)
+	}
+	return st, nil
 }
 
 // refused reports an answer that retrying does not change: a 4xx other than a rate limit.

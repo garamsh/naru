@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/enroll"
@@ -54,6 +55,11 @@ type fakeOrch struct {
 	// heartSerial is the serial of the last heartbeat's client certificate, and refuse the serial the
 	// heartbeat refuses, as orch does one that is revoked.
 	heartSerial, refuse int64
+	// spent refuses every enrollment, as orch does once the host's admission spent its key, and
+	// loseFirst admits the host at its first enrollment and loses that answer.
+	spent, loseFirst bool
+	// refusals counts the enrollments refused.
+	refusals int
 }
 
 func newFakeOrch(t *testing.T, secret string) *fakeOrch {
@@ -101,12 +107,20 @@ func (f *fakeOrch) enroll(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if req.Key != f.secret {
+	if req.Key != f.secret || f.spent {
+		f.refusals++
 		f.json(w, http.StatusForbidden, orchapi.Error{Message: "enrollment key refused"})
 		return
 	}
 	f.enrolls++
 	f.pub, f.csr, f.hostID, f.req = req.PublicKey, req.CSR, req.HostID, req
+	if f.loseFirst {
+		f.loseFirst = false
+		f.issue()
+		f.spent = true
+		f.json(w, http.StatusServiceUnavailable, orchapi.Error{Message: "the leader changed"})
+		return
+	}
 	f.json(w, http.StatusOK, orchapi.EnrollStatus{State: orchapi.StatePending, Code: "ABCD-EFGH"})
 }
 
@@ -145,6 +159,11 @@ func (f *fakeOrch) heartbeat(w http.ResponseWriter, r *http.Request) {
 func (f *fakeOrch) admit() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.issue()
+}
+
+// issue is admit with the lock held.
+func (f *fakeOrch) issue() {
 	csr, err := x509.ParseCertificateRequest(f.csr)
 	require.NoError(f.t, err)
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(10), Subject: pkix.Name{CommonName: f.hostID}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
@@ -437,4 +456,44 @@ func TestRotateRefusesBeforeTheHostHasEnrolled(t *testing.T) {
 	cert, key := f.pairFor("host-a", 11)
 	_, err := a.Rotate(t.Context(), cert, key)
 	require.ErrorIs(t, err, enroll.ErrNotEnrolled)
+}
+
+func TestAnEnrollmentRefusedAfterAnAdmissionItsAnswerMissedTakesTheCertificateFromAPoll(t *testing.T) {
+	f := newFakeOrch(t, "naru-ek-secret")
+	f.loseFirst = true
+	dir := t.TempDir()
+	stop := runAgent(t, agent(t, f, dir, &lockedBuffer{}))
+	defer stop()
+	require.Eventually(t, func() bool { _, hearts, _ := f.counts(); return hearts > 0 }, 5*time.Second, 20*time.Millisecond,
+		"the retry is refused, the poll answers admitted, and the host heartbeats with its certificate")
+	_, err := os.Stat(filepath.Join(dir, "host.crt"))
+	require.NoError(t, err)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	assert.Equal(t, 1, f.refusals, "control: the retry was refused")
+}
+
+func TestAJoinedHostWithItsCertificateAndNoConfigurationTakesItFromAPoll(t *testing.T) {
+	f := newFakeOrch(t, "naru-ek-secret")
+	dir := t.TempDir()
+	done := make(chan error, 1)
+	go func() { done <- joinAgent(t, f, dir, &lockedBuffer{}).Run(t.Context()) }()
+	require.Eventually(t, func() bool { e, _, _ := f.counts(); return e == 1 }, 5*time.Second, 20*time.Millisecond)
+	f.mu.Lock()
+	f.config, f.spent = []byte("apiVersion: naru.garam.sh/v1alpha1\n"), true
+	f.mu.Unlock()
+	f.admit()
+	require.NoError(t, <-done)
+
+	config := filepath.Join(dir, "join", "config.yaml")
+	require.NoError(t, os.Remove(config), "as a crash between the certificate and the configuration leaves it")
+	require.NoError(t, joinAgent(t, f, dir, &lockedBuffer{}).Run(t.Context()))
+	got, err := os.ReadFile(config)
+	require.NoError(t, err)
+	assert.Equal(t, "apiVersion: naru.garam.sh/v1alpha1\n", string(got))
+	enrolls, _, _ := f.counts()
+	assert.Equal(t, 1, enrolls)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	assert.Zero(t, f.refusals, "the configuration came from a poll, with no enrollment the spent key is refused")
 }
