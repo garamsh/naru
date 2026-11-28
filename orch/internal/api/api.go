@@ -548,6 +548,7 @@ func (h *handler) revokeProxy(w http.ResponseWriter, r *http.Request, who identi
 // errAbandonedBound is a removal of an abandoned host a Machine is still bound to: the record of
 // its abandonment is what marks that Machine lost until an operator moves or deletes it.
 var errAbandonedBound = errors.New("the host is abandoned and a Machine is still bound to it")
+
 func (h *handler) removeHost(w http.ResponseWriter, r *http.Request, who identity.Identity) {
 	if err := h.abandonedBound(r.Context(), r.PathValue("id")); err != nil {
 		writeError(w, r, err)
