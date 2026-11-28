@@ -53,7 +53,8 @@ func TestOrchPassesOnAHostsRenewalAndRetireOnlyWhenTheCertificateItConnectsWithS
 		"its retire, passed on as a renewal":   signedBy(t, a, identity.ActionRetireOwnHost, struct{}{}),
 	} {
 		_, err := hostA.RenewHost(t.Context(), signed)
-		assert.Equal(t, http.StatusForbidden, status(err), "%s: %v", name, err)
+		require.Equal(t, http.StatusForbidden, status(err), "%s: %v", name, err)
+		assert.Contains(t, body(t, err), "a host passes on only a request of its own", "%s: orch refuses it, not the signer", name)
 	}
 	_, err = hostA.RenewHost(t.Context(), []byte(`{"action":"renew-host"}`))
 	assert.Equal(t, http.StatusBadRequest, status(err), "a body that is not a signed request")

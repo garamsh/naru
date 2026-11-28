@@ -874,7 +874,8 @@ func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request, who identity
 var errNotOwnRequest = errors.New("a host passes on only a request of its own, signed by the certificate it connects with")
 
 // ownRequest reads the signed request in the body and returns it when it is the action, signed by
-// the certificate the host connects with. Orch reads no more of it: the signer verifies it.
+// the certificate the host connects with, byte for byte. Orch reads no more of it: the signer
+// verifies it.
 func ownRequest(w http.ResponseWriter, r *http.Request, who identity.Identity, action string) ([]byte, bool) {
 	signed, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
@@ -895,7 +896,7 @@ func ownRequest(w http.ResponseWriter, r *http.Request, who identity.Identity, a
 		writeJSON(w, http.StatusBadRequest, orchapi.Error{Message: "the body is not a signed request: " + err.Error()})
 		return nil, false
 	}
-	if got != action || identity.SerialOf(cert) != who.Serial || cert.Subject.CommonName != who.Subject {
+	if got != action || !bytes.Equal(cert.Raw, r.TLS.VerifiedChains[0][0].Raw) {
 		logger(r).Warn("refused: a host passed on a request not its own", "subject", who.Subject, "action", got, "signed_by", cert.Subject.CommonName)
 		writeJSON(w, http.StatusForbidden, orchapi.Error{Message: errNotOwnRequest.Error()})
 		return nil, false
