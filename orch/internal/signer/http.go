@@ -27,6 +27,13 @@ const maxBody = 8 << 20
 // that does not parse.
 var ErrInvalid = errors.New("the signer refused a malformed request")
 
+// ErrUnknownHost is a request for a host or a serial the signer holds no record of, as after a
+// restore from a bundle older than the host's certificate: answered 409.
+var ErrUnknownHost = errors.New("the signer holds no record of the host's certificate")
+
+// signerUnknownHost is the message naru-signer answers such a request with.
+const signerUnknownHost = "the signer holds no certificate for this host"
+
 // Client calls the signer over its unix socket.
 type Client struct {
 	http *http.Client
@@ -95,6 +102,8 @@ func (c *Client) do(ctx context.Context, method, path string, in []byte) ([]byte
 		return nil, fmt.Errorf("%w: %s", identity.ErrCallerNotDue, msg)
 	case resp.StatusCode == http.StatusConflict && bytes.Contains(msg, []byte(identity.ErrHostNotDue.Error())):
 		return nil, fmt.Errorf("%w: %s", identity.ErrHostNotDue, msg)
+	case resp.StatusCode == http.StatusConflict && bytes.Contains(msg, []byte(signerUnknownHost)):
+		return nil, fmt.Errorf("%w: %s", ErrUnknownHost, msg)
 	case resp.StatusCode/100 != 2:
 		return nil, fmt.Errorf("the signer answered %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
 	}

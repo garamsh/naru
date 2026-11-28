@@ -159,4 +159,8 @@ func TestAHostsRenewalAndRetireReachTheirRoutesAsSignedAndANotDueIsKept(t *testi
 	body = "another conflict"
 	_, err = c.RenewHost(t.Context(), []byte(`{}`))
 	require.NotErrorIs(t, err, identity.ErrHostNotDue, "another conflict is not a renewal before its time")
+	require.NotErrorIs(t, err, signer.ErrUnknownHost)
+
+	body = "the signer holds no certificate for this host: serial 0a is not one of host-1's"
+	require.ErrorIs(t, c.RetireHost(t.Context(), []byte(`{}`)), signer.ErrUnknownHost, "a serial the signer does not hold")
 }

@@ -41,8 +41,16 @@ type Signer struct {
 	failRevoke   error
 	// retired are the serials that signed a RetireHost, in order, and failRenew what RenewHost
 	// answers instead while it is set.
-	retired   []string
-	failRenew error
+	retired    []string
+	failRenew  error
+	failRetire error
+}
+
+// FailRetire makes RetireHost answer err from now on; nil makes it retire again.
+func (s *Signer) FailRetire(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failRetire = err
 }
 
 // FailRenew makes RenewHost answer err from now on; nil makes it issue again.
@@ -109,6 +117,9 @@ func (s *Signer) RetireHost(_ context.Context, signed []byte) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failRetire != nil {
+		return s.failRetire
+	}
 	s.retired = append(s.retired, who.Serial)
 	return nil
 }

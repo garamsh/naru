@@ -33,6 +33,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/machines"
 	"github.com/garamsh/naru/orch/internal/restore"
+	"github.com/garamsh/naru/orch/internal/signer"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
 
@@ -351,6 +352,8 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusNotFound, err.Error()
 	case errors.Is(err, identity.ErrHostNotDue):
 		status, msg = http.StatusConflict, identity.ErrHostNotDue.Error()
+	case errors.Is(err, signer.ErrUnknownHost):
+		status, msg = http.StatusConflict, signer.ErrUnknownHost.Error()
 	case errors.Is(err, ErrRestored):
 		status, msg = http.StatusConflict, err.Error()
 	case errors.Is(err, inventory.ErrConflict), errors.Is(err, inventory.ErrTooManyPending),

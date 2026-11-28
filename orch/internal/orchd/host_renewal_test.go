@@ -15,6 +15,7 @@ import (
 
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/orch/internal/orchtest"
+	"github.com/garamsh/naru/orch/internal/signer"
 )
 
 // signedBy is a request id signs for action with the body.
@@ -70,6 +71,10 @@ func TestOrchPassesOnAHostsRenewalAndRetireOnlyWhenTheCertificateItConnectsWithS
 	assert.Equal(t, http.StatusForbidden, status(hostA.RetireHost(t.Context(), signedBy(t, aAgain, identity.ActionRetireOwnHost, struct{}{}))), "a retire another certificate of host-a signed")
 	assert.Equal(t, http.StatusForbidden, status(hostA.RetireHost(t.Context(), renewal(t, a))), "a renewal passed on as a retire")
 	assert.Equal(t, []string{identity.SerialOf(a.Cert)}, o.c.Signer.Retired(), "only host-a's own retire reached the signer")
+	o.c.Signer.FailRetire(fmt.Errorf("%w: serial 0a", signer.ErrUnknownHost))
+	err = hostA.RetireHost(t.Context(), signedBy(t, a, identity.ActionRetireOwnHost, struct{}{}))
+	assert.Equal(t, http.StatusConflict, status(err), "a serial the signer holds no record of: %v", err)
+	o.c.Signer.FailRetire(nil)
 
 	_, err = o.op.RenewHost(t.Context(), renewal(t, o.operator))
 	assert.Equal(t, http.StatusForbidden, status(err), "an operator renews no host")
