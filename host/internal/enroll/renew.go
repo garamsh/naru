@@ -24,10 +24,6 @@ import (
 // requestLife is how long a renewal or a retire the agent signs stays valid.
 const requestLife = 5 * time.Minute
 
-// maxNotBeforeBackoff bounds how far before its signing a re-signing may start: the signer starts
-// one a minute early, and a day allows for any signer's clock.
-const maxNotBeforeBackoff = 24 * time.Hour
-
 // maintain runs Check now and then every CheckEvery until ctx ends.
 func (a *Agent) maintain(ctx context.Context) {
 	for {
@@ -220,64 +216,12 @@ func (a *Agent) RefreshTrust(ctx context.Context) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	var add []byte
-	trusted := certificates(append(append(append([]byte{}, base...), '\n'), stored...))
-	for _, der := range [][]byte{offered.Host, offered.Operator, offered.Orch} {
-		c, err := x509.ParseCertificate(der)
-		if err != nil || !resigns(c, trusted) {
-			continue
-		}
-		trusted = append(trusted, c)
-		add = append(add, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})...)
+	add, took := identity.Resignings(append(append(append([]byte{}, base...), '\n'), stored...), offered.Host, offered.Operator, offered.Orch)
+	for _, c := range took {
 		a.c.Log.Info("the host trusts an authority's re-signing", "authority", c.Subject.CommonName, "not_after", c.NotAfter)
 	}
 	if len(add) == 0 {
 		return nil
 	}
 	return writeFileAtomic(a.c.TrustFile, append(stored, add...), 0o644, "")
-}
-
-// resigns reports whether c is an authority's certificate of the subject and key of one in
-// trusted, signed by that key, living at most identity.AuthorityYears, and ending after every
-// certificate of that subject and key there.
-func resigns(c *x509.Certificate, trusted []*x509.Certificate) bool {
-	if !c.IsCA {
-		return false
-	}
-	// The authority's key signed it: it is self-issued and its signature verifies under its own
-	// key, which is the trusted authority's. A certificate of that key and name that another key
-	// signed would be a forged root.
-	if !bytes.Equal(c.RawIssuer, c.RawSubject) || c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature) != nil {
-		return false
-	}
-	// It lives no longer than the signer signs an authority for.
-	if c.NotAfter.After(c.NotBefore.AddDate(identity.AuthorityYears, 0, 0).Add(maxNotBeforeBackoff)) {
-		return false
-	}
-	known := false
-	for _, t := range trusted {
-		if !bytes.Equal(t.RawSubject, c.RawSubject) || !bytes.Equal(t.RawSubjectPublicKeyInfo, c.RawSubjectPublicKeyInfo) {
-			continue
-		}
-		if !c.NotAfter.After(t.NotAfter) {
-			return false
-		}
-		known = true
-	}
-	return known
-}
-
-// certificates parses every certificate in b, skipping what is not one.
-func certificates(b []byte) []*x509.Certificate {
-	var out []*x509.Certificate
-	for {
-		var block *pem.Block
-		block, b = pem.Decode(b)
-		if block == nil {
-			return out
-		}
-		if c, err := x509.ParseCertificate(block.Bytes); err == nil && block.Type == "CERTIFICATE" {
-			out = append(out, c)
-		}
-	}
 }
