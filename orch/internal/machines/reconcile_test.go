@@ -343,6 +343,12 @@ func (f *fakeRoutes) Delivered(_ context.Context, rev int64, at time.Time) (bool
 	return f.done, nil
 }
 
+func (f *fakeRoutes) deliver() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.done = true
+}
+
 func TestReconcile_DeletesARoutedMicroVMOnlyOnceNoProxyForwardsToItsAddress(t *testing.T) {
 	r := newRig(t, host("h-a", 64*gib))
 	gate := &fakeRoutes{}

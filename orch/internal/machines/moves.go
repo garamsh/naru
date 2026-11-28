@@ -1,6 +1,7 @@
 package machines
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -639,13 +640,16 @@ func (r *Reconciler) cleanUp(ctx context.Context, p *pass, e *Entry) error {
 func (r *Reconciler) lostAtTarget(ctx context.Context, p *pass, e *Entry) error {
 	m := *e.Move
 	t, src := *m.Target, m.Source
+	// The move is past its commit as read, so no table of e's revision or later routes the Machine
+	// to the source; the clean up's, when it recorded one, is earlier.
+	unrouted := cmp.Or(m.Routed, &Unrouted{Rev: e.Rev, At: r.cfg.Clock.Now()})
 	if err := r.allocate(ctx, p, e, src.Host, amounts{}.minus(need(e.Spec)).plus(diskOf(e.Spec)), func(rec *Record) {
 		rec.Move = nil
 		r.lose(rec, t)
 		if !slices.ContainsFunc(rec.Abandoned, func(a AbandonedEpoch) bool {
 			return a.role() == RoleSource && a.Host == src.Host && a.Epoch == src.Epoch
 		}) {
-			rec.Abandoned = append(slices.Clone(rec.Abandoned), AbandonedEpoch{Host: src.Host, Epoch: src.Epoch, Volumes: volumeNames(rec.Spec), At: r.cfg.Clock.Now().UTC(), Role: RoleSource})
+			rec.Abandoned = append(slices.Clone(rec.Abandoned), AbandonedEpoch{Host: src.Host, Epoch: src.Epoch, Volumes: volumeNames(rec.Spec), At: r.cfg.Clock.Now().UTC(), Role: RoleSource, Unrouted: unrouted})
 		}
 	}); err != nil {
 		return err

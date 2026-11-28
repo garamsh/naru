@@ -97,6 +97,10 @@ type AbandonedEpoch struct {
 	// Deleting is an operator's delete of a source copy, which the reconciler carries out on its
 	// host before it forgets the entry and frees the disk it holds.
 	Deleting bool `json:"deleting,omitempty"`
+	// Unrouted is, for a source copy, a revision after the move's commit and its time: a table older
+	// may still route the Machine to the copy's address, so the copy's microVM is deleted only once
+	// no proxy forwards on one (ADR 0112 item 6).
+	Unrouted *Unrouted `json:"unrouted,omitempty"`
 }
 
 // The roles of an AbandonedEpoch. A RoleSource copy is on a host that answers: its microVM is

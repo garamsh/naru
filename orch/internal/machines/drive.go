@@ -75,6 +75,10 @@ func (r *Reconciler) finish(ctx context.Context, p *pass, e *Entry) error {
 	// the copy.
 	for _, a := range slices.Clone(e.Abandoned) {
 		if a.role() == RoleSource {
+			// The tombstone has the copy deleted, so it waits as an operator's delete of it does.
+			if done, err := r.unrouted(ctx, e, a); err != nil || !done {
+				return err
+			}
 			if err := r.forgetCopy(ctx, p, e, a); err != nil {
 				return err
 			}
