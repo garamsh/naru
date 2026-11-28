@@ -56,10 +56,10 @@ It also replaces the enrollment key's life in `orch.md` §Enrollment, "valid at 
    - A holder of a pool takes the authorities' certificates from `GET /v1/ca` and adds them to its pool before the old ones end: hostd in (b), orch in (c), the people's files in (d).
    - A pin of an authority by its certificate's hash, such as hostd's `--orch-ca-sha256`, names one certificate and does not survive a re-signing. (b) moves it to the authority's key.
 5. **A pool within a year of its end is warned of.**
-   - A pool's end is, of each authority it holds (one subject and one key), the latest end among that authority's certificates, and the earliest of those ends (`identity.TrustExpiry`).
-   - hostd reports its `--client-ca` pool's end in `GET /v1/host` as `trustExpiresAt`, read from the file on each request.
+   - A pool's end is, of each authority it holds (one subject and one key), the latest end among that authority's certificates, and the earliest of those ends, with the subject of the authority that sets it (`identity.TrustExpiry`).
+   - hostd reports its `--client-ca` pool's end in `GET /v1/host` as `trustExpiresAt`, and the authority as `trustExpiresAuthority`, read from the file on each request. That pool may hold authorities the signer does not, such as the one `naructl gen host-ca` made, which the signer re-signs only once (f) has moved them into it; the warning names the authority, so the operator sees which one ends.
    - Every orch member checks its own `--ca` and `--host-ca` every hour. The leader checks every admitted host's report on the same interval.
-   - A pool that ends within `identity.AuthorityWarnYears` (1), or has ended, is logged and appended as `authority.expiring`. The event's subject is `orch/<member>` or the host's ID, and its detail names the pool, the file where orch read it, and the end. It is appended once per subject, pool and end in a process's life, and a failed append is tried at the next check.
+   - A pool that ends within `identity.AuthorityWarnYears` (1), or has ended, is logged and appended as `authority.expiring`. The event's subject is `orch/<member>` or the host's ID, and its detail names the pool, the file where orch read it, the authority and the end. It is appended once per subject, pool, authority and end in a process's life, and a failed append is tried at the next check.
 6. **Key rotation is not built.**
    - A new key for an authority, with an overlap in which each key cross-signs the other, is garamsh/naru#451.
    - Re-signing under the same key covers the end of a certificate, not the compromise of a key. A compromised authority key is the restore of ADR 0040 item 9 with new authorities.
@@ -69,11 +69,13 @@ It also replaces the enrollment key's life in `orch.md` §Enrollment, "valid at 
    - Root and each operator renew theirs from their own device: (d).
    - A caller renews as ADR 0116 decides, and (e) checks that the renewal goes through `crypto.Signer`.
 8. **An enrollment key enrolls one host, within a day.**
-   - `POST /v1/enrollment-keys` refuses an expiry more than 24 hours and five minutes from orch's now with 400 (`inventory.MaxKeyLife`, `inventory.KeyClockSkew`), and cuts one within the five minutes back to 24 hours. The five minutes are for a client whose clock is ahead of orch's, such as naructl's default `--ttl 24h`, and no key lives longer than 24 hours by orch's clock.
+   - `POST /v1/enrollment-keys` refuses an expiry more than 24 hours and five minutes from orch's now with 400 (`inventory.MaxKeyLife`, `inventory.KeyClockSkew`), and cuts one within the five minutes back to 24 hours. The five minutes are for a client whose clock is ahead of orch's, such as naructl's default `--ttl 24h`, and no key lives longer than 24 hours by orch's clock. A key enrolls only until its expiry or 24 hours and five minutes after it was made, whichever is first, which bounds a key made before this record with a life of up to 365 days.
    - The first `POST /v1/enroll` that presents a key binds it to its host ID and public key, in the transaction that creates the host's pending record.
    - The same host and key may present it again, as the host's agent does when it retries.
-   - Any other host ID or key is refused with 403, with the body an unknown, expired or revoked key gets.
+   - Any other host ID or key is refused with 403, with the body an unknown, expired or revoked key gets. Every refusal of a key, spent or lost to another enrollment's race included, answers that one body (`enrollment key refused`); orch logs the reason, and a refusal of a stored key is the event `enrollment.refused`, whose subject is the key's ID and whose detail names the host and the reason. An unknown key names no stored key and is not an event.
    - The admission that admits the host spends the key in its own transaction. From then on the key enrolls no host, its own included: a host that is reset, reinstalled or whose enrollment failed needs a new key or seed.
+   - A host whose enrollment is refused polls once with its key's proof (`GET /v1/enroll/{hostID}`), and takes the certificate and configuration of an admitted answer. So an agent whose answer was lost and whose host was admitted meanwhile is not stranded, and a joined host that holds its certificate and no configuration polls for the configuration before it enrolls.
+   - A fresh key that an admitted host presents is bound to that host and spent, so it enrolls no other.
 9. **ACME is not here.** naru-proxy's certificate comes from ACME under garamsh/naru#395, and until then it is the file ADR 0120 item 3 names.
 
 ## Options considered
