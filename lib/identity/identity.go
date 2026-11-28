@@ -51,8 +51,10 @@ type Identity struct {
 	NotAfter time.Time
 	// PublicKey is the certificate's key, which a caller's renewal must not ask for again.
 	PublicKey crypto.PublicKey
-	// IPAddresses are the certificate's IP addresses, which a host's renewal keeps.
+	// IPAddresses are the certificate's IP addresses, which a host's renewal keeps, and DNSNames
+	// its DNS names, which an orch member's renewal keeps with them.
 	IPAddresses []net.IP
+	DNSNames    []string
 }
 
 // Valid reports whether r is one of the roles.
@@ -103,7 +105,7 @@ func Authenticate(chains [][]*x509.Certificate, crl *CRL) (Identity, error) {
 			return Identity{}, err
 		}
 	}
-	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf), NotAfter: leaf.NotAfter, PublicKey: leaf.PublicKey, IPAddresses: leaf.IPAddresses}, nil
+	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf), NotAfter: leaf.NotAfter, PublicKey: leaf.PublicKey, IPAddresses: leaf.IPAddresses, DNSNames: leaf.DNSNames}, nil
 }
 
 // callerName is what a caller is called: a DNS label.

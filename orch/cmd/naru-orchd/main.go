@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/member"
 	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/orchd"
+	"github.com/garamsh/naru/orch/internal/renewal"
 	"github.com/garamsh/naru/orch/internal/routes"
 	"github.com/garamsh/naru/orch/internal/signer"
 	"github.com/garamsh/naru/orch/internal/snapshot"
@@ -54,6 +56,8 @@ func main() {
 		certFile    = flag.String("cert", "/var/lib/naru/orch/tls/orch.crt", "orch's certificate, followed by the authority's")
 		keyFile     = flag.String("key", "/var/lib/naru/orch/tls/orch.key", "orch's key")
 		caFile      = flag.String("ca", "/var/lib/naru/orch/tls/ca.crt", "the authority that issues every identity")
+		renewedCert = flag.String("renewed-cert", "/var/lib/naru/orch/renewed/orch.crt", "where the member keeps the certificate it renewed under --key, followed by the authority's, and presents it from: --cert's content until it renews; on the data disk, beside etcd-ca.pem, the authorities etcd trusts")
+		caStore     = flag.String("ca-store", "/var/lib/naru/orch/renewed/ca-store.pem", "where the member keeps the re-signings of the authorities of --ca and --host-ca it has taken, which it trusts beside them")
 		sock        = flag.String("signer-socket", "/run/naru-signer/signer.sock", "naru-signer's unix socket")
 		snapDir     = flag.String("snapshot-dir", "/var/lib/naru/orch/snapshots", "where sealed snapshots are kept")
 		revoke      = flag.String("revocation-public-key", "/var/lib/naru/orch/tls/revocation.pub", "the Ed25519 public key (PKIX, PEM) that verifies the revocation list")
@@ -85,7 +89,7 @@ func main() {
 	slog.SetDefault(log)
 	if err := run(log, runFlags{
 		name: *name, dataDir: *dataDir, peerURL: *peerURL, clientURL: *clientURL, initial: *initial, state: *state, join: *join, restore: *restore,
-		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, sock: *sock,
+		listen: *listen, cert: *certFile, key: *keyFile, ca: *caFile, renewedCert: *renewedCert, caStore: *caStore, sock: *sock,
 		snapDir: *snapDir, revoke: *revoke, recovery: *recovery, snapEvery: *snapEvery, snapKeep: *snapKeep, maxAge: *maxAge, crlEvery: *crlEvery,
 		hostCert: *hostCert, hostKey: *hostKey, hostCA: *hostCA, groupEach: *groupEach, netEach: *netEach, departAfter: *departAfter, houseEvery: *houseEvery, quota: *etcdQuota, keep: *etcdKeep, metricsAddr: *metricsAddr,
 		machineAddr: *machineAddr, machineZone: *machineZone, machineEach: *machineEach,
@@ -100,6 +104,7 @@ func main() {
 type runFlags struct {
 	name, dataDir, peerURL, clientURL, initial, state, listen    string
 	cert, key, ca, sock, snapDir, revoke, recovery               string
+	renewedCert, caStore                                         string
 	snapEvery, maxAge, crlEvery, groupEach, netEach, machineEach time.Duration
 	reserve                                                      machines.Reserve
 	departAfter, houseEvery                                      time.Duration
@@ -138,7 +143,18 @@ func run(log *slog.Logger, f runFlags) error {
 	if err != nil {
 		return err
 	}
-	hostHTTP, err := newHostHTTP(cmp.Or(f.hostCert, f.cert), cmp.Or(f.hostKey, f.key), cmp.Or(f.hostCA, f.ca))
+	renew := renewal.Config{
+		FirstCert: f.cert, Key: f.key, CertFile: f.renewedCert, CA: f.ca, Store: f.caStore,
+		EtcdCA: filepath.Join(filepath.Dir(f.renewedCert), "etcd-ca.pem"), Signer: sg, Revocations: revocations, Log: log,
+	}
+	if f.hostCA != f.ca {
+		renew.HostCA = f.hostCA
+	}
+	if err := renewal.Prepare(ctx, renew); err != nil {
+		return fmt.Errorf("choose the member's certificate: %w", err)
+	}
+	hostCert, hostKey := hostPair(f)
+	hostHTTP, err := newHostHTTP(hostCert, hostKey, cmp.Or(f.hostCA, f.ca), f.caStore)
 	if err != nil {
 		return err
 	}
@@ -154,7 +170,7 @@ func run(log *slog.Logger, f runFlags) error {
 	}
 	mcfg := member.Config{
 		Name: f.name, DataDir: f.dataDir, PeerURL: f.peerURL, ClientURL: f.clientURL,
-		InitialCluster: f.initial, State: f.state, Join: f.join, Cert: f.cert, Key: f.key, CA: f.ca, Log: log,
+		InitialCluster: f.initial, State: f.state, Join: f.join, Cert: f.renewedCert, Key: f.key, CA: renew.EtcdCA, Log: log,
 		QuotaBytes: f.quota, CompactionRetention: f.keep,
 	}
 	quota, err := mcfg.BackendQuota()
@@ -163,10 +179,11 @@ func run(log *slog.Logger, f runFlags) error {
 	}
 	o, err := orchd.Start(ctx, orchd.Config{
 		Config: mcfg,
-		Listen: f.listen, MachineAPIListen: f.machineAddr, MachineZone: f.machineZone, ClientCA: f.ca, TrustPools: trustPools(f.ca, f.hostCA), SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
+		Listen: f.listen, MachineAPIListen: f.machineAddr, MachineZone: f.machineZone, ClientCA: f.ca, CAStore: f.caStore, TrustPools: trustPools(f.ca, f.hostCA, f.caStore, renew.EtcdCA), SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
 		GroupInterval: f.groupEach, NetworkInterval: f.netEach, MachineInterval: f.machineEach, HostReserve: f.reserve, Restore: f.restore,
 	}, orchd.Deps{
 		Signer: sg, Credentials: sg, HostCredentials: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
+		Renewal:        renewal.New(renew),
 		NewHosts:       func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP, revocations) },
 		NewPrefixHosts: func(inv inventory.Service) inventory.PrefixHosts { return hostclient.New(inv, hostHTTP, revocations) },
 		NewMachineHosts: func(inv inventory.Service) machines.Hosts {
@@ -199,12 +216,25 @@ func run(log *slog.Logger, f runFlags) error {
 	return o.Stop()
 }
 
-// trustPools are the member's pools of authorities by flag: --ca, and --host-ca when it names
-// another file.
-func trustPools(ca, hostCA string) map[string]string {
-	pools := map[string]string{"ca": ca}
+// hostPair is the pair orch presents to the hosts' APIs: its own, as it renews it, when
+// --host-client-cert and --host-client-key are absent or name --cert and --key, as init gives
+// them, and the operator's other pair as it stands otherwise.
+func hostPair(f runFlags) (cert, key string) {
+	cert, key = cmp.Or(f.hostCert, f.cert), cmp.Or(f.hostKey, f.key)
+	if cert == f.cert && key == f.key {
+		cert = f.renewedCert
+	}
+	return cert, key
+}
+
+// trustPools are the member's pools of authorities by flag, each read with the store: --ca, and
+// --host-ca when it names another file. etcd-ca is the file etcd trusts, which etcd reads once, at
+// start: it stops trusting an authority when the pool does, unless the member is restarted after
+// the store took the re-signing (ADR 0123).
+func trustPools(ca, hostCA, store, etcdCA string) map[string][]string {
+	pools := map[string][]string{"ca": {ca, store}, "etcd-ca": {etcdCA}}
 	if hostCA != "" && hostCA != ca {
-		pools["host-ca"] = hostCA
+		pools["host-ca"] = []string{hostCA, store}
 	}
 	return pools
 }

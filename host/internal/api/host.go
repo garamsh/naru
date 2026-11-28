@@ -122,7 +122,7 @@ func (s *Server) trustExpiry() (end identity.TrustEnd, ok bool) {
 	if s.deps.ClientCAFile == "" {
 		return identity.TrustEnd{}, false
 	}
-	b, err := (&ClientPool{base: s.deps.ClientCAFile, refreshed: s.deps.RefreshedCAFile}).PEM()
+	b, err := identity.FilesPEM(s.deps.ClientCAFile, s.deps.RefreshedCAFile)
 	if err != nil {
 		s.deps.Log.Error("cannot read the client CA pool", "file", s.deps.ClientCAFile, "err", err.Error())
 		return identity.TrustEnd{}, false

@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/pem"
 	"time"
@@ -70,4 +71,69 @@ func TrustExpiry(poolPEM []byte) (end TrustEnd, ok bool) {
 // within AuthorityWarnYears of it, or past it.
 func TrustWarns(expiry, now time.Time) bool {
 	return !now.Before(expiry.AddDate(-AuthorityWarnYears, 0, 0))
+}
+
+// resigningSkew bounds how far before its signing a re-signing may start: the signer starts one a
+// minute early, and a day allows for any signer's clock.
+const resigningSkew = 24 * time.Hour
+
+// Resigns reports whether c is a re-signing of an authority in trusted (ADR 0122 item 4): an
+// authority's certificate, self-issued and signed by its own key, of the subject and key of one in
+// trusted, living at most AuthorityYears and a day, and ending after every certificate of that
+// subject and key there. A certificate of the authority's name and key that another key signed is
+// a forged root, and is not one.
+func Resigns(c *x509.Certificate, trusted []*x509.Certificate) bool {
+	if !c.IsCA {
+		return false
+	}
+	if !bytes.Equal(c.RawIssuer, c.RawSubject) || c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature) != nil {
+		return false
+	}
+	if c.NotAfter.After(c.NotBefore.AddDate(AuthorityYears, 0, 0).Add(resigningSkew)) {
+		return false
+	}
+	known := false
+	for _, t := range trusted {
+		if !bytes.Equal(t.RawSubject, c.RawSubject) || !bytes.Equal(t.RawSubjectPublicKeyInfo, c.RawSubjectPublicKeyInfo) {
+			continue
+		}
+		if !c.NotAfter.After(t.NotAfter) {
+			return false
+		}
+		known = true
+	}
+	return known
+}
+
+// Resignings returns, of the DER certificates offered, each that Resigns of the certificates in
+// trustedPEM and of those taken before it, as PEM in the order offered, and each one's certificate.
+// What cannot be parsed is not one.
+func Resignings(trustedPEM []byte, offered ...[]byte) ([]byte, []*x509.Certificate) {
+	trusted := Certificates(trustedPEM)
+	var out []byte
+	var took []*x509.Certificate
+	for _, der := range offered {
+		c, err := x509.ParseCertificate(der)
+		if err != nil || !Resigns(c, trusted) {
+			continue
+		}
+		trusted, took = append(trusted, c), append(took, c)
+		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})...)
+	}
+	return out, took
+}
+
+// Certificates parses every CERTIFICATE block in b, skipping what is not one.
+func Certificates(b []byte) []*x509.Certificate {
+	var out []*x509.Certificate
+	for {
+		var block *pem.Block
+		block, b = pem.Decode(b)
+		if block == nil {
+			return out
+		}
+		if c, err := x509.ParseCertificate(block.Bytes); err == nil && block.Type == "CERTIFICATE" {
+			out = append(out, c)
+		}
+	}
 }

@@ -166,3 +166,31 @@ func TestHostCertificates_ARevokedHostIsNotCalled(t *testing.T) {
 	now = now.Add(11 * time.Minute)
 	require.False(t, readyChecking(t, ca, "h-0123456789abcdef", other, list), "no host is reached once the list is too old")
 }
+
+func TestHostCertificates_ATransportsRootsAreReadAtEachHandshake(t *testing.T) {
+	ca, next := newAuthority(t), newAuthority(t)
+	trusted := []authority{ca}
+	roots := func() *x509.CertPool {
+		pool := x509.NewCertPool()
+		for _, a := range trusted {
+			pool.AddCert(a.cert)
+		}
+		return pool
+	}
+	base := orchapi.HTTPClient(orchapi.TrustCA(x509.NewCertPool(), nil), 10*time.Second)
+	tr, ok := base.Transport.(*http.Transport)
+	require.True(t, ok, "setup: orchapi's client has an *http.Transport")
+	base.Transport = &hostclient.Transport{Transport: tr, Roots: roots}
+	addr := hostAnswering(t, next.leaf(t, []string{"h-0123456789abcdef"}))
+	client := hostclient.New(inventory{{ID: "h-0123456789abcdef", Address: addr}}, base, nil)
+	ready := func() bool {
+		hosts, err := client.List(t.Context())
+		require.NoError(t, err)
+		require.Len(t, hosts, 1)
+		return hosts[0].Ready
+	}
+
+	require.False(t, ready(), "an authority the roots do not hold is refused")
+	trusted = append(trusted, next)
+	require.True(t, ready(), "control: the same client reaches the host once its roots hold the authority")
+}

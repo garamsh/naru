@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -217,15 +216,21 @@ func NewRestoring(d RestoreDeps) http.Handler {
 	return h.middleware(h.Metrics.count(mux))
 }
 
-// TLSConfig is the server's configuration: the client's certificate is verified against clientCA
-// when it sends one, and the handlers refuse a request that needs one and has none.
-func TLSConfig(cert tls.Certificate, clientCA *x509.CertPool) *tls.Config {
-	return &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.VerifyClientCertIfGiven,
-		ClientCAs:    clientCA,
+// TLSConfig is the server's configuration: it presents pair as its files stand, and the client's
+// certificate is verified against clients when it sends one, read again at a handshake when one of
+// their files has changed (ADR 0123). The handlers refuse a request that needs one and has none.
+func TLSConfig(pair *identity.FilePair, clients *identity.FilePool) *tls.Config {
+	conf := func() *tls.Config {
+		return &tls.Config{
+			MinVersion:     tls.VersionTLS13,
+			GetCertificate: pair.GetCertificate,
+			ClientAuth:     tls.VerifyClientCertIfGiven,
+			ClientCAs:      clients.Current(),
+		}
 	}
+	c := conf()
+	c.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) { return conf(), nil }
+	return c
 }
 
 // middleware recovers a panic as a 500 and logs each request with a trace id.

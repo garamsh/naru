@@ -47,7 +47,21 @@ const (
 	// ActionRetireOwnHost by the renewed one to revoke the host's others (ADR 0122).
 	ActionRenewHost     = "renew-host"
 	ActionRetireOwnHost = "retire-own-host"
+	// ActionRenewOrch is signed by an orch member's current certificate to renew it under its key,
+	// and ActionRetireOwnOrch by the renewed one to revoke the member's others (ADR 0123).
+	ActionRenewOrch     = "renew-orch"
+	ActionRetireOwnOrch = "retire-own-orch"
 )
+
+// OrchRenewWindow is the end of an orch certificate's life in which the member renews it. Each
+// member checks daily, so a member down for less than this renews when it is back.
+const OrchRenewWindow = 90 * 24 * time.Hour
+
+// OrchRenewal is the body of ActionRenewOrch: a PKCS #10 request, DER, for the key of the
+// certificate that signs it.
+type OrchRenewal struct {
+	CSR []byte `json:"csr"`
+}
 
 // HostRenewWindow is the end of a host certificate's life in which the host renews it. Its agent
 // checks daily, so a host down for less than this renews when it is back.
@@ -301,3 +315,6 @@ func RequestCertificate(data []byte) (*x509.Certificate, error) {
 
 // ErrHostNotDue is a host's renewal before the last HostRenewWindow of its certificate's life.
 var ErrHostNotDue = errors.New("the host certificate is not due to renew")
+
+// ErrOrchNotDue is an orch member's renewal before the last OrchRenewWindow of its certificate's life.
+var ErrOrchNotDue = errors.New("the orch certificate is not due to renew")
