@@ -32,6 +32,7 @@ func main() {
 		cert     = flag.String("cert", "/run/naru-hostd/tls.crt", "serving certificate")
 		key      = flag.String("key", "/run/naru-hostd/tls.key", "serving key")
 		clients  = flag.String("client-ca", "/run/naru-hostd/client-ca.crt", "CA of the clients' certificates")
+		trusted  = flag.String("client-ca-store", "/var/lib/naru/hostd/client-ca.pem", "where the re-signings of --client-ca's authorities that orch offers are kept, which the host trusts beside --client-ca (ADR 0122)")
 		hostFile = flag.String("host-file", "/run/naru-hostd/host.json", "region and labels, written by init from spec.host")
 		initFile = flag.String("init-file", "/run/naru-hostd/init.json", "the version, slot and last upgrade of the naru the host runs, written by init")
 		socket   = flag.String("mvmd-socket", "/run/mvmd.sock", "mvmd's runtime API socket")
@@ -154,11 +155,12 @@ func main() {
 		log.Error("refusing to serve with a revoked key", "err", err.Error())
 		os.Exit(1)
 	}
-	conf, err := api.TLSConfig(serving, *clients, revocations)
+	pool, err := api.NewClientPool(*clients, *trusted)
 	if err != nil {
 		log.Error("cannot load the client CA", "err", err.Error())
 		os.Exit(1)
 	}
+	conf := api.TLSConfig(serving, pool, revocations)
 	ownFiles := func() []string { return []string{serving.File(), enroll.CertPathFor(*hostKey)} }
 	if err := checkOwnCertificates(ctx, revocations, ownFiles()...); errors.Is(err, identity.ErrRevoked) {
 		log.Error("refusing to serve with a revoked key", "err", err.Error())
@@ -220,13 +222,13 @@ func main() {
 	}
 	var importer *api.Importer
 	if hostPair != nil && netMgr != nil {
-		if importer, err = newImporter(*hostKey, *clients, *listen, netMgr.Peers); err != nil {
+		if importer, err = newImporter(*hostKey, pool, *listen, netMgr.Peers); err != nil {
 			log.Error("cannot set up the import of disks", "err", err.Error())
 			os.Exit(1)
 		}
 	}
 	// A reset of the data disk deletes serving.pem, so the pair that serves after it is the configuration's.
-	srv := api.New(api.Deps{Runtime: rt, ClientCAFile: *clients, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, ProxyHealthy: proxyHealthy, Routes: routes, Virtualization: virt, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
+	srv := api.New(api.Deps{Runtime: rt, ClientCAFile: *clients, RefreshedCAFile: *trusted, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, ProxyHealthy: proxyHealthy, Routes: routes, Virtualization: virt, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
 		HostID: resetID, ResetMarker: *resetMarker, Reboot: rebootInit, CheckPair: pairAfterReset(revocations, *cert), Importer: importer})
 	if *metricsAddr != "" {
 		go func() {

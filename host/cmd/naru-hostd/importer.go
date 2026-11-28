@@ -3,11 +3,9 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"strconv"
 
 	"github.com/garamsh/naru/host/internal/api"
@@ -18,16 +16,9 @@ import (
 // newImporter is how this host fetches another host's export: with the pair it reports to orch
 // with, read at each fetch so a rotation is taken, to the peer's mesh address at the port this
 // host's API listens on, every host listening on the same one, accepting a serving certificate
-// under the client CA bundle, which holds the authorities every host's serving pair chains to.
-func newImporter(hostKey, clientCAFile, listen string, peers func() []network.Peer) (*api.Importer, error) {
-	pem, err := os.ReadFile(clientCAFile)
-	if err != nil {
-		return nil, err
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(pem) {
-		return nil, errors.New(clientCAFile + " holds no certificate")
-	}
+// under the client CA pool, which holds the authorities every host's serving pair chains to, as
+// it stands at each fetch.
+func newImporter(hostKey string, pool *api.ClientPool, listen string, peers func() []network.Peer) (*api.Importer, error) {
 	_, p, err := net.SplitHostPort(listen)
 	if err != nil {
 		return nil, fmt.Errorf("--listen %q: %w", listen, err)
@@ -41,7 +32,10 @@ func newImporter(hostKey, clientCAFile, listen string, peers func() []network.Pe
 			pair, err := tls.LoadX509KeyPair(enroll.CertPathFor(hostKey), hostKey)
 			return &pair, err
 		},
-		Roots: roots,
+		Roots: func() *x509.CertPool {
+			roots, _ := pool.Pool()
+			return roots
+		},
 		Address: func(id string) (string, error) {
 			for _, peer := range peers() {
 				if peer.Name == id && peer.Mesh.IsValid() {
