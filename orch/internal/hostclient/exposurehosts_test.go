@@ -23,6 +23,8 @@ type exposureAPI struct {
 	vms   []hostapi.MicroVM
 	hangs bool
 	proxy *hostapi.ProxyStatus
+	// ungranted is a host without the operator's grant of the proxy role.
+	ungranted bool
 }
 
 func (a *exposureAPI) Host(ctx context.Context) (hostapi.Host, error) {
@@ -51,7 +53,7 @@ func exposureHosts(apis map[string]*exposureAPI) *hostclient.ExposureHosts {
 	var hosts []orchapi.Host
 	for _, id := range []string{"h1", "h2", "h3"} {
 		if apis[id] != nil {
-			hosts = append(hosts, orchapi.Host{ID: id, Address: id + ":7443"})
+			hosts = append(hosts, orchapi.Host{ID: id, Address: id + ":7443", Proxy: !apis[id].ungranted})
 		}
 	}
 	return hostclient.NewExposureHosts(&invFake{hosts: hosts}, func(id, _ string) hostclient.ExposureAPI { return apis[id] })
@@ -153,6 +155,19 @@ func TestAHostIsAProxyCandidateOnlyWhileItsProxyIsHealthy(t *testing.T) {
 		{ID: "h2", LAN: "eth0"},
 		{ID: "h3", LAN: "eth0"},
 	}, hosts, "a proxy that fails its check, and a host that runs none, are no candidates")
+}
+
+func TestAHostIsAProxyCandidateOnlyWithTheOperatorsGrant(t *testing.T) {
+	apis := map[string]*exposureAPI{
+		"h1": {proxy: &hostapi.ProxyStatus{Healthy: true}},
+		"h2": {proxy: &hostapi.ProxyStatus{Healthy: true}, ungranted: true},
+	}
+	hosts, err := exposureHosts(apis).List(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []exposures.Host{
+		{ID: "h1", LAN: "eth0", Proxy: true},
+		{ID: "h2", LAN: "eth0"},
+	}, hosts, "a healthy proxy without the grant has no table, so traffic sent to it would fail")
 }
 
 func TestAProxyExposuresLeaseReachesTheHostAsOne(t *testing.T) {

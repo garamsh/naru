@@ -136,6 +136,10 @@ func TestFleet_TwoProxyExposuresAreHeldByTwoProxyHostsAndBothByTheOneLeftWhenOne
 	f.startOrch()
 	hostIDs := f.enrollAndAdmit("eu-1")
 	h1, h2 := 2, 3
+	// A proxy host is a candidate only once the operator grants it the role (ADR 0119).
+	for _, i := range []int{h1, h2} {
+		f.must(f.orch("host", "grant-proxy", hostIDs[i]), "host grant-proxy")
+	}
 	node := map[string]int{hostIDs[h1]: h1, hostIDs[h2]: h2}
 	f.must(f.orch("network", "apply", "-f", f.networkFile(netA, prefixA)), "network apply "+netA)
 	f.must(f.orch("address-pool", "apply", "-f", f.file("pool.yaml", "name: lan\ncidrs: ["+lbPool+"]\nnetworks: ["+netA+"]\n")), "address-pool apply")

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -247,4 +248,48 @@ func TestNetwork_ARefusedMemberLeavesNothingBehindInTheInputChain(t *testing.T) 
 	assert.Contains(t, rules, `ct state established,related accept`)
 	assert.Contains(t, rules, `iifname "tap*" counter drop comment "microVM to the host"`, "a microVM reaches no address of the host")
 	assert.Contains(t, rules, `ip saddr @net_a counter drop comment "a to the host"`)
+}
+
+func TestMicroVM_OneOnNoNetworkIsAdmittedAsAMachineUntilItsDelete(t *testing.T) {
+	e := start(t)
+	c := e.as(t, ProvisionerOrganization)
+	machines := func() string {
+		_, after, ok := strings.Cut(e.nft.ruleset(), "set machines {")
+		if !ok {
+			return ""
+		}
+		set, _, _ := strings.Cut(after, "}")
+		return set
+	}
+	code, b := e.do(t, c, "POST", "/v1/microvms", createBody())
+	require.Equal(t, 201, code, string(b))
+	assert.Contains(t, machines(), "10.1.0.5", "a microVM on no network leaves by the egress from its own address")
+
+	code, _ = e.do(t, c, "POST", "/v1/microvms/web/stop", nil)
+	require.Equal(t, 200, code)
+	before := e.nft.ruleset()
+	code, b = e.do(t, c, "POST", "/v1/microvms/web/start", nil)
+	require.Equal(t, 200, code, string(b))
+	assert.Equal(t, before, e.nft.ruleset(), "started again, it is admitted already")
+	assert.Contains(t, machines(), "10.1.0.5")
+
+	// One made without a start, whose address came with its start, is admitted at the start.
+	e.rt.machines["late"] = mvmd.Machine{ID: "late", State: mvmd.StateCreated, Addresses: []string{"10.1.0.9"}}
+	require.NotContains(t, machines(), "10.1.0.9", "the setup: not admitted before its start")
+	code, b = e.do(t, c, "POST", "/v1/microvms/late/start", nil)
+	require.Equal(t, 200, code, string(b))
+	assert.Contains(t, machines(), "10.1.0.9")
+
+	code, _ = e.do(t, c, "DELETE", "/v1/microvms/web", nil)
+	require.Equal(t, 204, code)
+	assert.NotContains(t, machines(), "10.1.0.5", "deleted, its address is no Machine's")
+
+	code, _ = e.do(t, c, "PUT", "/v1/networks/a", hostapi.NetworkRequest{Prefix: "10.1.0.0/16"})
+	require.Equal(t, 200, code)
+	body := createBody()
+	body["network"] = "a"
+	code, b = e.do(t, c, "POST", "/v1/microvms", body)
+	require.Equal(t, 201, code, string(b))
+	assert.NotContains(t, machines(), "10.1.0.5", "control: a microVM on a network is its network's")
+	assert.Equal(t, []network.Member{{Network: "a", Address: netip.MustParseAddr("10.1.0.5")}}, e.nets.Members())
 }

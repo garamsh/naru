@@ -56,6 +56,10 @@ func (p Peer) allowed() []netip.Prefix {
 type Config struct {
 	Networks []Network
 	Members  []Member
+	// Machines are the addresses of the host's microVMs that are no network's member, a Machine's
+	// as orch creates it (ADR 0112 item 7): each passes the forged-source rule from its own address
+	// and leaves by the egress, under its own policy, and reaches no network and no management.
+	Machines []netip.Addr
 	Peers    []Peer
 	// Mesh is the host's own address on the tunnel (ADR 0113 item 1); the zero value means none.
 	Mesh netip.Addr

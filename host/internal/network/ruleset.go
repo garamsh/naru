@@ -52,8 +52,10 @@ func elementText(p netip.Prefix) string {
 // forward chain drops by default; it accepts the replies of a flow that was allowed, a network's
 // traffic inside its set, a network's traffic to the egress, and the management plane's traffic to a
 // network's API endpoint, and a proxy host's mesh address to a tap. A network's traffic to another
-// network's set, to the management prefix, from a tap with a source no local member holds, and
-// from another host's mesh address is dropped and counted by a rule of its own.
+// network's set, to the management prefix, from a tap with a source no local member and no Machine
+// holds, and from another host's mesh address is dropped and counted by a rule of its own. A
+// Machine's traffic leaves by the egress, and to a network or the management prefix is dropped and
+// counted.
 // The input chain drops and counts a new connection from a tap, or from a network's member
 // arriving by the tunnel, to any address of the host, and one to an exposure's address but to a
 // port the host serves the exposure on itself.
@@ -106,6 +108,10 @@ func Ruleset(c Config) string {
 	if guard && len(proxies) > 0 {
 		set("mesh_proxies", proxies)
 	}
+	machines := c.machines()
+	if c.TapPrefix != "" && len(machines) > 0 {
+		set("machines", machines)
+	}
 
 	line("\tchain input {")
 	line("\t\ttype filter hook input priority 0; policy accept;")
@@ -124,10 +130,16 @@ func Ruleset(c Config) string {
 	line("\t\tct state established,related accept")
 	exposureForward(c, line)
 	if c.TapPrefix != "" {
+		own := ""
 		if len(members) > 0 {
-			line("\t\tiifname \"%s*\" ip saddr != @members counter drop comment \"forged source\"", c.TapPrefix)
-		} else {
-			line("\t\tiifname \"%s*\" counter drop comment \"forged source\"", c.TapPrefix)
+			own += " ip saddr != @members"
+		}
+		if len(machines) > 0 {
+			own += " ip saddr != @machines"
+		}
+		line("\t\tiifname \"%s*\"%s counter drop comment \"forged source\"", c.TapPrefix, own)
+		if len(machines) > 0 {
+			machineForward(c, len(nets) > 0, line)
 		}
 	}
 	// Of the hosts' own addresses on the mesh, only a proxy's reaches a microVM, and only through
@@ -329,4 +341,33 @@ func leasedRefresh(c Config) string {
 		out += "add element inet naru leased { " + el + " }\n"
 	}
 	return out
+}
+
+// machineForward writes the forward chain's rules for the host's Machines: from a tap, past the
+// forged-source rule, a Machine reaches no network and no management, and leaves by the egress.
+func machineForward(c Config, nets bool, line func(string, ...any)) {
+	if nets {
+		line("\t\tiifname \"%s*\" ip saddr @machines ip daddr @networks counter drop comment \"a Machine to a network\"", c.TapPrefix)
+	}
+	if c.Management.IsValid() {
+		line("\t\tiifname \"%s*\" ip saddr @machines ip daddr %s counter drop comment \"a Machine to management\"", c.TapPrefix, c.Management)
+	}
+	if c.Egress != "" {
+		line("\t\tiifname \"%s*\" ip saddr @machines oifname \"%s\" accept comment \"a Machine's egress\"", c.TapPrefix, c.Egress)
+	}
+}
+
+// machines are the Machines' addresses as /32s, sorted, with any a network's member holds left out.
+func (c Config) machines() []netip.Prefix {
+	member := map[netip.Addr]bool{}
+	for _, m := range c.Members {
+		member[m.Address] = true
+	}
+	var out []netip.Prefix
+	for _, a := range c.Machines {
+		if !member[a] {
+			out = append(out, netip.PrefixFrom(a, 32))
+		}
+	}
+	return sortedPrefixes(out)
 }
