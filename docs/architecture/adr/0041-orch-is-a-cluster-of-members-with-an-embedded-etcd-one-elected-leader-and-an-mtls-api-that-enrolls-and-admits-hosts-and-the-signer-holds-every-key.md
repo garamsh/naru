@@ -1,6 +1,6 @@
 # ADR 0041: orch is a cluster of members with an embedded etcd, one elected leader and an mTLS API that enrolls and admits hosts, and the signer holds every key
 
-> Status: accepted
+> Status: accepted; the decision "A host trusts orch by the SHA-256 of the authority's certificate" superseded in part (the pin is now of the authority's key) by [ADR 0122](./0122-a-host-renews-its-certificate-under-its-key-in-its-last-90-days-retires-its-others-trusts-a-re-signing-of-an-authority-it-holds-and-pins-orch-by-its-authoritys-key-superseding-adr-0041-and-0082-in-part.md)
 > Date: 2026-11-14
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
