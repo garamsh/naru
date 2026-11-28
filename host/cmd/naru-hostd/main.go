@@ -202,7 +202,8 @@ func main() {
 		if addr == "" {
 			addr = *listen
 		}
-		agent := enroll.New(enroll.Config{OrchURL: *orchURL, CASHA256: *orchCA, EnrollKeyFile: *enrollKey, KeyFile: *hostKey, HostID: id, Address: addr, Out: os.Stdout, Log: log})
+		agent := enroll.New(enroll.Config{OrchURL: *orchURL, CASHA256: *orchCA, EnrollKeyFile: *enrollKey, KeyFile: *hostKey, HostID: id, Address: addr, Out: os.Stdout, Log: log,
+			Serve: serving.Replace, ClientCAFile: *clients, TrustFile: *trusted})
 		hostPair = agent
 		go func() {
 			if err := agent.Run(ctx); err != nil && ctx.Err() == nil {

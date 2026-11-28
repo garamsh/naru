@@ -59,10 +59,20 @@ type Config struct {
 	Hardware func() (*orchapi.Hardware, error)
 	// Out receives the pairing code; stdout in the daemon.
 	Out io.Writer
-	// CodeEvery, PollEvery and HeartbeatEvery default to 60 s, 5 s and 30 s.
+	// Serve, when set, is given the PEM certificate and key of each pair the host renews to, before
+	// the agent reports with it: the host API serves it (ADR 0122).
+	Serve func(certPEM, keyPEM []byte) error
+	// ClientCAFile is the pool of authorities hostd trusts (--client-ca), and TrustFile where the
+	// agent stores the re-signings of them it reads from orch (ADR 0122); an empty TrustFile reads
+	// none.
+	ClientCAFile string
+	TrustFile    string
+	// CodeEvery, PollEvery and HeartbeatEvery default to 60 s, 5 s and 30 s, and CheckEvery, how
+	// often the host's certificate and its pool of authorities are checked, to a day.
 	CodeEvery      time.Duration
 	PollEvery      time.Duration
 	HeartbeatEvery time.Duration
+	CheckEvery     time.Duration
 	Now            func() time.Time
 	Log            *slog.Logger
 }
@@ -76,9 +86,11 @@ func CertPathFor(keyFile string) string {
 type Agent struct {
 	c Config
 
-	// mu guards cl, the client heartbeats go out on: a rotation replaces it.
-	mu sync.Mutex
-	cl *orchapi.Client
+	// mu guards cl, the client heartbeats go out on, and pair, the certificate and key it presents:
+	// a rotation or a renewal replaces both.
+	mu   sync.Mutex
+	cl   *orchapi.Client
+	pair *tls.Certificate
 }
 
 // New returns an agent with the defaults filled in.
@@ -91,6 +103,9 @@ func New(c Config) *Agent {
 	}
 	if c.HeartbeatEvery == 0 {
 		c.HeartbeatEvery = 30 * time.Second
+	}
+	if c.CheckEvery == 0 {
+		c.CheckEvery = 24 * time.Hour
 	}
 	if c.Now == nil {
 		c.Now = time.Now
@@ -378,7 +393,8 @@ func (a *Agent) heartbeat(ctx context.Context, cert *tls.Certificate) error {
 	if err != nil {
 		return err
 	}
-	a.setClient(cl)
+	a.setClient(cl, cert)
+	go a.maintain(ctx)
 	for {
 		if err := a.current().Heartbeat(ctx); err != nil && ctx.Err() == nil {
 			a.c.Log.Warn("heartbeat failed", "err", err.Error())
@@ -395,10 +411,17 @@ func (a *Agent) current() *orchapi.Client {
 	return a.cl
 }
 
-func (a *Agent) setClient(cl *orchapi.Client) {
+// currentPair is the certificate and key the agent reports with.
+func (a *Agent) currentPair() *tls.Certificate {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.cl = cl
+	return a.pair
+}
+
+func (a *Agent) setClient(cl *orchapi.Client, pair *tls.Certificate) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cl, a.pair = cl, pair
 }
 
 var (
@@ -438,22 +461,33 @@ func (a *Agent) Rotate(ctx context.Context, certPEM, keyPEM []byte) (string, err
 		return "", fmt.Errorf("%w: the certificate has expired", ErrBadPair)
 	}
 	pair.Leaf = leaf
-	cl, err := a.client(&pair)
-	if err != nil {
+	if err := a.apply(ctx, &pair, certPEM, keyPEM); err != nil {
 		return "", err
 	}
-	if err := cl.Heartbeat(ctx); err != nil {
-		return "", fmt.Errorf("%w: %w", ErrOrchRefused, err)
-	}
-	if err := writeFileAtomic(a.c.KeyFile, keyPEM, 0o600, ""); err != nil {
-		return "", err
-	}
-	if err := writeFileAtomic(a.c.CertFile, certPEM, 0o644, certificatePrefix); err != nil {
-		return "", err
-	}
-	a.setClient(cl)
 	a.c.Log.Info("the host's pair was replaced", "serial", leaf.SerialNumber.Text(16))
 	return leaf.SerialNumber.Text(16), nil
+}
+
+// apply has pair heartbeat to orch, then writes keyPEM, unless it is nil, and certPEM, and reports
+// with pair from then on. An orch that refuses the heartbeat leaves everything as it was.
+func (a *Agent) apply(ctx context.Context, pair *tls.Certificate, certPEM, keyPEM []byte) error {
+	cl, err := a.client(pair)
+	if err != nil {
+		return err
+	}
+	if err := cl.Heartbeat(ctx); err != nil {
+		return fmt.Errorf("%w: %w", ErrOrchRefused, err)
+	}
+	if keyPEM != nil {
+		if err := writeFileAtomic(a.c.KeyFile, keyPEM, 0o600, ""); err != nil {
+			return err
+		}
+	}
+	if err := writeFileAtomic(a.c.CertFile, certPEM, 0o644, certificatePrefix); err != nil {
+		return err
+	}
+	a.setClient(cl, pair)
+	return nil
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {

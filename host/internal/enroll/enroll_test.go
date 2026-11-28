@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/garamsh/naru/host/internal/enroll"
+	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
 )
 
@@ -60,6 +61,18 @@ type fakeOrch struct {
 	spent, loseFirst bool
 	// refusals counts the enrollments refused.
 	refusals int
+	// life is how long the certificate an admission issues lives (default an hour), and renewedUntil
+	// when each certificate a renewal issues ends.
+	life         time.Duration
+	renewedUntil time.Time
+	// renewed are the certificates renewals issued, notDue answers a renewal 409, failRetire a retire
+	// 503, and retired holds the serials that signed each retire done.
+	renewed    []*x509.Certificate
+	notDue     bool
+	failRetire bool
+	retired    []int64
+	// offered is what GET /v1/ca answers.
+	offered identity.Authorities
 }
 
 func newFakeOrch(t *testing.T, secret string) *fakeOrch {
@@ -83,6 +96,9 @@ func newFakeOrch(t *testing.T, secret string) *fakeOrch {
 	mux.HandleFunc("POST /v1/enroll", f.enroll)
 	mux.HandleFunc("GET /v1/enroll/{id}", f.poll)
 	mux.HandleFunc("POST /v1/heartbeat", f.heartbeat)
+	mux.HandleFunc("POST /v1/hosts/renew", f.renew)
+	mux.HandleFunc("POST /v1/hosts/retire", f.retire)
+	mux.HandleFunc("GET /v1/ca", f.authorities)
 	f.srv = httptest.NewUnstartedServer(mux)
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
@@ -166,7 +182,11 @@ func (f *fakeOrch) admit() {
 func (f *fakeOrch) issue() {
 	csr, err := x509.ParseCertificateRequest(f.csr)
 	require.NoError(f.t, err)
-	tmpl := &x509.Certificate{SerialNumber: big.NewInt(10), Subject: pkix.Name{CommonName: f.hostID}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	life := f.life
+	if life == 0 {
+		life = time.Hour
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(10), Subject: pkix.Name{CommonName: f.hostID, OrganizationalUnit: []string{string(identity.RoleHost)}}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(life), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, f.ca, csr.PublicKey, f.caKey)
 	require.NoError(f.t, err)
 	f.cert = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
@@ -195,17 +215,21 @@ func (l *lockedBuffer) String() string {
 	return l.b.String()
 }
 
-func agent(t *testing.T, f *fakeOrch, dir string, out *lockedBuffer) *enroll.Agent {
+func agent(t *testing.T, f *fakeOrch, dir string, out *lockedBuffer, with ...func(*enroll.Config)) *enroll.Agent {
 	t.Helper()
 	keyFile := filepath.Join(dir, "host.key")
 	secretFile := filepath.Join(dir, "enroll.key")
 	require.NoError(t, os.WriteFile(secretFile, []byte(f.secret+"\n"), 0o600))
-	return enroll.New(enroll.Config{
+	c := enroll.Config{
 		OrchURL: f.srv.URL, CASHA256: f.fingerprint(), EnrollKeyFile: secretFile, KeyFile: keyFile,
 		HostID: "host-a", Address: "10.0.0.5:7443", Out: out,
 		CodeEvery: 150 * time.Millisecond, PollEvery: 30 * time.Millisecond, HeartbeatEvery: 30 * time.Millisecond,
 		Log: slog.New(slog.NewTextHandler(os.Stderr, nil)),
-	})
+	}
+	for _, w := range with {
+		w(&c)
+	}
+	return enroll.New(c)
 }
 
 func runAgent(t *testing.T, a *enroll.Agent) (stop func()) {
@@ -378,11 +402,16 @@ func (f *fakeOrch) pairFor(cn string, serial int64) (certPEM, keyPEM []byte) {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 }
 
-func enrolled(t *testing.T) (*fakeOrch, *enroll.Agent, string, func()) {
+func enrolled(t *testing.T, with ...func(*enroll.Config)) (*fakeOrch, *enroll.Agent, string, func()) {
 	t.Helper()
-	f := newFakeOrch(t, "naru-ek-secret")
+	return enrolledBy(t, newFakeOrch(t, "naru-ek-secret"), with...)
+}
+
+// enrolledBy is enrolled with the fake orch f.
+func enrolledBy(t *testing.T, f *fakeOrch, with ...func(*enroll.Config)) (*fakeOrch, *enroll.Agent, string, func()) {
+	t.Helper()
 	dir := t.TempDir()
-	a := agent(t, f, dir, &lockedBuffer{})
+	a := agent(t, f, dir, &lockedBuffer{}, with...)
 	stop := runAgent(t, a)
 	require.Eventually(t, func() bool { e, _, _ := f.counts(); return e == 1 }, 5*time.Second, 20*time.Millisecond)
 	f.admit()
