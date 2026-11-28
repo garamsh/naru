@@ -328,6 +328,27 @@ func (c *Client) Heartbeat(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/v1/heartbeat", nil, nil, nil)
 }
 
+// RenewHost passes orch a renewal the calling host signed with the certificate it connects with,
+// and returns the certificate the signer issued under the host's key (ADR 0122). A renewal before
+// the certificate's last 90 days is an *Error of status 409.
+func (c *Client) RenewHost(ctx context.Context, signed []byte) (identity.Issued, error) {
+	var out identity.Issued
+	return out, c.do(ctx, http.MethodPost, "/v1/hosts/renew", nil, json.RawMessage(signed), &out)
+}
+
+// RetireHost passes orch a retire the calling host signed with the certificate it connects with,
+// which revokes the host's other certificates (ADR 0122).
+func (c *Client) RetireHost(ctx context.Context, signed []byte) error {
+	return c.do(ctx, http.MethodPost, "/v1/hosts/retire", nil, json.RawMessage(signed), nil)
+}
+
+// Authorities returns the signer's authorities as orch answers them to a host. They are only as
+// trustworthy as the connection: a host reads them only over one PinCA checked (ADR 0122).
+func (c *Client) Authorities(ctx context.Context) (identity.Authorities, error) {
+	var out identity.Authorities
+	return out, c.do(ctx, http.MethodGet, "/v1/ca", nil, nil, &out)
+}
+
 // RevocationSource returns a source of the signed revocation list that fetches it from orch at
 // orchURL over PinCA. Orch answers GET /v1/crl without a client certificate, so none is presented.
 func RevocationSource(orchURL, caSHA256 string) (identity.CRLSource, error) {
