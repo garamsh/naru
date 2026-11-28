@@ -26,3 +26,17 @@ func TestNewBootSets(t *testing.T) {
 		require.NotNil(t, store)
 	}
 }
+
+func TestOrchPresentsItsRenewedPairToTheHostsUnlessTheOperatorNamesAnother(t *testing.T) {
+	f := runFlags{cert: "/run/naru-orchd/orch.crt", key: "/run/naru-orchd/orch.key", renewedCert: "/var/lib/naru/orch/renewed/orch.crt"}
+	for _, given := range []runFlags{f, {cert: f.cert, key: f.key, renewedCert: f.renewedCert, hostCert: f.cert, hostKey: f.key}} {
+		cert, key := hostPair(given)
+		require.Equal(t, f.renewedCert, cert, "absent, or --cert and --key as init gives them")
+		require.Equal(t, f.key, key)
+	}
+	other := f
+	other.hostCert, other.hostKey = "/etc/other.crt", "/etc/other.key"
+	cert, key := hostPair(other)
+	require.Equal(t, "/etc/other.crt", cert, "control: the operator's own pair")
+	require.Equal(t, "/etc/other.key", key)
+}

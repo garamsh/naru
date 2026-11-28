@@ -2,8 +2,7 @@ package main
 
 import (
 	"crypto/ed25519"
-	"crypto/tls"
-	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/orchapi"
+	"github.com/garamsh/naru/orch/internal/hostclient"
 	"github.com/garamsh/naru/orch/internal/signer"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
@@ -58,20 +58,25 @@ func newSealer(path string) (snapshot.Sealer, error) {
 }
 
 // newHostHTTP is the HTTP client the groups engine drives the hosts' APIs with. It presents the
-// pair in certFile and keyFile, orch's own identity unless the operator names another, and trusts
-// the authority in caFile.
-func newHostHTTP(certFile, keyFile, caFile string) (*http.Client, error) {
-	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+// pair in certFile and keyFile as they stand, orch's own renewed identity unless the operator
+// names another, and trusts the authority in caFile with the re-signings in store, read again at a
+// handshake when one has changed (ADR 0123).
+func newHostHTTP(certFile, keyFile, caFile, store string) (*http.Client, error) {
+	pair, err := identity.NewFilePair(certFile, keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load the host API client pair: %w", err)
 	}
-	ca, err := os.ReadFile(caFile)
+	roots, err := identity.NewFilePool(caFile, store)
 	if err != nil {
 		return nil, fmt.Errorf("read the host API authority: %w", err)
 	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(ca) {
-		return nil, fmt.Errorf("%s holds no certificate", caFile)
+	conf := orchapi.TrustCA(roots.Current(), nil)
+	conf.GetClientCertificate = pair.GetClientCertificate
+	hc := orchapi.HTTPClient(conf, 30*time.Second)
+	tr, ok := hc.Transport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("the host API client has no HTTP transport")
 	}
-	return orchapi.HTTPClient(orchapi.TrustCA(pool, &pair), 30*time.Second), nil
+	hc.Transport = &hostclient.Transport{Transport: tr, Roots: roots.Current}
+	return hc, nil
 }
