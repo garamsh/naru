@@ -164,3 +164,30 @@ func TestAHostsRenewalAndRetireReachTheirRoutesAsSignedAndANotDueIsKept(t *testi
 	body = "the signer holds no certificate for this host: serial 0a is not one of host-1's"
 	require.ErrorIs(t, c.RetireHost(t.Context(), []byte(`{}`)), signer.ErrUnknownHost, "a serial the signer does not hold")
 }
+
+func TestAnOrchMembersRenewalAndRetireReachTheirRoutesAsSignedAndANotDueIsKept(t *testing.T) {
+	var paths, bodies []string
+	status, body := http.StatusOK, `{"certificate":"Qw==","serial":"0b"}`
+	c := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		paths, bodies = append(paths, r.Method+" "+r.URL.Path), append(bodies, string(b))
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	issued, err := c.RenewOrch(t.Context(), []byte(`{"signed":1}`))
+	require.NoError(t, err)
+	require.Equal(t, "0b", issued.Serial)
+	require.NoError(t, c.RetireOrch(t.Context(), []byte(`{"signed":2}`)))
+	require.Equal(t, []string{"POST /v1/orch-renew", "POST /v1/orch-retire"}, paths)
+	require.Equal(t, []string{`{"signed":1}`, `{"signed":2}`}, bodies, "the signed bytes pass unchanged")
+
+	status, body = http.StatusConflict, identity.ErrOrchNotDue.Error()+": renew from then"
+	_, err = c.RenewOrch(t.Context(), []byte(`{}`))
+	require.ErrorIs(t, err, identity.ErrOrchNotDue)
+	body = "another conflict"
+	_, err = c.RenewOrch(t.Context(), []byte(`{}`))
+	require.NotErrorIs(t, err, identity.ErrOrchNotDue, "another conflict is not a renewal before its time")
+
+	body = "the signer holds no certificate for this host: serial 0b is not one of orch-1's"
+	require.ErrorIs(t, c.RetireOrch(t.Context(), []byte(`{}`)), signer.ErrUnknownHost, "a serial the signer does not hold")
+}

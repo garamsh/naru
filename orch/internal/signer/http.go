@@ -1,7 +1,7 @@
 // Package signer is orch's client of naru-signer, which listens on a unix socket of the control
 // host and answers HTTP: POST /v1/host, a caller's POST /v1/caller and POST /v1/caller-renew, a
-// host's POST /v1/host-renew and POST /v1/host-retire, GET /v1/ca, and
-// GET /v1/crl.
+// host's POST /v1/host-renew and POST /v1/host-retire, an orch member's POST /v1/orch-renew and
+// POST /v1/orch-retire, GET /v1/ca, and GET /v1/crl.
 package signer
 
 import (
@@ -102,6 +102,8 @@ func (c *Client) do(ctx context.Context, method, path string, in []byte) ([]byte
 		return nil, fmt.Errorf("%w: %s", identity.ErrCallerNotDue, msg)
 	case resp.StatusCode == http.StatusConflict && bytes.Contains(msg, []byte(identity.ErrHostNotDue.Error())):
 		return nil, fmt.Errorf("%w: %s", identity.ErrHostNotDue, msg)
+	case resp.StatusCode == http.StatusConflict && bytes.Contains(msg, []byte(identity.ErrOrchNotDue.Error())):
+		return nil, fmt.Errorf("%w: %s", identity.ErrOrchNotDue, msg)
 	case resp.StatusCode == http.StatusConflict && bytes.Contains(msg, []byte(signerUnknownHost)):
 		return nil, fmt.Errorf("%w: %s", ErrUnknownHost, msg)
 	case resp.StatusCode/100 != 2:
@@ -179,6 +181,25 @@ func (c *Client) RenewHost(ctx context.Context, signed []byte) (identity.Issued,
 // other certificates (ADR 0122).
 func (c *Client) RetireHost(ctx context.Context, signed []byte) error {
 	_, err := c.do(ctx, http.MethodPost, "/v1/host-retire", signed)
+	return err
+}
+
+// RenewOrch passes a renewal this orch member signed with its current certificate (ADR 0123). One
+// before the certificate's last 90 days is identity.ErrOrchNotDue; a revoked or expired
+// certificate is inventory.ErrSignerRefused.
+func (c *Client) RenewOrch(ctx context.Context, signed []byte) (identity.Issued, error) {
+	raw, err := c.do(ctx, http.MethodPost, "/v1/orch-renew", signed)
+	if err != nil {
+		return identity.Issued{}, err
+	}
+	return decodeIssued(raw)
+}
+
+// RetireOrch passes a retire this orch member signed with its renewed certificate, which revokes
+// the member's other certificates (ADR 0123). A serial the signer holds no record of is
+// ErrUnknownHost.
+func (c *Client) RetireOrch(ctx context.Context, signed []byte) error {
+	_, err := c.do(ctx, http.MethodPost, "/v1/orch-retire", signed)
 	return err
 }
 
