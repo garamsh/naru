@@ -26,12 +26,13 @@ It also replaces the enrollment key's life in `orch.md` §Enrollment, "valid at 
 - **An enrollment key was a bearer secret for up to a year.** Any host that held it could enroll, as often as it was presented, until it expired or was revoked.
 - **The PM's decisions on #412 (2026-11-28).**
   1. The bundle, sealed to the USB recovery key, stays the disaster path. "No plain key leaves" means no authority key leaves the signer unsealed, and replication between signers is unchanged.
-  2. The work lands as five pull requests, in order, each from main once the previous one has merged:
+  2. The work lands as six pull requests, in order, each from main once the previous one has merged:
      - (a) this record, the authorities' rollover and the enrollment keys;
      - (b) the host's renewal;
      - (c) orch's renewal;
      - (d) people's renewal;
-     - (e) the callers' `crypto.Signer` check.
+     - (e) the callers' `crypto.Signer` check, and the revocation key behind `crypto.Signer`;
+     - (f) the host API's and the Node API's authorities moved into the signer.
   3. Each authority is signed again under the same key when under 2 of its 10 years remain, and peers fetch the new certificate from `GET /v1/ca`. Each consumer's trust refresh lands with its renewal: hostd's in (b), orch's in (c), people's files in (d). The 2-year window is the bound by which every pool refreshes.
   4. A check warns, as an event and a log, when a pool still holds an authority certificate within a year of its end.
   5. Key rotation, a new key with a cross-signed overlap, is not built (garamsh/naru#451).
@@ -42,10 +43,10 @@ It also replaces the enrollment key's life in `orch.md` §Enrollment, "valid at 
 
 1. **The signer makes and holds its authorities.**
    - `naru-signer init` generates the host, operator and orch authorities (ECDSA P-256) and the revocation key (Ed25519) in its own directory, as ADR 0040 items 2 and 3 decide.
-   - No person makes, places or rotates one of these keys, and no `naructl` command takes one. The host API's and the Node API's authorities that `naructl gen api-ca` and `naructl gen host-ca` make (`docs/operate/first-hosts.md` step 1) are not the signer's, and this record does not decide them.
+   - No person makes, places or rotates one of these keys, and no `naructl` command takes one. The host API's and the Node API's authorities that `naructl gen api-ca` and `naructl gen host-ca` make (`docs/operate/first-hosts.md` step 1) are not the signer's yet: they move into the signer as part (f) of garamsh/naru#412, after (e) (the PM, 2026-11-28).
    - An authority key leaves the directory only sealed: in the bundle, to the recovery key (ADR 0040 item 8), or in a replica, to a joining signer's ephemeral key (item 10).
    - The recovery key is made by its holder outside the signer, is kept offline on USB, and never enters a signer's directory.
-2. **Every certificate an authority signs is signed through `crypto.Signer`.** The authority's key in the directory is the implementation now. A KMS or HSM key is a later implementation behind the same interface, which no caller sees. The revocation key signs the list through `lib/identity`'s `SignCRL`, as before.
+2. **Every certificate an authority signs is signed through `crypto.Signer`.** The authority's key in the directory is the implementation now. A KMS or HSM key is a later implementation behind the same interface, which no caller sees. The revocation key signs the list through `lib/identity`'s `SignCRL` with its Ed25519 key, and moves behind `crypto.Signer` in (e) (the PM, 2026-11-28).
 3. **An authority is signed again under its key two years before it ends.**
    - The signer checks at start and every 24 hours. Each authority with less than `identity.AuthorityRenewYears` (2) of its `identity.AuthorityYears` (10) left is signed again: the same key and subject, a new serial, valid ten years from then.
    - The new certificates are written in one commit, and from then on are what `GET /v1/ca`, the bundle and a replica carry.
