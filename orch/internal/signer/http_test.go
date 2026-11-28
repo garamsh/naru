@@ -132,3 +132,35 @@ func TestRegistrationAndRenewalReachTheirRoutesAndKeepTheSignersRefusals(t *test
 	_, err = c.RegisterCaller(t.Context(), "tok", []byte("csr"))
 	require.ErrorIs(t, err, signer.ErrInvalid)
 }
+
+func TestAHostsRenewalAndRetireReachTheirRoutesAsSignedAndANotDueIsKept(t *testing.T) {
+	var paths, bodies []string
+	status, body := http.StatusOK, `{"certificate":"Qw==","serial":"0a"}`
+	c := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		paths, bodies = append(paths, r.Method+" "+r.URL.Path), append(bodies, string(b))
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	issued, err := c.RenewHost(t.Context(), []byte(`{"signed":1}`))
+	require.NoError(t, err)
+	require.Equal(t, "0a", issued.Serial)
+	require.NoError(t, c.RetireHost(t.Context(), []byte(`{"signed":2}`)))
+	body = `{"host":"SA=="}`
+	a, err := c.Authorities(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []byte("H"), a.Host)
+	require.Equal(t, []string{"POST /v1/host-renew", "POST /v1/host-retire", "GET /v1/ca"}, paths)
+	require.Equal(t, []string{`{"signed":1}`, `{"signed":2}`, ""}, bodies, "the signed bytes pass unchanged")
+
+	status, body = http.StatusConflict, identity.ErrHostNotDue.Error()+": renew from then"
+	_, err = c.RenewHost(t.Context(), []byte(`{}`))
+	require.ErrorIs(t, err, identity.ErrHostNotDue)
+	body = "another conflict"
+	_, err = c.RenewHost(t.Context(), []byte(`{}`))
+	require.NotErrorIs(t, err, identity.ErrHostNotDue, "another conflict is not a renewal before its time")
+	require.NotErrorIs(t, err, signer.ErrUnknownHost)
+
+	body = "the signer holds no certificate for this host: serial 0a is not one of host-1's"
+	require.ErrorIs(t, c.RetireHost(t.Context(), []byte(`{}`)), signer.ErrUnknownHost, "a serial the signer does not hold")
+}

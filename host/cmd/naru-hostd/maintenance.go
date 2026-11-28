@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -100,10 +99,10 @@ func pairAfterReset(list *identity.RevocationList, certFile string) func(context
 // reset is carried out at the next boot.
 func rebootInit() error { return syscall.Kill(1, syscall.SIGINT) }
 
-// fetchAuthority returns the certificate of orch's chain whose SHA-256 is fingerprint, taken over a
-// TLS handshake that orchapi.PinCA verifies: the pinned certificate is the one an operator's client
-// certificate must chain to (ADR 0082).
-func fetchAuthority(ctx context.Context, orchURL, fingerprint string) (*x509.Certificate, error) {
+// fetchAuthority returns the pool of orch's chain that the pin names, taken over a TLS handshake
+// that orchapi.PinCA verifies: every certificate of the pinned authority's subject and key, which an
+// operator's client certificate must chain to (ADR 0082, the key pin of ADR 0122).
+func fetchAuthority(ctx context.Context, orchURL, fingerprint string) (*x509.CertPool, error) {
 	u, err := url.Parse(orchURL)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		return nil, errors.New("the orch URL is not an https URL")
@@ -124,12 +123,11 @@ func fetchAuthority(ctx context.Context, orchURL, fingerprint string) (*x509.Cer
 	}
 	defer func() { _ = conn.Close() }()
 	want, _ := hex.DecodeString(strings.ReplaceAll(strings.ToLower(fingerprint), ":", ""))
-	for _, c := range conn.(*tls.Conn).ConnectionState().PeerCertificates[1:] {
-		if sum := sha256.Sum256(c.Raw); string(sum[:]) == string(want) {
-			return c, nil
-		}
+	pool, ok := orchapi.PinnedRoots(want, conn.(*tls.Conn).ConnectionState().PeerCertificates[1:])
+	if !ok {
+		return nil, errors.New("orch's chain holds no authority with the pinned key")
 	}
-	return nil, errors.New("orch's chain holds no certificate with the pinned fingerprint")
+	return pool, nil
 }
 
 // storedServingPath is where a rotation stores the serving pair: beside the host's key.
@@ -188,9 +186,9 @@ func runMaintenance(ctx context.Context, o maintenanceOptions, log *slog.Logger)
 	if err != nil {
 		return err
 	}
-	var authority *x509.Certificate
+	var pool *x509.CertPool
 	for {
-		if authority, err = fetchAuthority(ctx, o.orchURL, o.orchCA); err == nil {
+		if pool, err = fetchAuthority(ctx, o.orchURL, o.orchCA); err == nil {
 			break
 		}
 		log.Warn("maintenance cannot reach orch for its authority; retrying", "err", err.Error())
@@ -200,8 +198,6 @@ func runMaintenance(ctx context.Context, o maintenanceOptions, log *slog.Logger)
 		case <-time.After(authorityRetry):
 		}
 	}
-	pool := x509.NewCertPool()
-	pool.AddCert(authority)
 	ln, err := net.Listen("tcp", o.listen)
 	if err != nil {
 		return err

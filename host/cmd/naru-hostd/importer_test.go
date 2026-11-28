@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/garamsh/naru/host/internal/api"
 	"github.com/garamsh/naru/host/internal/network"
 )
 
@@ -27,8 +28,12 @@ func TestImporter_ReachesAPeerAtItsMeshAddressOnThisHostsAPIPort(t *testing.T) {
 		{Name: "h-src", Mesh: netip.MustParseAddr("10.99.0.2")},
 		{Name: "h-nomesh"},
 	}
-	imp, err := newImporter(key, ca, "0.0.0.0:7443", func() []network.Peer { return peers })
+	pool, err := api.NewClientPool(ca, "")
 	require.NoError(t, err)
+	imp, err := newImporter(key, pool, "0.0.0.0:7443", func() []network.Peer { return peers })
+	require.NoError(t, err)
+	roots, _ := pool.Pool()
+	assert.Same(t, roots, imp.Roots(), "the roots are the client CA pool as it stands")
 
 	pair, err := imp.Pair()
 	require.NoError(t, err)
@@ -42,8 +47,6 @@ func TestImporter_ReachesAPeerAtItsMeshAddressOnThisHostsAPIPort(t *testing.T) {
 	_, err = imp.Address("h-unknown")
 	assert.Error(t, err)
 
-	_, err = newImporter("k", ca, "0.0.0.0", func() []network.Peer { return nil })
+	_, err = newImporter("k", pool, "0.0.0.0", func() []network.Peer { return nil })
 	assert.Error(t, err, "a listen address without a port")
-	_, err = newImporter("k", filepath.Join(t.TempDir(), "absent"), "0.0.0.0:7443", func() []network.Peer { return nil })
-	assert.Error(t, err)
 }

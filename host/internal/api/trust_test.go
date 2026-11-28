@@ -49,3 +49,22 @@ func TestHost_ReportsWhenItsClientCAPoolStopsTrustingAnAuthorityOnEveryRequest(t
 	require.NotNil(t, h.TrustExpiresAt)
 	assert.True(t, h.TrustExpiresAt.Equal(tmpl.NotAfter.Truncate(time.Second)), "got %s", h.TrustExpiresAt)
 }
+
+func TestHost_ReportsTheEndOfTheReSigningTheAgentStoredBesideTheClientCAPool(t *testing.T) {
+	dir := t.TempDir()
+	base, refreshed := filepath.Join(dir, "client-ca.crt"), filepath.Join(dir, "client-ca.pem")
+	e := startEnvRevoking(t, netip.MustParseAddr("10.1.0.1"), true, nil, func(d *Deps) { d.ClientCAFile, d.RefreshedCAFile = base, refreshed })
+	require.NoError(t, os.WriteFile(base, e.ca.pem, 0o600))
+	tmpl := *e.ca.cert
+	tmpl.SerialNumber, tmpl.NotAfter = big.NewInt(2), e.ca.cert.NotAfter.AddDate(10, 0, 0)
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &e.ca.key.PublicKey, e.ca.key)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(refreshed, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
+
+	code, b := e.do(t, e.as(t, ReaderOrganization), "GET", "/v1/host", nil)
+	require.Equal(t, 200, code, string(b))
+	var h hostapi.Host
+	require.NoError(t, json.Unmarshal(b, &h))
+	require.NotNil(t, h.TrustExpiresAt)
+	assert.True(t, h.TrustExpiresAt.Equal(tmpl.NotAfter.Truncate(time.Second)), "the stored re-signing's end, not --client-ca's: got %s", h.TrustExpiresAt)
+}

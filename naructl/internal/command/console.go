@@ -2,8 +2,7 @@ package command
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/naructl/internal/console"
 )
 
@@ -69,8 +69,8 @@ func consoleCmd(fs *pflag.FlagSet) runner {
 	}
 }
 
-// authorityDigest is the hex SHA-256 of the first certificate of the --orch-ca file: what an install
-// seed gives a host to pin orch's authority by.
+// authorityDigest is the key pin (orchapi.KeyPin) of the first certificate of the --orch-ca file:
+// what an install seed gives a host to pin orch's authority by (ADR 0122).
 func authorityDigest(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -80,8 +80,11 @@ func authorityDigest(path string) (string, error) {
 	if block == nil || block.Type != "CERTIFICATE" {
 		return "", errors.New("the authority file holds no certificate")
 	}
-	sum := sha256.Sum256(block.Bytes)
-	return hex.EncodeToString(sum[:]), nil
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("the authority file: %w", err)
+	}
+	return orchapi.KeyPin(cert), nil
 }
 
 // loopbackHosts are the Host headers a browser sends to the loopback listener.

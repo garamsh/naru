@@ -188,7 +188,8 @@ type SignerJoin struct {
 type HostOrch struct {
 	// URL is the https URL of orch's API.
 	URL string `yaml:"url"`
-	// CASHA256 is the hex SHA-256 of the authority orch's certificate chains to.
+	// CASHA256 is the hex SHA-256 of the public key of the authority orch's certificate chains to,
+	// as spec.join.orch.caSHA256 (ADR 0122).
 	CASHA256 string `yaml:"caSHA256"`
 	// EnrollKey is the enrollment key. init writes it 0600 to HostdEnrollKeyFile, and GET /v1/config redacts it.
 	EnrollKey string `yaml:"enrollKey"`
@@ -545,7 +546,7 @@ func (v *validation) hostOrch(spec Spec) {
 		v.fail("spec.host.orch.url", "must be an https URL with a host and a port, got %q", o.URL)
 	}
 	if d, err := hex.DecodeString(o.CASHA256); err != nil || len(d) != sha256.Size {
-		v.fail("spec.host.orch.caSHA256", "must be the SHA-256 of the authority, 64 hexadecimal digits")
+		v.fail("spec.host.orch.caSHA256", "must be the SHA-256 of the authority's public key (or, until v0.1.0-rc.1, of its certificate), 64 hexadecimal digits")
 	}
 	if strings.TrimSpace(o.EnrollKey) == "" {
 		v.fail("spec.host.orch.enrollKey", "must hold the enrollment key")

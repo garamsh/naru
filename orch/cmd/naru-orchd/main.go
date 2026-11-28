@@ -166,7 +166,7 @@ func run(log *slog.Logger, f runFlags) error {
 		Listen: f.listen, MachineAPIListen: f.machineAddr, MachineZone: f.machineZone, ClientCA: f.ca, TrustPools: trustPools(f.ca, f.hostCA), SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
 		GroupInterval: f.groupEach, NetworkInterval: f.netEach, MachineInterval: f.machineEach, HostReserve: f.reserve, Restore: f.restore,
 	}, orchd.Deps{
-		Signer: sg, Credentials: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
+		Signer: sg, Credentials: sg, HostCredentials: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
 		NewHosts:       func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, hostHTTP, revocations) },
 		NewPrefixHosts: func(inv inventory.Service) inventory.PrefixHosts { return hostclient.New(inv, hostHTTP, revocations) },
 		NewMachineHosts: func(inv inventory.Service) machines.Hosts {

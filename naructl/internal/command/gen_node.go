@@ -68,7 +68,7 @@ func (f *nodeFlags) declare(fs *pflag.FlagSet) {
 	fs.StringVar(&f.signerPeer, "signer-peer-listen", "", "spec.signer: the address of the peer listener other signers replicate from (with --signer-peer-name)")
 	fs.Var(&f.signerPeerNames, "signer-peer-name", "spec.signer: a name or address of the peer listener's certificate, repeatable")
 	fs.StringVar(&f.hostOrchURL, "host-orch-url", "", "spec.host.orch: the https URL of orch's API, which naru-hostd enrolls with (with --host-region)")
-	fs.StringVar(&f.hostOrchCA, "host-orch-ca-sha256", "", "spec.host.orch: the hex SHA-256 of the authority orch's certificate chains to")
+	fs.StringVar(&f.hostOrchCA, "host-orch-ca-sha256", "", "spec.host.orch: the hex SHA-256 of the public key of the authority orch's certificate chains to (naructl orch ca prints it)")
 	fs.StringVar(&f.hostOrchKey, "host-orch-enroll-key", "", "spec.host.orch: the file holding the enrollment key, which the user data carries 0600 for naru-hostd alone")
 	fs.BoolVar(&f.signerReplica, "signer-replica", false, "spec.signer.replica: the signer is a replica of another and makes its join key at its first start (excludes --signer-root-csr)")
 	fs.StringVar(&f.signerJoinPeer, "signer-join-peer", "", "spec.signer.replica.join: host:port of the peer listener of a signer that holds the authorities (with --signer-replica)")

@@ -66,20 +66,24 @@ func (s *Signer) RetireHost(signed []byte) error {
 		return fmt.Errorf("%w: serial %q is not hexadecimal", ErrBadRequest, req.Keep)
 	}
 	keep := n.Text(16)
+	return s.retire(req.HostID, keep, who)
+}
 
+// retire is RetireHost's work for hostID, keeping keep, for the request who signed.
+func (s *Signer) retire(hostID, keep string, who identity.Identity) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.auth
-	held := cur.hosts[req.HostID]
+	held := cur.hosts[hostID]
 	if !slices.Contains(held, keep) {
-		return fmt.Errorf("%w: serial %s is not one of %s's", ErrUnknownHost, keep, req.HostID)
+		return fmt.Errorf("%w: serial %s is not one of %s's", ErrUnknownHost, keep, hostID)
 	}
 	if len(held) == 1 {
 		return nil
 	}
 	revoke := slices.DeleteFunc(slices.Clone(held), func(serial string) bool { return serial == keep || cur.crl.Revokes(serial) })
 	now := s.now()
-	next := cur.withHosts(req.HostID, []string{keep})
+	next := cur.withHosts(hostID, []string{keep})
 	files := []stagedFile{{hostsFile, next.marshalHosts()}}
 	crl := cur.successor(now)
 	if len(revoke) > 0 {
@@ -93,7 +97,7 @@ func (s *Signer) RetireHost(signed []byte) error {
 		return err
 	}
 	s.auth = next
-	s.log.Info("retired a host's earlier certificates", "host_id", req.HostID, "kept", keep, "revoked", revoke, "seq", crl.Seq,
+	s.log.Info("retired a host's earlier certificates", "host_id", hostID, "kept", keep, "revoked", revoke, "seq", crl.Seq,
 		"retired_by", who.Subject, "retired_by_serial", who.Serial)
 	return nil
 }

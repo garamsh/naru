@@ -100,8 +100,10 @@ type Deps struct {
 	Signer inventory.Signer
 	// Credentials is the signer a caller registers and renews through on the Machine API.
 	Credentials machineserver.Credentials
-	Auth        auth.Authenticator
-	Sealer      snapshot.Sealer
+	// HostCredentials is the signer a host renews its certificate through (ADR 0122).
+	HostCredentials api.HostCredentials
+	Auth            auth.Authenticator
+	Sealer          snapshot.Sealer
 	// NewHosts returns the engine's view of the hosts, given the inventory it reads them from. With
 	// it the leader runs the groups engine; without it, and without a Reconciler, no group is
 	// reconciled.
@@ -392,7 +394,7 @@ func (o *Orchd) assemble(m *member.Member) bool {
 			}
 		}()
 	}
-	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Machines: machineSvc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
+	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Machines: machineSvc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, invStore, d.Clock), Signer: d.Signer, HostCredentials: d.HostCredentials, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
 
 	o.wg.Add(4)
 	go func() {

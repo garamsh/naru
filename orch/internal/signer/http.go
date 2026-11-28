@@ -1,5 +1,6 @@
 // Package signer is orch's client of naru-signer, which listens on a unix socket of the control
-// host and answers HTTP: POST /v1/host, a caller's POST /v1/caller and POST /v1/caller-renew, and
+// host and answers HTTP: POST /v1/host, a caller's POST /v1/caller and POST /v1/caller-renew, a
+// host's POST /v1/host-renew and POST /v1/host-retire, GET /v1/ca, and
 // GET /v1/crl.
 package signer
 
@@ -25,6 +26,13 @@ const maxBody = 8 << 20
 // ErrInvalid is a request the signer answered 400: it is malformed, such as a certificate request
 // that does not parse.
 var ErrInvalid = errors.New("the signer refused a malformed request")
+
+// ErrUnknownHost is a request for a host or a serial the signer holds no record of, as after a
+// restore from a bundle older than the host's certificate: answered 409.
+var ErrUnknownHost = errors.New("the signer holds no record of the host's certificate")
+
+// signerUnknownHost is the message naru-signer answers such a request with.
+const signerUnknownHost = "the signer holds no certificate for this host"
 
 // Client calls the signer over its unix socket.
 type Client struct {
@@ -92,6 +100,10 @@ func (c *Client) do(ctx context.Context, method, path string, in []byte) ([]byte
 		return nil, fmt.Errorf("%w: %s", ErrInvalid, msg)
 	case resp.StatusCode == http.StatusConflict && bytes.Contains(msg, []byte(identity.ErrCallerNotDue.Error())):
 		return nil, fmt.Errorf("%w: %s", identity.ErrCallerNotDue, msg)
+	case resp.StatusCode == http.StatusConflict && bytes.Contains(msg, []byte(identity.ErrHostNotDue.Error())):
+		return nil, fmt.Errorf("%w: %s", identity.ErrHostNotDue, msg)
+	case resp.StatusCode == http.StatusConflict && bytes.Contains(msg, []byte(signerUnknownHost)):
+		return nil, fmt.Errorf("%w: %s", ErrUnknownHost, msg)
 	case resp.StatusCode/100 != 2:
 		return nil, fmt.Errorf("the signer answered %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
 	}
@@ -150,6 +162,38 @@ func (c *Client) RenewCaller(ctx context.Context, signed []byte) (identity.Issue
 		return identity.Issued{}, err
 	}
 	return decodeIssued(raw)
+}
+
+// RenewHost passes a renewal a host signed with its current certificate (ADR 0122). One before
+// its certificate's last 90 days is identity.ErrHostNotDue; a revoked or expired certificate is
+// inventory.ErrSignerRefused.
+func (c *Client) RenewHost(ctx context.Context, signed []byte) (identity.Issued, error) {
+	raw, err := c.do(ctx, http.MethodPost, "/v1/host-renew", signed)
+	if err != nil {
+		return identity.Issued{}, err
+	}
+	return decodeIssued(raw)
+}
+
+// RetireHost passes a retire a host signed with its renewed certificate, which revokes the host's
+// other certificates (ADR 0122).
+func (c *Client) RetireHost(ctx context.Context, signed []byte) error {
+	_, err := c.do(ctx, http.MethodPost, "/v1/host-retire", signed)
+	return err
+}
+
+// Authorities returns the signer's GET /v1/ca: the authorities' certificates and the revocation
+// key's public half, which hold nothing secret.
+func (c *Client) Authorities(ctx context.Context) (identity.Authorities, error) {
+	raw, err := c.do(ctx, http.MethodGet, "/v1/ca", nil)
+	if err != nil {
+		return identity.Authorities{}, err
+	}
+	var a identity.Authorities
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return identity.Authorities{}, fmt.Errorf("the signer's authorities are not an answer: %w", err)
+	}
+	return a, nil
 }
 
 func (c *Client) issued(ctx context.Context, path string, in any) (identity.Issued, error) {

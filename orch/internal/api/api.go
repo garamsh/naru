@@ -33,6 +33,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/machines"
 	"github.com/garamsh/naru/orch/internal/restore"
+	"github.com/garamsh/naru/orch/internal/signer"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
 
@@ -96,6 +97,19 @@ type Machines interface {
 	Callers(ctx context.Context) ([]machines.Caller, error)
 }
 
+// HostCredentials is the signer a host renews its certificate through, and reads the authorities
+// from (ADR 0122). Orch passes a host's signed requests on unread but for the certificate that
+// signed them; the signer verifies them.
+type HostCredentials interface {
+	// RenewHost returns the certificate the signer issued for a renewal the host signed. A renewal
+	// before the certificate's last 90 days is identity.ErrHostNotDue.
+	RenewHost(ctx context.Context, signed []byte) (identity.Issued, error)
+	// RetireHost revokes the host's certificates but the one that signed the retire.
+	RetireHost(ctx context.Context, signed []byte) error
+	// Authorities returns the signer's authorities, which hold nothing secret.
+	Authorities(ctx context.Context) (identity.Authorities, error)
+}
+
 // Deps is what the handlers call.
 type Deps struct {
 	Inventory inventory.Service
@@ -105,8 +119,10 @@ type Deps struct {
 	// Exposures is nil while the member has no way to reach the hosts; its endpoints answer 501.
 	Exposures Exposures
 	Signer    inventory.Signer
-	Auth      auth.Authenticator
-	Snapshots Snapshots
+	// HostCredentials is the signer a host renews through.
+	HostCredentials HostCredentials
+	Auth            auth.Authenticator
+	Snapshots       Snapshots
 	// Metrics counts the requests; nil counts none.
 	Metrics *Metrics
 	Log     *slog.Logger
@@ -178,6 +194,9 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/snapshots/latest", h.guard(auth.Administer, h.latestSnapshot))
 	mux.HandleFunc("PUT /v1/restore", h.guard(auth.Administer, h.alreadyRestored))
 	mux.HandleFunc("POST /v1/heartbeat", h.guard(auth.Report, h.heartbeat))
+	mux.HandleFunc("POST /v1/hosts/renew", h.guard(auth.Report, h.renewHost))
+	mux.HandleFunc("POST /v1/hosts/retire", h.guard(auth.Report, h.retireHost))
+	mux.HandleFunc("GET /v1/ca", h.guard(auth.Report, h.authorities))
 	// Enrollment is the one path without a client certificate: a key, or a proof of one, authenticates.
 	mux.HandleFunc("POST /v1/enroll", h.enroll)
 	mux.HandleFunc("GET /v1/enroll/{hostID}", h.poll)
@@ -331,6 +350,10 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, snapshot.ErrNoSnapshot):
 		status, msg = http.StatusNotFound, err.Error()
+	case errors.Is(err, identity.ErrHostNotDue):
+		status, msg = http.StatusConflict, identity.ErrHostNotDue.Error()
+	case errors.Is(err, signer.ErrUnknownHost):
+		status, msg = http.StatusConflict, signer.ErrUnknownHost.Error()
 	case errors.Is(err, ErrRestored):
 		status, msg = http.StatusConflict, err.Error()
 	case errors.Is(err, inventory.ErrConflict), errors.Is(err, inventory.ErrTooManyPending),
@@ -848,6 +871,74 @@ func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request, who identity
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// errNotOwnRequest is a host's renew or retire that is not its own, or not that action.
+var errNotOwnRequest = errors.New("a host passes on only a request of its own, signed by the certificate it connects with")
+
+// ownRequest reads the signed request in the body and returns it when it is the action, signed by
+// the certificate the host connects with, byte for byte. Orch reads no more of it: the signer
+// verifies it.
+func ownRequest(w http.ResponseWriter, r *http.Request, who identity.Identity, action string) ([]byte, bool) {
+	signed, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err != nil {
+		if tooLarge(err) {
+			writeError(w, r, err)
+			return nil, false
+		}
+		writeJSON(w, http.StatusBadRequest, orchapi.Error{Message: "the request body could not be read"})
+		return nil, false
+	}
+	cert, err := identity.RequestCertificate(signed)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, orchapi.Error{Message: "the body is not a signed request: " + err.Error()})
+		return nil, false
+	}
+	got, _, err := identity.ReadRequest(signed)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, orchapi.Error{Message: "the body is not a signed request: " + err.Error()})
+		return nil, false
+	}
+	if got != action || !bytes.Equal(cert.Raw, r.TLS.VerifiedChains[0][0].Raw) {
+		logger(r).Warn("refused: a host passed on a request not its own", "subject", who.Subject, "action", got, "signed_by", cert.Subject.CommonName)
+		writeJSON(w, http.StatusForbidden, orchapi.Error{Message: errNotOwnRequest.Error()})
+		return nil, false
+	}
+	return signed, true
+}
+
+// renewHost passes on a renewal the host signed with the certificate it connects with (ADR 0122).
+func (h *handler) renewHost(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	signed, ok := ownRequest(w, r, who, identity.ActionRenewHost)
+	if !ok {
+		return
+	}
+	out, err := h.HostCredentials.RenewHost(r.Context(), signed)
+	if err == nil {
+		logger(r).Info("host renewed its certificate", "host", who.Subject, "serial", out.Serial, "not_after", out.NotAfter)
+	}
+	reply(w, r, out, err)
+}
+
+// retireHost passes on a retire the host signed with its renewed certificate (ADR 0122).
+func (h *handler) retireHost(w http.ResponseWriter, r *http.Request, who identity.Identity) {
+	signed, ok := ownRequest(w, r, who, identity.ActionRetireOwnHost)
+	if !ok {
+		return
+	}
+	if err := h.HostCredentials.RetireHost(r.Context(), signed); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	logger(r).Info("host retired its other certificates", "host", who.Subject, "kept", who.Serial)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// authorities answers the signer's authorities to a host, which adds to its pool only a re-signing
+// of an authority it already trusts (ADR 0122).
+func (h *handler) authorities(w http.ResponseWriter, r *http.Request, _ identity.Identity) {
+	out, err := h.HostCredentials.Authorities(r.Context())
+	reply(w, r, out, err)
 }
 
 func (h *handler) enroll(w http.ResponseWriter, r *http.Request) {

@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,7 +16,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
 	"strings"
 	"time"
 
@@ -34,6 +32,9 @@ type Deps struct {
 	// ClientCAFile is the pool of authorities hostd trusts its callers through (--client-ca), whose
 	// expiry GET /v1/host reports (ADR 0121); empty reports none.
 	ClientCAFile string
+	// RefreshedCAFile is the agent's store of the re-signings of those authorities (ADR 0122),
+	// whose ends GET /v1/host reports with theirs; empty or absent adds none.
+	RefreshedCAFile string
 	// HostFile is the file init writes from spec.host: the region and labels /v1/host reports. It is
 	// read on every request, so an apply that changes spec.host shows with no restart.
 	HostFile string
@@ -238,22 +239,6 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
-}
-
-// TLSConfig returns the configuration of the listener: TLS 1.3 only, the serving pair at
-// serving, and a client certificate required and verified against the client CA at
-// clientCAFile. When revocations is not nil, a certificate on the signer's list is refused at the
-// handshake, and so is every client while the list is older than its max age or was never had.
-func TLSConfig(serving *Serving, clientCAFile string, revocations *identity.RevocationList) (*tls.Config, error) {
-	ca, err := os.ReadFile(clientCAFile)
-	if err != nil {
-		return nil, err
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(ca) {
-		return nil, errors.New(clientCAFile + " holds no certificate")
-	}
-	return ServerTLS(serving.GetCertificate, pool, revocations), nil
 }
 
 // DrainTimeout is how long Serve waits for the requests in flight after its context ends, before

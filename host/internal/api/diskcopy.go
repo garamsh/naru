@@ -60,9 +60,9 @@ type Importer struct {
 	// Pair is the certificate the host reports to orch with: its host ID, role host, which the
 	// source's export checks the grant against.
 	Pair func() (*tls.Certificate, error)
-	// Roots are the authorities a source's serving certificate chains to; it must also name the
-	// source's host ID.
-	Roots *x509.CertPool
+	// Roots returns the authorities a source's serving certificate chains to, read at each fetch so
+	// a refreshed pool is taken (ADR 0122); the certificate must also name the source's host ID.
+	Roots func() *x509.CertPool
 	// Address is host:port of the API of the host by ID over the mesh: its mesh address and the
 	// port the host API listens on.
 	Address func(hostID string) (string, error)
@@ -423,7 +423,7 @@ func (s *Server) fetchFrom(ctx context.Context, source, grant string) (io.ReadCl
 	if err != nil {
 		return nil, sourceError{err}
 	}
-	check := identity.PeerCheck{Roots: imp.Roots, Usage: x509.ExtKeyUsageServerAuth, Names: []string{source}, Revocations: s.deps.Revocations, Now: s.deps.Now}
+	check := identity.PeerCheck{Roots: imp.Roots(), Usage: x509.ExtKeyUsageServerAuth, Names: []string{source}, Revocations: s.deps.Revocations, Now: s.deps.Now}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS13, InsecureSkipVerify: true, VerifyConnection: check.VerifyConnection,

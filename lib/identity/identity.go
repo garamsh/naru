@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"time"
 )
@@ -50,6 +51,8 @@ type Identity struct {
 	NotAfter time.Time
 	// PublicKey is the certificate's key, which a caller's renewal must not ask for again.
 	PublicKey crypto.PublicKey
+	// IPAddresses are the certificate's IP addresses, which a host's renewal keeps.
+	IPAddresses []net.IP
 }
 
 // Valid reports whether r is one of the roles.
@@ -100,7 +103,7 @@ func Authenticate(chains [][]*x509.Certificate, crl *CRL) (Identity, error) {
 			return Identity{}, err
 		}
 	}
-	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf), NotAfter: leaf.NotAfter, PublicKey: leaf.PublicKey}, nil
+	return Identity{Subject: leaf.Subject.CommonName, Role: role, Serial: SerialOf(leaf), NotAfter: leaf.NotAfter, PublicKey: leaf.PublicKey, IPAddresses: leaf.IPAddresses}, nil
 }
 
 // callerName is what a caller is called: a DNS label.

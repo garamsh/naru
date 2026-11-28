@@ -112,7 +112,7 @@ func (f *fleet) start(t *testing.T, id string) *env {
 		Now: f.clock.now, StreamIdle: f.idle, MinStreamRate: f.rateOf(id), Transfers: f.transfers,
 		Importer: &Importer{
 			Pair:  func() (*tls.Certificate, error) { return &pair, nil },
-			Roots: roots,
+			Roots: func() *x509.CertPool { return roots },
 			Address: func(host string) (string, error) {
 				if h, ok := f.byID[host]; ok {
 					return h.addr, nil

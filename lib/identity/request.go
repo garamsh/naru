@@ -43,7 +43,21 @@ const (
 	ActionBundle       = "bundle"
 	ActionRestore      = "restore"
 	ActionReplicate    = "replicate"
+	// ActionRenewHost is signed by a host's current certificate to renew it under its key, and
+	// ActionRetireOwnHost by the renewed one to revoke the host's others (ADR 0122).
+	ActionRenewHost     = "renew-host"
+	ActionRetireOwnHost = "retire-own-host"
 )
+
+// HostRenewWindow is the end of a host certificate's life in which the host renews it. Its agent
+// checks daily, so a host down for less than this renews when it is back.
+const HostRenewWindow = 90 * 24 * time.Hour
+
+// HostRenewal is the body of ActionRenewHost: a PKCS #10 request, DER, for the key of the
+// certificate that signs it.
+type HostRenewal struct {
+	CSR []byte `json:"csr"`
+}
 
 // HostRequest is the body of the signer's POST /v1/host: an admission statement and the
 // host's PKCS #10 certificate request, DER.
@@ -278,3 +292,12 @@ func VerifyRequest(data []byte, action string, roots *x509.CertPool, crl *CRL, n
 	}
 	return id, body, nil
 }
+
+// RequestCertificate returns the certificate attached to a signed request without checking it, for
+// a party that only forwards the request to the one that verifies it.
+func RequestCertificate(data []byte) (*x509.Certificate, error) {
+	return signedrequest.Certificate(data)
+}
+
+// ErrHostNotDue is a host's renewal before the last HostRenewWindow of its certificate's life.
+var ErrHostNotDue = errors.New("the host certificate is not due to renew")

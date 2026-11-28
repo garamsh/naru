@@ -44,7 +44,7 @@ type Config struct {
 	// loopback would reach it. A loopback server lists its own addresses.
 	AllowedHosts []string
 	// OrchURL and OrchCASHA256 are what an install seed tells a host about orch: the address it
-	// enrolls at and the SHA-256 of the authority orch's certificate chains to. Without them the
+	// enrolls at and the key pin of the authority orch's certificate chains to (orchapi.KeyPin). Without them the
 	// install-seed page says it cannot make a seed.
 	OrchURL      string
 	OrchCASHA256 string

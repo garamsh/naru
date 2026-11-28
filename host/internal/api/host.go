@@ -116,13 +116,13 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 }
 
 // trustExpiry is when the client CA pool stops trusting an authority it holds, and which, read from
-// the file on each call, so a refreshed pool reports at once; ok is false when the pool cannot be
-// read or holds none.
+// --client-ca and the agent's re-signings on each call, so a refreshed pool reports at once; ok is
+// false when the pool cannot be read or holds none.
 func (s *Server) trustExpiry() (end identity.TrustEnd, ok bool) {
 	if s.deps.ClientCAFile == "" {
 		return identity.TrustEnd{}, false
 	}
-	b, err := os.ReadFile(s.deps.ClientCAFile)
+	b, err := (&ClientPool{base: s.deps.ClientCAFile, refreshed: s.deps.RefreshedCAFile}).PEM()
 	if err != nil {
 		s.deps.Log.Error("cannot read the client CA pool", "file", s.deps.ClientCAFile, "err", err.Error())
 		return identity.TrustEnd{}, false

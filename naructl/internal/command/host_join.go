@@ -23,7 +23,7 @@ const installSeedMode = 0o600
 // shell history and no process list.
 func hostInstallSeed(fs *pflag.FlagSet) runner {
 	orchURL := fs.String("orch-url", "", "orch's https URL, which the host enrolls with")
-	orchCA := fs.String("orch-ca-sha256", "", "the hex SHA-256 of the authority orch's certificate chains to")
+	orchCA := fs.String("orch-ca-sha256", "", "the hex SHA-256 of the public key of the authority orch's certificate chains to (naructl orch ca prints it)")
 	keyFile := fs.String("enroll-key", "", "a file holding the enrollment key, which enroll-key create printed")
 	name := fs.String("name", "", "the name the host is listed under until it is admitted, a DNS label (default none: its ID)")
 	out := fs.String("out", "", "the ISO to write (0600: it carries the enrollment key; a file already there is replaced)")
@@ -80,7 +80,7 @@ func genHostProfile(fs *pflag.FlagSet) runner {
 	fs.StringVar(&pool, "machine-pool", "", "the IPv4 prefix orch gives each host a /24 of for its Machines, such as 10.200.0.0/16")
 	fs.StringVar(&meshPool, "mesh-pool", "", "the IPv4 prefix orch gives each admitted host its mesh address from, a /32 on its tunnel, such as 10.99.0.0/24; apart from the Machine pool, every network and every address pool")
 	fs.StringVar(&p.Orch.URL, "orch-url", "", "orch's https URL, which an admitted host's agent keeps reporting to")
-	fs.StringVar(&p.Orch.CASHA256, "orch-ca-sha256", "", "the hex SHA-256 of the authority orch's certificate chains to")
+	fs.StringVar(&p.Orch.CASHA256, "orch-ca-sha256", "", "the hex SHA-256 of the public key of the authority orch's certificate chains to (naructl orch ca prints it)")
 	fs.StringVar(&out, "out", "", "the profile to write (0600 when it carries a registry's password, else 0644)")
 	return func(args []string, stdout, stderr io.Writer) error {
 		if err := require(fs, "firecracker-sha256", "machine-pool", "orch-url", "orch-ca-sha256", "out"); err != nil {
