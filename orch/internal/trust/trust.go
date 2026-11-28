@@ -28,27 +28,6 @@ const EventExpiring = "authority.expiring"
 // DefaultInterval is how often a Watcher checks when its Config names none.
 const DefaultInterval = time.Hour
 
-// Host is when an admitted host's pool stops trusting an authority, as the host reports it.
-type Host struct {
-	ID        string
-	ExpiresAt time.Time
-}
-
-// Hosts is what a Watcher reads of the admitted hosts: each that reports when its pool ends.
-type Hosts interface {
-	Trust(ctx context.Context) ([]Host, error)
-}
-
-// Events is where a Watcher appends its events.
-type Events interface {
-	AppendEvent(ctx context.Context, ev orchapi.Event) error
-}
-
-// Clock is the Watcher's clock.
-type Clock interface {
-	Now() time.Time
-}
-
 // Config is what a Watcher checks and where it warns.
 type Config struct {
 	// Member is the name of the orch member whose Pools these are.
