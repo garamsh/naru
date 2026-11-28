@@ -497,6 +497,18 @@ func TestTheHostRefusesAReSigningItsAuthorityDidNotSignOrThatOutlivesTenYears(t 
 	require.NoError(t, a.Check(t.Context()))
 	assert.Empty(t, stored(), "nor one for nine years")
 
+	// The authority's key signed it, but as another authority's: it is no re-signing of itself.
+	parent := &x509.Certificate{SerialNumber: big.NewInt(8), Subject: pkix.Name{CommonName: "naru-operator-ca"}}
+	tmpl.SerialNumber, tmpl.NotAfter = big.NewInt(9), time.Now().AddDate(9, 0, 0)
+	der, err = x509.CreateCertificate(rand.Reader, tmpl, parent, &hostKey.PublicKey, hostKey)
+	require.NoError(t, err)
+	crossed, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	require.NoError(t, crossed.CheckSignature(crossed.SignatureAlgorithm, crossed.RawTBSCertificate, crossed.Signature), "setup: the authority's key signed it")
+	offer(crossed)
+	require.NoError(t, a.Check(t.Context()))
+	assert.Empty(t, stored(), "nor one issued under another name")
+
 	offer(authorityCert(t, hostKey, "naru-host-ca", time.Now().AddDate(100, 0, 0), true))
 	require.NoError(t, a.Check(t.Context()))
 	assert.Empty(t, stored(), "nor one the authority signed for a century")
