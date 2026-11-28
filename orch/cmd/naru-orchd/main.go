@@ -29,6 +29,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/orchd"
 	"github.com/garamsh/naru/orch/internal/routes"
+	"github.com/garamsh/naru/orch/internal/trust"
 	"github.com/garamsh/naru/orch/internal/signer"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
@@ -162,7 +163,7 @@ func run(log *slog.Logger, f runFlags) error {
 	}
 	o, err := orchd.Start(ctx, orchd.Config{
 		Config: mcfg,
-		Listen: f.listen, MachineAPIListen: f.machineAddr, MachineZone: f.machineZone, ClientCA: f.ca, SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
+		Listen: f.listen, MachineAPIListen: f.machineAddr, MachineZone: f.machineZone, ClientCA: f.ca, TrustPools: trustPools(f.ca, f.hostCA), SnapshotDir: f.snapDir, SnapshotInterval: f.snapEvery, SnapshotKeep: f.snapKeep, CRLSyncInterval: f.crlEvery,
 		GroupInterval: f.groupEach, NetworkInterval: f.netEach, MachineInterval: f.machineEach, HostReserve: f.reserve, Restore: f.restore,
 	}, orchd.Deps{
 		Signer: sg, Credentials: sg, Auth: authn, Sealer: sealer, Clock: realClock{}, Log: log, CRLPeer: sg, RevocationKey: revokeKey, Metrics: registerer,
@@ -182,6 +183,9 @@ func run(log *slog.Logger, f runFlags) error {
 		NewRouteHosts: func(inv inventory.Service) routes.Hosts {
 			return hostclient.NewRouteHosts(inv, hostclient.DialRouteAPI(hostHTTP, revocations))
 		},
+		NewTrustHosts: func(inv inventory.Service) trust.Hosts {
+			return hostclient.NewRouteHosts(inv, hostclient.DialRouteAPI(hostHTTP, revocations))
+		},
 	})
 	if err != nil {
 		return err
@@ -193,6 +197,16 @@ func run(log *slog.Logger, f runFlags) error {
 	log.Info("naru-orchd serving", "member", f.name, "api", o.Addr())
 	<-ctx.Done()
 	return o.Stop()
+}
+
+// trustPools are the member's pools of authorities by flag: --ca, and --host-ca when it names
+// another file.
+func trustPools(ca, hostCA string) map[string]string {
+	pools := map[string]string{"ca": ca}
+	if hostCA != "" && hostCA != ca {
+		pools["host-ca"] = hostCA
+	}
+	return pools
 }
 
 // newBootSets is the store the boot sets are added from, or nil when none is set. A store whose

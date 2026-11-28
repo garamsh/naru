@@ -30,6 +30,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/orchd"
 	"github.com/garamsh/naru/orch/internal/snapshot"
+	"github.com/garamsh/naru/orch/internal/trust"
 )
 
 // Cluster is n orch members on localhost sharing one authority.
@@ -90,6 +91,10 @@ type Options struct {
 	NewMachineHosts func(inv inventory.Service) machines.Hosts
 	MachineInterval time.Duration
 	HostReserve     machines.Reserve
+	// TrustPools makes every member warn of its CA pool, which ends within a day, as naru-orchd
+	// warns of --ca; NewTrustHosts gives the leader the hosts whose pools it warns of too.
+	TrustPools    bool
+	NewTrustHosts func(inv inventory.Service) trust.Hosts
 }
 
 // pickPorts is how a cluster chooses its ports; a test replaces it to make a port taken.
@@ -234,6 +239,10 @@ func (c *Cluster) member(t testing.TB, i, peerPort, clientPort int) (orchd.Confi
 	if i < len(o.CRLPeers) {
 		deps.CRLPeer = o.CRLPeers[i]
 	}
+	if o.TrustPools {
+		cfg.TrustPools = map[string]string{"ca": files.CA}
+	}
+	deps.NewTrustHosts = o.NewTrustHosts
 	return cfg, deps
 }
 

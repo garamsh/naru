@@ -11,6 +11,7 @@ import (
 
 	"github.com/garamsh/naru/host/internal/mvmd"
 	"github.com/garamsh/naru/lib/hostapi"
+	"github.com/garamsh/naru/lib/identity"
 )
 
 // HostInfo is spec.host as init writes it to the host file.
@@ -97,6 +98,7 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 			out.Proxy.RouteMaxAgeSeconds = int64((s.deps.Routes.MaxAge + time.Second - 1) / time.Second)
 		}
 	}
+	out.TrustExpiresAt = s.trustExpiry()
 	out.Mvmd.BootSets = hostBootSets(rt.BootSets)
 	out.Mvmd.MachinePrefixes = append([]string{}, rt.MachinePrefixes...)
 	out.Free = hostapi.Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateAvailableBytes}
@@ -108,6 +110,25 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 		out.Free.Memory -= min(out.Free.Memory, m.MemoryBytes)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// trustExpiry is when the client CA pool stops trusting an authority it holds, read from the file
+// on each call, so a refreshed pool reports at once; nil when the pool cannot be read or holds none.
+func (s *Server) trustExpiry() *time.Time {
+	if s.deps.ClientCAFile == "" {
+		return nil
+	}
+	b, err := os.ReadFile(s.deps.ClientCAFile)
+	if err != nil {
+		s.deps.Log.Error("cannot read the client CA pool", "file", s.deps.ClientCAFile, "err", err.Error())
+		return nil
+	}
+	at, ok := identity.TrustExpiry(b)
+	if !ok {
+		return nil
+	}
+	at = at.UTC()
+	return &at
 }
 
 // hostBootSets is the boot sets mvmd offers as the host API says them; an empty list is [], not null.

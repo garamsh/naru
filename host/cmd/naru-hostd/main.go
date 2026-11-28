@@ -226,7 +226,7 @@ func main() {
 		}
 	}
 	// A reset of the data disk deletes serving.pem, so the pair that serves after it is the configuration's.
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, ProxyHealthy: proxyHealthy, Routes: routes, Virtualization: virt, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
+	srv := api.New(api.Deps{Runtime: rt, ClientCAFile: *clients, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, ProxyHealthy: proxyHealthy, Routes: routes, Virtualization: virt, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
 		HostID: resetID, ResetMarker: *resetMarker, Reboot: rebootInit, CheckPair: pairAfterReset(revocations, *cert), Importer: importer})
 	if *metricsAddr != "" {
 		go func() {

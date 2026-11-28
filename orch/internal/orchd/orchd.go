@@ -49,6 +49,7 @@ import (
 	"github.com/garamsh/naru/orch/internal/routes"
 	routesetcd "github.com/garamsh/naru/orch/internal/routes/etcd"
 	"github.com/garamsh/naru/orch/internal/snapshot"
+	"github.com/garamsh/naru/orch/internal/trust"
 )
 
 // DefaultLeaderTTL is the lease of the leader: a stopped leader is replaced within about this long.
@@ -65,6 +66,9 @@ type Config struct {
 	MachineZone      string
 	// ClientCA verifies the certificates of the API's callers.
 	ClientCA string
+	// TrustPools are the member's pools of authorities by the flag that names them, each a PEM
+	// file. The member warns of each that ends within a year (ADR 0121); none warns of none.
+	TrustPools map[string]string
 	// SnapshotDir holds the sealed snapshots; SnapshotInterval and SnapshotKeep default to every
 	// 6 hours and 8 files.
 	SnapshotDir      string
@@ -121,6 +125,9 @@ type Deps struct {
 	// routing table to every host that reports a proxy, and a Machine's delete waits for the proxies
 	// to stop forwarding to its address; without it no table is pushed and a delete does not wait.
 	NewRouteHosts func(inv inventory.Service) routes.Hosts
+	// NewTrustHosts returns the hosts as the leader reads when each host's pool of authorities ends
+	// (ADR 0121). With it the leader warns of a host's pool too; without it, of the members' alone.
+	NewTrustHosts func(inv inventory.Service) trust.Hosts
 	// BootSets, with NewBootSetHosts, turns on the adding of the boot sets the groups' node
 	// versions need to the hosts that lack them. The leader runs it beside the groups engine.
 	BootSets        groups.ReleaseStore
@@ -356,6 +363,9 @@ func (o *Orchd) assemble(m *member.Member) bool {
 		})
 		reconcilers, gate = append(reconcilers, push), push
 	}
+	if d.NewTrustHosts != nil {
+		reconcilers = append(reconcilers, trust.New(trust.Config{Hosts: d.NewTrustHosts(svc), Events: leaderInv, Clock: d.Clock, Log: d.Log}))
+	}
 	if machineHosts != nil {
 		reconcilers = append(reconcilers, machines.NewReconciler(machines.ReconcilerConfig{
 			Store: machinesetcd.New(leaderKV), Hosts: machineHosts, Clock: d.Clock, Interval: c.MachineInterval, Reserve: c.HostReserve,
@@ -384,7 +394,14 @@ func (o *Orchd) assemble(m *member.Member) bool {
 	}
 	o.handler.Store(&handlerBox{api.New(api.Deps{Inventory: svc, Machines: machineSvc, Exposures: exposureSvc, Groups: groupsvc.New(groupStore, hosts, invStore, d.Clock), Networks: networks.New(networkStore, groupStore, exposuresetcd.New(m.Client()), invStore, invStore, d.Clock), Signer: d.Signer, Auth: d.Auth, Snapshots: taker, Metrics: o.metrics, Log: d.Log})})
 
-	o.wg.Add(3)
+	o.wg.Add(4)
+	go func() {
+		defer o.wg.Done()
+		if len(c.TrustPools) == 0 {
+			return
+		}
+		_ = trust.New(trust.Config{Member: c.Name, Pools: c.TrustPools, Events: invStore, Clock: d.Clock, Log: d.Log}).Run(o.runCtx)
+	}()
 	go func() {
 		defer o.wg.Done()
 		if d.Sealer == nil {

@@ -31,6 +31,9 @@ import (
 // Deps is what the server reads and acts through.
 type Deps struct {
 	Runtime mvmd.Runtime
+	// ClientCAFile is the pool of authorities hostd trusts its callers through (--client-ca), whose
+	// expiry GET /v1/host reports (ADR 0121); empty reports none.
+	ClientCAFile string
 	// HostFile is the file init writes from spec.host: the region and labels /v1/host reports. It is
 	// read on every request, so an apply that changes spec.host shows with no restart.
 	HostFile string
