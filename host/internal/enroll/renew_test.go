@@ -56,6 +56,10 @@ func (f *fakeOrch) renew(w http.ResponseWriter, r *http.Request) {
 		f.json(w, http.StatusConflict, orchapi.Error{Message: identity.ErrHostNotDue.Error()})
 		return
 	}
+	if f.conflict {
+		f.json(w, http.StatusConflict, orchapi.Error{Message: "this member is not waiting for a restore"})
+		return
+	}
 	var req identity.HostRenewal
 	require.NoError(f.t, json.Unmarshal(raw, &req))
 	csr, err := x509.ParseCertificateRequest(req.CSR)
@@ -65,7 +69,17 @@ func (f *fakeOrch) renew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(int64(20 + len(f.renewed))), Subject: pkix.Name{CommonName: who.Subject, OrganizationalUnit: []string{string(identity.RoleHost)}}, NotBefore: time.Now().Add(-time.Hour), NotAfter: f.renewedUntil, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, f.ca, csr.PublicKey, f.caKey)
+	pub, parent, signer := csr.PublicKey, f.ca, f.caKey
+	switch f.bogus {
+	case "name":
+		tmpl.Subject.CommonName = "host-b"
+	case "key":
+		pub = &mustKey(f.t).PublicKey
+	case "authority":
+		other := mustKey(f.t)
+		parent, signer = authorityCert(f.t, other, "ca", time.Now().AddDate(5, 0, 0), true), other
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, signer)
 	require.NoError(f.t, err)
 	cert, err := x509.ParseCertificate(der)
 	require.NoError(f.t, err)
@@ -82,6 +96,10 @@ func (f *fakeOrch) retire(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	if f.failRetire {
 		f.json(w, http.StatusServiceUnavailable, orchapi.Error{Message: "the signer is away"})
+		return
+	}
+	if f.retireUnknown {
+		f.json(w, http.StatusConflict, orchapi.Error{Message: "the signer holds no record of the host's certificate"})
 		return
 	}
 	serial, _ := new(big.Int).SetString(who.Serial, 16)
@@ -134,6 +152,8 @@ type served struct {
 	mu    sync.Mutex
 	certs [][]byte
 	fail  error
+	// kept is what host.retire held at each call.
+	kept []string
 }
 
 func (s *served) serve(certPEM, _ []byte) error {
@@ -158,8 +178,19 @@ func newRenewal(t *testing.T) *renewal {
 	f := newFakeOrch(t, "naru-ek-secret")
 	f.life, f.renewedUntil = 365*24*time.Hour, time.Now().AddDate(2, 0, 0)
 	r := &renewal{f: f, served: &served{}, clock: &agentClock{}}
+	clientCA := filepath.Join(t.TempDir(), "client-ca.crt")
+	require.NoError(t, os.WriteFile(clientCA, pemOf(f.ca), 0o600))
 	var stop func()
-	f, r.a, r.dir, stop = enrolledBy(t, f, func(c *enroll.Config) { c.Now, c.Serve = r.clock.Now, r.served.serve })
+	f, r.a, r.dir, stop = enrolledBy(t, f, func(c *enroll.Config) {
+		c.Now, c.ClientCAFile = r.clock.Now, clientCA
+		c.Serve = func(certPEM, keyPEM []byte) error {
+			kept, _ := os.ReadFile(filepath.Join(r.dir, "host.retire"))
+			r.served.mu.Lock()
+			r.served.kept = append(r.served.kept, string(kept))
+			r.served.mu.Unlock()
+			return r.served.serve(certPEM, keyPEM)
+		}
+	})
 	t.Cleanup(stop)
 	r.first = r.hostCert()
 	return r
@@ -209,6 +240,7 @@ func TestTheHostRenewsInTheLastNinetyDaysAndRetiresItsOthersWithTheRenewedCertif
 	require.NoError(t, err)
 	assert.Equal(t, key, after, "the key is not rewritten")
 	assert.Equal(t, 1, r.served.count(), "and the host API serves it")
+	assert.Equal(t, []string{"14\n"}, r.served.kept, "the retire of the others is kept before the API serves the new certificate")
 	require.Eventually(t, func() bool { _, _, h := r.state(); return h == 20 }, 5*time.Second, 20*time.Millisecond, "the host reports with it")
 
 	r.f.mu.Lock()
@@ -366,6 +398,65 @@ func TestARetireKeptForACertificateARotationReplacedIsDroppedNotSigned(t *testin
 	assert.Empty(t, retired, "the pair the retire was kept for is not the host's any more, and the operator's rotation revokes the rest")
 	_, err = os.Stat(filepath.Join(r.dir, "host.retire"))
 	assert.ErrorIs(t, err, os.ErrNotExist, "and the retire is dropped")
+}
+
+func TestTheHostRefusesARenewedCertificateThatIsNotItsOwnUnderItsAuthority(t *testing.T) {
+	r := newRenewal(t)
+	r.clock.set(r.first.NotAfter.Add(-time.Hour))
+	for _, bogus := range []string{"name", "key", "authority"} {
+		r.f.mu.Lock()
+		r.f.bogus = bogus
+		r.f.mu.Unlock()
+		require.Error(t, r.a.Check(t.Context()), bogus)
+		assert.Equal(t, r.first.Raw, r.hostCert().Raw, "%s: nothing is written beside the key", bogus)
+		assert.Zero(t, r.served.count(), "%s: nor served", bogus)
+		_, err := os.Stat(filepath.Join(r.dir, "host.retire"))
+		assert.ErrorIs(t, err, os.ErrNotExist, "%s: nor a retire kept", bogus)
+	}
+	r.f.mu.Lock()
+	r.f.bogus = ""
+	r.f.mu.Unlock()
+	require.NoError(t, r.a.Check(t.Context()), "control: the host's own certificate under its authority")
+	assert.Equal(t, 1, r.served.count())
+}
+
+func TestARetireThatKeepsFailingDoesNotStopTheNextRenewal(t *testing.T) {
+	r := newRenewal(t)
+	r.clock.set(r.first.NotAfter.Add(-time.Hour))
+	r.f.mu.Lock()
+	r.f.failRetire = true
+	r.f.mu.Unlock()
+	require.Error(t, r.a.Check(t.Context()))
+	r.clock.set(r.f.renewedUntil.Add(-identity.HostRenewWindow).Add(time.Hour))
+	require.Error(t, r.a.Check(t.Context()), "the retire fails again")
+	renewed, _, _ := r.state()
+	assert.Equal(t, 2, renewed, "and the renewed certificate renews all the same")
+}
+
+func TestARetireTheSignerHasNoRecordOfIsDropped(t *testing.T) {
+	r := newRenewal(t)
+	r.clock.set(r.first.NotAfter.Add(-time.Hour))
+	r.f.mu.Lock()
+	r.f.retireUnknown = true
+	r.f.mu.Unlock()
+	require.NoError(t, r.a.Check(t.Context()), "a retire no retry can do is not an error to keep")
+	_, err := os.Stat(filepath.Join(r.dir, "host.retire"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "it is dropped")
+	renewed, _, _ := r.state()
+	assert.Equal(t, 1, renewed, "control: the renewal itself was done")
+}
+
+func TestAConflictThatIsNotNotDueIsAFailedRenewal(t *testing.T) {
+	r := newRenewal(t)
+	r.clock.set(r.first.NotAfter.Add(-time.Hour))
+	r.f.mu.Lock()
+	r.f.conflict = true
+	r.f.mu.Unlock()
+	assert.Error(t, r.a.Check(t.Context()), "another 409 of orch's")
+	r.f.mu.Lock()
+	r.f.conflict, r.f.notDue = false, true
+	r.f.mu.Unlock()
+	assert.NoError(t, r.a.Check(t.Context()), "control: the not-due one")
 }
 
 func TestTheHostRefusesAReSigningItsAuthorityDidNotSignOrThatOutlivesTenYears(t *testing.T) {

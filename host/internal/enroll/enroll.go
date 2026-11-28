@@ -91,6 +91,8 @@ type Agent struct {
 	mu   sync.Mutex
 	cl   *orchapi.Client
 	pair *tls.Certificate
+	// renewMu serialises a rotation and a renewal, each of which replaces the pair.
+	renewMu sync.Mutex
 }
 
 // New returns an agent with the defaults filled in.
@@ -440,6 +442,8 @@ var (
 // certificate beside it, each atomically, and reports with the new pair from the next heartbeat on.
 // It returns the serial of the certificate, in hexadecimal.
 func (a *Agent) Rotate(ctx context.Context, certPEM, keyPEM []byte) (string, error) {
+	a.renewMu.Lock()
+	defer a.renewMu.Unlock()
 	if a.current() == nil {
 		return "", ErrNotEnrolled
 	}

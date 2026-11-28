@@ -73,13 +73,20 @@ type fakeOrch struct {
 	retired    []int64
 	// offered is what GET /v1/ca answers.
 	offered identity.Authorities
+	// bogus makes a renewal answer a certificate that is not the host's: "name" another host's,
+	// "key" one for another key, "authority" one no authority the host trusts signed. retireUnknown
+	// answers a retire 409, as orch answers a serial the signer has no record of, and conflict
+	// answers a renewal 409 with a message that is not the not-due one.
+	bogus         string
+	retireUnknown bool
+	conflict      bool
 }
 
 func newFakeOrch(t *testing.T, secret string) *fakeOrch {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "ca"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "ca"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().AddDate(10, 0, 0), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &caKey.PublicKey, caKey)
 	require.NoError(t, err)
 	ca, err := x509.ParseCertificate(der)
