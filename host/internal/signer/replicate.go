@@ -206,7 +206,7 @@ func (s *Signer) PeerTLSConfig(names []string) (*tls.Config, error) {
 			tmpl.DNSNames = append(tmpl.DNSNames, n)
 		}
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, a.orch.cert, &key.PublicKey, a.orch.key)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, a.orch.cert, &key.PublicKey, a.orch.signer())
 	if err != nil {
 		return nil, fmt.Errorf("issue the serving certificate: %w", err)
 	}

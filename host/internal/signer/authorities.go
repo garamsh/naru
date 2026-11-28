@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -37,7 +38,6 @@ const (
 	certSuffix       = ".crt"
 	keySuffix        = ".key"
 	bundleVersion    = 1
-	authorityYears   = 10
 	notBeforeBackoff = time.Minute
 )
 
@@ -46,6 +46,10 @@ type authority struct {
 	cert *x509.Certificate
 	key  *ecdsa.PrivateKey
 }
+
+// signer is what every certificate the authority signs is signed through (ADR 0121): the key in
+// the signer's directory now, and a KMS or HSM key behind the same interface later.
+func (ca authority) signer() crypto.Signer { return ca.key }
 
 // authorities is everything the signer holds. A value is never changed after it is published
 // to the Signer; a change makes a new one.
@@ -85,7 +89,7 @@ func newAuthority(cn string, now time.Time) (authority, error) {
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: cn},
 		NotBefore:             now.Add(-notBeforeBackoff),
-		NotAfter:              now.AddDate(authorityYears, 0, 0),
+		NotAfter:              now.AddDate(identity.AuthorityYears, 0, 0),
 		IsCA:                  true,
 		BasicConstraintsValid: true,
 		MaxPathLenZero:        true,
@@ -100,6 +104,61 @@ func newAuthority(cn string, now time.Time) (authority, error) {
 		return authority{}, fmt.Errorf("parse %s certificate: %w", cn, err)
 	}
 	return authority{cert: cert, key: key}, nil
+}
+
+// renew signs the authority's certificate again under its own key, with its subject, for
+// identity.AuthorityYears from now. A certificate the old one verified, the new one verifies.
+func (ca authority) renew(now time.Time) (authority, error) {
+	serial, err := randomSerial()
+	if err != nil {
+		return authority{}, err
+	}
+	old := ca.cert
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               old.Subject,
+		NotBefore:             now.Add(-notBeforeBackoff),
+		NotAfter:              now.AddDate(identity.AuthorityYears, 0, 0),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		MaxPathLenZero:        true,
+		KeyUsage:              old.KeyUsage,
+		SubjectKeyId:          old.SubjectKeyId,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, ca.signer().Public(), ca.signer())
+	if err != nil {
+		return authority{}, fmt.Errorf("sign %s again: %w", old.Subject.CommonName, err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return authority{}, fmt.Errorf("parse %s certificate: %w", old.Subject.CommonName, err)
+	}
+	return authority{cert: cert, key: ca.key}, nil
+}
+
+// renewed returns a copy of a with each authority whose certificate is at identity.RenewsBy at now
+// signed again, and the names of those authorities; none renewed returns a itself.
+func (a *authorities) renewed(now time.Time) (*authorities, []string, error) {
+	next := *a
+	var names []string
+	for _, p := range []struct {
+		name string
+		ca   *authority
+	}{{"host", &next.host}, {"operator", &next.operator}, {"orch", &next.orch}} {
+		if now.Before(identity.RenewsBy(p.ca.cert)) {
+			continue
+		}
+		renewed, err := p.ca.renew(now)
+		if err != nil {
+			return nil, nil, err
+		}
+		*p.ca = renewed
+		names = append(names, p.name)
+	}
+	if len(names) == 0 {
+		return a, nil, nil
+	}
+	return &next, names, nil
 }
 
 func randomSerial() (*big.Int, error) {
