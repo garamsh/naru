@@ -23,7 +23,7 @@ import (
 	routesetcd "github.com/garamsh/naru/orch/internal/routes/etcd"
 )
 
-const zone = "m.example.test"
+const zone = "run.example.test"
 
 // machine is a Machine placed on h-a at addr with a web and a db service, in phase.
 func machine(id, addr string, phase machineapi.Phase) machines.Record {
@@ -44,19 +44,19 @@ func TestTable_NamesEachServiceOfAPlacedMachineAndEachAliasOfOne(t *testing.T) {
 	b := machine("00000000000000bb", "10.200.0.6", machineapi.PhaseStopped)
 	got, dropped := routes.Table(zone, []machines.Record{a, b}, []machines.Alias{
 		{Hostname: "shop.example.com", MachineID: a.ID, Service: "db", Certificate: "CERT", Key: "KEY"},
-		{Hostname: "app." + zone, MachineID: b.ID},
+		{Hostname: "app.apps.example.test", MachineID: b.ID},
 	})
 	addrA, addrB := a.PrivateAddress, b.PrivateAddress
 	want := []hostapi.Route{
-		{Hostname: "00000000000000aa." + zone, Machine: a.ID, Address: addrA, Port: 8080, Protocol: hostapi.RouteHTTP, Running: true},
-		{Hostname: "00000000000000bb." + zone, Machine: b.ID, Address: addrB, Port: 8080, Protocol: hostapi.RouteHTTP},
-		{Hostname: "app." + zone, Machine: b.ID, Address: addrB, Port: 8080, Protocol: hostapi.RouteHTTP},
-		{Hostname: "db--00000000000000aa." + zone, Machine: a.ID, Address: addrA, Port: 5432, Protocol: hostapi.RouteTCP, ProxyProtocol: "v2", Running: true},
-		{Hostname: "db--00000000000000bb." + zone, Machine: b.ID, Address: addrB, Port: 5432, Protocol: hostapi.RouteTCP, ProxyProtocol: "v2"},
+		{Hostname: "app.apps.example.test", Machine: b.ID, Address: addrB, Port: 8080, Protocol: hostapi.RouteHTTP},
+		{Hostname: "m-00000000000000aa." + zone, Machine: a.ID, Address: addrA, Port: 8080, Protocol: hostapi.RouteHTTP, Running: true},
+		{Hostname: "m-00000000000000bb." + zone, Machine: b.ID, Address: addrB, Port: 8080, Protocol: hostapi.RouteHTTP},
+		{Hostname: "m-db--00000000000000aa." + zone, Machine: a.ID, Address: addrA, Port: 5432, Protocol: hostapi.RouteTCP, ProxyProtocol: "v2", Running: true},
+		{Hostname: "m-db--00000000000000bb." + zone, Machine: b.ID, Address: addrB, Port: 5432, Protocol: hostapi.RouteTCP, ProxyProtocol: "v2"},
 	}
 	// The alias outside the zone carries a pair that does not load, so it is dropped: Check is the
 	// proxy's rule.
-	assert.Equal(t, want, got, "the default service under <id>.<zone>, the others under <service>--<id>.<zone>, an alias at its service, sorted")
+	assert.Equal(t, want, got, "the default service under m-<id>.<zone>, the others under m-<service>--<id>.<zone>, an alias at its service, sorted")
 	require.Len(t, dropped, 1)
 	assert.Equal(t, "shop.example.com", dropped[0].Hostname)
 	assert.Contains(t, dropped[0].Reason, "certificate")
@@ -70,15 +70,15 @@ func TestTable_LeavesOutAMachineDeletingUnplacedOrWithNoAddressAndItsAliases(t *
 	unaddressed.PrivateAddress = netip.Addr{}
 	live := machine("00000000000000dd", "10.200.0.8", machineapi.PhaseRunning)
 	got, dropped := routes.Table(zone, []machines.Record{deleting, unplaced, unaddressed, live}, []machines.Alias{
-		{Hostname: "a." + zone, MachineID: deleting.ID}, {Hostname: "b." + zone, MachineID: unplaced.ID},
-		{Hostname: "c." + zone, MachineID: unaddressed.ID}, {Hostname: "gone." + zone, MachineID: "00000000000000ee"},
+		{Hostname: "a.apps.example.test", MachineID: deleting.ID}, {Hostname: "b.apps.example.test", MachineID: unplaced.ID},
+		{Hostname: "c.apps.example.test", MachineID: unaddressed.ID}, {Hostname: "gone.apps.example.test", MachineID: "00000000000000ee"},
 	})
 	assert.Empty(t, dropped)
 	var names []string
 	for _, r := range got {
 		names = append(names, r.Hostname)
 	}
-	assert.Equal(t, []string{"00000000000000dd." + zone, "db--00000000000000dd." + zone}, names, "the control: the live Machine is routed")
+	assert.Equal(t, []string{"m-00000000000000dd." + zone, "m-db--00000000000000dd." + zone}, names, "the control: the live Machine is routed")
 }
 
 func TestTable_DropsEveryRouteOfANameGivenTwice(t *testing.T) {
@@ -88,7 +88,7 @@ func TestTable_DropsEveryRouteOfANameGivenTwice(t *testing.T) {
 	twin.Name = "other"
 	got, dropped := routes.Table(zone, []machines.Record{a, twin}, nil)
 	assert.Empty(t, got)
-	assert.Equal(t, []routes.Dropped{{"00000000000000aa." + zone, "the name is given twice"}, {"00000000000000aa." + zone, "the name is given twice"}}, dropped)
+	assert.Equal(t, []routes.Dropped{{"m-00000000000000aa." + zone, "the name is given twice"}, {"m-00000000000000aa." + zone, "the name is given twice"}}, dropped)
 }
 
 // fakeSource answers one revision's Machines and aliases; during, when not nil, runs inside each

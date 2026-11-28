@@ -82,7 +82,7 @@ func (f *nodeFlags) declare(fs *pflag.FlagSet) {
 	fs.StringVar(&f.orchState, "orch-state", "", "spec.orch: new, or existing for a member that joins a cluster (default new)")
 	fs.StringVar(&f.orchListen, "orch-listen", "", "spec.orch: the address of orch's HTTPS API (default 0.0.0.0:7500)")
 	fs.StringVar(&f.orchMachineListen, "orch-machine-api-listen", "", "spec.orch: the address of the Machine API (default 0.0.0.0:7600), served only with --orch-machine-zone")
-	fs.StringVar(&f.orchMachineZone, "orch-machine-zone", "", "spec.orch: the zone of Machines' stable names; without it orch serves no Machine API")
+	fs.StringVar(&f.orchMachineZone, "orch-machine-zone", "", "spec.orch: the zone of Machines' stable names, m-<id>.<zone>, such as garam.run; without it orch serves no Machine API")
 	fs.Var(&f.orchSANs, "orch-san", "spec.orch: a name or address of orch's certificate, repeatable")
 	fs.StringVar(&f.orchCert, "orch-certificate", "", "spec.orch: the file holding orch's certificate then the authority's, PEM")
 	fs.StringVar(&f.orchCA, "orch-ca", "", "spec.orch: the file holding the authority's certificate, PEM")

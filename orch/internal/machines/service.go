@@ -67,7 +67,7 @@ const retries = 8
 type service struct {
 	store Store
 	clock Clock
-	// zone is the zone of the stable names, such as "m.garam.sh".
+	// zone is the zone of the stable names, such as "garam.run", where no alias is taken.
 	zone string
 	// guests reaches the Machines' guests; nil on a member that reaches no host.
 	guests Guests

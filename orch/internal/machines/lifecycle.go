@@ -56,7 +56,7 @@ func (s *service) Create(ctx context.Context, caller, name string, spec machinea
 		}
 		id := newID()
 		r := Record{Caller: caller, Name: name, ID: id, Spec: spec, Status: machineapi.Status{
-			Phase: machineapi.PhasePending, Address: machineapi.Address{Name: id + "." + s.zone}, Generation: 1, Capabilities: capabilities(spec),
+			Phase: machineapi.PhasePending, Address: machineapi.Address{Name: machineapi.StableName(id, "", s.zone)}, Generation: 1, Capabilities: capabilities(spec),
 		}}
 		err = s.store.Create(ctx, r, from, s.event(machineapi.EventStatus, r))
 		if err == nil {
