@@ -69,7 +69,7 @@ func TestRouteHosts_PushesToTheHostsThatReportAProxyAndAnswersWhatTheyLoaded(t *
 
 func TestRouteHosts_TrustIsWhenEachAnsweringHostsPoolEnds(t *testing.T) {
 	var got hostapi.RoutesRequest
-	a, ca := hostServer(t, `,"trustExpiresAt":"2036-11-28T00:00:00Z"`, 0, &got)
+	a, ca := hostServer(t, `,"trustExpiresAt":"2036-11-28T00:00:00Z","trustExpiresAuthority":"naru-host-ca"`, 0, &got)
 	b, cb := hostServer(t, "", 0, &got)
 	clients := map[string]hostclient.RouteAPI{a: ca, b: cb}
 	inv := &invFake{hosts: []orchapi.Host{{ID: "a", Address: a}, {ID: "b", Address: b}, {ID: "away", Address: "127.0.0.1:1"}}}
@@ -81,6 +81,6 @@ func TestRouteHosts_TrustIsWhenEachAnsweringHostsPoolEnds(t *testing.T) {
 	})
 	hosts, err := h.Trust(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, []trust.Host{{ID: "a", ExpiresAt: time.Date(2036, 11, 28, 0, 0, 0, 0, time.UTC)}}, hosts,
+	assert.Equal(t, []trust.Host{{ID: "a", ExpiresAt: time.Date(2036, 11, 28, 0, 0, 0, 0, time.UTC), Authority: "naru-host-ca"}}, hosts,
 		"a host that reports no expiry, or does not answer, is left out")
 }

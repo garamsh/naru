@@ -22,7 +22,7 @@ import (
 
 // EventExpiring is a pool that stops trusting an authority it holds within
 // identity.AuthorityWarnYears: its subject is the orch member or host that holds the pool, and its
-// detail the pool and when it ends.
+// detail the pool, the authority and when the pool stops trusting it.
 const EventExpiring = "authority.expiring"
 
 // DefaultInterval is how often a Watcher checks when its Config names none.
@@ -79,7 +79,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 }
 
 // Check reads every pool once and warns of each that ends within identity.AuthorityWarnYears, once
-// per subject, pool and end. A pool that cannot be read is an error, and the others are checked.
+// per subject, pool, authority and end. A pool that cannot be read is an error, and the others are checked.
 func (w *Watcher) Check(ctx context.Context) error {
 	now := w.cfg.Clock.Now()
 	var errs []error
@@ -89,7 +89,7 @@ func (w *Watcher) Check(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("read the pool %s: %w", name, err))
 			continue
 		}
-		if end, ok := identity.TrustExpiry(b); ok && identity.TrustWarns(end, now) {
+		if end, ok := identity.TrustExpiry(b); ok && identity.TrustWarns(end.At, now) {
 			w.warn(ctx, "orch/"+w.cfg.Member, name, file, end)
 		}
 	}
@@ -100,16 +100,16 @@ func (w *Watcher) Check(ctx context.Context) error {
 		}
 		for _, h := range hosts {
 			if identity.TrustWarns(h.ExpiresAt, now) {
-				w.warn(ctx, h.ID, "client-ca", "", h.ExpiresAt)
+				w.warn(ctx, h.ID, "client-ca", "", identity.TrustEnd{At: h.ExpiresAt, Authority: h.Authority})
 			}
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (w *Watcher) warn(ctx context.Context, subject, pool, file string, end time.Time) {
-	end = end.UTC()
-	key := subject + "\x00" + pool + "\x00" + end.Format(time.RFC3339)
+func (w *Watcher) warn(ctx context.Context, subject, pool, file string, end identity.TrustEnd) {
+	at := end.At.UTC().Format(time.RFC3339)
+	key := subject + "\x00" + pool + "\x00" + end.Authority + "\x00" + at
 	w.mu.Lock()
 	seen := w.warned[key]
 	w.warned[key] = true
@@ -117,12 +117,12 @@ func (w *Watcher) warn(ctx context.Context, subject, pool, file string, end time
 	if seen {
 		return
 	}
-	w.cfg.Log.Warn("a pool of authorities stops trusting an authority within a year: it has not taken the authority's renewed certificate from GET /v1/ca",
-		"subject", subject, "pool", pool, "file", file, "expires_at", end.Format(time.RFC3339))
+	w.cfg.Log.Warn("a pool stops trusting an authority within a year",
+		"subject", subject, "pool", pool, "file", file, "authority", end.Authority, "expires_at", at)
 	if w.cfg.Events == nil {
 		return
 	}
-	detail := map[string]string{"pool": pool, "expiresAt": end.Format(time.RFC3339)}
+	detail := map[string]string{"pool": pool, "authority": end.Authority, "expiresAt": at}
 	if file != "" {
 		detail["file"] = file
 	}

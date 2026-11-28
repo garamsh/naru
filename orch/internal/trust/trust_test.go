@@ -81,9 +81,10 @@ func TestAMembersPoolIsWarnedOfOnceAYearBeforeItEndsAndNotOnceItTookTheRenewedCe
 	require.NoError(t, w.Check(context.Background()))
 	require.Len(t, ev.got, 1)
 	assert.Equal(t, orchapi.Event{Time: c.now, Type: trust.EventExpiring, Subject: "orch/orch-1",
-		Detail: map[string]string{"pool": "ca", "file": file, "expiresAt": "2036-11-28T00:00:00Z"}}, ev.got[0])
+		Detail: map[string]string{"pool": "ca", "file": file, "authority": "naru-orch-ca", "expiresAt": "2036-11-28T00:00:00Z"}}, ev.got[0])
 	assert.Contains(t, logged.String(), "level=WARN")
 	assert.Contains(t, logged.String(), "expires_at=2036-11-28T00:00:00Z")
+	assert.Contains(t, logged.String(), "authority=naru-orch-ca")
 
 	require.NoError(t, w.Check(context.Background()))
 	assert.Len(t, ev.got, 1, "a pool is warned of once")
@@ -101,7 +102,7 @@ func TestAHostsReportedPoolIsWarnedOfAndAFailedAppendIsTriedAgain(t *testing.T) 
 	c := &clock{now: now}
 	ev := &events{fail: true}
 	w := trust.New(trust.Config{
-		Hosts:  hosts{{ID: "host-1", ExpiresAt: now.AddDate(0, 6, 0)}, {ID: "host-2", ExpiresAt: now.AddDate(5, 0, 0)}},
+		Hosts:  hosts{{ID: "host-1", ExpiresAt: now.AddDate(0, 6, 0), Authority: "naru-host-ca"}, {ID: "host-2", ExpiresAt: now.AddDate(5, 0, 0)}},
 		Events: ev, Clock: c, Log: slog.New(slog.DiscardHandler),
 	})
 	require.NoError(t, w.Check(context.Background()))
@@ -111,7 +112,7 @@ func TestAHostsReportedPoolIsWarnedOfAndAFailedAppendIsTriedAgain(t *testing.T) 
 	require.NoError(t, w.Check(context.Background()))
 	require.Len(t, ev.got, 1, "the append that failed is tried at the next check, and host-2 has years left")
 	assert.Equal(t, "host-1", ev.got[0].Subject)
-	assert.Equal(t, map[string]string{"pool": "client-ca", "expiresAt": "2035-07-01T00:00:00Z"}, ev.got[0].Detail)
+	assert.Equal(t, map[string]string{"pool": "client-ca", "authority": "naru-host-ca", "expiresAt": "2035-07-01T00:00:00Z"}, ev.got[0].Detail)
 }
 
 func TestAPoolThatCannotBeReadIsAnErrorAndTheOthersAreChecked(t *testing.T) {

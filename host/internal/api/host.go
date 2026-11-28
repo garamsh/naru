@@ -98,7 +98,10 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 			out.Proxy.RouteMaxAgeSeconds = int64((s.deps.Routes.MaxAge + time.Second - 1) / time.Second)
 		}
 	}
-	out.TrustExpiresAt = s.trustExpiry()
+	if end, ok := s.trustExpiry(); ok {
+		at := end.At.UTC()
+		out.TrustExpiresAt, out.TrustExpiresAuthority = &at, end.Authority
+	}
 	out.Mvmd.BootSets = hostBootSets(rt.BootSets)
 	out.Mvmd.MachinePrefixes = append([]string{}, rt.MachinePrefixes...)
 	out.Free = hostapi.Resources{CPU: rt.CPUs, Memory: rt.MemoryBytes, Disk: rt.StateAvailableBytes}
@@ -112,23 +115,19 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// trustExpiry is when the client CA pool stops trusting an authority it holds, read from the file
-// on each call, so a refreshed pool reports at once; nil when the pool cannot be read or holds none.
-func (s *Server) trustExpiry() *time.Time {
+// trustExpiry is when the client CA pool stops trusting an authority it holds, and which, read from
+// the file on each call, so a refreshed pool reports at once; ok is false when the pool cannot be
+// read or holds none.
+func (s *Server) trustExpiry() (end identity.TrustEnd, ok bool) {
 	if s.deps.ClientCAFile == "" {
-		return nil
+		return identity.TrustEnd{}, false
 	}
 	b, err := os.ReadFile(s.deps.ClientCAFile)
 	if err != nil {
 		s.deps.Log.Error("cannot read the client CA pool", "file", s.deps.ClientCAFile, "err", err.Error())
-		return nil
+		return identity.TrustEnd{}, false
 	}
-	at, ok := identity.TrustExpiry(b)
-	if !ok {
-		return nil
-	}
-	at = at.UTC()
-	return &at
+	return identity.TrustExpiry(b)
 }
 
 // hostBootSets is the boot sets mvmd offers as the host API says them; an empty list is [], not null.

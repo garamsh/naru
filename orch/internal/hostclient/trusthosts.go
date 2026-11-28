@@ -21,6 +21,6 @@ func (h *RouteHosts) Trust(ctx context.Context) ([]trust.Host, error) {
 		if err != nil || info.TrustExpiresAt == nil {
 			return trust.Host{}, false
 		}
-		return trust.Host{ID: a.ID, ExpiresAt: *info.TrustExpiresAt}, true
+		return trust.Host{ID: a.ID, ExpiresAt: *info.TrustExpiresAt, Authority: info.TrustExpiresAuthority}, true
 	}), nil
 }

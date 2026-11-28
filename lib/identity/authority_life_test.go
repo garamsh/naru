@@ -51,16 +51,16 @@ func TestTrustExpiryIsTheEarliestOfEachAuthoritysLatestCertificate(t *testing.T)
 
 	got, ok := identity.TrustExpiry(old)
 	require.True(t, ok)
-	assert.Equal(t, t0, got)
+	assert.Equal(t, identity.TrustEnd{At: t0, Authority: "naru-host-ca"}, got)
 
 	got, _ = identity.TrustExpiry(append(append(append([]byte{}, old...), renewed...), leaf...))
-	assert.Equal(t, t0.AddDate(8, 0, 0), got, "a pool that took the renewed certificate trusts the authority until its end")
+	assert.Equal(t, t0.AddDate(8, 0, 0), got.At, "a pool that took the renewed certificate trusts the authority until its end")
 
 	got, _ = identity.TrustExpiry(append(append(append([]byte{}, old...), renewed...), orchCA...))
-	assert.Equal(t, t0.AddDate(3, 0, 0), got, "the authority that ends first")
+	assert.Equal(t, identity.TrustEnd{At: t0.AddDate(3, 0, 0), Authority: "naru-orch-ca"}, got, "the authority that ends first, named")
 
 	got, _ = identity.TrustExpiry(append(append([]byte{}, renewed...), other...))
-	assert.Equal(t, t0.AddDate(-1, 0, 0), got, "a certificate of another key is another authority")
+	assert.Equal(t, t0.AddDate(-1, 0, 0), got.At, "a certificate of another key is another authority")
 }
 
 func TestTrustWarnsWithinAYearOfTheEnd(t *testing.T) {

@@ -36,6 +36,7 @@ func TestHost_ReportsWhenItsClientCAPoolStopsTrustingAnAuthorityOnEveryRequest(t
 	h := get()
 	require.NotNil(t, h.TrustExpiresAt)
 	assert.True(t, h.TrustExpiresAt.Equal(e.ca.cert.NotAfter))
+	assert.Equal(t, "clients", h.TrustExpiresAuthority, "and names the authority")
 
 	// The authority signed again under its key: a pool that took the new certificate reports its end.
 	tmpl := *e.ca.cert
