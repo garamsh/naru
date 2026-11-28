@@ -3,6 +3,7 @@
 package inventory
 
 import (
+	"bytes"
 	"errors"
 	"time"
 
@@ -79,6 +80,18 @@ type Key struct {
 	CreatedAt time.Time `json:"createdAt"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	Revoked   bool      `json:"revoked"`
+	// Host and HostKey are the host and its public key the key enrolled, bound by the first
+	// enrollment that presented it: the key enrolls no other (ADR 0121). Spent is set when that host
+	// is admitted, after which the key enrolls nothing.
+	Host    string `json:"host,omitempty"`
+	HostKey []byte `json:"hostKey,omitempty"`
+	Spent   bool   `json:"spent,omitempty"`
+}
+
+// enrolls reports whether k may enroll hostID with publicKey: it is unbound, or bound to them,
+// and not spent.
+func (k Key) enrolls(hostID string, publicKey []byte) bool {
+	return !k.Spent && (k.Host == "" || k.Host == hostID && bytes.Equal(k.HostKey, publicKey))
 }
 
 // Pending is an enrollment waiting for admission.

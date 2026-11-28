@@ -11,8 +11,9 @@ import (
 	"github.com/garamsh/naru/lib/wire"
 )
 
-// maxKeyLife is the longest an enrollment key may live.
-const maxKeyLife = 365 * 24 * time.Hour
+// MaxKeyLife is the longest an enrollment key may live, as a caller's registration token does
+// (ADR 0121).
+const MaxKeyLife = 24 * time.Hour
 
 func hashSecret(secret string) string {
 	sum := sha256.Sum256([]byte(secret))
@@ -25,8 +26,8 @@ func keyID(hash string) string { return hash[:16] }
 
 func (s *service) CreateKey(ctx context.Context, by string, expiresAt time.Time) (orchapi.EnrollmentKey, error) {
 	now := s.clock.Now()
-	if !expiresAt.After(now) || expiresAt.After(now.Add(maxKeyLife)) {
-		return orchapi.EnrollmentKey{}, invalid("an enrollment key expires within the next 365 days")
+	if !expiresAt.After(now) || expiresAt.After(now.Add(MaxKeyLife)) {
+		return orchapi.EnrollmentKey{}, invalid("an enrollment key expires within the next 24 hours")
 	}
 	var raw [wire.EnrollKeyBytes]byte
 	if _, err := rand.Read(raw[:]); err != nil {

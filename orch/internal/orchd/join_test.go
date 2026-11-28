@@ -51,7 +51,7 @@ func profileYAML(t *testing.T, pool string, registries ...layout.Registry) []byt
 // admitSeeded enrolls h from the install seed and admits it, and returns the host as the operator sees it.
 func (o *one) admitSeeded(t *testing.T, h host) orchapi.Host {
 	t.Helper()
-	_, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
+	_, err := o.anon.Enroll(t.Context(), h.seeded(o.keyOf(t, h.id)))
 	require.NoError(t, err)
 	return o.admit(t, h)
 }
@@ -86,7 +86,7 @@ func TestAdmittingAHostFromTheSeedBuildsItsConfigurationAndHandsItOverOnPoll(t *
 	require.NoError(t, o.op.SetProfile(t.Context(), profileYAML(t, "10.200.0.0/16")))
 	h := newHost(t, "h-0123456789abcdef")
 
-	_, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
+	_, err := o.anon.Enroll(t.Context(), h.seeded(o.keyOf(t, h.id)))
 	require.NoError(t, err)
 	pending, err := o.op.Pending(t.Context())
 	require.NoError(t, err)
@@ -123,8 +123,11 @@ func TestAdmittingAHostFromTheSeedBuildsItsConfigurationAndHandsItOverOnPoll(t *
 	assert.NotNil(t, got)
 	assert.Contains(t, string(st.Config), "10.200.1.0/24", "the lowest prefix of the pool that is not its first")
 
-	// A host that lost the response enrolls again and is handed the same.
-	again, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
+	// A host that lost the response polls again, with the proof of its key, and is handed the same;
+	// its enrollment key is spent, so it does not enroll again.
+	_, err = o.anon.Enroll(t.Context(), h.seeded(o.keyOf(t, h.id)))
+	require.Equal(t, http.StatusForbidden, status(err))
+	again, err := o.anon.PollEnrollment(t.Context(), h.id, h.key, o.c.Clock.Now())
 	require.NoError(t, err)
 	assert.Equal(t, st.Certificate, again.Certificate)
 	// The configuration is built from the record on each answer and carries the signer's list as it
@@ -141,7 +144,7 @@ func TestAdmittingAHostFromTheSeedBuildsItsConfigurationAndHandsItOverOnPoll(t *
 func TestAHostEnrolledWithItsOwnConfigurationIsAdmittedWithoutOne(t *testing.T) {
 	o := startOne(t, orchtest.Options{})
 	h := newHost(t, "host-a")
-	_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+	_, err := o.anon.Enroll(t.Context(), h.request(o.keyOf(t, h.id)))
 	require.NoError(t, err)
 	o.admit(t, h)
 
@@ -155,7 +158,7 @@ func TestAHostEnrolledWithItsOwnConfigurationIsAdmittedWithoutOne(t *testing.T) 
 func TestAdmittingAHostFromTheSeedWithNoProfileIsRefusedBeforeTheSignerIsAsked(t *testing.T) {
 	o := startOne(t, orchtest.Options{})
 	h := newHost(t, "h-0123456789abcdef")
-	_, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
+	_, err := o.anon.Enroll(t.Context(), h.seeded(o.keyOf(t, h.id)))
 	require.NoError(t, err)
 
 	_, err = o.op.Admit(t.Context(), orchapi.AdmitRequest{HostID: h.id, Code: identity.PairingCode(h.pub), Statement: orchtest.Statement(t, o.operator, h.id, h.pub)})
@@ -194,7 +197,7 @@ func TestThePoolGivesTheLowestFreePrefixAnswers409WhenFullAndTakesRemovedHostsBa
 	assert.Equal(t, prefixes, listedPrefixes, "GET /v1/hosts carries the prefix each host was given")
 
 	full := newHost(t, "h-d")
-	_, err = o.anon.Enroll(t.Context(), full.seeded(o.secret))
+	_, err = o.anon.Enroll(t.Context(), full.seeded(o.keyOf(t, full.id)))
 	require.NoError(t, err)
 	_, err = o.op.Admit(t.Context(), orchapi.AdmitRequest{HostID: full.id, Code: identity.PairingCode(full.pub), Statement: orchtest.Statement(t, o.operator, full.id, full.pub)})
 	assert.Equal(t, http.StatusConflict, status(err), "a full pool")
@@ -286,7 +289,7 @@ func TestTheProfileNoRoleReadsBackHoldsNoSecretAndOneWithTheRedactionIsRefused(t
 	}
 	// The stored secret is what a host is built from: the refused set changed nothing.
 	h := newHost(t, "h-0123456789abcdef")
-	_, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
+	_, err := o.anon.Enroll(t.Context(), h.seeded(o.keyOf(t, h.id)))
 	require.NoError(t, err)
 	o.admit(t, h)
 	st, err := o.anon.PollEnrollment(t.Context(), h.id, h.key, o.c.Clock.Now())
@@ -297,7 +300,7 @@ func TestTheProfileNoRoleReadsBackHoldsNoSecretAndOneWithTheRedactionIsRefused(t
 func TestARevokedSeedKeyStillRefusesTheHostThatBootedFromIt(t *testing.T) {
 	o := startOne(t, orchtest.Options{})
 	h := newHost(t, "h-0123456789abcdef")
-	_, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
+	_, err := o.anon.Enroll(t.Context(), h.seeded(o.keyOf(t, h.id)))
 	require.NoError(t, err, "control: the key works until it is revoked")
 
 	keys, err := o.op.CreateEnrollmentKey(t.Context(), o.c.Clock.Now().Add(time.Hour))

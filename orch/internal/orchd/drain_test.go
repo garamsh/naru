@@ -134,7 +134,7 @@ func startDrainFleet(t *testing.T) *drainFleet {
 	d.one = startOne(t, orchtest.Options{NewHosts: func(inv inventory.Service) groups.Hosts { return hostclient.New(inv, insecure, nil) }})
 	for _, id := range []string{"host-a", "host-b"} {
 		h := newHost(t, id)
-		req := h.request(d.secret)
+		req := h.request(d.keyOf(t, h.id))
 		req.Address = d.apis.serve(t, id)
 		_, err := d.anon.Enroll(t.Context(), req)
 		require.NoError(t, err)

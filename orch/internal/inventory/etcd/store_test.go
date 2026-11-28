@@ -88,6 +88,32 @@ func TestAnEnrollmentWriteNeverResurrectsAPendingRecordNextToAnAdmittedHost(t *t
 	require.ErrorIs(t, err, inventory.ErrNotFound)
 }
 
+func TestAPendingRecordBindsItsEnrollmentKeyAndTheAdmissionSpendsIt(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	s := invetcd.New(c.Members[0].Etcd())
+	ctx := t.Context()
+	now := time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, s.PutKey(ctx, inventory.Key{ID: "k1", Hash: "h", ExpiresAt: now.Add(time.Hour)}))
+	p := inventory.Pending{HostID: "h1", PublicKey: []byte("pub-1"), KeyID: "k1", FirstSeen: now}
+
+	require.NoError(t, s.PutPending(ctx, p, nil, true))
+	k, err := s.GetKey(ctx, "k1")
+	require.NoError(t, err)
+	assert.Equal(t, []any{"h1", []byte("pub-1"), false}, []any{k.Host, k.HostKey, k.Spent}, "the create binds the key to its host")
+	require.NoError(t, s.PutPending(ctx, p, nil, false), "control: the host's own update holds")
+	for what, other := range map[string]inventory.Pending{
+		"another host":          {HostID: "h2", PublicKey: []byte("pub-1"), KeyID: "k1", FirstSeen: now},
+		"the host, another key": {HostID: "h1", PublicKey: []byte("pub-2"), KeyID: "k1", FirstSeen: now},
+	} {
+		require.ErrorIs(t, s.PutPending(ctx, other, nil, other.HostID != "h1"), inventory.ErrKeyRefused, what)
+	}
+
+	require.NoError(t, s.Admit(ctx, p, inventory.Host{ID: "h1", PublicKey: p.PublicKey}, orchapi.Event{Time: now, Type: inventory.EventAdmitted, Subject: "h1"}))
+	k, err = s.GetKey(ctx, "k1")
+	require.NoError(t, err)
+	assert.True(t, k.Spent, "the admission spends the key")
+}
+
 func TestReservationsNeverOverlapAreTakenOverWhenExpiredAndReleasedOnlyByTheirHolder(t *testing.T) {
 	c := orchtest.Start(t, orchtest.Options{Members: 1})
 	s := invetcd.New(c.Members[0].Etcd())

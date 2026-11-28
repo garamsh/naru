@@ -174,7 +174,10 @@ func TestFleet_AWipeOfTheDataDiskMakesTheHostFormatItAgainAtItsNextBoot(t *testi
 	require.NoError(t, nd.WaitFor(t.Context(), bootTimeout, "resetting as the host asked", "scope=all"))
 	require.NoError(t, nd.WaitFor(t.Context(), bootTimeout, "data disk formatted as ext4"))
 	assert.Equal(t, 1, formatted(), "this boot formatted the disk")
-	eventually(t, "the host enrolls again from its seed, as a new host", func() bool { return len(f.pending()) > 0 })
+	// The host enrolls again from its seed, as a new host, and its seed's key, spent by the first
+	// admission, is refused (ADR 0121): a wiped host is given a new seed.
+	require.NoError(t, nd.WaitFor(t.Context(), bootTimeout, enrollRefusal), "the spent key is refused")
+	assert.Empty(t, f.pending(), "and the host does not wait for admission")
 }
 
 func TestFleet_ARefusedHostIsReachableInMaintenanceByACertificateUnderOrchsAuthorityAndRefusedOnceItIsRevoked(t *testing.T) {

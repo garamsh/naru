@@ -17,7 +17,9 @@ type Store interface {
 
 	// PutPending writes the pending record p and appends ev, in one step that holds only while the
 	// host is not admitted (ErrAlreadyAdmitted otherwise) and, with create, while p is not pending, or
-	// without it while p is (ErrConflict otherwise).
+	// without it while p is (ErrConflict otherwise). The same step binds p's enrollment key to p's
+	// host and public key when the key is unbound, and holds only while the key is unchanged
+	// (ErrConflict otherwise); a key bound to another host or key, or spent, is ErrKeyRefused.
 	PutPending(ctx context.Context, p Pending, ev *orchapi.Event, create bool) error
 	GetPending(ctx context.Context, hostID string) (Pending, error)
 	ListPending(ctx context.Context) ([]Pending, error)
@@ -40,7 +42,7 @@ type Store interface {
 	// Admit replaces the pending record p by the host h and appends ev, in one step that fails
 	// with ErrNotFound when p is no longer pending. It also confirms each of allocs, the reservations
 	// Reserve returned, in that step, which fails with ErrAllocationTaken when one is no longer the
-	// stored one.
+	// stored one, and spends p's enrollment key, which fails with ErrConflict when the key changed.
 	Admit(ctx context.Context, p Pending, h Host, ev orchapi.Event, allocs ...Allocation) error
 	// GiveMeshAddress gives the admitted host hostID a mesh address chosen by pick from the
 	// addresses already claimed, writing the confirmed allocation and the host's MeshAddress in one

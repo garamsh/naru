@@ -51,7 +51,7 @@ func TestConcurrentAdmissionsAgainstASmallPoolGiveEachHostItsOwnPrefixAndIssueNo
 	for _, id := range []string{"h-a", "h-b", "h-c", "h-d", "h-e"} {
 		h := newHost(t, id)
 		hosts = append(hosts, h)
-		_, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
+		_, err := o.anon.Enroll(t.Context(), h.seeded(o.keyOf(t, h.id)))
 		require.NoError(t, err)
 	}
 	var wg sync.WaitGroup
@@ -96,7 +96,7 @@ func TestASignerFailureDropsTheReservationAndTheNextAdmissionGetsTheSamePrefix(t
 	o := startOne(t, orchtest.Options{})
 	require.NoError(t, o.op.SetProfile(t.Context(), profileYAML(t, "10.200.0.0/16")))
 	h := newHost(t, "h-a")
-	_, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
+	_, err := o.anon.Enroll(t.Context(), h.seeded(o.keyOf(t, h.id)))
 	require.NoError(t, err)
 
 	o.c.Signer.Fail(errors.New("the signer is down"))
@@ -126,7 +126,7 @@ func TestAReservationLeftByACrashedAdmissionIsTakenOverOnlyOnceItHasExpired(t *t
 	// An admission that is still inside its reservation holds the prefix.
 	o.putReservation(t, "ghost", "10.200.1.0/24", now.Add(time.Minute))
 	a := newHost(t, "h-a")
-	_, err := o.anon.Enroll(t.Context(), a.seeded(o.secret))
+	_, err := o.anon.Enroll(t.Context(), a.seeded(o.keyOf(t, a.id)))
 	require.NoError(t, err)
 	got, err := o.tryAdmit(t, a)
 	require.NoError(t, err)
@@ -135,7 +135,7 @@ func TestAReservationLeftByACrashedAdmissionIsTakenOverOnlyOnceItHasExpired(t *t
 	// One that ran out is taken over, and the prefix is the lowest free one again.
 	o.putReservation(t, "ghost", "10.200.1.0/24", now.Add(-time.Second))
 	b := newHost(t, "h-b")
-	_, err = o.anon.Enroll(t.Context(), b.seeded(o.secret))
+	_, err = o.anon.Enroll(t.Context(), b.seeded(o.keyOf(t, b.id)))
 	require.NoError(t, err)
 	got, err = o.tryAdmit(t, b)
 	require.NoError(t, err)
@@ -148,7 +148,8 @@ func TestAReEnrollmentRacingTheAdmissionLeavesNoPendingRecordNextToTheHost(t *te
 		o := startOne(t, orchtest.Options{Limits: inventory.Config{SourceRate: 1000, SourceBurst: 1000, KeyRate: 1000, KeyBurst: 1000}})
 		require.NoError(t, o.op.SetProfile(t.Context(), profileYAML(t, "10.200.0.0/16")))
 		h := newHost(t, "h-a")
-		_, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
+		key := o.keyOf(t, h.id)
+		_, err := o.anon.Enroll(t.Context(), h.seeded(key))
 		require.NoError(t, err)
 
 		var wg sync.WaitGroup
@@ -157,7 +158,8 @@ func TestAReEnrollmentRacingTheAdmissionLeavesNoPendingRecordNextToTheHost(t *te
 			go func() {
 				defer wg.Done()
 				for range 25 {
-					if _, err := o.anon.Enroll(t.Context(), h.seeded(o.secret)); err != nil {
+					// Once the host is admitted its key is spent, and a repeat is refused.
+					if _, err := o.anon.Enroll(t.Context(), h.seeded(key)); err != nil && status(err) != http.StatusForbidden {
 						t.Error(err)
 						return
 					}
@@ -171,16 +173,15 @@ func TestAReEnrollmentRacingTheAdmissionLeavesNoPendingRecordNextToTheHost(t *te
 		pending, err := o.op.Pending(t.Context())
 		require.NoError(t, err)
 		require.Empty(t, pending, "an admitted host is not pending again")
-		st, err := o.anon.Enroll(t.Context(), h.seeded(o.secret))
-		require.NoError(t, err)
-		require.Equal(t, orchapi.StateAdmitted, st.State)
+		_, err = o.anon.Enroll(t.Context(), h.seeded(key))
+		require.Equal(t, http.StatusForbidden, status(err), "the admitted host's key is spent")
 	}
 }
 
 func TestPollAnswersTheSame404ForAnUnknownHostAndABadProofAndLimitsASource(t *testing.T) {
 	o := startOne(t, orchtest.Options{Limits: inventory.Config{PollRate: 0.001, PollBurst: 5}})
 	h := newHost(t, "host-a")
-	_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+	_, err := o.anon.Enroll(t.Context(), h.request(o.keyOf(t, h.id)))
 	require.NoError(t, err)
 
 	st, err := o.anon.PollEnrollment(t.Context(), h.id, h.key, o.c.Clock.Now())

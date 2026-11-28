@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,7 +63,28 @@ type one struct {
 	op       *orchapi.Client
 	reader   *orchapi.Client
 	anon     *orchapi.Client
-	secret   string
+	// secret is a key of an hour no host has presented yet; keyOf gives each host its own.
+	secret string
+	keysMu sync.Mutex
+	keys   map[string]string
+}
+
+// keyOf is the enrollment key of the host id, made the first time it is asked for, so a host's
+// repeats present its own key and no two hosts share one (ADR 0121).
+func (o *one) keyOf(t *testing.T, id string) string {
+	t.Helper()
+	o.keysMu.Lock()
+	defer o.keysMu.Unlock()
+	if k, ok := o.keys[id]; ok {
+		return k
+	}
+	k, err := o.op.CreateEnrollmentKey(t.Context(), o.c.Clock.Now().Add(time.Hour))
+	require.NoError(t, err)
+	if o.keys == nil {
+		o.keys = map[string]string{}
+	}
+	o.keys[id] = k.Secret
+	return k.Secret
 }
 
 func startOne(t *testing.T, opts orchtest.Options) *one {
@@ -160,11 +182,19 @@ func TestAMismatchedPairingCodeIsRefusedAndNothingIsSigned(t *testing.T) {
 	require.Equal(t, 1, o.c.Signer.Calls())
 }
 
-func TestTwoHostsFromOneKeyShowDifferentCodes(t *testing.T) {
+// key is a new enrollment key of an hour.
+func (o *one) key(t *testing.T) string {
+	t.Helper()
+	k, err := o.op.CreateEnrollmentKey(t.Context(), o.c.Clock.Now().Add(time.Hour))
+	require.NoError(t, err)
+	return k.Secret
+}
+
+func TestTwoHostsShowDifferentCodes(t *testing.T) {
 	o := startOne(t, orchtest.Options{})
 	a, b := newHost(t, "host-a"), newHost(t, "host-b")
 	for _, h := range []host{a, b} {
-		_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+		_, err := o.anon.Enroll(t.Context(), h.request(o.key(t)))
 		require.NoError(t, err)
 	}
 	pending, err := o.op.Pending(t.Context())
@@ -176,25 +206,28 @@ func TestTwoHostsFromOneKeyShowDifferentCodes(t *testing.T) {
 func TestEnrollmentIsRateLimited(t *testing.T) {
 	t.Run("per source", func(t *testing.T) {
 		o := startOne(t, orchtest.Options{Limits: inventory.Config{SourceRate: 0.001, SourceBurst: 2, KeyBurst: 1000, KeyRate: 1000}})
+		keys := []string{o.key(t), o.key(t), o.key(t)}
 		for i := range 2 {
-			_, err := o.anon.Enroll(t.Context(), newHost(t, hostName(i)).request(o.secret))
+			_, err := o.anon.Enroll(t.Context(), newHost(t, hostName(i)).request(keys[i]))
 			require.NoError(t, err, "within the burst")
 		}
-		_, err := o.anon.Enroll(t.Context(), newHost(t, hostName(2)).request(o.secret))
+		late := newHost(t, hostName(2))
+		_, err := o.anon.Enroll(t.Context(), late.request(keys[2]))
 		require.Equal(t, http.StatusTooManyRequests, status(err))
 
 		// The bucket refills with time.
 		o.c.Clock.Advance(20 * time.Minute)
-		_, err = o.anon.Enroll(t.Context(), newHost(t, hostName(2)).request(o.secret))
+		_, err = o.anon.Enroll(t.Context(), late.request(keys[2]))
 		require.NoError(t, err)
 	})
 	t.Run("per key", func(t *testing.T) {
 		o := startOne(t, orchtest.Options{Limits: inventory.Config{KeyRate: 0.001, KeyBurst: 2, SourceBurst: 1000, SourceRate: 1000}})
-		for i := range 2 {
-			_, err := o.anon.Enroll(t.Context(), newHost(t, hostName(i)).request(o.secret))
-			require.NoError(t, err, "within the burst")
+		h := newHost(t, hostName(0))
+		for range 2 {
+			_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+			require.NoError(t, err, "within the burst, the key's host repeats its enrollment")
 		}
-		_, err := o.anon.Enroll(t.Context(), newHost(t, hostName(2)).request(o.secret))
+		_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
 		require.Equal(t, http.StatusTooManyRequests, status(err))
 
 		// Control: the limit belongs to the key, not to the source, so another key still enrolls.
@@ -215,25 +248,69 @@ func TestExpiredAndRevokedKeysAreRefused(t *testing.T) {
 	t.Run("expired", func(t *testing.T) {
 		k, err := o.op.CreateEnrollmentKey(t.Context(), o.c.Clock.Now().Add(time.Minute))
 		require.NoError(t, err)
-		_, err = o.anon.Enroll(t.Context(), newHost(t, "host-b").request(k.Secret))
+		h := newHost(t, "host-b")
+		_, err = o.anon.Enroll(t.Context(), h.request(k.Secret))
 		require.NoError(t, err, "control: the key works before it expires")
 		o.c.Clock.Advance(2 * time.Minute)
-		_, err = o.anon.Enroll(t.Context(), newHost(t, "host-c").request(k.Secret))
+		_, err = o.anon.Enroll(t.Context(), h.request(k.Secret))
 		require.Equal(t, http.StatusForbidden, status(err))
 	})
 	t.Run("revoked", func(t *testing.T) {
 		k, err := o.op.CreateEnrollmentKey(t.Context(), o.c.Clock.Now().Add(time.Hour))
 		require.NoError(t, err)
-		_, err = o.anon.Enroll(t.Context(), newHost(t, "host-d").request(k.Secret))
+		h := newHost(t, "host-d")
+		_, err = o.anon.Enroll(t.Context(), h.request(k.Secret))
 		require.NoError(t, err, "control: the key works before it is revoked")
 		require.NoError(t, o.op.RevokeEnrollmentKey(t.Context(), k.ID))
-		_, err = o.anon.Enroll(t.Context(), newHost(t, "host-e").request(k.Secret))
+		_, err = o.anon.Enroll(t.Context(), h.request(k.Secret))
 		require.Equal(t, http.StatusForbidden, status(err))
 	})
 	t.Run("unknown", func(t *testing.T) {
 		_, err := o.anon.Enroll(t.Context(), newHost(t, "host-f").request("naru-ek-not-a-key"))
 		require.Equal(t, http.StatusForbidden, status(err))
 	})
+}
+
+func TestAnEnrollmentKeyEnrollsTheFirstHostThatPresentsItAndNoOther(t *testing.T) {
+	o := startOne(t, orchtest.Options{})
+	h := newHost(t, "host-a")
+	for range 2 {
+		st, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+		require.NoError(t, err, "the key's host repeats its enrollment while it waits")
+		require.Equal(t, orchapi.StatePending, st.State)
+	}
+	for what, other := range map[string]host{"another host": newHost(t, "host-b"), "the host with another key": newHost(t, "host-a")} {
+		_, err := o.anon.Enroll(t.Context(), other.request(o.secret))
+		require.Equal(t, http.StatusForbidden, status(err), what)
+	}
+	_, err := o.anon.Enroll(t.Context(), newHost(t, "host-c").request("naru-ek-not-a-key"))
+	require.Equal(t, http.StatusForbidden, status(err), "the same answer as an unknown key")
+	pending, err := o.op.Pending(t.Context())
+	require.NoError(t, err)
+	require.Len(t, pending, 1, "only the key's host waits")
+}
+
+func TestAnAdmittedHostsKeyEnrollsNothingMore(t *testing.T) {
+	o := startOne(t, orchtest.Options{})
+	h := newHost(t, "host-a")
+	_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+	require.NoError(t, err)
+	_, err = o.op.Admit(t.Context(), orchapi.AdmitRequest{HostID: h.id, Code: identity.PairingCode(h.pub), Statement: orchtest.Statement(t, o.operator, h.id, h.pub), Region: "kr-seoul"})
+	require.NoError(t, err)
+
+	_, err = o.anon.Enroll(t.Context(), h.request(o.secret))
+	require.Equal(t, http.StatusForbidden, status(err), "the key is spent, even for its own host")
+	st, err := o.anon.PollEnrollment(t.Context(), h.id, h.key, o.c.Clock.Now())
+	require.NoError(t, err, "control: the admitted host's poll answers")
+	require.Equal(t, orchapi.StateAdmitted, st.State)
+}
+
+func TestAnEnrollmentKeyLivesADayAtMost(t *testing.T) {
+	o := startOne(t, orchtest.Options{})
+	_, err := o.op.CreateEnrollmentKey(t.Context(), o.c.Clock.Now().Add(24*time.Hour))
+	require.NoError(t, err, "a day")
+	_, err = o.op.CreateEnrollmentKey(t.Context(), o.c.Clock.Now().Add(24*time.Hour+time.Second))
+	require.Equal(t, http.StatusBadRequest, status(err), "a second more")
 }
 
 func TestAdmissionNeedsAnOperatorWhoIsNotRevoked(t *testing.T) {

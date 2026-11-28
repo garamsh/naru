@@ -154,8 +154,7 @@ func TestFleet_OrchLeaderLossElectsAnotherAndEnrollmentKeepsTheRegionLabelsAndTh
 
 	// Enrollment: the pairing code orch lists as pending is the code the host's own console shows, and
 	// the admission records the region and the labels.
-	key := f.enrollmentKey()
-	code := f.enroll(h, key)
+	code := f.enroll(h, f.enrollmentKey())
 	id := f.hostID(code)
 	require.NotEmpty(t, id)
 	assert.Contains(t, f.must(f.orch("host", "pending"), "host pending"), code, "orch lists the code the console shows")
@@ -397,10 +396,9 @@ func TestFleet_RestoresTheControlHostsFromTheSignersBundleAndOrchsSealedSnapshot
 func TestFleet_GroupsKeepTheCountRollDrainReplaceOnALabelChangeAndFenceAStatefulMember(t *testing.T) {
 	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1536, vmCPUs: 4})
 	f.startOrch()
-	key := f.enrollmentKey()
 	ids := map[int]string{}
 	for _, i := range f.hosts() {
-		ids[i] = f.admit(f.enroll(i, key), "eu-1", "tier=a")
+		ids[i] = f.admit(f.enroll(i, f.enrollmentKey()), "eu-1", "tier=a")
 	}
 	h1, h2 := f.hosts()[0], f.hosts()[1]
 

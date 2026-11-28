@@ -20,7 +20,7 @@ func (s *service) Enroll(ctx context.Context, source string, req orchapi.EnrollR
 	if !s.sources.Allow(source) {
 		return orchapi.EnrollStatus{}, ErrRateLimited
 	}
-	key, err := s.usableKey(ctx, req.Key)
+	key, err := s.usableKey(ctx, req)
 	if err != nil {
 		return orchapi.EnrollStatus{}, err
 	}
@@ -47,7 +47,13 @@ func (s *service) Enroll(ctx context.Context, source string, req orchapi.EnrollR
 
 	// The writes below hold only while the host is not admitted, so a repeat of this request that
 	// meets an admission in between starts over and answers the admitted status.
-	for range enrollRetries {
+	for i := range enrollRetries {
+		if i > 0 {
+			// A lost race may be another enrollment binding the key, so it is read again.
+			if key, err = s.usableKey(ctx, req); err != nil {
+				return orchapi.EnrollStatus{}, err
+			}
+		}
 		st, err := s.enrollOnce(ctx, key, req)
 		if errors.Is(err, ErrAlreadyAdmitted) || (errors.Is(err, ErrConflict) && errors.Is(err, errRaced)) {
 			continue
@@ -110,9 +116,11 @@ func raced(err error) error {
 	return err
 }
 
-// usableKey finds the key a secret names and refuses it when it is unknown, expired or revoked.
-func (s *service) usableKey(ctx context.Context, secret string) (Key, error) {
-	hash := hashSecret(secret)
+// usableKey finds the key req's secret names and refuses it when it is unknown, expired, revoked,
+// spent, or bound to another host or public key than req's. Every refusal is ErrKeyRefused, so the
+// answer does not tell which.
+func (s *service) usableKey(ctx context.Context, req orchapi.EnrollRequest) (Key, error) {
+	hash := hashSecret(req.Key)
 	k, err := s.store.GetKey(ctx, keyID(hash))
 	if errors.Is(err, ErrNotFound) || (err == nil && subtle.ConstantTimeCompare([]byte(k.Hash), []byte(hash)) != 1) {
 		return Key{}, ErrKeyRefused
@@ -125,6 +133,8 @@ func (s *service) usableKey(ctx context.Context, secret string) (Key, error) {
 		return Key{}, fmt.Errorf("%w: the key is revoked", ErrKeyRefused)
 	case !s.clock.Now().Before(k.ExpiresAt):
 		return Key{}, fmt.Errorf("%w: the key is expired", ErrKeyRefused)
+	case !k.enrolls(req.HostID, req.PublicKey):
+		return Key{}, fmt.Errorf("%w: the key enrolled another host, or its host is admitted", ErrKeyRefused)
 	}
 	return k, nil
 }

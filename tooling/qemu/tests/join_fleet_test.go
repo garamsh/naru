@@ -166,14 +166,18 @@ func TestFleet_TwoHostsInstalledFromOneSeedEnrollAreAdmittedWithTheirOwnIdentity
 	})
 	f.startOrch()
 
-	// The enrollment key, and the one seed every host boots from.
-	created := f.must(f.orch("enroll-key", "create"), "enroll-key create")
-	keyID, secret := keyIDLine.FindStringSubmatch(created), secretLine.FindStringSubmatch(created)
-	require.NotNil(t, keyID, created)
-	require.NotNil(t, secret, created)
+	// Each host boots from a seed of its own, which carries an enrollment key that enrolls one host
+	// (ADR 0121).
 	orchURL := "https://" + nodeIP(1) + ":" + orchPort
-	iso := filepath.Join(f.dir, "seed.iso")
-	f.must(nrun("host", "install-seed", "--orch-url", orchURL, "--orch-ca-sha256", f.caSHA, "--enroll-key", f.file("enroll.key", secret[1]+"\n"), "--out", iso), "host install-seed")
+	seedFor := func(name string) (iso, keyID string) {
+		created := f.must(f.orch("enroll-key", "create"), "enroll-key create")
+		id, secret := keyIDLine.FindStringSubmatch(created), secretLine.FindStringSubmatch(created)
+		require.NotNil(t, id, created)
+		require.NotNil(t, secret, created)
+		iso = filepath.Join(f.dir, name+".iso")
+		f.must(nrun("host", "install-seed", "--orch-url", orchURL, "--orch-ca-sha256", f.caSHA, "--enroll-key", f.file(name+".key", secret[1]+"\n"), "--out", iso), "host install-seed")
+		return iso, id[1]
+	}
 
 	// The host profile is what orch builds each host's configuration from: the Firecracker the image carries,
 	// the pool each host's Machine prefix is taken from, the
@@ -188,7 +192,9 @@ func TestFleet_TwoHostsInstalledFromOneSeedEnrollAreAdmittedWithTheirOwnIdentity
 	// Hosts 2 and 3 enroll with the key; host 4 boots after the key is revoked.
 	const total = 4
 	f.serveDHCP(total, 2, 3, 4)
-	a, b := f.bootFromSeed(iso, 2, total), f.bootFromSeed(iso, 3, total)
+	isoA, _ := seedFor("seed-2")
+	isoB, _ := seedFor("seed-3")
+	a, b := f.bootFromSeed(isoA, 2, total), f.bootFromSeed(isoB, 3, total)
 	hosts := map[*node.Node]pendingHost{}
 	for i, nd := range []*node.Node{a, b} {
 		hosts[nd] = f.pendingWith(node.QEMUNetwork(i+2, total).MAC)
@@ -219,10 +225,12 @@ func TestFleet_TwoHostsInstalledFromOneSeedEnrollAreAdmittedWithTheirOwnIdentity
 	assert.True(t, a.Has("DHCPv4 lease", nodeIP(2), node.Gateway), "host 2 leased its reserved address, and the router and NTP server the server named")
 	assert.True(t, b.Has("DHCPv4 lease", nodeIP(3), node.Gateway), "host 3 leased its reserved address, and the router and NTP server the server named")
 
-	// A revoked key enrolls no further host: the same seed on a third host is refused at the enrollment,
-	// which the two above, enrolled with the key before, show was not for another reason.
-	f.must(f.orch("enroll-key", "revoke", keyID[1]), "enroll-key revoke")
-	c := f.bootFromSeed(iso, 4, total)
+	// A revoked key enrolls no host: a seed whose key is revoked before its host boots is refused at
+	// the enrollment, which the two above, made the same way and not revoked, show was not for
+	// another reason.
+	isoC, keyC := seedFor("seed-4")
+	f.must(f.orch("enroll-key", "revoke", keyC), "enroll-key revoke")
+	c := f.bootFromSeed(isoC, 4, total)
 	require.NoError(t, c.WaitFor(t.Context(), bootTimeout, enrollRefusal), "the third host is told the enrollment is refused")
 	assert.Len(t, f.pending(), 2, "the refused host is not pending: only the two that enrolled before the revocation are")
 
