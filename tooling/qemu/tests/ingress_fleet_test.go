@@ -87,7 +87,9 @@ func TestFleet_OnlyAProxyHostsMeshAddressReachesAMachineAndOnlyOnItsServicePorts
 		"--host-management-prefix", managementPrefix, "--host-egress-interface", "eth0", "--host-tunnel-port", "51820",
 		"--out", profile), "gen host-profile")
 	f.must(f.orch("host", "profile", "set", "-f", profile), "host profile set")
-	f.enrollAndAdmit("eu-1")
+	ids := f.enrollAndAdmit("eu-1")
+	// A host's proxy is trusted with the role only once the operator grants it (ADR 0119).
+	f.must(f.orch("host", "grant-proxy", ids[proxyHost]), "host grant-proxy")
 
 	// The first microVM admits the mesh pool to 8080, and the harness's route to its probe, which
 	// comes from the host's gateway; the second admits the mesh pool to 9999 alone.
@@ -119,16 +121,17 @@ func TestFleet_OnlyAProxyHostsMeshAddressReachesAMachineAndOnlyOnItsServicePorts
 		return counter(machines, "a_host_to_a_microVM") > 0
 	})
 
-	// The forward chain's other drops still count: the first microVM is no network's member, so a
-	// connection it makes out of the host is dropped as a forged source. A Machine's egress is
-	// dropped the same way, which garamsh/naru#446 is to change, and this assertion with it.
+	// The forward chain's other drops still count: the first microVM is a Machine, no network's
+	// member, so it leaves its host by the egress from its own address, but the other hosts are on the
+	// management prefix, which no Machine reaches.
 	addr, stop, err := f.hostOfNode(machineHost).RouteTo(context.Background(), open+":"+probePort)
 	require.NoError(t, err)
 	t.Cleanup(stop)
 	vm := netVM{name: "open", ip: open, host: machineHost, base: "http://" + addr}
-	before := counter(machines, "forged_source")
+	before, forged := counter(machines, "a_Machine_to_management"), counter(machines, "forged_source")
 	assert.False(t, vm.dials(t, nodeIP(plainHost)+":"+meshPort), "the microVM reaches no other host")
-	eventually(t, "the forward chain counts the microVM's dial as a forged source", func() bool {
-		return counter(machines, "forged_source") > before
+	eventually(t, "the forward chain counts the Machine's dial to the management prefix", func() bool {
+		return counter(machines, "a_Machine_to_management") > before
 	})
+	assert.Equal(t, forged, counter(machines, "forged_source"), "a Machine's own address is no forged source")
 }
