@@ -12,7 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,8 +32,10 @@ const DefaultInterval = time.Hour
 type Config struct {
 	// Member is the name of the orch member whose Pools these are.
 	Member string
-	// Pools are this member's pools by the flag that names them, each a file of PEM certificates.
-	Pools map[string]string
+	// Pools are this member's pools by the flag that names them, each the files of PEM
+	// certificates read together: the first, which must be there, and the stores of re-signings
+	// after it, which may be absent (ADR 0123).
+	Pools map[string][]string
 	// Hosts, when set, are the admitted hosts whose reported pools are checked too: the leader's.
 	Hosts    Hosts
 	Events   Events
@@ -83,8 +85,12 @@ func (w *Watcher) Run(ctx context.Context) error {
 func (w *Watcher) Check(ctx context.Context) error {
 	now := w.cfg.Clock.Now()
 	var errs []error
-	for name, file := range w.cfg.Pools {
-		b, err := os.ReadFile(file)
+	for name, files := range w.cfg.Pools {
+		if len(files) == 0 {
+			continue
+		}
+		b, err := identity.FilesPEM(files[0], files[1:]...)
+		file := strings.Join(files, ",")
 		if err != nil {
 			errs = append(errs, fmt.Errorf("read the pool %s: %w", name, err))
 			continue

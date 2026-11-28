@@ -71,7 +71,7 @@ func TestAMembersPoolIsWarnedOfOnceAYearBeforeItEndsAndNotOnceItTookTheRenewedCe
 	var logged bytes.Buffer
 	c := &clock{now: end.AddDate(-1, 0, 0).Add(-time.Hour)}
 	ev := &events{}
-	w := trust.New(trust.Config{Member: "orch-1", Pools: map[string]string{"ca": file}, Events: ev, Clock: c, Log: slog.New(slog.NewTextHandler(&logged, nil))})
+	w := trust.New(trust.Config{Member: "orch-1", Pools: map[string][]string{"ca": {file}}, Events: ev, Clock: c, Log: slog.New(slog.NewTextHandler(&logged, nil))})
 
 	require.NoError(t, w.Check(context.Background()))
 	assert.Empty(t, ev.got, "more than a year remains")
@@ -123,9 +123,29 @@ func TestAPoolThatCannotBeReadIsAnErrorAndTheOthersAreChecked(t *testing.T) {
 	good := filepath.Join(dir, "host-ca.crt")
 	require.NoError(t, os.WriteFile(good, authorityPEM(t, key, end), 0o600))
 	ev := &events{}
-	w := trust.New(trust.Config{Member: "orch-2", Pools: map[string]string{"ca": filepath.Join(dir, "absent"), "host-ca": good},
+	w := trust.New(trust.Config{Member: "orch-2", Pools: map[string][]string{"ca": {filepath.Join(dir, "absent")}, "host-ca": {good}},
 		Events: ev, Clock: &clock{now: end}, Log: slog.New(slog.DiscardHandler)})
 	require.Error(t, w.Check(context.Background()))
 	require.Len(t, ev.got, 1)
 	assert.Equal(t, "host-ca", ev.got[0].Detail["pool"], "a pool already past its end is warned of too")
+}
+
+func TestAPoolIsReadWithItsStoreOfReSignings(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	end := time.Date(2036, 11, 28, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	base, store := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca-store.pem")
+	require.NoError(t, os.WriteFile(base, authorityPEM(t, key, end), 0o600))
+	ev := &events{}
+	w := trust.New(trust.Config{Member: "orch-1", Pools: map[string][]string{"ca": {base, store}}, Events: ev, Clock: &clock{now: end.AddDate(-1, 0, 0)}, Log: slog.New(slog.DiscardHandler)})
+
+	require.NoError(t, w.Check(context.Background()), "a store not yet written is no error")
+	require.Len(t, ev.got, 1, "control: without the re-signing the pool ends within a year")
+	assert.Equal(t, base+","+store, ev.got[0].Detail["file"])
+
+	require.NoError(t, os.WriteFile(store, authorityPEM(t, key, end.AddDate(8, 0, 0)), 0o600))
+	w = trust.New(trust.Config{Member: "orch-1", Pools: map[string][]string{"ca": {base, store}}, Events: ev, Clock: &clock{now: end.AddDate(-1, 0, 0)}, Log: slog.New(slog.DiscardHandler)})
+	require.NoError(t, w.Check(context.Background()))
+	assert.Len(t, ev.got, 1, "the store's re-signing ends the warning")
 }
