@@ -110,3 +110,18 @@ func Read(data []byte) (action string, body json.RawMessage, err error) {
 	}
 	return req.Action, req.Body, nil
 }
+
+// Certificate returns the certificate attached to a signed request without checking it, for a
+// party that only forwards the request: it tells that party whose request it holds, never that the
+// request is authentic.
+func Certificate(data []byte) (*x509.Certificate, error) {
+	var s signed
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, fmt.Errorf("parse signed request: %w", err)
+	}
+	cert, err := x509.ParseCertificate(s.Certificate)
+	if err != nil {
+		return nil, fmt.Errorf("parse request certificate: %w", err)
+	}
+	return cert, nil
+}

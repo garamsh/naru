@@ -139,7 +139,7 @@ func statusOf(err error) int {
 	switch {
 	case errors.Is(err, ErrMovedRoute):
 		return http.StatusGone
-	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost), errors.Is(err, identity.ErrCallerNotDue), errors.Is(err, ErrNotDue):
+	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost), errors.Is(err, identity.ErrCallerNotDue), errors.Is(err, identity.ErrHostNotDue):
 		return http.StatusConflict
 	case errors.Is(err, ErrBadRequest), errors.Is(err, identity.ErrFormat):
 		return http.StatusBadRequest

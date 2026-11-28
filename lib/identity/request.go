@@ -292,3 +292,12 @@ func VerifyRequest(data []byte, action string, roots *x509.CertPool, crl *CRL, n
 	}
 	return id, body, nil
 }
+
+// RequestCertificate returns the certificate attached to a signed request without checking it, for
+// a party that only forwards the request to the one that verifies it.
+func RequestCertificate(data []byte) (*x509.Certificate, error) {
+	return signedrequest.Certificate(data)
+}
+
+// ErrHostNotDue is a host's renewal before the last HostRenewWindow of its certificate's life.
+var ErrHostNotDue = errors.New("the host certificate is not due to renew")

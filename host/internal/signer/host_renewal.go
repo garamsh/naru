@@ -3,15 +3,11 @@ package signer
 import (
 	"crypto"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/garamsh/naru/lib/identity"
 )
-
-// ErrNotDue is a host's renewal before the last identity.HostRenewWindow of its certificate's life.
-var ErrNotDue = errors.New("the certificate is not due to renew")
 
 // authoriseHost verifies a request a host's certificate signed, against the host authority and the
 // revocation list (ADR 0122): the host authority, not the operator's, issues a host's certificate.
@@ -44,7 +40,7 @@ func (s *Signer) RenewHost(signed []byte) (identity.Issued, error) {
 	}
 	now := s.now()
 	if due := who.NotAfter.Add(-identity.HostRenewWindow); now.Before(due) {
-		return identity.Issued{}, fmt.Errorf("%w: renew from %s", ErrNotDue, due.Format(time.RFC3339))
+		return identity.Issued{}, fmt.Errorf("%w: renew from %s", identity.ErrHostNotDue, due.Format(time.RFC3339))
 	}
 	csr, err := parseCSR(req.CSR)
 	if err != nil {
