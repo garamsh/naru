@@ -37,8 +37,8 @@ import (
 
 // Config is the agent's settings.
 type Config struct {
-	// OrchURL is orch's https URL and CASHA256 the hex SHA-256 of the authority orch's certificate
-	// chains to, which is the only trust the host has before it holds a certificate.
+	// OrchURL is orch's https URL and CASHA256 the key pin of the authority orch's certificate
+	// chains to (orchapi.KeyPin, ADR 0122), which is the only trust the host has before it holds a certificate.
 	OrchURL  string
 	CASHA256 string
 	// EnrollKeyFile holds the enrollment key. It is read by path and never logged.

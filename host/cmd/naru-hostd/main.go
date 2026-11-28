@@ -40,7 +40,7 @@ func main() {
 		interval = flag.Duration("fence-interval", time.Minute, "how often the deadline is renewed")
 
 		orchURL   = flag.String("orch-url", "", "https URL of naru-orchd; empty turns enrollment off")
-		orchCA    = flag.String("orch-ca-sha256", "", "hex SHA-256 of the authority orch's certificate chains to")
+		orchCA    = flag.String("orch-ca-sha256", "", "hex SHA-256 of the public key of the authority orch's certificate chains to (until v0.1.0-rc.1, also of its certificate)")
 		enrollKey = flag.String("enroll-key-file", "", "file holding the enrollment key")
 		joinKey   = flag.String("enroll-key", "", "file holding the enrollment key, for --join (the install seed's)")
 		join      = flag.Bool("join", false, "enroll from the install seed, receive the configuration orch built, write it to --join-config and exit; serves no API")

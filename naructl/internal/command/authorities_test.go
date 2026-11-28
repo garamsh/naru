@@ -42,11 +42,11 @@ func pemOf(c *x509.Certificate) string {
 }
 
 func fingerprint(c *x509.Certificate) string {
-	sum := sha256.Sum256(c.Raw)
+	sum := sha256.Sum256(c.RawSubjectPublicKeyInfo)
 	return hex.EncodeToString(sum[:])
 }
 
-func TestSignerCA_PrintsEachAuthorityAsPEMWithTheHashOfItsDER(t *testing.T) {
+func TestSignerCA_PrintsEachAuthorityAsPEMWithTheHashOfItsKey(t *testing.T) {
 	signer, node, config := signerThroughNode(t)
 	orch, operator, host := authorityCert(t, "orch authority"), authorityCert(t, "operator authority"), authorityCert(t, "host authority")
 	signer.authorities = identity.Authorities{Orch: orch.Raw, Operator: operator.Raw, Host: host.Raw}
@@ -55,13 +55,13 @@ func TestSignerCA_PrintsEachAuthorityAsPEMWithTheHashOfItsDER(t *testing.T) {
 	require.NoError(t, err, text)
 	assert.Contains(t, node.requests, "GET /v1/signer/ca", "through the Node API's route to the signer")
 	assert.Equal(t,
-		"# orch authority, SHA-256 "+fingerprint(orch)+"\n"+pemOf(orch)+
-			"# operator authority, SHA-256 "+fingerprint(operator)+"\n"+pemOf(operator)+
-			"# host authority, SHA-256 "+fingerprint(host)+"\n"+pemOf(host), text)
+		"# orch authority, key SHA-256 "+fingerprint(orch)+"\n"+pemOf(orch)+
+			"# operator authority, key SHA-256 "+fingerprint(operator)+"\n"+pemOf(operator)+
+			"# host authority, key SHA-256 "+fingerprint(host)+"\n"+pemOf(host), text)
 
 	text, err = run(t, "signer", "ca", "--authority", "host", "--socket", signer.socket)
 	require.NoError(t, err, text)
-	assert.Equal(t, "# host authority, SHA-256 "+fingerprint(host)+"\n"+pemOf(host), text, "one authority, reached on the socket")
+	assert.Equal(t, "# host authority, key SHA-256 "+fingerprint(host)+"\n"+pemOf(host), text, "one authority, reached on the socket")
 
 	text, err = run(t, "signer", "ca", "--authority", "root", "--socket", signer.socket)
 	require.Error(t, err)
@@ -79,7 +79,7 @@ func TestOrchCA_PrintsTheOrchAuthorityAlone(t *testing.T) {
 
 	text, err := run(t, "orch", "ca", "--config", config)
 	require.NoError(t, err, text)
-	assert.Equal(t, "# orch authority, SHA-256 "+fingerprint(orch)+"\n"+pemOf(orch), text)
+	assert.Equal(t, "# orch authority, key SHA-256 "+fingerprint(orch)+"\n"+pemOf(orch), text)
 }
 
 func TestHostList_ShowsEachHostWithItsMachinePrefixAndWhenItWasLastSeen(t *testing.T) {

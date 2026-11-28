@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -32,6 +31,7 @@ import (
 	"github.com/garamsh/naru/host/internal/enroll"
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/orchapi"
 )
 
 // ca is a throwaway authority: orch's host CA.
@@ -248,12 +248,17 @@ func TestMaintenance_NeedsTheAnchorOrchAndTheRevocationKey(t *testing.T) {
 	assert.ErrorContains(t, err, "maintenance needs")
 }
 
-func TestFetchAuthority_TakesTheCertificateOfThePinnedFingerprintAndNoOther(t *testing.T) {
+func TestFetchAuthority_TakesTheCertificatesOfThePinnedAuthorityAndNoOther(t *testing.T) {
 	o := newFakeOrch(t)
+	want := x509.NewCertPool()
+	want.AddCert(o.ca.cert)
 
-	got, err := fetchAuthority(t.Context(), o.srv.URL, o.ca.fingerprint())
+	got, err := fetchAuthority(t.Context(), o.srv.URL, orchapi.KeyPin(o.ca.cert))
 	require.NoError(t, err)
-	assert.True(t, bytes.Equal(o.ca.cert.Raw, got.Raw))
+	assert.True(t, want.Equal(got), "the authority the key pin names")
+	got, err = fetchAuthority(t.Context(), o.srv.URL, o.ca.fingerprint())
+	require.NoError(t, err)
+	assert.True(t, want.Equal(got), "and, until v0.1.0-rc.1, the certificate's hash")
 
 	_, err = fetchAuthority(t.Context(), o.srv.URL, newCA(t).fingerprint())
 	assert.Error(t, err, "another authority's fingerprint")

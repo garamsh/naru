@@ -31,7 +31,9 @@ type Join struct {
 type JoinOrch struct {
 	// URL is the https URL of orch's API, with a host and a port.
 	URL string `yaml:"url"`
-	// CASHA256 is the SHA-256 of the DER of the authority the orch's certificate chains to, in hex.
+	// CASHA256 is the hex SHA-256 of the public key (SubjectPublicKeyInfo) of the authority orch's
+	// certificate chains to, which a re-signing keeps; until v0.1.0-rc.1 the SHA-256 of its certificate
+	// is taken too (ADR 0122).
 	CASHA256 string `yaml:"caSHA256"`
 }
 
@@ -93,7 +95,7 @@ func validateJoin(cfg NodeConfig) error {
 		v.fail("spec.join.orch.url", "must be an https URL with a host and a port, got %q", j.Orch.URL)
 	}
 	if d, err := hex.DecodeString(j.Orch.CASHA256); err != nil || len(d) != sha256.Size {
-		v.fail("spec.join.orch.caSHA256", "must be the SHA-256 of the authority, 64 hexadecimal digits")
+		v.fail("spec.join.orch.caSHA256", "must be the SHA-256 of the authority's public key (or, until v0.1.0-rc.1, of its certificate), 64 hexadecimal digits")
 	}
 	if !wire.IsEnrollKey(j.EnrollKey) {
 		v.fail("spec.join.enrollKey", "must be an enrollment key: %s followed by 64 lowercase hexadecimal digits", wire.EnrollKeyPrefix)

@@ -242,11 +242,11 @@ func (f *fleet) readOrchCA() {
 	f.orchTrust = f.orchCA + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operator.Raw})) +
 		string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: host.Raw}))
 	f.orchCAFile = f.file("orch-ca.pem", f.orchCA)
-	sum := sha256.Sum256(orch.Raw)
+	sum := sha256.Sum256(orch.RawSubjectPublicKeyInfo)
 	f.caSHA = hex.EncodeToString(sum[:])
-	// `naructl orch ca` prints the same certificate and the hash a seed carries.
+	// `naructl orch ca` prints the same certificate and the key pin a seed carries (ADR 0122).
 	only := f.must(nrun("orch", "ca", "--config", f.c.API.Admin), "orch ca")
-	require.Equal(f.t, "# orch authority, SHA-256 "+f.caSHA+"\n"+f.orchCA, only)
+	require.Equal(f.t, "# orch authority, key SHA-256 "+f.caSHA+"\n"+f.orchCA, only)
 }
 
 func orchName(i int) string { return fmt.Sprintf("orch-%d", i) }

@@ -52,12 +52,17 @@ func TrustCA(pool *x509.CertPool, cert *tls.Certificate) *tls.Config {
 	return c
 }
 
-// PinCA returns a TLS config that trusts orch when the chain it presents holds a certificate whose
-// SHA-256 is caSHA256 (hex) and the leaf verifies against that certificate and names host, a DNS
-// name or an IP address, which is the host of orch's URL. The host is checked by name because every
-// certificate the authority issues carries the server EKU, so the chain alone would also accept a
-// host's own certificate. It checks no revocation, because its callers hold no revocation key. It
-// presents cert when it is not nil. The built-in verification is replaced by that check.
+// PinCA returns a TLS config that trusts orch when the chain it presents holds an authority that
+// caSHA256 (hex) pins, and the leaf verifies against that authority and names host, a DNS name or an
+// IP address, which is the host of orch's URL. The pin is the SHA-256 of the authority's
+// SubjectPublicKeyInfo (KeyPin), so it holds across the signer's re-signing of the authority under
+// its key (ADR 0122); every certificate of the chain with a pinned authority's subject and key is a
+// root. The SHA-256 of a certificate's DER, the form before ADR 0122, is accepted beside it until
+// v0.1.0-rc.1, and pins that certificate's authority the same way. The host is checked by name
+// because every certificate the authority issues carries the server EKU, so the chain alone would
+// also accept a host's own certificate. It checks no revocation, because its callers hold no
+// revocation key. It presents cert when it is not nil. The built-in verification is replaced by
+// that check.
 func PinCA(caSHA256, host string, cert *tls.Certificate) (*tls.Config, error) {
 	want, err := hex.DecodeString(strings.ReplaceAll(strings.ToLower(caSHA256), ":", ""))
 	if err != nil || len(want) != sha256.Size {
@@ -68,16 +73,9 @@ func PinCA(caSHA256, host string, cert *tls.Certificate) (*tls.Config, error) {
 		if len(cs.PeerCertificates) == 0 {
 			return errors.New("orch presented no certificate")
 		}
-		pool := x509.NewCertPool()
-		pinned := false
-		for _, p := range cs.PeerCertificates[1:] {
-			if sum := sha256.Sum256(p.Raw); bytes.Equal(sum[:], want) {
-				pool.AddCert(p)
-				pinned = true
-			}
-		}
-		if !pinned {
-			return errors.New("orch's chain holds no certificate with the pinned fingerprint")
+		pool, ok := PinnedRoots(want, cs.PeerCertificates[1:])
+		if !ok {
+			return errors.New("orch's chain holds no authority with the pinned key")
 		}
 		return identity.PeerCheck{Roots: pool, Usage: x509.ExtKeyUsageServerAuth, Names: []string{host}}.VerifyConnection(cs)
 	}
@@ -85,6 +83,34 @@ func PinCA(caSHA256, host string, cert *tls.Certificate) (*tls.Config, error) {
 		c.Certificates = []tls.Certificate{*cert}
 	}
 	return c, nil
+}
+
+// KeyPin is the hex SHA-256 of cert's SubjectPublicKeyInfo: the pin of its authority, which holds
+// for every certificate of the authority's key (ADR 0122).
+func KeyPin(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return hex.EncodeToString(sum[:])
+}
+
+// PinnedRoots is the pool of the certificates of chain that are of an authority pin names: one whose
+// key's SHA-256, or, until v0.1.0-rc.1, whose own SHA-256, is pin, and every certificate with the
+// same subject and key. ok is false when none is.
+func PinnedRoots(pin []byte, chain []*x509.Certificate) (*x509.CertPool, bool) {
+	type authority struct{ subject, key string }
+	pinned := map[authority]bool{}
+	for _, p := range chain {
+		key, raw := sha256.Sum256(p.RawSubjectPublicKeyInfo), sha256.Sum256(p.Raw)
+		if bytes.Equal(key[:], pin) || bytes.Equal(raw[:], pin) {
+			pinned[authority{string(p.RawSubject), string(p.RawSubjectPublicKeyInfo)}] = true
+		}
+	}
+	pool := x509.NewCertPool()
+	for _, p := range chain {
+		if pinned[authority{string(p.RawSubject), string(p.RawSubjectPublicKeyInfo)}] {
+			pool.AddCert(p)
+		}
+	}
+	return pool, len(pinned) > 0
 }
 
 func (c *Client) do(ctx context.Context, method, path string, headers map[string]string, in, out any) error {

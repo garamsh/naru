@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/garamsh/naru/lib/identity"
+	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/lib/wire"
 	"github.com/garamsh/naru/naructl/internal/client"
 )
@@ -70,8 +71,8 @@ func signerCARunner(fs *pflag.FlagSet, offered []string) runner {
 			if err != nil {
 				return fmt.Errorf("the signer's %s authority: %w", n, err)
 			}
-			sum := sha256.Sum256(cert.Raw)
-			_, _ = fmt.Fprintf(stdout, "# %s authority, SHA-256 %s\n%s", n, hex.EncodeToString(sum[:]), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
+			// The pin is the authority's key's, which a re-signing keeps (ADR 0122).
+			_, _ = fmt.Fprintf(stdout, "# %s authority, key SHA-256 %s\n%s", n, orchapi.KeyPin(cert), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
 		}
 		return nil
 	}

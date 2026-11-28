@@ -24,8 +24,8 @@ var (
 	label  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
-// Join is what a host needs to enroll: orch's URL, the SHA-256 of the authority orch's certificate
-// chains to, the enrollment key, and optionally the name the host is listed under until it is
+// Join is what a host needs to enroll: orch's URL, the key pin of the authority orch's certificate
+// chains to (orchapi.KeyPin), the enrollment key, and optionally the name the host is listed under until it is
 // admitted.
 type Join struct {
 	OrchURL   string
