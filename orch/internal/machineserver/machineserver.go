@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -128,10 +127,16 @@ func Unavailable(why string) http.Handler {
 }
 
 // TLSConfig is the listener's configuration: TLS 1.3, and a client certificate, when one is sent,
-// that verifies against clientCA. certified refuses a request without one to every operation but
-// register.
-func TLSConfig(cert tls.Certificate, clientCA *x509.CertPool) *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, ClientAuth: tls.VerifyClientCertIfGiven, ClientCAs: clientCA}
+// that verifies against clients. It presents pair as its files stand, and reads clients again at
+// a handshake when one of their files has changed (ADR 0123). certified refuses a request without
+// one to every operation but register.
+func TLSConfig(pair *identity.FilePair, clients *identity.FilePool) *tls.Config {
+	conf := func() *tls.Config {
+		return &tls.Config{MinVersion: tls.VersionTLS13, GetCertificate: pair.GetCertificate, ClientAuth: tls.VerifyClientCertIfGiven, ClientCAs: clients.Current()}
+	}
+	c := conf()
+	c.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) { return conf(), nil }
+	return c
 }
 
 // middleware recovers a panic as a 500 and gives each request a logger with a trace id.

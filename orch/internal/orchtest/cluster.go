@@ -95,6 +95,9 @@ type Options struct {
 	// warns of --ca; NewTrustHosts gives the leader the hosts whose pools it warns of too.
 	TrustPools    bool
 	NewTrustHosts func(inv inventory.Service) trust.Hosts
+	// CAStore gives every member a store of authorities beside its CA, as naru-orchd's
+	// --ca-store, which MemberStore names and which is absent until a test writes it.
+	CAStore bool
 }
 
 // pickPorts is how a cluster chooses its ports; a test replaces it to make a port taken.
@@ -240,7 +243,10 @@ func (c *Cluster) member(t testing.TB, i, peerPort, clientPort int) (orchd.Confi
 		deps.CRLPeer = o.CRLPeers[i]
 	}
 	if o.TrustPools {
-		cfg.TrustPools = map[string]string{"ca": files.CA}
+		cfg.TrustPools = map[string][]string{"ca": {files.CA}}
+	}
+	if o.CAStore {
+		cfg.CAStore = filepath.Join(dir, "ca-store.pem")
 	}
 	deps.NewTrustHosts = o.NewTrustHosts
 	return cfg, deps
@@ -311,6 +317,9 @@ func (c *Cluster) RestartInZone(t testing.TB, i int, zone string) *orchd.Orchd {
 
 // MemberConfig is the etcd configuration member i first started with.
 func (c *Cluster) MemberConfig(i int) member.Config { return c.cfgs[i].Config }
+
+// MemberStore is member i's store of authorities, empty without Options.CAStore.
+func (c *Cluster) MemberStore(i int) string { return c.cfgs[i].CAStore }
 
 // Client returns a client of member i's API that presents id, or no certificate when id is nil.
 func (c *Cluster) Client(t testing.TB, i int, id *Identity) *orchapi.Client {

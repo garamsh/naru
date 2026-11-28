@@ -20,6 +20,8 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
+
+	"github.com/garamsh/naru/lib/identity"
 )
 
 // Cluster states a member starts in.
@@ -222,9 +224,10 @@ func addWhenHealthy(ctx context.Context, cl *clientv3.Client, peerURL string) (*
 	}
 }
 
-// clientTLS is the TLS configuration of orch's own client of its member.
+// clientTLS is the TLS configuration of orch's own client of its member. It presents the pair as
+// its files stand, so a renewed certificate is presented from the next handshake on (ADR 0123).
 func clientTLS(c Config) (*tls.Config, error) {
-	pair, err := tls.LoadX509KeyPair(c.Cert, c.Key)
+	pair, err := identity.NewFilePair(c.Cert, c.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +239,7 @@ func clientTLS(c Config) (*tls.Config, error) {
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("%s holds no certificate", c.CA)
 	}
-	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pair}, RootCAs: pool}, nil
+	return &tls.Config{MinVersion: tls.VersionTLS12, GetClientCertificate: pair.GetClientCertificate, RootCAs: pool}, nil
 }
 
 // Client returns orch's client of this member.

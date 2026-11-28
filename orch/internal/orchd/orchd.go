@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -64,11 +63,14 @@ type Config struct {
 	// under. The Machine API is served only when both are set.
 	MachineAPIListen string
 	MachineZone      string
-	// ClientCA verifies the certificates of the API's callers.
+	// ClientCA verifies the certificates of the API's callers, with CAStore, the re-signings of
+	// its authorities the member has taken since (ADR 0123), when it is set.
 	ClientCA string
-	// TrustPools are the member's pools of authorities by the flag that names them, each a PEM
-	// file. The member warns of each that ends within a year (ADR 0121); none warns of none.
-	TrustPools map[string]string
+	CAStore  string
+	// TrustPools are the member's pools of authorities by the flag that names them, each its files
+	// as trust.Config reads them. The member warns of each that ends within a year (ADR 0121);
+	// none warns of none.
+	TrustPools map[string][]string
 	// SnapshotDir holds the sealed snapshots; SnapshotInterval and SnapshotKeep default to every
 	// 6 hours and 8 files.
 	SnapshotDir      string
@@ -144,6 +146,14 @@ type Deps struct {
 	RevocationKey ed25519.PublicKey
 	// Metrics is the registry the API's request counter is registered on; nil counts none.
 	Metrics prometheus.Registerer
+	// Renewal, when set, runs beside the API until the member stops: the check that renews the
+	// member's certificate and takes its authorities' re-signings (ADR 0123).
+	Renewal Runner
+}
+
+// Runner is what runs until its context ends.
+type Runner interface {
+	Run(ctx context.Context)
 }
 
 // ExposureHosts is what the exposures need of the hosts: a lease on an address, and the addresses
@@ -193,7 +203,7 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	if c.SnapshotInterval == 0 {
 		c.SnapshotInterval = snapshot.DefaultInterval
 	}
-	tlsConf, callersCA, err := serverTLS(c)
+	pair, clients, callersCA, err := serverTLS(c)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +227,7 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	} else if m, err = member.Start(ctx, c.Config); err != nil {
 		return nil, err
 	}
-	l, err := tls.Listen("tcp", c.Listen, tlsConf)
+	l, err := tls.Listen("tcp", c.Listen, api.TLSConfig(pair, clients))
 	if err != nil {
 		if m != nil {
 			m.Close()
@@ -226,7 +236,7 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 	}
 	var machineL net.Listener
 	if c.MachineAPIListen != "" && c.MachineZone != "" {
-		if machineL, err = tls.Listen("tcp", c.MachineAPIListen, machineserver.TLSConfig(tlsConf.Certificates[0], tlsConf.ClientCAs)); err != nil {
+		if machineL, err = tls.Listen("tcp", c.MachineAPIListen, machineserver.TLSConfig(pair, clients)); err != nil {
 			_ = l.Close()
 			if m != nil {
 				m.Close()
@@ -255,6 +265,13 @@ func Start(ctx context.Context, c Config, d Deps) (*Orchd, error) {
 			d.Log.Error("api stopped", "err", err.Error())
 		}
 	}()
+	if d.Renewal != nil {
+		o.wg.Add(1)
+		go func() {
+			defer o.wg.Done()
+			d.Renewal.Run(runCtx)
+		}()
+	}
 	if machineL != nil {
 		o.machineAddr = machineL.Addr().String()
 		o.wg.Add(1)
@@ -528,21 +545,22 @@ func (o *Orchd) keepRunning(ctx context.Context, d Deps, r Reconciler) {
 	}
 }
 
-// serverTLS is the API's TLS configuration and the PEM of the authority it trusts callers through.
-func serverTLS(c Config) (*tls.Config, []byte, error) {
-	pair, err := tls.LoadX509KeyPair(c.Cert, c.Key)
+// serverTLS is the pair the API and the Machine API present, the pool they verify callers against,
+// and the PEM of ClientCA, the authority a joined host is told.
+func serverTLS(c Config) (*identity.FilePair, *identity.FilePool, []byte, error) {
+	pair, err := identity.NewFilePair(c.Cert, c.Key)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	clients, err := identity.NewFilePool(c.ClientCA, c.CAStore)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	pem, err := os.ReadFile(c.ClientCA)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pem) {
-		return nil, nil, fmt.Errorf("%s holds no certificate", c.ClientCA)
-	}
-	return api.TLSConfig(pair, pool), pem, nil
+	return pair, clients, pem, nil
 }
 
 // Addr is the address the API listens on.
