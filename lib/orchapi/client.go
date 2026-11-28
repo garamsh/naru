@@ -93,8 +93,8 @@ func KeyPin(cert *x509.Certificate) string {
 }
 
 // PinnedRoots is the pool of the certificates of chain that are of an authority pin names: one whose
-// key's SHA-256, or, until v0.1.0-rc.1, whose own SHA-256, is pin, and every certificate with the
-// same subject and key. ok is false when none is.
+// key's SHA-256, or, until v0.1.0-rc.1 (garamsh/naru#457 drops it), whose own SHA-256, is pin, and
+// every certificate with the same subject and key. ok is false when none is.
 func PinnedRoots(pin []byte, chain []*x509.Certificate) (*x509.CertPool, bool) {
 	type authority struct{ subject, key string }
 	pinned := map[authority]bool{}
