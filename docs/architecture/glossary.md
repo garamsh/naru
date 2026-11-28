@@ -44,7 +44,7 @@ The word Node in the older documents named the physical machine, and `boundaries
 |---|---|---|
 | join form | The configuration of a host that has nothing yet: orch's URL, the SHA-256 of orch's CA and an enrollment key. Init runs `naru-hostd --join` for it, and applies the configuration orch builds at admission ([ADR 0058](./adr/0058-a-host-boots-from-a-join-form-that-names-an-orch-and-an-enrollment-key-and-init-applies-the-configuration-hostd-brings-back.md)). | `spec.join` ([config.md](./config.md)) |
 | install seed | The NoCloud `cidata` ISO 9660 volume that carries a join form and nothing else, which a new host boots the installer with ([ADR 0059](./adr/0059-orch-admits-a-host-that-boots-from-an-install-seed-allocates-its-machine-prefix-and-builds-its-configuration-from-one-fleet-profile.md)). The issue that asked for this file calls it the installation seed. | `naructl host install-seed`; `/install-seed` of the console |
-| enrollment key | The secret in a join form that lets a host ask to enroll. Orch keeps only its hash. | `naructl enroll-key create`, `naructl enroll-key revoke` |
+| enrollment key | The secret in a join form that lets one host ask to enroll, within 24 hours; the host's admission spends it. Orch keeps only its hash. | `naructl enroll-key create`, `naructl enroll-key revoke` |
 | admission | An operator's approval of a pending host, after which orch builds the host's configuration and has the signer issue its certificate. | `naructl host admit`; `POST /v1/admit` |
 
 ## Boot sets and disks
