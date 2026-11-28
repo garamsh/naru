@@ -31,8 +31,8 @@ func (s *Signer) authoriseHost(signed []byte, action string, body any) (identity
 // request, in the last identity.HostRenewWindow of that certificate's life (ADR 0122). The new
 // certificate has the current one's host ID and IP addresses, whatever the request asks, is valid a
 // year, and is recorded among the host's serials, so the retire that follows its use revokes the
-// others. Nothing is spent: a host whose answer was lost renews again, and its retire revokes every
-// certificate it does not use.
+// others. A host whose answer was lost renews again: the renewal it lost is revoked, so a
+// certificate has at most one renewal the host has not retired.
 func (s *Signer) RenewHost(signed []byte) (identity.Issued, error) {
 	var req identity.HostRenewal
 	who, err := s.authoriseHost(signed, identity.ActionRenewHost, &req)
@@ -66,6 +66,14 @@ func (s *Signer) RenewHost(signed []byte) (identity.Issued, error) {
 	if !slices.Contains(held, who.Serial) {
 		return identity.Issued{}, fmt.Errorf("%w: serial %s is not one of %s's", ErrUnknownHost, who.Serial, who.Subject)
 	}
+	// One unretired renewal per certificate: a renewal the certificate signed before, whose answer
+	// was lost or which the host has not retired yet, is revoked with this one's issue.
+	var earlier []string
+	for _, serial := range held[slices.Index(held, who.Serial)+1:] {
+		if !cur.crl.Revokes(serial) {
+			earlier = append(earlier, serial)
+		}
+	}
 	issued, err := issueLeaf(cur.host, now, who.Subject, identity.RoleHost, csr.PublicKey, serverAndClient,
 		&x509.CertificateRequest{DNSNames: []string{who.Subject}, IPAddresses: who.IPAddresses})
 	if err != nil {
@@ -73,11 +81,19 @@ func (s *Signer) RenewHost(signed []byte) (identity.Issued, error) {
 	}
 	next := cur.withHost(who.Subject, issued.Serial)
 	files := []stagedFile{{issuedFile, next.marshalIssued()}, {hostsFile, next.marshalHosts()}}
+	if len(earlier) > 0 {
+		crl := cur.successor(now)
+		crl.Serials = slices.Sorted(slices.Values(slices.Concat(crl.Serials, earlier)))
+		if err := next.signCRL(crl); err != nil {
+			return identity.Issued{}, err
+		}
+		files = append(files, stagedFile{crlFile, next.crlSigned})
+	}
 	if err := commitFiles(s.dir, files); err != nil {
 		return identity.Issued{}, err
 	}
 	s.auth = next
-	s.log.Info("renewed a host's certificate", "host_id", who.Subject, "serial", issued.Serial, "previous_serial", who.Serial)
+	s.log.Info("renewed a host's certificate", "host_id", who.Subject, "serial", issued.Serial, "previous_serial", who.Serial, "revoked_earlier_renewals", earlier)
 	return issued, nil
 }
 

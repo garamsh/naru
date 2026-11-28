@@ -126,6 +126,8 @@ func TestARenewedHostRetiresEveryOtherCertificateByTheOneItKeeps(t *testing.T) {
 		return person{key: r.key, cert: parseCert(t, issued.Certificate)}
 	}
 	lost, kept := renew(), renew() // the first answer was lost, so the host renewed again
+	assert.True(t, r.revoked(identity.SerialOf(lost.cert)), "a certificate has one unretired renewal: the second revokes the first")
+	assert.False(t, r.revoked(identity.SerialOf(old)), "and leaves the certificate it renewed from until the retire")
 
 	retire := func(p person) int {
 		status, _ := r.do(http.MethodPost, "/v1/host-retire", r.signedAt(p, identity.ActionRetireOwnHost, struct{}{}))
