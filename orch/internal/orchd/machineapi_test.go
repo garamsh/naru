@@ -75,8 +75,9 @@ func oneHost() *orchtest.FakeMachineHosts {
 	return h
 }
 
-// aliasDomain is the domain outside the zone the operator grants garam.
-const aliasDomain = "apps.garam.example"
+// aliasDomain is the domain outside the zone the operator grants garam, and sharedAliasDomain the
+// one it grants garam and functions.
+const aliasDomain, sharedAliasDomain = "apps.garam.example", "shared.garam.example"
 
 func TestOrch_PassesTheMachineAPIConformanceScenarios(t *testing.T) {
 	hosts := oneHost()
@@ -85,11 +86,13 @@ func TestOrch_PassesTheMachineAPIConformanceScenarios(t *testing.T) {
 	o := startMachineOrchWith(t, orchtest.Options{NewMachineHosts: func(inventory.Service) machines.Hosts { return hosts }, MachineInterval: time.Hour})
 	kv := o.c.Members[0].Etcd()
 	alice := o.c.CA.Issue(t, "alice", identity.RoleOperator)
-	_, err := o.c.Client(t, 0, &alice).ApplyCaller(t.Context(), "garam", orchapi.CallerSpec{AliasDomains: []string{aliasDomain}})
-	require.NoError(t, err)
+	for caller, domains := range map[string][]string{"garam": {aliasDomain, sharedAliasDomain}, "functions": {sharedAliasDomain}} {
+		_, err := o.c.Client(t, 0, &alice).ApplyCaller(t.Context(), caller, orchapi.CallerSpec{AliasDomains: domains})
+		require.NoError(t, err)
+	}
 	cfg := machineapitest.Config{
-		AliasDomain: aliasDomain,
-		Caller:      o.garam, Other: o.functions, OtherRole: o.op, Zone: machineZone, Spec: machineSpec(), Timeout: 10 * time.Second,
+		AliasDomain: aliasDomain, SharedAliasDomain: sharedAliasDomain,
+		Caller: o.garam, Other: o.functions, OtherRole: o.op, Zone: machineZone, Spec: machineSpec(), Timeout: 10 * time.Second,
 		Anonymous: o.c.MachineClient(t, 0, orchtest.Identity{}), Token: func(_ *testing.T, name string) string { return o.c.Signer.CallerToken(name) },
 		CallerKey: o.garamID.TLS.PrivateKey.(crypto.Signer), CallerCert: o.garamID.Cert,
 		// The log's age drops every event the caller's log holds: its trim deletes them and records

@@ -49,6 +49,23 @@ func CheckName(name string) error {
 // IsMachineID reports whether s has the form of a Machine's id: 16 lowercase hexadecimal digits.
 func IsMachineID(s string) bool { return idForm.MatchString(s) }
 
+// MachinePrefix begins every label naru answers in the Machine zone, a zone other names share
+// (ADR 0120).
+const MachinePrefix = "m-"
+
+// MaxServiceName is the longest a service's name may be, so that its stable name,
+// m-<service>--<id>, is one DNS label of 63 characters at most.
+const MaxServiceName = 63 - len(MachinePrefix) - len("--") - 16
+
+// StableName is the stable name in zone of the Machine id's default service when service is "",
+// m-<id>.<zone>, or of its named service, m-<service>--<id>.<zone> (ADR 0120).
+func StableName(id, service, zone string) string {
+	if service == "" {
+		return MachinePrefix + id + "." + zone
+	}
+	return MachinePrefix + service + "--" + id + "." + zone
+}
+
 // gib is the unit a GPU Machine's memory is a whole number of (ADR 0111 item 6).
 const gib = 1 << 30
 
@@ -163,8 +180,8 @@ func (s Spec) checkServices() error {
 	for i, v := range s.Services {
 		f := fmt.Sprintf("spec.services[%d]", i)
 		switch {
-		case CheckName(v.Name) != nil || strings.Contains(v.Name, "--") || seen[v.Name]:
-			return invalid(f+".name", "is not a DNS label without \"--\" unique among the services")
+		case CheckName(v.Name) != nil || strings.Contains(v.Name, "--") || len(v.Name) > MaxServiceName || seen[v.Name]:
+			return invalid(f+".name", "is not a DNS label of %d characters at most without \"--\" unique among the services", MaxServiceName)
 		case v.Port == 0:
 			return invalid(f+".port", "must be 1 to 65535")
 		case v.Protocol != ServiceHTTP && v.Protocol != ServiceTCP:

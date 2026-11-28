@@ -19,13 +19,14 @@ import (
 func Isolation(t *testing.T, c Config) {
 	c = c.check(t)
 	ctx := t.Context()
-	name, snap, host := unique("isolation"), unique("isolation-snap"), unique("isolation")+"."+c.Zone
+	name, snap, host := unique("isolation"), unique("isolation-snap"), unique("isolation")+"."+c.SharedAliasDomain
 	since, err := c.Other.Machines(ctx)
 	require.NoError(t, err)
 	m := create(t, c.Caller, name, c.Spec)
 	waitPhase(t, c, c.Caller, name, machineapi.PhaseRunning)
 	snapshot(t, c, c.Caller, snap, name)
-	_, _, err = c.Caller.PutAlias(ctx, host, machineapi.AliasRequest{Machine: name})
+	cert, key := certificate(t, host)
+	_, _, err = c.Caller.PutAlias(ctx, host, machineapi.AliasRequest{Machine: name, Certificate: cert, Key: key})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Caller.DeleteAlias(context.Background(), host) })
 	file := c.Spec.Volumes[0].MountPath + "/isolation"
@@ -59,7 +60,9 @@ func Isolation(t *testing.T, c Config) {
 	create(t, c.Caller, unique("isolation-restored"), from)
 	_, _, err = c.Other.CreateMachine(ctx, unique("isolation-theirs"), from)
 	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeSnapshotNotFound, "a restore from another caller's snapshot")
-	_, _, err = c.Other.PutAlias(ctx, unique("isolation-theirs")+"."+c.Zone, machineapi.AliasRequest{Machine: name})
+	theirHost := unique("isolation-theirs") + "." + c.SharedAliasDomain
+	cert, key = certificate(t, theirHost)
+	_, _, err = c.Other.PutAlias(ctx, theirHost, machineapi.AliasRequest{Machine: name, Certificate: cert, Key: key})
 	refused(t, err, http.StatusUnprocessableEntity, machineapi.CodeMachineNotFound, "an alias of another caller's Machine")
 
 	list, err := c.Other.Machines(ctx)

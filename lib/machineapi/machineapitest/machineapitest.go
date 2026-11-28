@@ -30,10 +30,11 @@ type Config struct {
 	Other  *machineapi.Client
 	// OtherRole is a client holding a certificate of a role other than caller, such as operator.
 	OtherRole *machineapi.Client
-	// Zone is the zone the implementation gives stable names under, such as "m.garam.sh".
+	// Zone is the zone the implementation gives stable names under, such as "garam.run".
 	Zone string
-	// AliasDomain is a domain outside the zone the operator granted Caller, and not Other.
-	AliasDomain string
+	// AliasDomain is a domain outside the zone the operator granted Caller, and not Other, and
+	// SharedAliasDomain one it granted both.
+	AliasDomain, SharedAliasDomain string
 	// Spec is a spec the implementation runs: at least one volume and one service, and an image
 	// whose guest runs "cat", reading stdin to stdout.
 	Spec machineapi.Spec

@@ -98,8 +98,8 @@ type Orch struct {
 	// MachineAPIListen is the address of the Machine API, served only with MachineZone. It is
 	// "0.0.0.0:7600" when empty.
 	MachineAPIListen string `yaml:"machineApiListen,omitempty"`
-	// MachineZone is the zone of Machines' stable names, such as "m.example.com". Without it orch
-	// serves no Machine API.
+	// MachineZone is the zone of Machines' stable names, m-<id>.<zone>, such as "garam.run". Without
+	// it orch serves no Machine API.
 	MachineZone string `yaml:"machineZone,omitempty"`
 	// SANs are the names and addresses of the member's certificate. They are ["127.0.0.1"] when empty.
 	SANs []string `yaml:"sans,omitempty"`

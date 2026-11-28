@@ -33,11 +33,11 @@ func Table(zone string, recs []machines.Record, aliases []machines.Alias) ([]hos
 		}
 		routed[r.ID] = r
 		for i, svc := range r.Spec.Services {
-			name := r.ID + "." + zone
-			if i > 0 {
-				name = svc.Name + "--" + name
+			service := svc.Name
+			if i == 0 {
+				service = ""
 			}
-			out = append(out, route(name, r, svc))
+			out = append(out, route(machineapi.StableName(r.ID, service, zone), r, svc))
 		}
 	}
 	for _, a := range aliases {

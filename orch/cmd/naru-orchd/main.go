@@ -49,7 +49,7 @@ func main() {
 		restore     = flag.Bool("restore", false, "with no etcd member in --data-dir, serve only PUT /v1/restore and start etcd on the snapshot it receives")
 		listen      = flag.String("listen", "0.0.0.0:7500", "address of the HTTPS API")
 		machineAddr = flag.String("machine-api-addr", "0.0.0.0:"+wire.MachineAPIPort, "address of the Machine API, served only with --machine-zone")
-		machineZone = flag.String("machine-zone", "", "the zone Machines' stable names are under, such as m.example.com; empty serves no Machine API")
+		machineZone = flag.String("machine-zone", "", "the zone Machines' stable names m-<id>.<zone> are under, such as garam.run, where orch takes no alias; empty serves no Machine API")
 		certFile    = flag.String("cert", "/var/lib/naru/orch/tls/orch.crt", "orch's certificate, followed by the authority's")
 		keyFile     = flag.String("key", "/var/lib/naru/orch/tls/orch.key", "orch's key")
 		caFile      = flag.String("ca", "/var/lib/naru/orch/tls/ca.crt", "the authority that issues every identity")

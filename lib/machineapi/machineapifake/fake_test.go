@@ -31,7 +31,7 @@ func spec() machineapi.Spec {
 func TestFake_PassesTheConformanceTest(t *testing.T) {
 	s := machineapifake.Start(t, machineapifake.Options{
 		Zone:         zone,
-		AliasDomains: map[string][]string{"garam": {"workspaces.example.test"}},
+		AliasDomains: map[string][]string{"garam": {"workspaces.example.test", "shared.example.test"}, "functions": {"shared.example.test"}},
 		Latency:      300 * time.Millisecond,
 	})
 	caller, key, cert := s.ClientWithPair("garam", machineapifake.CallerRole)
@@ -45,9 +45,9 @@ func TestFake_PassesTheConformanceTest(t *testing.T) {
 		OtherRole:   s.ClientOfRole("garam", "operator"),
 		ExpireLog:   func(*testing.T) { s.ExpireLog("garam") },
 		Zone:        zone,
-		AliasDomain: "workspaces.example.test",
-		Spec:        spec(),
-		Timeout:     10 * time.Second,
+		AliasDomain: "workspaces.example.test", SharedAliasDomain: "shared.example.test",
+		Spec:    spec(),
+		Timeout: 10 * time.Second,
 	})
 }
 

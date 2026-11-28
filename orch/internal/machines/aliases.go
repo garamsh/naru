@@ -14,16 +14,16 @@ import (
 var (
 	// ErrAliasTaken is a hostname another caller holds.
 	ErrAliasTaken = errors.New("another caller holds the hostname")
-	// ErrDomainNotGranted is a hostname outside the zone in no domain granted to the caller.
-	ErrDomainNotGranted = errors.New("the hostname is outside the zone and in no domain granted to the caller")
+	// ErrDomainNotGranted is a hostname in no domain granted to the caller.
+	ErrDomainNotGranted = errors.New("the hostname is in no domain granted to the caller")
 )
 
 // MaxAliasesPerMachine bounds a Machine's aliases, which its delete removes in one transaction.
 const MaxAliasesPerMachine = 64
 
 // Alias is an alias as orch stores it, under /naru/orch/aliases/<hostname>, so a hostname is held by
-// one caller across the fleet (ADR 0112 item 3). Certificate and Key are an alias outside the zone's
-// own pair, which only the routes the proxies' hosts receive carry; Shown is what a read shows of the
+// one caller across the fleet (ADR 0112 item 3, ADR 0120). Certificate and Key are the alias's own
+// pair, which only the routes the proxies' hosts receive carry; Shown is what a read shows of the
 // certificate.
 type Alias struct {
 	Hostname    string                       `json:"hostname"`
@@ -62,29 +62,21 @@ type Caller struct {
 // hostname holds it; the same request again answers the alias as it is, and another one of the
 // caller's is ErrConflict. created is true when this call recorded it.
 func (s *service) PutAlias(ctx context.Context, caller, hostname string, req machineapi.AliasRequest) (machineapi.Alias, bool, error) {
-	inZone, err := machineapi.AliasInZone(hostname, s.zone)
+	if err := machineapi.CheckAliasHostname(hostname, s.zone); err != nil {
+		return machineapi.Alias{}, false, fmt.Errorf("%w: %v", machineapi.ErrInvalid, err)
+	}
+	grant, err := s.store.Caller(ctx, caller)
+	if err != nil {
+		return machineapi.Alias{}, false, err
+	}
+	if !slices.ContainsFunc(grant.AliasDomains, func(d string) bool { return machineapi.InDomain(hostname, d) }) {
+		return machineapi.Alias{}, false, fmt.Errorf("%w: %s", ErrDomainNotGranted, hostname)
+	}
+	shown, err := machineapi.CheckAliasCertificate(hostname, req.Certificate, req.Key, s.clock.Now())
 	if err != nil {
 		return machineapi.Alias{}, false, fmt.Errorf("%w: %v", machineapi.ErrInvalid, err)
 	}
-	a := Alias{Hostname: hostname, Caller: caller, Machine: req.Machine, Service: req.Service, Certificate: req.Certificate, Key: req.Key}
-	if inZone {
-		if req.Certificate != "" || req.Key != "" {
-			return machineapi.Alias{}, false, fmt.Errorf("%w: an alias in the zone %s takes no certificate or key", machineapi.ErrInvalid, s.zone)
-		}
-	} else {
-		grant, err := s.store.Caller(ctx, caller)
-		if err != nil {
-			return machineapi.Alias{}, false, err
-		}
-		if !slices.ContainsFunc(grant.AliasDomains, func(d string) bool { return machineapi.InDomain(hostname, d) }) {
-			return machineapi.Alias{}, false, fmt.Errorf("%w: %s", ErrDomainNotGranted, hostname)
-		}
-		shown, err := machineapi.CheckAliasCertificate(hostname, req.Certificate, req.Key, s.clock.Now())
-		if err != nil {
-			return machineapi.Alias{}, false, fmt.Errorf("%w: %v", machineapi.ErrInvalid, err)
-		}
-		a.Shown = &shown
-	}
+	a := Alias{Hostname: hostname, Caller: caller, Machine: req.Machine, Service: req.Service, Certificate: req.Certificate, Key: req.Key, Shown: &shown}
 	for range retries {
 		m, mrev, err := s.store.Machine(ctx, caller, req.Machine)
 		if errors.Is(err, ErrNotFound) || err == nil && m.Status.Phase == machineapi.PhaseDeleting {
