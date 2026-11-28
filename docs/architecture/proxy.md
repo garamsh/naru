@@ -6,14 +6,14 @@ Everything below is built: `naru-proxy`, the exposure, orch's names, aliases and
 
 ## Current decisions
 
-- **Stable names** ([ADR 0112](./adr/0112-a-machine-is-reached-by-a-stable-name-through-naru-proxy-which-terminates-tls-reads-the-routes-orch-pushes-to-its-host-and-forwards-over-the-mesh-amending-adr-0085-items-3-5-and-6.md) item 1).
-  - **The forms.** A Machine's default service is `<id>.<zone>`, and its other services are `<service>--<id>.<zone>`. The zone is orch's `--machine-zone`, `m.garam.sh` for the coordinator's fleet.
-  - **Why this form.** Each name is one label, so one wildcard certificate covers every name, and no name reveals a caller or a Machine's name.
+- **Stable names** ([ADR 0112](./adr/0112-a-machine-is-reached-by-a-stable-name-through-naru-proxy-which-terminates-tls-reads-the-routes-orch-pushes-to-its-host-and-forwards-over-the-mesh-amending-adr-0085-items-3-5-and-6.md) item 1, [ADR 0120](./adr/0120-a-machines-stable-name-is-one-m-label-under-the-shared-garam-run-zone-and-naru-takes-no-alias-in-the-zone-superseding-adr-0112-items-1-and-3-in-part.md)).
+  - **The forms.** A Machine's default service is `m-<id>.<zone>`, and its other services are `m-<service>--<id>.<zone>` (`lib/machineapi.StableName`); a service's name is at most 43 characters, so the name stays one label. The zone is orch's `--machine-zone`, `garam.run` for the coordinator's fleet.
+  - **Why this form.** Each name is one label, so one wildcard certificate, `*.garam.run`, covers every name, and no name reveals a caller or a Machine's name. The zone is shared: in garam.run the `m-` labels are naru's and the `c-` labels cowork's, and `garam.run` is on the Public Suffix List, so every name under it is its own site.
   - **Moves.** A move never changes the name. The Machine API reports it as the `address`.
 - **Services.** A Machine's `services` (`name`, `port`, `protocol` `http` or `tcp`, optional `proxyProtocol: v2`) are all a proxy reaches; the first is the default. `http` carries HTTP/1.1, HTTP/2 and WebSocket. `tcp` is TLS from the client, terminated by SNI, and plain TCP to the Machine.
 - **Aliases.** A use publishes `PUT /machines/v1alpha1/aliases/{hostname}` (Machine and service), and the first caller to create a hostname holds it ([ADR 0112](./adr/0112-a-machine-is-reached-by-a-stable-name-through-naru-proxy-which-terminates-tls-reads-the-routes-orch-pushes-to-its-host-and-forwards-over-the-mesh-amending-adr-0085-items-3-5-and-6.md) item 3).
-  - **Inside the zone.** An alias is one label that is not 16 hexadecimal digits and has no `--`.
-  - **Outside the zone.** An alias ends in a domain the operator granted the caller (`PUT /v1/callers/{name}` with `aliasDomains`, operator and root) and brings a certificate and key for the hostname.
+  - **Not in the zone.** naru answers only its stable names in the zone, which other names share, and refuses an alias there with 422 ([ADR 0120](./adr/0120-a-machines-stable-name-is-one-m-label-under-the-shared-garam-run-zone-and-naru-takes-no-alias-in-the-zone-superseding-adr-0112-items-1-and-3-in-part.md) item 2).
+  - **In a granted domain.** An alias ends in a domain the operator granted the caller (`PUT /v1/callers/{name}` with `aliasDomains`, operator and root) and brings a certificate and key for the hostname.
   - **The key** is never read back: `GET` shows `<set>`. It goes only to the proxies' hosts.
   - **Deleting.** An alias goes with its Machine.
 - **`naru-proxy`** is the binary of the unit `proxy/` (`proxy/cmd/naru-proxy`, `/bin/naru-proxy` in the image). Init runs it as user and group 6003 on each host whose configuration has `spec.proxy`, with `CAP_NET_BIND_SERVICE` as its one ambient capability and an open-file limit of 9216, two descriptors for each connection it may hold and room for the rest ([config.md](./config.md)); a site runs at least two.
@@ -51,10 +51,12 @@ Everything below is built: `naru-proxy`, the exposure, orch's names, aliases and
 - [ADR 0113](./adr/0113-hosts-form-a-wireguard-mesh-with-an-address-each-hosts-that-cannot-be-reached-dial-out-to-relays-and-orch-rotates-every-hosts-key-amending-adr-0045-item-5-adr-0048-item-5-and-adr-0049-item-6.md): the mesh address the proxy forwards from.
 - [ADR 0117](./adr/0117-proxy-exposures-are-spread-over-the-proxy-hosts-one-address-to-a-host-while-there-are-hosts-enough-superseding-adr-0112-item-8s-several-addresses-in-part.md): why proxy exposures are placed together in one sequential stage and spread one address to a host, where rendezvous hashing alone would put two addresses on one of two hosts half the time.
 - [ADR 0119](./adr/0119-the-proxy-role-is-the-operators-grant-and-orch-tells-every-host-the-proxy-peers-and-the-mesh-pool-with-its-peers-superseding-adr-0112-items-5-6-and-7-in-part.md): why the proxy role is the operator's grant and not the host's report (the table carries every alias key, and the mark reaches every Machine), why the proxy set and the mesh pool go with the peers, how a host that leaves the role is waited out, and why a max age is capped.
+- [ADR 0120](./adr/0120-a-machines-stable-name-is-one-m-label-under-the-shared-garam-run-zone-and-naru-takes-no-alias-in-the-zone-superseding-adr-0112-items-1-and-3-in-part.md): why the stable names are `m-` labels under the shared garam.run zone, and why naru takes no alias there.
 
 ## Open questions
 
 - **Waking a stopped Machine on traffic**, as E2B's client proxy does. A Function service needs it.
-- **ACME.** The zone's certificate is a file. DNS-01 issuance needs a DNS provider's credential, which is not granted.
+- **ACME** (#395). The zone's certificate is a file. DNS-01 issuance on the garam.run zone needs a token scoped to that zone, which is not yet granted.
+- **Aliases in the zone** wait for a naming policy of garam.run as a whole.
 - **A private address kept across moves**, routed to whichever host holds the Machine. It is not taken: uses reach Machines by name.
 - **Deltas.** The whole table is pushed. Deltas wait for a table large enough to cost.
