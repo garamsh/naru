@@ -78,6 +78,7 @@ func TestAnAuthorityIsSignedAgainUnderItsKeyOnceTwoOfItsTenYearsRemain(t *testin
 		assert.NotEqual(t, old.cert.SerialNumber, fresh.cert.SerialNumber, name)
 		assert.Equal(t, now.AddDate(identity.AuthorityYears, 0, 0), fresh.cert.NotAfter, "%s lives ten years from now", name)
 		assert.True(t, fresh.cert.IsCA, name)
+		assert.NoError(t, fresh.cert.CheckSignatureFrom(fresh.cert), "%s is self-signed by its own key", name)
 		assert.Equal(t, old.cert.KeyUsage, fresh.cert.KeyUsage, name)
 		assert.Equal(t, old.cert.SubjectKeyId, fresh.cert.SubjectKeyId, name)
 	}
