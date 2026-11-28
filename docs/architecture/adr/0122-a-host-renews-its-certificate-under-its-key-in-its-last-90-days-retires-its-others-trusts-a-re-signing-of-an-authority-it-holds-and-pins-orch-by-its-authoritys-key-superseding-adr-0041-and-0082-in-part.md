@@ -30,7 +30,7 @@ The rest of both records stands, and neither body is edited.
 
 1. **A host renews its certificate under its own key.**
    - hostd signs a request `renew-host` (`identity.ActionRenewHost`) with its current key and certificate. Its body (`identity.HostRenewal`) is a certificate request for the same key. hostd posts it over mTLS to orch's `POST /v1/hosts/renew`.
-   - Orch passes it to the signer's `POST /v1/host-renew` only when the certificate that signed it is the one the host connects with: the same serial and subject. It also checks that the action is `renew-host`. Anything else is 403, and a body that is not a signed request is 400. Orch verifies nothing else: the signer does.
+   - Orch passes it to the signer's `POST /v1/host-renew` only when the certificate that signed it is the one the host connects with, byte for byte. It also checks that the action is `renew-host`. Anything else is 403, and a body that is not a signed request is 400. Orch verifies nothing else: the signer does.
    - The signer verifies the request against the host authority and the revocation list, and requires the role `host` and a host ID for subject. It refuses a request for another key with 400.
    - The new certificate's CN and DNS name are the host ID, its IP addresses are those of the current certificate, and it lives a year. Its serial is recorded in the signer's `hosts.json`. Nothing is spent, so a host whose answer was lost renews again.
 2. **The window is the last 90 days.**
