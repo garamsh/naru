@@ -29,9 +29,9 @@ import (
 	"github.com/garamsh/naru/orch/internal/netrec"
 	"github.com/garamsh/naru/orch/internal/orchd"
 	"github.com/garamsh/naru/orch/internal/routes"
-	"github.com/garamsh/naru/orch/internal/trust"
 	"github.com/garamsh/naru/orch/internal/signer"
 	"github.com/garamsh/naru/orch/internal/snapshot"
+	"github.com/garamsh/naru/orch/internal/trust"
 )
 
 type realClock struct{}
