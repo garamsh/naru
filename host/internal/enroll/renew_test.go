@@ -234,7 +234,10 @@ func TestAHostWhoseAPICannotServeTheRenewedCertificateRetiresNothingAndRenewsAga
 	_, retired, _ := r.state()
 	assert.Empty(t, retired, "a retire would revoke the certificate the API serves")
 	assert.EqualValues(t, 10, r.hostCert().SerialNumber.Int64(), "the host keeps the certificate it serves")
-	time.Sleep(100 * time.Millisecond)
+	r.f.mu.Lock()
+	hearts := r.f.hearts
+	r.f.mu.Unlock()
+	require.Eventually(t, func() bool { r.f.mu.Lock(); defer r.f.mu.Unlock(); return r.f.hearts > hearts }, 5*time.Second, 20*time.Millisecond, "a heartbeat after the check")
 	_, _, heart := r.state()
 	assert.EqualValues(t, 10, heart, "and reports with it")
 

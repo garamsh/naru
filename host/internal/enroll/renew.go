@@ -130,7 +130,11 @@ func (a *Agent) retirePending(ctx context.Context, pair *tls.Certificate) error 
 	if string(bytes.TrimSpace(b)) != identity.SerialOf(pair.Leaf) {
 		return os.Remove(a.retirePath())
 	}
-	signed, err := identity.SignRequest(identity.ActionRetireOwnHost, struct{}{}, a.c.Now().Add(requestLife), pair.PrivateKey.(*ecdsa.PrivateKey), pair.Leaf)
+	key, ok := pair.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return errors.New("the host's key is not an ECDSA key")
+	}
+	signed, err := identity.SignRequest(identity.ActionRetireOwnHost, struct{}{}, a.c.Now().Add(requestLife), key, pair.Leaf)
 	if err != nil {
 		return err
 	}
