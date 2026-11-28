@@ -68,7 +68,7 @@ It also replaces the enrollment key's life in `orch.md` §Enrollment, "valid at 
    - Root and each operator renew theirs from their own device: (d).
    - A caller renews as ADR 0116 decides, and (e) checks that the renewal goes through `crypto.Signer`.
 8. **An enrollment key enrolls one host, within a day.**
-   - `POST /v1/enrollment-keys` refuses an expiry later than 24 hours from now with 400 (`inventory.MaxKeyLife`).
+   - `POST /v1/enrollment-keys` refuses an expiry more than 24 hours and five minutes from orch's now with 400 (`inventory.MaxKeyLife`, `inventory.KeyClockSkew`), and cuts one within the five minutes back to 24 hours. The five minutes are for a client whose clock is ahead of orch's, such as naructl's default `--ttl 24h`, and no key lives longer than 24 hours by orch's clock.
    - The first `POST /v1/enroll` that presents a key binds it to its host ID and public key, in the transaction that creates the host's pending record.
    - The same host and key may present it again, as the host's agent does when it retries.
    - Any other host ID or key is refused with 403, with the body an unknown, expired or revoked key gets.

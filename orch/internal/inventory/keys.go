@@ -15,6 +15,10 @@ import (
 // (ADR 0121).
 const MaxKeyLife = 24 * time.Hour
 
+// KeyClockSkew is how far past MaxKeyLife a requested expiry may be, for a client whose clock is
+// ahead of orch's; such an expiry is cut back to MaxKeyLife from orch's now.
+const KeyClockSkew = 5 * time.Minute
+
 func hashSecret(secret string) string {
 	sum := sha256.Sum256([]byte(secret))
 	return hex.EncodeToString(sum[:])
@@ -26,8 +30,11 @@ func keyID(hash string) string { return hash[:16] }
 
 func (s *service) CreateKey(ctx context.Context, by string, expiresAt time.Time) (orchapi.EnrollmentKey, error) {
 	now := s.clock.Now()
-	if !expiresAt.After(now) || expiresAt.After(now.Add(MaxKeyLife)) {
+	if !expiresAt.After(now) || expiresAt.After(now.Add(MaxKeyLife+KeyClockSkew)) {
 		return orchapi.EnrollmentKey{}, invalid("an enrollment key expires within the next 24 hours")
+	}
+	if limit := now.Add(MaxKeyLife); expiresAt.After(limit) {
+		expiresAt = limit
 	}
 	var raw [wire.EnrollKeyBytes]byte
 	if _, err := rand.Read(raw[:]); err != nil {

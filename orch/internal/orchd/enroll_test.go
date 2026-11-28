@@ -307,9 +307,14 @@ func TestAnAdmittedHostsKeyEnrollsNothingMore(t *testing.T) {
 
 func TestAnEnrollmentKeyLivesADayAtMost(t *testing.T) {
 	o := startOne(t, orchtest.Options{})
-	_, err := o.op.CreateEnrollmentKey(t.Context(), o.c.Clock.Now().Add(24*time.Hour))
+	now := o.c.Clock.Now()
+	k, err := o.op.CreateEnrollmentKey(t.Context(), now.Add(24*time.Hour))
 	require.NoError(t, err, "a day")
-	_, err = o.op.CreateEnrollmentKey(t.Context(), o.c.Clock.Now().Add(24*time.Hour+time.Second))
+	require.True(t, k.ExpiresAt.Equal(now.Add(24*time.Hour)), "got %s", k.ExpiresAt)
+	k, err = o.op.CreateEnrollmentKey(t.Context(), now.Add(24*time.Hour+inventory.KeyClockSkew))
+	require.NoError(t, err, "a client clock up to five minutes ahead")
+	require.True(t, k.ExpiresAt.Equal(now.Add(24*time.Hour)), "is cut back to a day: got %s", k.ExpiresAt)
+	_, err = o.op.CreateEnrollmentKey(t.Context(), now.Add(24*time.Hour+inventory.KeyClockSkew+time.Second))
 	require.Equal(t, http.StatusBadRequest, status(err), "a second more")
 }
 
