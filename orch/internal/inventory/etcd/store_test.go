@@ -112,6 +112,7 @@ func TestAPendingRecordBindsItsEnrollmentKeyAndTheAdmissionSpendsIt(t *testing.T
 	k, err = s.GetKey(ctx, "k1")
 	require.NoError(t, err)
 	assert.True(t, k.Spent, "the admission spends the key")
+	require.ErrorIs(t, s.PutPending(ctx, p, nil, true), inventory.ErrKeyRefused, "a spent key binds no pending record, its own host's included")
 }
 
 func TestReservationsNeverOverlapAreTakenOverWhenExpiredAndReleasedOnlyByTheirHolder(t *testing.T) {
