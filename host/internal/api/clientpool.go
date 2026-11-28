@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/garamsh/naru/lib/identity"
 )
@@ -22,6 +23,26 @@ type ClientPool struct {
 	mu   sync.Mutex
 	seen []byte
 	pool *x509.CertPool
+	// stat is the size and modification time of both files when seen was read: while they stand,
+	// a handshake reads neither file.
+	stat [2]fileStat
+}
+
+// fileStat is what a handshake compares of a file before it reads it; an absent file is the zero one.
+type fileStat struct {
+	size int64
+	mod  time.Time
+}
+
+func statOf(path string) fileStat {
+	if path == "" {
+		return fileStat{}
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fileStat{size: -1}
+	}
+	return fileStat{size: fi.Size(), mod: fi.ModTime()}
 }
 
 // NewClientPool reads base and refreshed, which together must hold a certificate. Refreshed may be
@@ -50,19 +71,29 @@ func (p *ClientPool) PEM() ([]byte, error) {
 	return append(append(append([]byte{}, b...), '\n'), r...), nil
 }
 
-// Pool returns the pool of both files as they stand. A pair of files that cannot be read, or holds
-// no certificate, keeps the pool last read and returns the error; before any read there is none.
+// Pool returns the pool of both files as they stand. It reads them only when the size or the
+// modification time of either has changed since the last read, and builds a new pool only when
+// their bytes have. A pair of files that cannot be read, or holds no certificate, keeps the pool
+// last read and returns the error; before any read there is none.
 func (p *ClientPool) Pool() (*x509.CertPool, error) {
+	stat := [2]fileStat{statOf(p.base), statOf(p.refreshed)}
+	p.mu.Lock()
+	if p.pool != nil && stat == p.stat {
+		defer p.mu.Unlock()
+		return p.pool, nil
+	}
+	p.mu.Unlock()
 	b, err := p.PEM()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err == nil && p.pool != nil && bytes.Equal(b, p.seen) {
+		p.stat = stat
 		return p.pool, nil
 	}
 	if err == nil {
 		pool := x509.NewCertPool()
 		if pool.AppendCertsFromPEM(b) {
-			p.seen, p.pool = b, pool
+			p.seen, p.pool, p.stat = b, pool, stat
 			return pool, nil
 		}
 		err = fmt.Errorf("%s holds no certificate", p.base)

@@ -95,3 +95,29 @@ func TestAPoolWhoseFilesHoldNoCertificateIsRefusedAndAnUnreadableChangeKeepsTheL
 	assert.Error(t, err)
 	assert.Same(t, first, got, "a pool that cannot be read keeps the one last read")
 }
+
+func TestAHandshakeReadsThePoolsFilesOnlyWhenTheyHaveChanged(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "client-ca.crt")
+	require.NoError(t, os.WriteFile(base, newAuthority(t, "clients").pem, 0o600))
+	p, err := NewClientPool(base, filepath.Join(dir, "client-ca.pem"))
+	require.NoError(t, err)
+	first, err := p.Pool()
+	require.NoError(t, err)
+
+	// A file hostd can no longer read, with its size and modification time unchanged, is not read.
+	require.NoError(t, os.Chmod(base, 0))
+	t.Cleanup(func() { _ = os.Chmod(base, 0o600) })
+	if _, err := os.ReadFile(base); err == nil {
+		t.Skip("the test runs as a user every file is readable to")
+	}
+	got, err := p.Pool()
+	require.NoError(t, err, "the file was not read")
+	assert.Same(t, first, got)
+
+	require.NoError(t, os.Chmod(base, 0o600))
+	require.NoError(t, os.WriteFile(base, newAuthority(t, "other").pem, 0o600))
+	got, err = p.Pool()
+	require.NoError(t, err)
+	assert.NotSame(t, first, got, "control: a file that changed is read")
+}
