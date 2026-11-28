@@ -293,7 +293,7 @@ func TestTheHostStoresOnlyALaterReSigningOfAnAuthorityItTrustsAndNeverAnotherKey
 	f, a, _, stop := enrolledBy(t, f, func(c *enroll.Config) { c.ClientCAFile, c.TrustFile = clientCA, store })
 	defer stop()
 
-	resigned := authorityCert(t, hostKey, "naru-host-ca", end.AddDate(10, 0, 0), true)
+	resigned := authorityCert(t, hostKey, "naru-host-ca", time.Now().AddDate(9, 0, 0), true)
 	offer := func(h, o, orch *x509.Certificate) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -318,9 +318,9 @@ func TestTheHostStoresOnlyALaterReSigningOfAnAuthorityItTrustsAndNeverAnotherKey
 	}
 
 	offer(
-		authorityCert(t, mustKey(t), "naru-host-ca", end.AddDate(10, 0, 0), true),       // a new key under a known name
-		authorityCert(t, hostKey, "naru-operator-ca", end.AddDate(10, 0, 0), true),      // a known key under another's name
-		authorityCert(t, operatorKey, "naru-operator-ca", end.AddDate(10, 0, 0), false), // not an authority
+		authorityCert(t, mustKey(t), "naru-host-ca", time.Now().AddDate(9, 0, 0), true),       // a new key under a known name
+		authorityCert(t, hostKey, "naru-operator-ca", time.Now().AddDate(9, 0, 0), true),      // a known key under another's name
+		authorityCert(t, operatorKey, "naru-operator-ca", time.Now().AddDate(9, 0, 0), false), // not an authority
 	)
 	require.NoError(t, a.Check(t.Context()))
 	assert.Empty(t, stored(), "nothing that is not a re-signing of a trusted authority")
@@ -366,4 +366,52 @@ func TestARetireKeptForACertificateARotationReplacedIsDroppedNotSigned(t *testin
 	assert.Empty(t, retired, "the pair the retire was kept for is not the host's any more, and the operator's rotation revokes the rest")
 	_, err = os.Stat(filepath.Join(r.dir, "host.retire"))
 	assert.ErrorIs(t, err, os.ErrNotExist, "and the retire is dropped")
+}
+
+func TestTheHostRefusesAReSigningItsAuthorityDidNotSignOrThatOutlivesTenYears(t *testing.T) {
+	hostKey := mustKey(t)
+	host := authorityCert(t, hostKey, "naru-host-ca", time.Now().Add(30*24*time.Hour), true)
+	dir := t.TempDir()
+	clientCA, store := filepath.Join(dir, "client-ca.crt"), filepath.Join(dir, "client-ca.pem")
+	require.NoError(t, os.WriteFile(clientCA, pemOf(host), 0o600))
+	f := newFakeOrch(t, "naru-ek-secret")
+	f.life = 365 * 24 * time.Hour
+	f, a, _, stop := enrolledBy(t, f, func(c *enroll.Config) { c.ClientCAFile, c.TrustFile = clientCA, store })
+	defer stop()
+	offer := func(c *x509.Certificate) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.offered = identity.Authorities{Host: c.Raw, Operator: c.Raw, Orch: c.Raw}
+	}
+	stored := func() []byte { b, _ := os.ReadFile(store); return b }
+
+	// The authority's subject and key, in a certificate another key signed, for a century.
+	attacker := mustKey(t)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "naru-host-ca"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().AddDate(100, 0, 0), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &hostKey.PublicKey, attacker)
+	require.NoError(t, err)
+	forged, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	require.Equal(t, host.RawSubjectPublicKeyInfo, forged.RawSubjectPublicKeyInfo, "setup: the forgery carries the authority's key")
+	offer(forged)
+	require.NoError(t, a.Check(t.Context()))
+	assert.Empty(t, stored(), "a certificate the authority's key did not sign")
+
+	tmpl.NotAfter = time.Now().AddDate(9, 0, 0)
+	der, err = x509.CreateCertificate(rand.Reader, tmpl, tmpl, &hostKey.PublicKey, attacker)
+	require.NoError(t, err)
+	forged, err = x509.ParseCertificate(der)
+	require.NoError(t, err)
+	offer(forged)
+	require.NoError(t, a.Check(t.Context()))
+	assert.Empty(t, stored(), "nor one for nine years")
+
+	offer(authorityCert(t, hostKey, "naru-host-ca", time.Now().AddDate(100, 0, 0), true))
+	require.NoError(t, a.Check(t.Context()))
+	assert.Empty(t, stored(), "nor one the authority signed for a century")
+
+	genuine := authorityCert(t, hostKey, "naru-host-ca", time.Now().AddDate(10, 0, 0), true)
+	offer(genuine)
+	require.NoError(t, a.Check(t.Context()))
+	assert.Equal(t, pemOf(genuine), stored(), "control: the authority's own re-signing for ten years")
 }

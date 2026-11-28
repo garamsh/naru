@@ -24,6 +24,10 @@ import (
 // requestLife is how long a renewal or a retire the agent signs stays valid.
 const requestLife = 5 * time.Minute
 
+// maxNotBeforeBackoff bounds how far before its signing a re-signing may start: the signer starts
+// one a minute early, and a day allows for any signer's clock.
+const maxNotBeforeBackoff = 24 * time.Hour
+
 // maintain runs Check now and then every CheckEvery until ctx ends.
 func (a *Agent) maintain(ctx context.Context) {
 	for {
@@ -187,9 +191,20 @@ func (a *Agent) RefreshTrust(ctx context.Context) error {
 }
 
 // resigns reports whether c is an authority's certificate of the subject and key of one in
-// trusted, ending after every certificate of that subject and key there.
+// trusted, signed by that key, living at most identity.AuthorityYears, and ending after every
+// certificate of that subject and key there.
 func resigns(c *x509.Certificate, trusted []*x509.Certificate) bool {
 	if !c.IsCA {
+		return false
+	}
+	// The authority's key signed it: it is self-issued and its signature verifies under its own
+	// key, which is the trusted authority's. A certificate of that key and name that another key
+	// signed would be a forged root.
+	if !bytes.Equal(c.RawIssuer, c.RawSubject) || c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature) != nil {
+		return false
+	}
+	// It lives no longer than the signer signs an authority for.
+	if c.NotAfter.After(c.NotBefore.AddDate(identity.AuthorityYears, 0, 0).Add(maxNotBeforeBackoff)) {
 		return false
 	}
 	known := false
