@@ -1,6 +1,7 @@
 package hostclient
 
 import (
+	"crypto/tls"
 	"crypto/x509"
 	"net"
 	"net/http"
@@ -19,6 +20,8 @@ import (
 // Every certificate is also checked against revocations, when it is not nil, so a revoked host is
 // not called. A base client that skips verification, or whose transport is not an *http.Transport,
 // is returned as it is: that is the caller's own choice of what to trust, and only tests make it.
+// A *Transport reads its roots at each handshake, so the authorities it trusts can be refreshed
+// while orch runs.
 type named struct {
 	base        *http.Client
 	revocations *identity.RevocationList
@@ -40,10 +43,32 @@ func newNamed(base *http.Client, revocations *identity.RevocationList) *named {
 	return &named{base: &b, revocations: revocations, by: map[string]namedClient{}}
 }
 
+// Transport is an *http.Transport whose roots are Roots, read at each handshake in place of its
+// TLSClientConfig's RootCAs.
+type Transport struct {
+	*http.Transport
+	Roots func() *x509.CertPool
+}
+
+// transport is base's *http.Transport, and how its roots are read.
+func transport(base http.RoundTripper) (*http.Transport, func() *x509.CertPool) {
+	switch tr := base.(type) {
+	case *Transport:
+		return tr.Transport, tr.Roots
+	case *http.Transport:
+		if tr.TLSClientConfig == nil {
+			return tr, nil
+		}
+		roots := tr.TLSClientConfig.RootCAs
+		return tr, func() *x509.CertPool { return roots }
+	}
+	return nil, nil
+}
+
 // client is the client for the host id at addr.
 func (n *named) client(id, addr string) *http.Client {
-	tr, ok := n.base.Transport.(*http.Transport)
-	if !ok || tr.TLSClientConfig == nil || tr.TLSClientConfig.InsecureSkipVerify {
+	tr, roots := transport(n.base.Transport)
+	if tr == nil || roots == nil || tr.TLSClientConfig == nil || tr.TLSClientConfig.InsecureSkipVerify {
 		return n.base
 	}
 	n.mu.Lock()
@@ -56,13 +81,17 @@ func (n *named) client(id, addr string) *http.Client {
 	}
 	clone := tr.Clone()
 	conf := clone.TLSClientConfig
-	roots := conf.RootCAs
 	conf.InsecureSkipVerify = true
 	dialled, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		dialled = addr
 	}
-	conf.VerifyConnection = identity.PeerCheck{Roots: roots, Usage: x509.ExtKeyUsageServerAuth, Names: []string{dialled, id}, Revocations: n.revocations}.VerifyConnection
+	check := identity.PeerCheck{Usage: x509.ExtKeyUsageServerAuth, Names: []string{dialled, id}, Revocations: n.revocations}
+	conf.VerifyConnection = func(cs tls.ConnectionState) error {
+		c := check
+		c.Roots = roots()
+		return c.VerifyConnection(cs)
+	}
 	c := &http.Client{Transport: clone}
 	n.by[id] = namedClient{addr: addr, client: c}
 	return c
