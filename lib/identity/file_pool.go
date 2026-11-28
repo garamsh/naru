@@ -19,13 +19,16 @@ type FilePool struct {
 	mu   sync.Mutex
 	seen []byte
 	pool *x509.CertPool
-	// stat is the size and modification time of every file when seen was read: while they stand,
-	// a handshake reads none of them.
+	// stat is what every file was when seen was read: while they stand, a handshake reads none of
+	// them.
 	stat []fileStat
 }
 
-// fileStat is what a handshake compares of a file before it reads it.
+// fileStat is what a handshake compares of a file before it reads it: the file itself, since a
+// file replaced by a rename is another file even within the clock tick its time is kept to, its
+// size and its modification time.
 type fileStat struct {
+	fi   os.FileInfo
 	size int64
 	mod  time.Time
 }
@@ -35,7 +38,15 @@ func statOf(path string) fileStat {
 	if err != nil {
 		return fileStat{size: -1}
 	}
-	return fileStat{size: fi.Size(), mod: fi.ModTime()}
+	return fileStat{fi: fi, size: fi.Size(), mod: fi.ModTime()}
+}
+
+// same reports whether a and b are the same file, unchanged, or both absent.
+func (a fileStat) same(b fileStat) bool {
+	if a.fi == nil || b.fi == nil {
+		return a.fi == nil && b.fi == nil
+	}
+	return os.SameFile(a.fi, b.fi) && a.size == b.size && a.mod.Equal(b.mod)
 }
 
 // NewFilePool reads base and the stores, which together must hold a certificate. A store may be
@@ -76,8 +87,8 @@ func FilesPEM(base string, stores ...string) ([]byte, error) {
 	return out, nil
 }
 
-// Pool returns the pool of the files as they stand. It reads them only when the size or the
-// modification time of one has changed since the last read, and builds a new pool only when their
+// Pool returns the pool of the files as they stand. It reads them only when one has been replaced,
+// or its size or modification time has changed, since the last read, and builds a new pool only when their
 // bytes have. Files that cannot be read, or hold no certificate, keep the pool last read and
 // return the error; before any read there is none.
 func (p *FilePool) Pool() (*x509.CertPool, error) {
@@ -114,7 +125,7 @@ func equalStats(a, b []fileStat) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if !a[i].same(b[i]) {
 			return false
 		}
 	}

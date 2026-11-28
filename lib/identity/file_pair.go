@@ -12,8 +12,7 @@ type FilePair struct {
 
 	mu   sync.Mutex
 	pair *tls.Certificate
-	// stat is the size and modification time of both files when pair was read: while they stand,
-	// a handshake reads neither.
+	// stat is what both files were when pair was read: while they stand, a handshake reads neither.
 	stat [2]fileStat
 }
 
@@ -26,14 +25,14 @@ func NewFilePair(cert, key string) (*FilePair, error) {
 	return p, nil
 }
 
-// Pair returns the pair as the files stand. It reads them only when the size or the modification
-// time of one has changed since the last read. Files that cannot be read, or are not a pair, keep
+// Pair returns the pair as the files stand. It reads them only when one has been replaced, or its
+// size or modification time has changed, since the last read. Files that cannot be read, or are not a pair, keep
 // the pair last read and return the error; before any read there is none.
 func (p *FilePair) Pair() (*tls.Certificate, error) {
 	stat := [2]fileStat{statOf(p.cert), statOf(p.key)}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.pair != nil && stat == p.stat {
+	if p.pair != nil && stat[0].same(p.stat[0]) && stat[1].same(p.stat[1]) {
 		return p.pair, nil
 	}
 	pair, err := tls.LoadX509KeyPair(p.cert, p.key)
