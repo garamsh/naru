@@ -257,6 +257,31 @@ func (s *Store) bindKey(ctx context.Context, p inventory.Pending) (*keyChange, e
 	})
 }
 
+// SpendKey is inventory.Store's SpendKey.
+func (s *Store) SpendKey(ctx context.Context, id, hostID string, publicKey []byte) error {
+	spend, err := s.changeKey(ctx, id, func(k *inventory.Key) (bool, error) {
+		switch {
+		case k.Host != "" && (k.Host != hostID || !bytes.Equal(k.HostKey, publicKey)):
+			return false, inventory.ErrKeyRefused
+		case k.Spent:
+			return false, nil
+		}
+		k.Host, k.HostKey, k.Spent = hostID, publicKey, true
+		return true, nil
+	})
+	if err != nil || spend == nil {
+		return err
+	}
+	resp, err := s.kv.Txn(ctx).If(spend.cmp).Then(spend.op).Commit()
+	if err != nil {
+		return err
+	}
+	if !resp.Succeeded {
+		return inventory.ErrConflict
+	}
+	return nil
+}
+
 // changeKey reads the key id and returns the write of what f makes of it, held to the key as read;
 // nil when f changes nothing or no key id is stored.
 func (s *Store) changeKey(ctx context.Context, id string, f func(*inventory.Key) (bool, error)) (*keyChange, error) {

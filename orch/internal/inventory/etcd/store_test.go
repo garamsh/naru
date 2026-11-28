@@ -557,3 +557,45 @@ func TestAnAbandonmentWritesTheHostsAbandonedKeyAndARemovalDeletesIt(t *testing.
 	require.NoError(t, err)
 	assert.False(t, present("gone"), "deleted with the host, so one admitted again under its ID is placed on")
 }
+
+func TestAKeyBoundBetweenAnEnrollmentsReadAndItsWriteRefusesTheWrite(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	plain := invetcd.New(c.Members[0].Etcd())
+	ctx := t.Context()
+	now := time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, plain.PutKey(ctx, inventory.Key{ID: "k1", Hash: "h", ExpiresAt: now.Add(time.Hour)}))
+	other := inventory.Pending{HostID: "h2", PublicKey: []byte("pub-2"), KeyID: "k1", FirstSeen: now}
+	rkv := &raceKV{KV: c.Members[0].Etcd(), race: func() { require.NoError(t, plain.PutPending(ctx, other, nil, true)) }}
+	s := invetcd.New(rkv)
+
+	p := inventory.Pending{HostID: "h1", PublicKey: []byte("pub-1"), KeyID: "k1", FirstSeen: now}
+	require.ErrorIs(t, s.PutPending(ctx, p, nil, true), inventory.ErrConflict, "the key read unbound was bound before the write")
+	k, err := plain.GetKey(ctx, "k1")
+	require.NoError(t, err)
+	assert.Equal(t, "h2", k.Host, "the binding that got in first stands")
+	_, err = plain.GetPending(ctx, "h1")
+	require.ErrorIs(t, err, inventory.ErrNotFound, "and the loser left no pending record")
+	require.ErrorIs(t, s.PutPending(ctx, p, nil, true), inventory.ErrKeyRefused, "control: read again, the key is refused")
+}
+
+func TestAKeyRevokedBetweenAnAdmissionsReadAndItsWriteFailsTheAdmission(t *testing.T) {
+	c := orchtest.Start(t, orchtest.Options{Members: 1})
+	plain := invetcd.New(c.Members[0].Etcd())
+	ctx := t.Context()
+	now := time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, plain.PutKey(ctx, inventory.Key{ID: "k1", Hash: "h", ExpiresAt: now.Add(time.Hour)}))
+	p := inventory.Pending{HostID: "h1", PublicKey: []byte("pub-1"), KeyID: "k1", FirstSeen: now}
+	require.NoError(t, plain.PutPending(ctx, p, nil, true))
+	ev := orchapi.Event{Time: now, Type: inventory.EventAdmitted, Subject: "h1"}
+	rkv := &raceKV{KV: c.Members[0].Etcd(), race: func() {
+		require.NoError(t, plain.RevokeKey(ctx, "k1", orchapi.Event{Time: now, Type: inventory.EventKeyRevoked, Subject: "k1"}))
+	}}
+
+	require.ErrorIs(t, invetcd.New(rkv).Admit(ctx, p, inventory.Host{ID: "h1", PublicKey: p.PublicKey}, ev), inventory.ErrConflict)
+	_, err := plain.GetHost(ctx, "h1")
+	require.ErrorIs(t, err, inventory.ErrNotFound, "the host is not admitted")
+	k, err := plain.GetKey(ctx, "k1")
+	require.NoError(t, err)
+	assert.Equal(t, []bool{true, false}, []bool{k.Revoked, k.Spent}, "the revoke stands and the key is not spent")
+	require.NoError(t, plain.Admit(ctx, p, inventory.Host{ID: "h1", PublicKey: p.PublicKey}, ev), "control: with nothing in between the admission holds")
+}

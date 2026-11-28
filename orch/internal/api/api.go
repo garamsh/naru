@@ -308,7 +308,10 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, inventory.ErrRateLimited):
 		status, msg = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, inventory.ErrKeyRefused):
-		status, msg = http.StatusForbidden, err.Error()
+		// One body for every refusal, so the answer does not tell a stolen key's holder whether its
+		// host has used it (ADR 0121 item 8); the reason is logged.
+		status, msg = http.StatusForbidden, inventory.ErrKeyRefused.Error()
+		logger(r).Info("an enrollment key was refused", "reason", err.Error())
 	case errors.Is(err, inventory.ErrCodeMismatch), errors.Is(err, inventory.ErrSignerRefused):
 		status, msg = http.StatusForbidden, err.Error()
 	case errors.Is(err, exposures.ErrForbidden):

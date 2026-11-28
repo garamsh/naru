@@ -44,6 +44,10 @@ type Store interface {
 	// Reserve returned, in that step, which fails with ErrAllocationTaken when one is no longer the
 	// stored one, and spends p's enrollment key, which fails with ErrConflict when the key changed.
 	Admit(ctx context.Context, p Pending, h Host, ev orchapi.Event, allocs ...Allocation) error
+	// SpendKey binds the key id to hostID and publicKey when it is unbound and spends it, for an
+	// admitted host that presents a key it did not enroll with. A key bound to another host or key
+	// is ErrKeyRefused, and a key that changed meanwhile ErrConflict.
+	SpendKey(ctx context.Context, id, hostID string, publicKey []byte) error
 	// GiveMeshAddress gives the admitted host hostID a mesh address chosen by pick from the
 	// addresses already claimed, writing the confirmed allocation and the host's MeshAddress in one
 	// step that holds only while neither the claims, the host nor the profile changed since before
