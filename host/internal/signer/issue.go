@@ -178,7 +178,11 @@ func (s *Signer) issueFor(a *authorities, who identity.Identity, ca authority, r
 	if err != nil {
 		return identity.Issued{}, err
 	}
-	if err := s.record(issued.Serial, role); err != nil {
+	record := func() error { return s.record(issued.Serial, role) }
+	if role == identity.RoleOrch {
+		record = func() error { return s.recordOrch(req.Name, issued.Serial) }
+	}
+	if err := record(); err != nil {
 		return identity.Issued{}, err
 	}
 	s.log.Info("issued a certificate", "role", string(role), "subject", req.Name, "serial", issued.Serial,
@@ -206,6 +210,19 @@ func (s *Signer) recordHost(hostID, serial string) error {
 	defer s.mu.Unlock()
 	next := s.auth.withHost(hostID, serial)
 	if err := commitFiles(s.dir, []stagedFile{{issuedFile, next.marshalIssued()}, {hostsFile, next.marshalHosts()}}); err != nil {
+		return err
+	}
+	s.auth = next
+	return nil
+}
+
+// recordOrch notes the serial of an orch member's certificate under its name, and as issued to
+// role orch, before the certificate is handed out, so the member's retire revokes it (ADR 0123).
+func (s *Signer) recordOrch(name, serial string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.auth.withOrch(name, serial)
+	if err := commitFiles(s.dir, []stagedFile{{issuedFile, next.marshalIssued()}, {orchsFile, next.marshalOrchs()}}); err != nil {
 		return err
 	}
 	s.auth = next

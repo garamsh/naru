@@ -26,6 +26,7 @@ import (
 // The files of the signer's directory, each mode 0600.
 const (
 	hostsFile        = "hosts.json"   // optional: host ID to the serials of its certificates
+	orchsFile        = "orchs.json"   // optional: orch member name to the serials of its certificates
 	callersFile      = "callers.json" // optional: caller name to the serials of its certificates
 	hostCAFile       = "host-ca"
 	operatorCAFile   = "operator-ca"
@@ -64,6 +65,9 @@ type authorities struct {
 	issued map[string]string
 	// hosts lists the certificate serials of every host by host ID, which a rotation revokes.
 	hosts map[string][]string
+	// orchs lists the certificate serials of every orch member by name, which its retire revokes
+	// (ADR 0123). A certificate issued before the registry is recorded when it first renews.
+	orchs map[string][]string
 	// callers lists the certificates this signer issued to each caller by name, each with the
 	// serial of the one it renewed (ADR 0116).
 	callers map[string][]callerRecord
@@ -264,6 +268,7 @@ func (a *authorities) save(dir string, extra ...stagedFile) error {
 		stagedFile{recoveryPubFile, pub},
 		stagedFile{issuedFile, a.marshalIssued()},
 		stagedFile{hostsFile, a.marshalHosts()},
+		stagedFile{orchsFile, a.marshalOrchs()},
 		stagedFile{callersFile, a.marshalCallers()},
 		stagedFile{crlFile, a.crlSigned})
 	return commitFiles(dir, append(files, extra...))
@@ -277,6 +282,30 @@ func (a *authorities) marshalIssued() []byte {
 func (a *authorities) marshalHosts() []byte {
 	b, _ := json.Marshal(a.hosts) // a map of string slices always marshals
 	return b
+}
+
+func (a *authorities) marshalOrchs() []byte {
+	b, _ := json.Marshal(a.orchs) // a map of string slices always marshals
+	return b
+}
+
+// withOrch returns a copy of a that also records serial, issued to role orch, under name.
+func (a *authorities) withOrch(name, serial string) *authorities {
+	next := a.withIssued(serial, identity.RoleOrch)
+	next.orchs = maps.Clone(a.orchs)
+	if next.orchs == nil {
+		next.orchs = map[string][]string{}
+	}
+	next.orchs[name] = append(slices.Clone(next.orchs[name]), serial)
+	return next
+}
+
+// withOrchs returns a copy of a whose serials for the orch member name are serials.
+func (a *authorities) withOrchs(name string, serials []string) *authorities {
+	next := *a
+	next.orchs = maps.Clone(a.orchs)
+	next.orchs[name] = serials
+	return &next
 }
 
 func (a *authorities) marshalCallers() []byte {
@@ -401,6 +430,13 @@ func loadAuthorities(dir string) (*authorities, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read %s: %w", hostsFile, err)
 	}
+	if data, err := os.ReadFile(filepath.Join(dir, orchsFile)); err == nil {
+		if err := json.Unmarshal(data, &a.orchs); err != nil {
+			return nil, fmt.Errorf("%w: %s: %w", errCorrupt, orchsFile, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read %s: %w", orchsFile, err)
+	}
 	if data, err := os.ReadFile(filepath.Join(dir, callersFile)); err == nil {
 		if err := json.Unmarshal(data, &a.callers); err != nil {
 			return nil, fmt.Errorf("%w: %s: %w", errCorrupt, callersFile, err)
@@ -465,6 +501,7 @@ type bundleFile struct {
 	CRL        []byte                    `json:"crl"`
 	Issued     map[string]string         `json:"issued,omitempty"`
 	Hosts      map[string][]string       `json:"hosts,omitempty"`
+	Orchs      map[string][]string       `json:"orchs,omitempty"`
 	Callers    map[string][]callerRecord `json:"callers,omitempty"`
 }
 
@@ -491,7 +528,7 @@ func (a *authorities) marshalBundle() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal revocation key: %w", err)
 	}
-	b.Revocation, b.Recovery, b.CRL, b.Issued, b.Hosts, b.Callers = revDER, a.recovery, a.crlSigned, a.issued, a.hosts, a.callers
+	b.Revocation, b.Recovery, b.CRL, b.Issued, b.Hosts, b.Orchs, b.Callers = revDER, a.recovery, a.crlSigned, a.issued, a.hosts, a.orchs, a.callers
 	return json.Marshal(b)
 }
 
@@ -504,7 +541,7 @@ func parseBundle(plain []byte) (*authorities, error) {
 	if b.Version != bundleVersion {
 		return nil, fmt.Errorf("%w: bundle version %d", errCorrupt, b.Version)
 	}
-	a := &authorities{recovery: b.Recovery, crlSigned: b.CRL, issued: b.Issued, hosts: b.Hosts, callers: b.Callers}
+	a := &authorities{recovery: b.Recovery, crlSigned: b.CRL, issued: b.Issued, hosts: b.Hosts, orchs: b.Orchs, callers: b.Callers}
 	var err error
 	for _, p := range []struct {
 		from bundleAuthority

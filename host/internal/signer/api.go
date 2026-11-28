@@ -54,6 +54,8 @@ func (s *Signer) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/reissue-host", handleSigned(s, s.ReissueHost))
 	mux.HandleFunc("POST /v1/retire-host", handleSigned(s, func(signed []byte) (struct{}, error) { return struct{}{}, s.RetireHost(signed) }))
 	mux.HandleFunc("POST /v1/host-renew", handleSigned(s, s.RenewHost))
+	mux.HandleFunc("POST /v1/orch-renew", handleSigned(s, s.RenewOrch))
+	mux.HandleFunc("POST /v1/orch-retire", handleSigned(s, func(signed []byte) (struct{}, error) { return struct{}{}, s.RetireOwnOrch(signed) }))
 	mux.HandleFunc("POST /v1/host-retire", handleSigned(s, func(signed []byte) (struct{}, error) { return struct{}{}, s.RetireOwnHost(signed) }))
 	mux.HandleFunc("POST /v1/lookup-host", handleSigned(s, s.LookupHost))
 	mux.HandleFunc("POST /v1/revoke-host", handleSigned(s, s.RevokeHost))
@@ -139,7 +141,7 @@ func statusOf(err error) int {
 	switch {
 	case errors.Is(err, ErrMovedRoute):
 		return http.StatusGone
-	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost), errors.Is(err, identity.ErrCallerNotDue), errors.Is(err, identity.ErrHostNotDue):
+	case errors.Is(err, ErrInitialised), errors.Is(err, ErrNotInitialised), errors.Is(err, ErrNotSynced), errors.Is(err, ErrUnknownHost), errors.Is(err, identity.ErrCallerNotDue), errors.Is(err, identity.ErrHostNotDue), errors.Is(err, identity.ErrOrchNotDue):
 		return http.StatusConflict
 	case errors.Is(err, ErrBadRequest), errors.Is(err, identity.ErrFormat):
 		return http.StatusBadRequest
