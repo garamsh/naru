@@ -77,6 +77,12 @@ func (r *Reconciler) deleteCopies(ctx context.Context, p *pass) []error {
 			if _, ok := p.answering(a.Host); !ok {
 				continue
 			}
+			if done, err := r.unrouted(ctx, e, a); err != nil || !done {
+				if err != nil {
+					errs = append(errs, err)
+				}
+				continue
+			}
 			name := Binding{Host: a.Host, Epoch: a.Epoch}.MicroVM(e.ID)
 			if err := r.cfg.Hosts.Delete(ctx, a.Host, name); err != nil {
 				errs = append(errs, fmt.Errorf("delete the source copy %s on %s: %w", name, a.Host, err))
@@ -88,6 +94,19 @@ func (r *Reconciler) deleteCopies(ctx context.Context, p *pass) []error {
 		}
 	}
 	return errs
+}
+
+// unrouted reports whether no proxy forwards on a table that routes the Machine to the source copy
+// a, so its address may be given to another microVM once it is deleted.
+func (r *Reconciler) unrouted(ctx context.Context, e *Entry, a AbandonedEpoch) (bool, error) {
+	if a.role() != RoleSource || a.Unrouted == nil || r.cfg.Routes == nil {
+		return true, nil
+	}
+	done, err := r.cfg.Routes.Delivered(ctx, a.Unrouted.Rev, a.Unrouted.At)
+	if err != nil {
+		return false, fmt.Errorf("ask whether the proxies stopped routing %s/%s to %s: %w", e.Caller, e.Name, a.Host, err)
+	}
+	return done, nil
 }
 
 // forgetCopy removes the source copy a from the record and frees the disk its host kept for it.

@@ -5,7 +5,9 @@
 //
 //	naru94-mesh: self=<mesh address> <address>=<the answer's address, or fail>... rx=<bytes> tx=<bytes>
 //
-// where rx and tx are the interface's counters (docs/architecture/harness.md).
+// where rx and tx are the interface's counters (docs/architecture/harness.md). A target given as
+// tcp://<address:port> is only connected to from the mesh address, and its answer is "open" when
+// the connection is made, which reaches a microVM's port, and "fail" when it is not.
 package main
 
 import (
@@ -34,7 +36,10 @@ func main() {
 	for ; ; time.Sleep(2 * time.Second) {
 		parts := []string{"self=" + self.String()}
 		for _, t := range targets {
-			if t != self.String() {
+			switch addr, ok := strings.CutPrefix(t, "tcp://"); {
+			case ok:
+				parts = append(parts, t+"="+connect(self, addr))
+			case t != self.String():
 				parts = append(parts, t+"="+ask(self, net.JoinHostPort(t, port)))
 			}
 		}
@@ -93,6 +98,17 @@ func ask(self netip.Addr, target string) string {
 		return "fail"
 	}
 	return addr
+}
+
+// connect reports whether a TCP connection from self to target is made.
+func connect(self netip.Addr, target string) string {
+	d := net.Dialer{Timeout: 2 * time.Second, LocalAddr: &net.TCPAddr{IP: self.AsSlice()}}
+	c, err := d.Dial("tcp", target)
+	if err != nil {
+		return "fail"
+	}
+	_ = c.Close()
+	return "open"
 }
 
 // counter is the interface's statistic, or "0" when it cannot be read.

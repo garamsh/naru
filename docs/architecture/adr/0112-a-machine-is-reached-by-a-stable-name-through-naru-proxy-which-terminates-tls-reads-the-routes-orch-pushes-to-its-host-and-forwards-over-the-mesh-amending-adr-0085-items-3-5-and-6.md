@@ -1,6 +1,6 @@
 # ADR 0112: a Machine is reached by a stable name through naru-proxy, which terminates TLS, reads the routes orch pushes to its host and forwards over the mesh, amending ADR 0085 items 3, 5 and 6
 
-> Status: accepted; item 8's "Several addresses" superseded in part by [ADR 0117](./0117-proxy-exposures-are-spread-over-the-proxy-hosts-one-address-to-a-host-while-there-are-hosts-enough-superseding-adr-0112-item-8s-several-addresses-in-part.md)
+> Status: accepted; item 8's "Several addresses" superseded in part by [ADR 0117](./0117-proxy-exposures-are-spread-over-the-proxy-hosts-one-address-to-a-host-while-there-are-hosts-enough-superseding-adr-0112-item-8s-several-addresses-in-part.md); items 5, 6 and 7 superseded in part (who is a proxy host, the set waited on, and where the proxy set goes) by [ADR 0119](./0119-the-proxy-role-is-the-operators-grant-and-orch-tells-every-host-the-proxy-peers-and-the-mesh-pool-with-its-peers-superseding-adr-0112-items-5-6-and-7-in-part.md)
 > Date: 2026-11-24
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
@@ -103,3 +103,15 @@ What item 8 leaves open, settled where the proxy exposure was built (garamsh/nar
 - **Any pool.** A pool still lists at least one network, as ADR 0085 item 3 has it; a proxy exposure draws from any pool whatever its networks, and a pool is not replaced to leave out, or deleted under, an address one holds.
 - **Candidacy.** hostd reads the proxy's `GET /healthz` at each `GET /v1/host`, with a 1 s bound, and reports `proxy.healthy`; orch's reconciler takes a host that answered, has a LAN interface and reports it healthy. A host that runs no proxy reports no `proxy` and refuses the lease with 409.
 - **The redirect.** Port 443 is redirected to the port of `spec.proxy.listen`'s first entry on `0.0.0.0`, which init passes hostd as `--proxy-tls-port` and without which it refuses the section, since the redirect sends a flow to the address of the interface it came in on, and port 80 to a listener of the proxy's own on `0.0.0.0:80`, which answers 308 to `https://` on the same host, path and query. A `listen` entry on port 80 is refused. The redirect listener's connections count against the proxy's limits.
+
+## Errata
+
+- 2026-11-28 (garamsh/naru#387): **the allowance is 4 s, and item 6's bound is the max age plus 8 s, not 2 s.** Item 5 bounds orch's call by 2 s and has the host compare orch's `sentAt` with its own clock. That comparison also carries the skew between the two clocks, which the 2 s left out. The fleet's clocks, hosts' and orch members' alike, keep time from `spec.time` (ADR 0021), and two may differ by 2 s (`lib/hostapi.MaxRouteSkew`).
+  - The host refuses a table whose `sentAt` is more than 4 s behind its own clock (`lib/hostapi.RouteAllowance`): the 2 s push and 2 s of skew. It answers 409 `late-table`, naming the difference it saw, with a warning in its log.
+  - A host whose clock runs 2 s behind the sender's takes a table up to 6 s after `sentAt` by the sender's clock, and its proxy counts its max age from then.
+  - The member that records the time a delete waits from may run 2 s ahead of the member that sent the table, and the one that decides reads that time against its own clock.
+  - So a proxy forwards on no table older than the commit once its `--route-max-age` plus 8 s has passed since that time (`lib/hostapi.RouteRelease`). This holds because each table is sent with a `sentAt` taken before orch reads the store for it, so a table older than the commit has a `sentAt` before the commit, which item 6's reasoning assumed and the first build of #387 did not keep.
+- 2026-11-28 (garamsh/naru#387): **`--route-max-age` is each proxy's.** Item 6 waits out `--route-max-age` as though orch knew one value. It is each proxy's own (`spec.proxy.routeMaxAge`), set per host, and orch was given none.
+  - Init passes it to hostd too (`--proxy-route-max-age`), and `GET /v1/host` reports it (`proxy.routeMaxAgeSeconds`, rounded up).
+  - Orch keeps the longest each host has reported with its acknowledgement (`/naru/orch/route-acks/<host>`), recorded before every push, so each proxy is waited out by its own bound.
+  - A host that reports none is taken to have the proxy's default, 1 hour. The bound on the value reported is [ADR 0119](./0119-the-proxy-role-is-the-operators-grant-and-orch-tells-every-host-the-proxy-peers-and-the-mesh-pool-with-its-peers-superseding-adr-0112-items-5-6-and-7-in-part.md)'s.

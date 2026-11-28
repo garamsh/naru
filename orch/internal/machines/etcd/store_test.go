@@ -182,3 +182,64 @@ func TestClaimZone_KeepsTheZoneFirstClaimed(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "m.example.test", got, "an empty zone reads it")
 }
+
+func TestRouting_ReadsTheMachinesAndTheAliasesAtOneRevision(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	r := record("garam", "web", "0123456789abcdef")
+	require.NoError(t, s.Create(ctx, r, 0, event(r, time.Now())))
+	_, rev, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	require.NoError(t, s.CreateAlias(ctx, machines.Alias{Hostname: "app.m.example", Caller: "garam", Machine: "web", MachineID: r.ID}, r, rev))
+
+	recs, aliases, at, err := s.Routing(ctx)
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	assert.Equal(t, r.ID, recs[0].ID)
+	require.Len(t, aliases, 1)
+	assert.Equal(t, "app.m.example", aliases[0].Hostname)
+	_, last, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, at, last, "the revision read is at or after every write it holds")
+}
+
+func TestCreateAlias_RefusesAHostnameTakenOrAMachineChangedSinceItWasRead(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	r := record("garam", "web", "0123456789abcdef")
+	require.NoError(t, s.Create(ctx, r, 0, event(r, time.Now())))
+	_, rev, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	a := machines.Alias{Hostname: "app.m.example", Caller: "garam", Machine: "web", MachineID: r.ID}
+	require.NoError(t, s.CreateAlias(ctx, a, r, rev), "control: the Machine as read and a free hostname")
+
+	_, now, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	assert.ErrorIs(t, s.CreateAlias(ctx, a, r, now), machines.ErrRaced, "a hostname taken")
+	b := machines.Alias{Hostname: "two.m.example", Caller: "garam", Machine: "web", MachineID: r.ID}
+	assert.ErrorIs(t, s.CreateAlias(ctx, b, r, rev), machines.ErrRaced, "the Machine written since it was read, by the first alias")
+	_, _, err = s.Alias(ctx, "two.m.example")
+	assert.ErrorIs(t, err, machines.ErrNotFound, "nothing was written")
+}
+
+func TestMarkDeleting_RefusesAMachineGivenAnAliasSinceItWasRead(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	r := record("garam", "web", "0123456789abcdef")
+	require.NoError(t, s.Create(ctx, r, 0, event(r, time.Now())))
+	_, rev, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	require.NoError(t, s.CreateAlias(ctx, machines.Alias{Hostname: "app.m.example", Caller: "garam", Machine: "web", MachineID: r.ID}, r, rev))
+
+	deleting := r
+	deleting.Status.Phase = machineapi.PhaseDeleting
+	assert.ErrorIs(t, s.MarkDeleting(ctx, deleting, rev, nil, event(deleting, time.Now())), machines.ErrRaced,
+		"read before the alias, so the delete would leave it routing to a deleting Machine")
+	_, now, err := s.Machine(ctx, "garam", "web")
+	require.NoError(t, err)
+	held, err := s.Aliases(ctx)
+	require.NoError(t, err)
+	require.NoError(t, s.MarkDeleting(ctx, deleting, now, held, event(deleting, time.Now())), "control: the Machine and its aliases as read")
+	_, _, err = s.Alias(ctx, "app.m.example")
+	assert.ErrorIs(t, err, machines.ErrNotFound, "the alias goes in the delete's write")
+}

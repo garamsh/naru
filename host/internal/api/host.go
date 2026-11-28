@@ -93,6 +93,9 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.deps.ProxyHealthy != nil {
 		out.Proxy = &hostapi.ProxyStatus{Healthy: s.deps.ProxyHealthy(ctx)}
+		if s.deps.Routes != nil {
+			out.Proxy.RouteMaxAgeSeconds = int64((s.deps.Routes.MaxAge + time.Second - 1) / time.Second)
+		}
 	}
 	out.Mvmd.BootSets = hostBootSets(rt.BootSets)
 	out.Mvmd.MachinePrefixes = append([]string{}, rt.MachinePrefixes...)

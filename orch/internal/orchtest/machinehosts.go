@@ -31,6 +31,12 @@ type FakeMachineHosts struct {
 	DeleteDelay time.Duration
 	// AfterList, when not nil, runs once each List has taken its answer, before it returns it.
 	AfterList func()
+	// made counts the microVMs made, each given an address of 10.200.0.0/16 as mvmd gives one,
+	// unless NoAddresses, as before a microVM's host reports one.
+	made        int
+	NoAddresses bool
+	// AddressAtStart gives a microVM made without starting it no address until its first start.
+	AddressAtStart bool
 }
 
 type fakeMachineHost struct {
@@ -283,9 +289,13 @@ func (f *FakeMachineHosts) Create(_ context.Context, host string, r hostapi.Crea
 			return hostapi.MicroVM{}, &hostapi.Error{Status: http.StatusUnprocessableEntity, Message: "no imported disk " + r.Name + "." + d.Name}
 		}
 	}
+	f.made++
 	vm := hostapi.MicroVM{
 		Name: r.Name, MachineID: r.Name, State: "running", ImageDigest: r.Image, CPU: r.CPU, Memory: r.Memory,
 		RootDiskBytes: r.RootDiskBytes, Disks: r.Disks, NetworkPolicy: r.NetworkPolicy,
+	}
+	if !f.NoAddresses && !(r.NoStart && f.AddressAtStart) {
+		vm.Addresses = []string{f.address()}
 	}
 	if r.NoStart {
 		vm.State = "created"
@@ -321,8 +331,17 @@ func (f *FakeMachineHosts) state(host, microVM, state string) (hostapi.MicroVM, 
 		return hostapi.MicroVM{}, notFound("no microVM %s", microVM)
 	}
 	vm.State = state
+	if state == "running" && len(vm.Addresses) == 0 && !f.NoAddresses {
+		f.made++
+		vm.Addresses = []string{f.address()}
+	}
 	h.vms[microVM] = vm
 	return vm, nil
+}
+
+// address is the address of the microVM made last.
+func (f *FakeMachineHosts) address() string {
+	return fmt.Sprintf("10.200.%d.%d", f.made/250, 1+f.made%250)
 }
 
 func (f *FakeMachineHosts) Start(_ context.Context, host, microVM string) (hostapi.MicroVM, error) {

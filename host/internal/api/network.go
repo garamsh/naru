@@ -23,9 +23,10 @@ type Networks interface {
 	Networks() []network.Network
 	Attach(ctx context.Context, m network.Member) error
 	Detach(ctx context.Context, a netip.Addr) error
-	SetPeers(ctx context.Context, mesh netip.Addr, peers []network.Peer) error
+	SetPeers(ctx context.Context, mesh netip.Addr, pool netip.Prefix, peers []network.Peer) error
 	Peers() []network.Peer
 	Mesh() netip.Addr
+	MeshPool() netip.Prefix
 	Members() []network.Member
 	TunnelInfo() (network.TunnelInfo, bool)
 }
@@ -241,6 +242,7 @@ func peerViews(in []network.Peer) []hostapi.Peer {
 		if p.Mesh.IsValid() {
 			v.MeshAddress = p.Mesh.String()
 		}
+		v.Proxy = p.Proxy
 		for _, x := range p.Prefixes {
 			v.Prefixes = append(v.Prefixes, x.String())
 		}
@@ -253,7 +255,7 @@ func peerViews(in []network.Peer) []hostapi.Peer {
 // putPeers replaces the tunnel's peers and the host's mesh address. Each peer has a WireGuard public
 // key (44 base64 characters), at most one endpoint, the prefixes it holds and at most one mesh
 // address; a prefix or a mesh address is held by one peer only, and the host's own mesh address by
-// none.
+// none. A peer that runs a proxy has a mesh address.
 func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 	if s.noNetworks(w) {
 		return
@@ -280,6 +282,14 @@ func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 	mesh, ok := meshAddress(req.MeshAddress)
 	if !ok {
 		bad("meshAddress")
+	}
+	var pool netip.Prefix
+	if req.MeshPool != "" {
+		p, err := netip.ParsePrefix(req.MeshPool)
+		if err != nil || p.Masked() != p || !p.Addr().Is4() || p.Bits() < minPrefixBits {
+			bad("meshPool")
+		}
+		pool = p
 	}
 	if mesh.IsValid() {
 		held[netip.PrefixFrom(mesh, 32)] = true
@@ -316,6 +326,11 @@ func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 			held[netip.PrefixFrom(m, 32)] = true
 			np.Mesh = m
 		}
+		// A proxy reaches the microVMs from its mesh address, so one without it reaches none.
+		if p.Proxy && p.MeshAddress == "" {
+			bad("peers.proxy")
+		}
+		np.Proxy = p.Proxy
 		peers = append(peers, np)
 	}
 	if len(fields) > 0 {
@@ -324,7 +339,7 @@ func (s *Server) putPeers(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := s.deps.Networks.SetPeers(ctx, mesh, peers); err != nil {
+	if err := s.deps.Networks.SetPeers(ctx, mesh, pool, peers); err != nil {
 		s.networkFail(w, err)
 		return
 	}
@@ -343,6 +358,9 @@ func (s *Server) writePeers(w http.ResponseWriter) {
 	out := hostapi.PeersRequest{Peers: peerViews(s.deps.Networks.Peers())}
 	if m := s.deps.Networks.Mesh(); m.IsValid() {
 		out.MeshAddress = m.String()
+	}
+	if p := s.deps.Networks.MeshPool(); p.IsValid() {
+		out.MeshPool = p.String()
 	}
 	writeJSON(w, http.StatusOK, out)
 }

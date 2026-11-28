@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/garamsh/naru/lib/machineapi"
@@ -180,6 +181,8 @@ func (s *service) change(ctx context.Context, caller, name string, change func(r
 	return machineapi.Machine{}, fmt.Errorf("change %s/%s: %d writes raced", caller, name, retries)
 }
 
+// Delete marks the Machine deleting and removes its aliases in the same write, so no table derived
+// after it routes to the Machine (ADR 0112 item 3).
 func (s *service) Delete(ctx context.Context, caller, name string) (machineapi.Machine, error) {
 	for range retries {
 		r, rev, err := s.store.Machine(ctx, caller, name)
@@ -189,9 +192,14 @@ func (s *service) Delete(ctx context.Context, caller, name string) (machineapi.M
 		if r.Status.Phase == machineapi.PhaseDeleting {
 			return r.Machine(), nil
 		}
+		all, err := s.store.Aliases(ctx)
+		if err != nil {
+			return machineapi.Machine{}, err
+		}
+		aliases := slices.DeleteFunc(all, func(a AliasEntry) bool { return a.MachineID != r.ID })
 		r.Status.Phase = machineapi.PhaseDeleting
 		ev := s.event(machineapi.EventStatus, r)
-		_, err = s.store.Update(ctx, r, rev, &ev)
+		err = s.store.MarkDeleting(ctx, r, rev, aliases, ev)
 		if err == nil {
 			return r.Machine(), nil
 		}

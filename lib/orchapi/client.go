@@ -200,6 +200,17 @@ func (c *Client) AbandonHost(ctx context.Context, hostID string, r AbandonReques
 	return out, c.do(ctx, http.MethodPost, "/v1/hosts/"+url.PathEscape(hostID)+"/abandon", nil, r, &out)
 }
 
+// GrantProxy grants the host the proxy role, and RevokeProxy takes it back.
+func (c *Client) GrantProxy(ctx context.Context, hostID string) (Host, error) {
+	var out Host
+	return out, c.do(ctx, http.MethodPost, "/v1/hosts/"+url.PathEscape(hostID)+"/proxy", nil, nil, &out)
+}
+
+func (c *Client) RevokeProxy(ctx context.Context, hostID string) (Host, error) {
+	var out Host
+	return out, c.do(ctx, http.MethodDelete, "/v1/hosts/"+url.PathEscape(hostID)+"/proxy", nil, nil, &out)
+}
+
 // Undrain lets the host be placed on again.
 func (c *Client) Undrain(ctx context.Context, hostID string) (Host, error) {
 	var out Host

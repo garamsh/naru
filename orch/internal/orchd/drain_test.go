@@ -268,3 +268,46 @@ func TestRevocationListIsServedWithoutACertificate(t *testing.T) {
 	_, err = d.anon.Drain(t.Context(), "host-a")
 	require.Equal(t, http.StatusUnauthorized, status(err), "control: the other routes still need one")
 }
+
+func TestProxyGrantIsAnOperatorsAndEachIsRecorded(t *testing.T) {
+	d := startDrainFleet(t)
+	granted := func() map[string]bool {
+		hs, err := d.reader.Hosts(t.Context())
+		require.NoError(t, err)
+		out := map[string]bool{}
+		for _, h := range hs {
+			out[h.ID] = h.Proxy
+		}
+		return out
+	}
+
+	_, err := d.reader.GrantProxy(t.Context(), "host-a")
+	require.Equal(t, http.StatusForbidden, status(err), "a reader grants nothing")
+	_, err = d.anon.GrantProxy(t.Context(), "host-a")
+	require.Equal(t, http.StatusUnauthorized, status(err), "no certificate")
+	require.Equal(t, map[string]bool{"host-a": false, "host-b": false}, granted(), "setup: no host holds the role before an operator grants it")
+	_, err = d.op.GrantProxy(t.Context(), "no-such-host")
+	require.Equal(t, http.StatusNotFound, status(err))
+
+	h, err := d.op.GrantProxy(t.Context(), "host-a")
+	require.NoError(t, err)
+	require.True(t, h.Proxy)
+	require.Equal(t, map[string]bool{"host-a": true, "host-b": false}, granted())
+	_, err = d.reader.RevokeProxy(t.Context(), "host-a")
+	require.Equal(t, http.StatusForbidden, status(err), "a reader revokes nothing")
+	h, err = d.op.RevokeProxy(t.Context(), "host-a")
+	require.NoError(t, err)
+	require.False(t, h.Proxy)
+	require.Equal(t, map[string]bool{"host-a": false, "host-b": false}, granted())
+
+	events, err := d.reader.Events(t.Context())
+	require.NoError(t, err)
+	var types []string
+	for _, e := range events {
+		if e.Subject == "host-a" {
+			types = append(types, e.Type)
+		}
+	}
+	require.Contains(t, types, inventory.EventProxyGranted)
+	require.Contains(t, types, inventory.EventProxyRevoked)
+}

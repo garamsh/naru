@@ -136,6 +136,14 @@ func (c *Client) DeleteNetwork(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, networkPath(name), nil, nil)
 }
 
+// PutRoutes puts the routing table to the host's proxy, and returns the revision the proxy has
+// loaded.
+func (c *Client) PutRoutes(ctx context.Context, r RoutesRequest) (RoutesAnswer, error) {
+	var out RoutesAnswer
+	err := c.do(ctx, http.MethodPut, "/v1/routes", r, &out)
+	return out, err
+}
+
 // SetPeers replaces the tunnel's peers and the host's mesh address, and returns what the host holds.
 func (c *Client) SetPeers(ctx context.Context, req PeersRequest) (PeersRequest, error) {
 	var out PeersRequest

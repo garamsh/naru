@@ -126,8 +126,12 @@ type Host struct {
 
 // ProxyStatus is the host's naru-proxy as hostd last asked its health endpoint: Healthy when it
 // answered, which makes the host a candidate for a proxy exposure (ADR 0112 item 8).
+// RouteMaxAgeSeconds is the proxy's --route-max-age, rounded up to a second: how long it forwards
+// on a table after hostd took it, which orch waits out before it deletes a microVM whose address a
+// table named for a proxy that has not acknowledged a later one (ADR 0112 item 6).
 type ProxyStatus struct {
-	Healthy bool `json:"healthy"`
+	Healthy            bool  `json:"healthy"`
+	RouteMaxAgeSeconds int64 `json:"routeMaxAgeSeconds,omitempty"`
 }
 
 // DiskSpec is a disk of a microVM, created with it and deleted with it.

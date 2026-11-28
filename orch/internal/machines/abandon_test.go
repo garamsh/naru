@@ -221,10 +221,11 @@ func TestLost_AMoveWhoseTargetIsAbandonedAfterTheCommitLeavesTheMachineLostThere
 	r.move(orchapi.MoveRequest{})
 	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
 		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet,
-		Routes: func(context.Context, string, machines.Binding) (bool, error) { return false, nil },
+		Routes: &fakeRoutes{},
 	})
 	r.pass()
 	require.Equal(t, machines.MoveStarted, r.record("web").Move.Step)
+	routed := *r.record("web").Move.Routed
 	r.hosts.Abandon("h-b")
 	r.pass()
 
@@ -234,7 +235,8 @@ func TestLost_AMoveWhoseTargetIsAbandonedAfterTheCommitLeavesTheMachineLostThere
 	assert.Equal(t, machines.Binding{Host: "h-b", Epoch: 2}, *rec.Binding)
 	require.Len(t, rec.Abandoned, 2)
 	assert.Equal(t, machines.AbandonedEpoch{Host: "h-b", Epoch: 2, Volumes: []string{"data"}, At: rec.Abandoned[0].At, Role: machines.RoleBound}, rec.Abandoned[0])
-	assert.Equal(t, machines.AbandonedEpoch{Host: "h-a", Epoch: 1, Volumes: []string{"data"}, At: rec.Abandoned[1].At, Role: machines.RoleSource}, rec.Abandoned[1], "the source's copy, as of its stop, is listed")
+	assert.Equal(t, machines.AbandonedEpoch{Host: "h-a", Epoch: 1, Volumes: []string{"data"}, At: rec.Abandoned[1].At, Role: machines.RoleSource, Unrouted: &routed}, rec.Abandoned[1],
+		"the source's copy, as of its stop, is listed with the revision after the commit its clean up waited on")
 	assert.Equal(t, hostapi.Resources{Disk: 30 * gib}, r.allocation("h-a"), "its CPUs and memory are freed, its disk kept for the copy")
 	assert.Equal(t, "stopped", r.hosts.MicroVMs("h-a")["m-"+m.ID+"-1"].State, "the copy is kept")
 	ev := r.fleet.of(machines.EventMoveLost)
@@ -246,7 +248,7 @@ func TestLost_AMoveWhoseTargetIsAbandonedAfterTheCommitLeavesTheMachineLostThere
 }
 
 func TestLost_AnOperatorDeletesASourceCopyOnItsHostAndFreesItsDisk(t *testing.T) {
-	r, m := lostAtTarget(t)
+	r, m, gate := lostAtTarget(t)
 	require.NoError(t, r.svc.DeleteAbandonedVolumes(t.Context(), "garam", "web", "h-a", 1))
 	got, err := r.svc.AbandonedVolumes(t.Context())
 	require.NoError(t, err)
@@ -257,6 +259,9 @@ func TestLost_AnOperatorDeletesASourceCopyOnItsHostAndFreesItsDisk(t *testing.T)
 	assert.Contains(t, r.hosts.MicroVMs("h-a"), "m-"+m.ID+"-1", "control: the delete itself calls no host")
 
 	r.pass()
+	assert.Contains(t, r.hosts.MicroVMs("h-a"), "m-"+m.ID+"-1", "a proxy may still route the Machine to the copy's address")
+	gate.deliver()
+	r.pass()
 	assert.NotContains(t, r.hosts.MicroVMs("h-a"), "m-"+m.ID+"-1", "deleted with its disks")
 	assert.Equal(t, hostapi.Resources{}, r.allocation("h-a"), "and its disk freed")
 	rec := r.record("web")
@@ -266,9 +271,13 @@ func TestLost_AnOperatorDeletesASourceCopyOnItsHostAndFreesItsDisk(t *testing.T)
 }
 
 func TestLost_DeletingAMachineFreesItsSourceCopysDisk(t *testing.T) {
-	r, _ := lostAtTarget(t)
+	r, _, gate := lostAtTarget(t)
 	_, err := r.svc.Delete(t.Context(), "garam", "web")
 	require.NoError(t, err)
+	r.pass()
+	_, _, err = r.store.Machine(t.Context(), "garam", "web")
+	require.NoError(t, err, "a proxy may still route the Machine to the copy, which its tombstone would have deleted")
+	gate.deliver()
 	r.pass()
 	_, _, err = r.store.Machine(t.Context(), "garam", "web")
 	require.ErrorIs(t, err, machines.ErrNotFound)
@@ -276,7 +285,7 @@ func TestLost_DeletingAMachineFreesItsSourceCopysDisk(t *testing.T) {
 }
 
 func TestLost_ASourceCopyIsCountedOnceThroughTheDiskItsHostKeeps(t *testing.T) {
-	r, _ := lostAtTarget(t)
+	r, _, _ := lostAtTarget(t)
 	big := spec()
 	big.MemoryBytes = 60 * gib
 	r.create("big", big)
@@ -325,15 +334,15 @@ func TestLost_AMachineDeletedAsItsHostIsAbandonedIsRemovedWithoutCallingIt(t *te
 func TestLost_AMoveWhoseSourceIsAbandonedAfterTheCommitEndsWithoutCallingIt(t *testing.T) {
 	r, _ := placedOnA(t)
 	r.move(orchapi.MoveRequest{})
-	routed := false
+	gate := &fakeRoutes{}
 	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
 		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet,
-		Routes: func(context.Context, string, machines.Binding) (bool, error) { return routed, nil },
+		Routes: gate,
 	})
 	r.pass()
 	require.Equal(t, machines.MoveStarted, r.record("web").Move.Step)
 	r.hosts.Abandon("h-a")
-	routed = true
+	gate.deliver()
 	calls := r.hosts.Calls("h-a")
 	r.pass()
 	rec := r.record("web")
@@ -342,21 +351,23 @@ func TestLost_AMoveWhoseSourceIsAbandonedAfterTheCommitEndsWithoutCallingIt(t *t
 	assert.Equal(t, calls, r.hosts.Calls("h-a"), "the abandoned source is called no more")
 }
 
-// lostAtTarget is placedOnA moved to h-b, with h-b abandoned after the commit.
-func lostAtTarget(t *testing.T) (*rig, machineapi.Machine) {
+// lostAtTarget is placedOnA moved to h-b, with h-b abandoned after the commit while a proxy may
+// still route the Machine to h-a; gate is the routes it waits on.
+func lostAtTarget(t *testing.T) (*rig, machineapi.Machine, *fakeRoutes) {
 	t.Helper()
 	r, m := placedOnA(t)
 	r.move(orchapi.MoveRequest{})
+	gate := &fakeRoutes{}
 	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
 		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet,
-		Routes: func(context.Context, string, machines.Binding) (bool, error) { return false, nil },
+		Routes: gate,
 	})
 	r.pass()
 	require.Equal(t, machines.MoveStarted, r.record("web").Move.Step)
 	r.hosts.Abandon("h-b")
 	r.pass()
 	require.Equal(t, machineapi.PhaseLost, r.record("web").Status.Phase)
-	return r, m
+	return r, m, gate
 }
 
 func TestLost_AMachineStaysLostWhenItsHostIsReadmitted(t *testing.T) {

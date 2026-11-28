@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ type fakeHost struct {
 	peers    []netrec.Peer
 	peered   bool
 	mesh     string // the mesh address the host was told is its own
+	pool     string // the mesh pool the host was told
 }
 
 type fakeHosts struct {
@@ -69,11 +71,11 @@ func (f *fakeHosts) PutNetwork(_ context.Context, id, name string, n netrec.Netw
 	return nil
 }
 
-func (f *fakeHosts) PutPeers(_ context.Context, id, mesh string, p []netrec.Peer) error {
+func (f *fakeHosts) PutPeers(_ context.Context, id, mesh, pool string, p []netrec.Peer) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	h := f.hosts[id]
-	h.peers, h.peered, h.mesh = p, true, mesh
+	h.peers, h.peered, h.mesh, h.pool = p, true, mesh, pool
 	return nil
 }
 
@@ -164,6 +166,41 @@ func TestEachHostIsToldItsOwnMeshAddressAndEveryPeersBesideItsPrefixes(t *testin
 	assert.Empty(t, f.hosts["h2"].mesh)
 }
 
+func TestAHostThatRunsNoProxyAdmitsExactlyTheProxyPeersAndFollowsThemComeAndGo(t *testing.T) {
+	f := fleet()
+	f.hosts["h1"].MeshAddress = "10.99.0.1"
+	f.hosts["h2"].MeshAddress = "10.99.0.2"
+	f.hosts["h3"] = &fakeHost{
+		Host:   netrec.Host{ID: "h3", Address: "192.0.2.3:7443", MeshAddress: "10.99.0.3"},
+		tunnel: &netrec.Tunnel{PublicKey: "key3", ListenPort: 51822, MachinePrefixes: []string{"10.200.3.0/24"}},
+	}
+	f.hosts["h1"].tunnel.Proxy, f.hosts["h1"].Proxy = true, true
+	// proxies are the mesh addresses the Machine-only host h2 is told run a proxy.
+	proxies := func() []string {
+		t.Helper()
+		require.NoError(t, newRec(f, twoNetworks, &bytes.Buffer{}).Reconcile(t.Context()))
+		var out []string
+		for _, p := range f.hosts["h2"].peers {
+			if p.Proxy {
+				out = append(out, p.MeshAddress)
+			}
+		}
+		return out
+	}
+	assert.Equal(t, []string{"10.99.0.1"}, proxies(), "the one proxy host, and not h3")
+
+	f.hosts["h3"].tunnel.Proxy = true
+	assert.Equal(t, []string{"10.99.0.1"}, proxies(), "a host that reports a proxy without the operator's grant is no proxy")
+	f.hosts["h3"].Proxy = true
+	assert.ElementsMatch(t, []string{"10.99.0.1", "10.99.0.3"}, proxies(), "granted, a proxy host that comes is added")
+
+	f.hosts["h1"].tunnel.Proxy = false
+	assert.Equal(t, []string{"10.99.0.3"}, proxies(), "and one that goes is taken out, though it holds the grant")
+
+	f.hosts["h3"].MeshAddress = ""
+	assert.Empty(t, proxies(), "a proxy host with no mesh address is marked no proxy: it reaches no microVM")
+}
+
 func TestAMemberThatIsRemovedDisappearsFromTheOtherHosts(t *testing.T) {
 	f := fleet()
 	r := newRec(f, twoNetworks, &bytes.Buffer{})
@@ -229,4 +266,22 @@ func TestARunPassesUntilItsContextEnds(t *testing.T) {
 	}, 5*time.Second, time.Millisecond)
 	cancel()
 	require.ErrorIs(t, <-done, context.Canceled)
+}
+
+func TestEveryHostIsToldTheMeshPoolWithItsPeers(t *testing.T) {
+	f := fleet()
+	pool := netip.MustParsePrefix("10.99.0.0/24")
+	r := netrec.New(netrec.Config{Hosts: f, Networks: twoNetworks, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		MeshPool: func(context.Context) (netip.Prefix, error) { return pool, nil }})
+	require.NoError(t, r.Reconcile(t.Context()))
+	for id, h := range f.hosts {
+		assert.Equal(t, "10.99.0.0/24", h.pool, "%s drops every mesh source in it but a proxy's", id)
+	}
+	require.NoError(t, newRec(f, twoNetworks, &bytes.Buffer{}).Reconcile(t.Context()))
+	for id, h := range f.hosts {
+		assert.Empty(t, h.pool, "control: %s is told none when orch has none", id)
+	}
+	failing := netrec.New(netrec.Config{Hosts: f, Networks: twoNetworks, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		MeshPool: func(context.Context) (netip.Prefix, error) { return netip.Prefix{}, errors.New("etcd is away") }})
+	assert.ErrorContains(t, failing.Reconcile(t.Context()), "mesh pool", "a pass that cannot read the pool puts no peers without it")
 }

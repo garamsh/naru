@@ -43,7 +43,7 @@ func (a *api) DeleteNetwork(_ context.Context, name string) error {
 	return nil
 }
 
-func (a *api) PutPeers(_ context.Context, _ string, p []netrec.Peer) error {
+func (a *api) PutPeers(_ context.Context, _, _ string, p []netrec.Peer) error {
 	a.peers[a.addr] = p
 	return nil
 }
@@ -65,7 +65,7 @@ func TestNetHostsReachEachHostAtItsRecordedAddress(t *testing.T) {
 	assert.Equal(t, "vm@192.0.2.1:7443", vms[0].Name)
 
 	require.NoError(t, h.PutNetwork(t.Context(), "h1", "lab", netrec.NetworkState{Prefix: "10.9.0.0/24"}))
-	require.NoError(t, h.PutPeers(t.Context(), "h2", "", []netrec.Peer{{Name: "h1"}}))
+	require.NoError(t, h.PutPeers(t.Context(), "h2", "", "", []netrec.Peer{{Name: "h1"}}))
 	assert.Equal(t, "10.9.0.0/24", nets["192.0.2.1:7443/lab"].Prefix)
 	assert.Equal(t, []netrec.Peer{{Name: "h1"}}, peers["192.0.2.2:7443"])
 

@@ -20,6 +20,7 @@ import (
 	"github.com/garamsh/naru/lib/identity"
 	"github.com/garamsh/naru/lib/machineapi"
 	"github.com/garamsh/naru/lib/machineapi/machineapitest"
+	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/inventory"
 	"github.com/garamsh/naru/orch/internal/machines"
 	machinesetcd "github.com/garamsh/naru/orch/internal/machines/etcd"
@@ -74,17 +75,21 @@ func oneHost() *orchtest.FakeMachineHosts {
 	return h
 }
 
-// The scenarios of machineapitest that need no alias. The rest are turned on here by the issue that
-// keeps aliases (#387: Aliases, and Isolation, which reads an alias), when machineapitest.Run runs
-// whole.
-func TestOrch_PassesTheMachineAPIConformanceScenariosThatNeedNoAlias(t *testing.T) {
+// aliasDomain is the domain outside the zone the operator grants garam.
+const aliasDomain = "apps.garam.example"
+
+func TestOrch_PassesTheMachineAPIConformanceScenarios(t *testing.T) {
 	hosts := oneHost()
 	// An hour between passes: every pass after the first is the one a write of a Machine or a
 	// snapshot wakes, as the reconciler runs at once after an API write.
 	o := startMachineOrchWith(t, orchtest.Options{NewMachineHosts: func(inventory.Service) machines.Hosts { return hosts }, MachineInterval: time.Hour})
 	kv := o.c.Members[0].Etcd()
+	alice := o.c.CA.Issue(t, "alice", identity.RoleOperator)
+	_, err := o.c.Client(t, 0, &alice).ApplyCaller(t.Context(), "garam", orchapi.CallerSpec{AliasDomains: []string{aliasDomain}})
+	require.NoError(t, err)
 	cfg := machineapitest.Config{
-		Caller: o.garam, Other: o.functions, OtherRole: o.op, Zone: machineZone, Spec: machineSpec(), Timeout: 10 * time.Second,
+		AliasDomain: aliasDomain,
+		Caller:      o.garam, Other: o.functions, OtherRole: o.op, Zone: machineZone, Spec: machineSpec(), Timeout: 10 * time.Second,
 		Anonymous: o.c.MachineClient(t, 0, orchtest.Identity{}), Token: func(_ *testing.T, name string) string { return o.c.Signer.CallerToken(name) },
 		CallerKey: o.garamID.TLS.PrivateKey.(crypto.Signer), CallerCert: o.garamID.Cert,
 		// The log's age drops every event the caller's log holds: its trim deletes them and records
@@ -96,18 +101,7 @@ func TestOrch_PassesTheMachineAPIConformanceScenariosThatNeedNoAlias(t *testing.
 			require.NoError(t, err)
 		},
 	}
-	for _, s := range []struct {
-		name string
-		run  func(*testing.T, machineapitest.Config)
-	}{
-		{"Create", machineapitest.Create}, {"OtherRole", machineapitest.OtherRole}, {"Credentials", machineapitest.Credentials},
-		{"StartStop", machineapitest.StartStop},
-		{"Delete", machineapitest.Delete}, {"Snapshots", machineapitest.Snapshots}, {"Events", machineapitest.Events},
-		{"CursorExpired", machineapitest.CursorExpired}, {"RunningOnly", machineapitest.RunningOnly},
-		{"Secrets", machineapitest.Secrets}, {"Restore", machineapitest.Restore},
-	} {
-		t.Run(s.name, func(t *testing.T) { s.run(t, cfg) })
-	}
+	machineapitest.Run(t, cfg)
 }
 
 // refused asserts err is the Machine API's refusal with status and code.
@@ -322,7 +316,7 @@ func TestOrch_RefusesARevokedCaller(t *testing.T) {
 	require.NoError(t, err, "control: another caller is served")
 }
 
-func TestOrch_AnswersTheAliasesAsUnimplementedAndAGuestCallToAMachineNotPlacedAsNotRunning(t *testing.T) {
+func TestOrch_AnswersAGuestCallToAMachineNotPlacedAsNotRunning(t *testing.T) {
 	o := startMachineOrch(t)
 	ctx := t.Context()
 	_, _, err := o.garam.CreateMachine(ctx, "web", machineSpec())
@@ -331,8 +325,6 @@ func TestOrch_AnswersTheAliasesAsUnimplementedAndAGuestCallToAMachineNotPlacedAs
 	refused(t, err, http.StatusConflict, machineapi.CodeNotRunning, "exec")
 	_, err = o.garam.ReadFile(ctx, "web", "/data/a")
 	refused(t, err, http.StatusConflict, machineapi.CodeNotRunning, "a file read")
-	_, _, err = o.garam.PutAlias(ctx, "app."+machineZone, machineapi.AliasRequest{Machine: "web"})
-	refused(t, err, http.StatusNotImplemented, machineapi.CodeUnimplemented, "an alias")
 }
 
 // get answers a GET of path on addr to a client presenting id, as status and body.

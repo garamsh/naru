@@ -52,6 +52,9 @@ type Deps struct {
 	// ProxyHealthy asks the host's naru-proxy whether it answers its health check, which /v1/host
 	// reports for a proxy exposure's candidacy (ADR 0112 item 8). Nil means the host runs no proxy.
 	ProxyHealthy func(ctx context.Context) bool
+	// Routes is where the host hands orch's routing table to its naru-proxy. Nil means the host
+	// runs no proxy: PUT /v1/routes is 501.
+	Routes *Routes
 	// Virtualization is the value of hostapi.LabelVirtualization /v1/host reports, read once at
 	// start; empty reports no such label.
 	Virtualization string
@@ -143,6 +146,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/networks", s.listNetworks)
 	mux.HandleFunc("GET /v1/networks/{name}", s.getNetwork)
 	mux.HandleFunc("DELETE /v1/networks/{name}", s.deleteNetwork)
+	mux.HandleFunc("PUT /v1/routes", s.putRoutes)
 	mux.HandleFunc("PUT /v1/peers", s.putPeers)
 	mux.HandleFunc("GET /v1/peers", s.getPeers)
 	mux.HandleFunc("GET /v1/tunnel", s.getTunnel)

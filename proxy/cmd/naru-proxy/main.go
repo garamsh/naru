@@ -37,7 +37,7 @@ func run() error {
 		revisionFile = flag.String("revision-file", wire.ProxyRevisionFile, "where the revision of the table loaded is written, for hostd")
 		healthAddr   = flag.String("health-addr", wire.ProxyHealthAddr, "where GET /healthz is answered")
 		redirects    = flag.String("redirect-listen", "", "the addresses plain HTTP is answered on with a redirect to https, separated by commas; empty answers none")
-		maxAge       = flag.Duration("route-max-age", time.Hour, "how long after hostd took a table it is forwarded on")
+		maxAge       = flag.Duration("route-max-age", wire.ProxyRouteMaxAge, "how long after hostd took a table it is forwarded on")
 		reload       = flag.Duration("reload-interval", time.Second, "how often the routes file is checked for a new table")
 	)
 	flag.Parse()

@@ -187,6 +187,8 @@ func hostCommands() *cobra.Command {
 		leaf("get <id>", "print an admitted host as orch records it, with its abandonment", hostGet),
 		described(leaf("abandon <id>", "declare a fenced host gone: revoke it and mark its Machines lost", hostAbandon),
 			"abandon declares a host that is fenced, so it runs nothing, gone for good. Orch records the abandonment, forwards your signed revocation of every certificate the host holds to the signer, takes the host out of every peer list and route, and marks its Machines lost. A repeat retries only the revocation.", ""),
+		leaf("grant-proxy <id>", "let a host's proxy take the routing table and reach Machines", hostProxy("grant")),
+		leaf("revoke-proxy <id>", "take a host's proxy role back", hostProxy("revoke")),
 		leaf("install-seed", "write the NoCloud drive a new host boots the installer with (offline)", hostInstallSeed),
 		parent("profile", "the fleet-wide inputs orch builds each joined host from",
 			leaf("set", "give orch the host profile", hostProfileSet),

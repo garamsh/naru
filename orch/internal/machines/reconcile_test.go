@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -181,6 +182,56 @@ func TestReconcile_RunsAMachineOnAHostAsItsRecordAsks(t *testing.T) {
 	assert.Len(t, r.hosts.Creates("h-a"), 1, "a pass over a running Machine changes nothing")
 }
 
+func TestReconcile_AMachinesServicesAdmitTheMeshPoolToTheirPortsAlone(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	mesh := netip.MustParsePrefix("10.99.0.0/24")
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet,
+		MeshPool: func(context.Context) (netip.Prefix, error) { return mesh, nil },
+	})
+	s := spec()
+	s.Services = []machineapi.Service{{Name: "web", Port: 8080, Protocol: machineapi.ServiceHTTP}, {Name: "db", Port: 5432, Protocol: machineapi.ServiceTCP}}
+	r.create("web", s)
+	r.create("quiet", spec())
+	r.pass()
+
+	creates := r.hosts.Creates("h-a")
+	require.Len(t, creates, 2)
+	byName := map[string]hostapi.CreateRequest{}
+	for _, c := range creates {
+		byName[c.Name] = c
+	}
+	web := byName[machines.Binding{Epoch: 1}.MicroVM(r.record("web").ID)]
+	assert.Equal(t, []hostapi.Rule{
+		{Prefix: "10.99.0.0/24", Protocol: "tcp", Ports: []hostapi.PortRange{{First: 8080, Last: 8080}}},
+		{Prefix: "10.99.0.0/24", Protocol: "tcp", Ports: []hostapi.PortRange{{First: 5432, Last: 5432}}},
+	}, web.NetworkPolicy.Ingress, "each service's port from the mesh pool, TCP for http and tcp alike")
+	assert.Equal(t, spec().NetworkPolicy.Egress[0].Prefix, web.NetworkPolicy.Egress[0].Prefix, "egress is the caller's")
+	quiet := byName[machines.Binding{Epoch: 1}.MicroVM(r.record("quiet").ID)]
+	assert.Empty(t, quiet.NetworkPolicy.Ingress, "a Machine with no service admits nothing")
+}
+
+func TestReconcile_AMachineWithNoMeshPoolAdmitsNothing(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	s := spec()
+	s.Services = []machineapi.Service{{Name: "web", Port: 8080, Protocol: machineapi.ServiceHTTP}}
+	r.create("web", s)
+	r.pass()
+	creates := r.hosts.Creates("h-a")
+	require.Len(t, creates, 1)
+	assert.Empty(t, creates[0].NetworkPolicy.Ingress, "mvmd's empty policy blocks every source")
+}
+
+func TestReconcile_RecordsTheAddressTheHostGaveTheMicroVM(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	r.create("web", spec())
+	r.pass()
+	rec := r.record("web")
+	vm := r.hosts.MicroVMs("h-a")[rec.Binding.MicroVM(rec.ID)]
+	require.Len(t, vm.Addresses, 1)
+	assert.Equal(t, netip.MustParseAddr(vm.Addresses[0]), rec.PrivateAddress, "the address a route names")
+}
+
 func TestReconcile_StopsAndStartsTheMicroVMToTheDesiredState(t *testing.T) {
 	r := newRig(t, host("h-a", 64*gib))
 	m := r.create("web", spec())
@@ -276,6 +327,82 @@ func TestReconcile_DeletesTheMicroVMThenFreesTheNameAndTheAllocation(t *testing.
 	assert.Equal(t, hostapi.Resources{CPU: 2, Memory: 4 * gib, Disk: 30 * gib}, r.allocation("h-a"), "the allocation gives back what it took")
 	_, deleted := r.phases(m.ID)
 	assert.True(t, deleted, "its end is an event")
+}
+
+// fakeRoutes answers Delivered with done, and keeps what it was asked.
+type fakeRoutes struct {
+	mu    sync.Mutex
+	done  bool
+	asked []machines.Unrouted
+}
+
+func (f *fakeRoutes) Delivered(_ context.Context, rev int64, at time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, machines.Unrouted{Rev: rev, At: at})
+	return f.done, nil
+}
+
+func (f *fakeRoutes) deliver() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.done = true
+}
+
+func TestReconcile_DeletesARoutedMicroVMOnlyOnceNoProxyForwardsToItsAddress(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	gate := &fakeRoutes{}
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet, Routes: gate,
+	})
+	m := r.create("web", spec())
+	r.pass()
+	vm := "m-" + m.ID + "-1"
+	_, err := r.svc.Delete(t.Context(), "garam", "web")
+	require.NoError(t, err)
+	_, markRev, err := r.store.Machine(t.Context(), "garam", "web")
+	require.NoError(t, err)
+	at := r.clock.Now()
+
+	r.pass()
+	assert.Contains(t, r.hosts.MicroVMs("h-a"), vm, "the microVM stays while a proxy may forward to its address")
+	rec := r.record("web")
+	require.NotNil(t, rec.Unrouted, "the revision and time the table stopped naming the address are kept")
+	assert.Equal(t, markRev, rec.Unrouted.Rev, "the revision the Machine was read deleting at, which no later table routes")
+	assert.True(t, rec.Unrouted.At.Equal(at))
+	r.clock.Advance(time.Minute)
+	r.pass()
+	require.Len(t, gate.asked, 2)
+	for _, a := range gate.asked {
+		assert.Equal(t, markRev, a.Rev, "a later pass, or a new leader, waits on the same revision")
+		assert.True(t, a.At.Equal(at), "and time")
+	}
+
+	gate.done = true
+	r.pass()
+	assert.NotContains(t, r.hosts.MicroVMs("h-a"), vm, "deleted once no proxy forwards to the address")
+	_, _, err = r.store.Machine(t.Context(), "garam", "web")
+	require.ErrorIs(t, err, machines.ErrNotFound)
+}
+
+func TestReconcile_DeletesAMicroVMNoRouteNamedWithoutWaiting(t *testing.T) {
+	r := newRig(t, host("h-a", 64*gib))
+	gate := &fakeRoutes{}
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet, Routes: gate,
+	})
+	r.hosts.NoAddresses = true
+	m := r.create("web", spec())
+	r.pass()
+	require.NotNil(t, r.record("web").Binding, "the setup: placed")
+	require.False(t, r.record("web").PrivateAddress.IsValid(), "and its host reported no address")
+	_, err := r.svc.Delete(t.Context(), "garam", "web")
+	require.NoError(t, err)
+	r.pass()
+	_, _, err = r.store.Machine(t.Context(), "garam", "web")
+	require.ErrorIs(t, err, machines.ErrNotFound, "no table named an address, so nothing is waited on")
+	assert.Empty(t, gate.asked)
+	assert.NotContains(t, r.hosts.MicroVMs("h-a"), "m-"+m.ID+"-1")
 }
 
 func TestReconcile_RemovesAMachineDeletedBeforeItWasPlaced(t *testing.T) {

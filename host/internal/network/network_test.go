@@ -176,6 +176,52 @@ func TestRuleset_InputChain(t *testing.T) {
 	}
 }
 
+func TestRuleset_OnlyAProxyHostsMeshAddressReachesAMicroVM(t *testing.T) {
+	c := twoNetworks()
+	c.Peers = []network.Peer{
+		{Name: "proxy", PublicKey: "p", Mesh: addr("10.99.0.3"), Proxy: true},
+		{Name: "machines", PublicKey: "m", Mesh: addr("10.99.0.4")},
+		{Name: "no-mesh", PublicKey: "n"},
+	}
+	tb := parseTable(t, network.Ruleset(c))
+	for _, tc := range []struct {
+		name   string
+		p      packet
+		accept bool
+		rule   string
+	}{
+		{"a proxy host to a microVM", packet{in: "wg-naru", out: "tap1", src: "10.99.0.3", dst: "10.0.0.3", dport: 8080}, true, "a proxy to a microVM"},
+		{"another host to a microVM", packet{in: "wg-naru", out: "tap1", src: "10.99.0.4", dst: "10.0.0.3", dport: 8080}, false, "a host to a microVM"},
+		{"a proxy host past a microVM", packet{in: "wg-naru", out: "eth0", src: "10.99.0.3", dst: "192.0.2.9"}, false, "a host to a microVM"},
+		{"a microVM's reply to a proxy", packet{in: "tap1", out: "wg-naru", src: "10.0.0.3", dst: "10.99.0.3", established: true}, true, ""},
+		{"the control: a remote member of a to a local one", packet{in: "wg-naru", out: "tap1", src: "10.0.2.7", dst: "10.0.0.3"}, true, "a inside its set"},
+		{"the forward chain's other drops still count", packet{in: "tap1", out: "tap2", src: "10.0.0.3", dst: "10.0.0.4"}, false, "a to another network"},
+	} {
+		got := tb.judge("forward", tc.p)
+		assert.Equal(t, tc.accept, got.accept, tc.name)
+		if tc.rule != "" {
+			assert.Equal(t, tc.rule, got.rule, tc.name)
+		}
+	}
+	assert.Equal(t, []netip.Prefix{pfx("10.99.0.3/32"), pfx("10.99.0.4/32")}, tb.sets["mesh_hosts"])
+	assert.Equal(t, []netip.Prefix{pfx("10.99.0.3/32")}, tb.sets["mesh_proxies"])
+}
+
+func TestRuleset_NoProxyHostLeavesEveryHostsMeshAddressDropped(t *testing.T) {
+	c := twoNetworks()
+	c.Peers = []network.Peer{{Name: "machines", PublicKey: "m", Mesh: addr("10.99.0.4")}}
+	rules := network.Ruleset(c)
+	assert.NotContains(t, rules, "mesh_proxies", "an empty set is not written")
+	tb := parseTable(t, rules)
+	assert.Equal(t, "a host to a microVM", tb.judge("forward", packet{in: "wg-naru", out: "tap1", src: "10.99.0.4", dst: "10.0.0.3"}).rule)
+
+	c.Peers = nil
+	assert.NotContains(t, network.Ruleset(c), "mesh_hosts", "no peer with a mesh address writes no rule")
+	c.Peers = []network.Peer{{Name: "machines", PublicKey: "m", Mesh: addr("10.99.0.4")}}
+	c.TapPrefix = ""
+	assert.NotContains(t, network.Ruleset(c), "mesh_hosts", "nor a host with no taps")
+}
+
 type call struct {
 	stdin string
 	argv  []string
@@ -255,7 +301,7 @@ func TestManager_AppliesTheWholeStateOnEveryChange(t *testing.T) {
 	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16"), Remote: []netip.Prefix{pfx("10.0.2.7/32")}}))
 	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
 	peers := []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}}}
-	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, peers))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, netip.Prefix{}, peers))
 
 	assert.Equal(t, []string{"nft", "-f", "-"}, f.calls[len(f.calls)-1].argv)
 	tb := parseTable(t, f.last())
@@ -328,7 +374,7 @@ func TestManager_StateSurvivesARestart(t *testing.T) {
 	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
 	require.NoError(t, m.Attach(ctx, network.Member{Network: "b", Address: addr("10.0.0.4")}))
 	peers := []network.Peer{{Name: "h2", PublicKey: "KEYTWO", Endpoint: netip.MustParseAddrPort("192.0.2.2:51820"), Prefixes: []netip.Prefix{pfx("10.0.2.0/24"), pfx("10.8.2.0/24")}}}
-	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, peers))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, netip.Prefix{}, peers))
 	require.NoError(t, m.Detach(ctx, addr("10.0.0.4")))
 
 	st, err := os.Stat(state)
@@ -421,14 +467,14 @@ func TestManager_ADeclarationThatChangesNothingReplacesNoTable(t *testing.T) {
 	n := network.Network{Name: "a", Prefix: pfx("10.8.0.0/16"), Remote: []netip.Prefix{pfx("10.0.2.7/32"), pfx("10.0.2.8/32")}}
 	peers := []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24"), pfx("10.8.3.0/24")}}}
 	require.NoError(t, m.Declare(ctx, n))
-	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, peers))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, netip.Prefix{}, peers))
 	before := len(f.calls)
 
 	// The same, in another order: the table's counters are not reset by it.
 	n.Remote = []netip.Prefix{pfx("10.0.2.8/32"), pfx("10.0.2.7/32")}
 	peers[0].Prefixes = []netip.Prefix{pfx("10.8.3.0/24"), pfx("10.8.2.0/24")}
 	require.NoError(t, m.Declare(ctx, n))
-	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, peers))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, netip.Prefix{}, peers))
 	assert.Len(t, f.calls, before, "nothing changed, so nft ran no more")
 
 	n.Remote = n.Remote[:1]
@@ -442,7 +488,7 @@ func held(t *testing.T, f *fakeRunner, tun *fakeTunnel, m *network.Manager) (str
 	ctx := context.Background()
 	require.NoError(t, m.Declare(ctx, network.Network{Name: "a", Prefix: pfx("10.8.0.0/16")}))
 	require.NoError(t, m.Attach(ctx, network.Member{Network: "a", Address: addr("10.0.0.3")}))
-	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}}}))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, netip.Prefix{}, []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}}}))
 	return f.table, tun.peers
 }
 
@@ -586,7 +632,7 @@ func TestManager_TheMeshAddressReachesTheTunnelIsReportedAndSurvivesARestart(t *
 	f, tun := &fakeRunner{}, &fakeTunnel{}
 	m := newManager(f, tun, state)
 	peers := []network.Peer{{Name: "h2", PublicKey: "KEYTWO", Prefixes: []netip.Prefix{pfx("10.0.2.0/24")}, Mesh: addr("10.99.0.2")}}
-	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.1"), peers))
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.1"), netip.Prefix{}, peers))
 
 	assert.Equal(t, addr("10.99.0.1"), tun.mesh, "the tunnel was given the host's mesh address")
 	assert.Equal(t, peers, tun.peers, "and each peer's")
@@ -608,21 +654,65 @@ func TestManager_AChangeOfTheMeshAddressAloneIsApplied(t *testing.T) {
 	m := newManager(f, tun, "")
 	ctx := context.Background()
 	peers := []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}, Mesh: addr("10.99.0.2")}}
-	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.1"), peers))
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.1"), netip.Prefix{}, peers))
 	sets := tun.sets
 
-	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.1"), peers))
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.1"), netip.Prefix{}, peers))
 	assert.Equal(t, sets, tun.sets, "the control: the same declaration sets nothing")
 
-	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.3"), peers))
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.3"), netip.Prefix{}, peers))
 	assert.Equal(t, sets+1, tun.sets, "a new mesh address is applied")
 	assert.Equal(t, addr("10.99.0.3"), tun.mesh)
 
 	moved := []network.Peer{{PublicKey: "KEYONE", Prefixes: []netip.Prefix{pfx("10.8.2.0/24")}, Mesh: addr("10.99.0.4")}}
-	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.3"), moved))
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.3"), netip.Prefix{}, moved))
 	assert.Equal(t, sets+2, tun.sets, "a peer's new mesh address is applied")
 
-	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, moved))
+	require.NoError(t, m.SetPeers(ctx, netip.Addr{}, netip.Prefix{}, moved))
 	assert.Equal(t, sets+3, tun.sets, "and so is none")
 	assert.False(t, tun.mesh.IsValid())
+}
+
+func TestRuleset_TheMeshPoolIsDroppedWholeButAProxyPeersAddress(t *testing.T) {
+	c := twoNetworks()
+	c.MeshPool = pfx("10.99.0.0/24")
+	c.Peers = []network.Peer{
+		{Name: "proxy", PublicKey: "p", Mesh: addr("10.99.0.3"), Proxy: true},
+		{Name: "relay", PublicKey: "r", Mesh: addr("10.99.0.4")},
+	}
+	tb := parseTable(t, network.Ruleset(c))
+	for _, tc := range []struct {
+		name   string
+		p      packet
+		accept bool
+		rule   string
+	}{
+		{"a proxy peer to a microVM", packet{in: "wg-naru", out: "tap1", src: "10.99.0.3", dst: "10.0.0.3", dport: 8080}, true, "a proxy to a microVM"},
+		{"a host behind a relay, which is no peer", packet{in: "wg-naru", out: "tap1", src: "10.99.0.77", dst: "10.0.0.3", dport: 8080}, false, "a host to a microVM"},
+		{"the relay itself", packet{in: "wg-naru", out: "tap1", src: "10.99.0.4", dst: "10.0.0.3", dport: 8080}, false, "a host to a microVM"},
+		{"control: a remote member of a to a local one", packet{in: "wg-naru", out: "tap1", src: "10.0.2.7", dst: "10.0.0.3"}, true, "a inside its set"},
+	} {
+		got := tb.judge("forward", tc.p)
+		assert.Equal(t, tc.accept, got.accept, tc.name)
+		assert.Equal(t, tc.rule, got.rule, tc.name)
+	}
+	assert.NotContains(t, tb.sets, "mesh_hosts", "the pool, not the peers' addresses, is dropped")
+
+	c.Peers = nil
+	got := parseTable(t, network.Ruleset(c)).judge("forward", packet{in: "wg-naru", out: "tap1", src: "10.99.0.77", dst: "10.0.0.3"})
+	assert.Equal(t, verdict{false, "a host to a microVM"}, got, "a pool with no peer still drops every host")
+}
+
+func TestManager_KeepsTheMeshPoolAcrossARestart(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "networks.json")
+	f, tun := &fakeRunner{}, &fakeTunnel{}
+	m := newManager(f, tun, state)
+	ctx := context.Background()
+	require.NoError(t, m.SetPeers(ctx, addr("10.99.0.1"), pfx("10.99.0.0/24"), nil))
+	assert.Equal(t, pfx("10.99.0.0/24"), m.MeshPool())
+
+	again := newManager(&fakeRunner{}, &fakeTunnel{}, state)
+	require.NoError(t, again.Load(ctx))
+	assert.Equal(t, pfx("10.99.0.0/24"), again.MeshPool(), "a restarted host drops the pool before orch's next pass")
 }

@@ -31,13 +31,15 @@ type Tunnel struct {
 
 // Peer is another host the tunnel reaches. Prefixes are the ones that host holds, and MeshAddress
 // is its own address on the tunnel: together the only source addresses the tunnel accepts from it
-// and the only destinations it sends to it.
+// and the only destinations it sends to it. Proxy is whether that host runs naru-proxy, whose
+// mesh address alone of the hosts' reaches this host's microVMs (ADR 0112 item 7).
 type Peer struct {
 	Name        string   `json:"name"`
 	PublicKey   string   `json:"publicKey"`
 	Endpoint    string   `json:"endpoint,omitempty"`
 	Prefixes    []string `json:"prefixes"`
 	MeshAddress string   `json:"meshAddress,omitempty"`
+	Proxy       bool     `json:"proxy,omitempty"`
 }
 
 // PeersRequest is the body of PUT /v1/peers, and what GET /v1/peers answers: the whole list of
@@ -45,5 +47,9 @@ type Peer struct {
 // tunnel interface. An empty MeshAddress leaves the interface with none.
 type PeersRequest struct {
 	MeshAddress string `json:"meshAddress,omitempty"`
-	Peers       []Peer `json:"peers"`
+	// MeshPool is the prefix the hosts' mesh addresses come from: of its sources, the host lets
+	// only a proxy peer's mesh address reach its microVMs, and drops the rest (ADR 0119). Empty
+	// leaves the peers' own mesh addresses as the sources it drops.
+	MeshPool string `json:"meshPool,omitempty"`
+	Peers    []Peer `json:"peers"`
 }

@@ -22,8 +22,11 @@ const (
 )
 
 // proxyFlags are the proxy's ports from --proxy-health-addr and --proxy-tls-port, which go
-// together; none when both are empty.
-func proxyFlags(health string, tlsPort int) (network.ProxyPorts, error) {
+// together; none when both are empty. maxAge, --proxy-route-max-age, is what a proxy may be given.
+func proxyFlags(health string, tlsPort int, maxAge time.Duration) (network.ProxyPorts, error) {
+	if maxAge <= 0 || maxAge > wire.ProxyMaxRouteMaxAge {
+		return network.ProxyPorts{}, errors.New("--proxy-route-max-age must be positive and " + wire.ProxyMaxRouteMaxAge.String() + " at most")
+	}
 	if (health == "") != (tlsPort == 0) || tlsPort < 0 || tlsPort > 65535 {
 		return network.ProxyPorts{}, errors.New("--proxy-health-addr and --proxy-tls-port go together, and the port is 1 to 65535")
 	}

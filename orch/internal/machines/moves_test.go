@@ -2,6 +2,7 @@ package machines_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -11,11 +12,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/garamsh/naru/lib/hostapi"
 	"github.com/garamsh/naru/lib/machineapi"
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/machines"
+	machinesetcd "github.com/garamsh/naru/orch/internal/machines/etcd"
 )
 
 // placedOnA is a rig of h-a, which takes the Machine web as the larger host, and h-b, with web
@@ -327,25 +330,24 @@ func TestMove_RefusesAMoveTheServiceCannotRecord(t *testing.T) {
 
 func TestMove_RefusesACancelPastTheCommit(t *testing.T) {
 	r, _ := placedOnA(t)
+	source := r.record("web").PrivateAddress
+	require.True(t, source.IsValid(), "the setup: the source reported the Machine's address")
 	r.move(orchapi.MoveRequest{})
-	routes := make(chan struct{})
+	gate := &fakeRoutes{}
 	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
 		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet,
-		Routes: func(context.Context, string, machines.Binding) (bool, error) {
-			select {
-			case <-routes:
-				return true, nil
-			default:
-				return false, nil
-			}
-		},
+		Routes: gate,
 	})
 	r.pass()
 	rec := r.record("web")
 	require.NotNil(t, rec.Move)
 	assert.Equal(t, machines.MoveStarted, rec.Move.Step, "the move waits for the routes")
-	assert.Equal(t, "a proxy does not yet route the Machine to h-b", rec.Move.Reason)
+	assert.Equal(t, "a proxy may still route the Machine to h-a", rec.Move.Reason)
 	assert.Len(t, r.hosts.MicroVMs("h-a"), 1, "the source's copy stays until the routes are delivered")
+	assert.True(t, rec.PrivateAddress.IsValid())
+	assert.NotEqual(t, source, rec.PrivateAddress, "the commit routes the Machine to the address the target gave it")
+	require.NotNil(t, rec.Move.Routed)
+	committed := rec.Move.Routed.Rev
 
 	r.pass()
 	assert.Len(t, r.hosts.MicroVMs("h-a"), 1, "a pass more leaves it")
@@ -353,10 +355,74 @@ func TestMove_RefusesACancelPastTheCommit(t *testing.T) {
 	assert.Empty(t, r.fleet.of(machines.EventAllocationDrift), "the source's capacity is held until the clean up")
 	_, err := r.svc.CancelMove(t.Context(), "garam", "web")
 	assert.ErrorIs(t, err, machines.ErrMoving)
-	close(routes)
+	gate.mu.Lock()
+	gate.done = true
+	asked := append([]machines.Unrouted(nil), gate.asked...)
+	gate.mu.Unlock()
+	require.NotEmpty(t, asked)
+	for _, a := range asked {
+		assert.Equal(t, committed, a.Rev, "every pass waits on the one revision the clean up recorded")
+	}
 	r.pass()
 	assert.Nil(t, r.record("web").Move)
-	assert.Empty(t, r.hosts.MicroVMs("h-a"))
+	assert.Empty(t, r.hosts.MicroVMs("h-a"), "deleted once every proxy has loaded a table that routes the Machine to the target")
+}
+
+func TestMove_TheCommitRoutesTheMachineToTheTargetInTheWriteThatRebindsIt(t *testing.T) {
+	r, _ := placedOnA(t)
+	source := r.record("web").PrivateAddress
+	r.move(orchapi.MoveRequest{})
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet,
+		Routes: &fakeRoutes{},
+	})
+	now, err := r.kv.Get(t.Context(), machinesetcd.MachinePrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	require.NoError(t, err)
+	watch := r.kv.Watch(t.Context(), machinesetcd.MachinePrefix, clientv3.WithPrefix(), clientv3.WithRev(now.Header.Revision+1))
+	r.pass()
+	require.Equal(t, "h-b", r.record("web").Binding.Host, "the setup: the pass committed the move")
+	rebound, commit := false, int64(0)
+	for !rebound {
+		var resp clientv3.WatchResponse
+		select {
+		case resp = <-watch:
+		case <-time.After(10 * time.Second):
+			t.Fatal("no write of the Machine bound to the target was seen")
+		}
+		require.NoError(t, resp.Err())
+		for _, ev := range resp.Events {
+			var rec machines.Record
+			require.NoError(t, json.Unmarshal(ev.Kv.Value, &rec))
+			if rec.Binding != nil && rec.Binding.Host == "h-b" {
+				assert.NotEqual(t, source, rec.PrivateAddress, "the first write bound to the target no longer names the source's address")
+				assert.Equal(t, rec.Move.TargetAddress, rec.PrivateAddress, "but the target's")
+				assert.True(t, rec.PrivateAddress.IsValid())
+				rebound, commit = true, ev.Kv.ModRevision
+				break
+			}
+		}
+	}
+	routed := r.record("web").Move.Routed
+	require.NotNil(t, routed, "the clean up recorded what it waits on")
+	assert.GreaterOrEqual(t, routed.Rev, commit, "a revision at or after the commit, whose tables no longer route the Machine to the source")
+}
+
+func TestMove_RoutesTheMachineToTheAddressTheTargetGivesItAtItsStart(t *testing.T) {
+	r, _ := placedOnA(t)
+	source := r.record("web").PrivateAddress
+	r.hosts.AddressAtStart = true
+	r.move(orchapi.MoveRequest{})
+	r.rec = machines.NewReconciler(machines.ReconcilerConfig{
+		Store: r.store, Hosts: r.hosts, Clock: r.clock, Reserve: machines.Reserve{CPU: 1, Memory: 2 * gib}, Fleet: r.fleet,
+		Routes: &fakeRoutes{},
+	})
+	r.pass()
+	rec := r.record("web")
+	require.NotNil(t, rec.Move)
+	require.Equal(t, machines.MoveStarted, rec.Move.Step, "the setup: the target started the Machine")
+	assert.False(t, rec.Move.TargetAddress.IsValid(), "the setup: the target gave no address before the start")
+	assert.True(t, rec.PrivateAddress.IsValid(), "the address the target reports at the start")
+	assert.NotEqual(t, source, rec.PrivateAddress)
 }
 
 func TestMove_NarrowsTheTargetByTheShapeAsked(t *testing.T) {

@@ -51,6 +51,14 @@ type Service interface {
 	// DeleteAbandonedVolumes forgets one Machine's at one epoch.
 	AbandonedVolumes(ctx context.Context) ([]orchapi.AbandonedVolumes, error)
 	DeleteAbandonedVolumes(ctx context.Context, caller, name, host string, epoch uint64) error
+	// PutAlias publishes hostname for one of the caller's Machines; created is true when this call
+	// recorded it. Alias and DeleteAlias reach the caller's own alias.
+	PutAlias(ctx context.Context, caller, hostname string, r machineapi.AliasRequest) (a machineapi.Alias, created bool, err error)
+	Alias(ctx context.Context, caller, hostname string) (machineapi.Alias, error)
+	DeleteAlias(ctx context.Context, caller, hostname string) error
+	// PutCaller and Callers are the operator's grants of alias domains (ADR 0112 item 3).
+	PutCaller(ctx context.Context, c Caller) (Caller, error)
+	Callers(ctx context.Context) ([]Caller, error)
 }
 
 // retries bounds how often a write reads again after another write got in first.

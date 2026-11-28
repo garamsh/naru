@@ -4,6 +4,7 @@
 package orchd
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
@@ -14,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -44,6 +46,8 @@ import (
 	netetcd "github.com/garamsh/naru/orch/internal/networks/etcd"
 	"github.com/garamsh/naru/orch/internal/ratelimit"
 	"github.com/garamsh/naru/orch/internal/restore"
+	"github.com/garamsh/naru/orch/internal/routes"
+	routesetcd "github.com/garamsh/naru/orch/internal/routes/etcd"
 	"github.com/garamsh/naru/orch/internal/snapshot"
 )
 
@@ -113,6 +117,10 @@ type Deps struct {
 	// the Machine API's Machines on hosts and runs them there, and every member reaches their
 	// guests; without it every Machine stays pending.
 	NewMachineHosts func(inv inventory.Service) machines.Hosts
+	// NewRouteHosts returns the routing push's view of the hosts. With it the leader pushes the
+	// routing table to every host that reports a proxy, and a Machine's delete waits for the proxies
+	// to stop forwarding to its address; without it no table is pushed and a delete does not wait.
+	NewRouteHosts func(inv inventory.Service) routes.Hosts
 	// BootSets, with NewBootSetHosts, turns on the adding of the boot sets the groups' node
 	// versions need to the hosts that lack them. The leader runs it beside the groups engine.
 	BootSets        groups.ReleaseStore
@@ -311,7 +319,8 @@ func (o *Orchd) assemble(m *member.Member) bool {
 		reconcilers = append(reconcilers, d.Reconciler)
 	}
 	if d.NewNetworkHosts != nil {
-		reconcilers = append(reconcilers, netrec.New(netrec.Config{Hosts: d.NewNetworkHosts(svc), Networks: networkStore, Interval: c.NetworkInterval, Log: d.Log}))
+		reconcilers = append(reconcilers, netrec.New(netrec.Config{Hosts: d.NewNetworkHosts(svc), Networks: networkStore, Interval: c.NetworkInterval, Log: d.Log,
+			MeshPool: func(ctx context.Context) (netip.Prefix, error) { return inventory.MeshPool(ctx, invStore) }}))
 	}
 	if d.NewPrefixHosts != nil {
 		reconcilers = append(reconcilers, inventory.NewRecorder(leaderInv, d.NewPrefixHosts(svc), d.Clock, c.NetworkInterval, d.Log))
@@ -338,13 +347,22 @@ func (o *Orchd) assemble(m *member.Member) bool {
 		guests = machineHosts
 	}
 	machineSvc := machines.NewService(machineStore, d.Clock, c.MachineZone, guests)
+	var gate machines.Routes
+	if d.NewRouteHosts != nil {
+		push := routes.New(routes.Config{
+			Source: machineStore, Hosts: d.NewRouteHosts(svc), Acks: routesetcd.New(leaderKV), Zone: c.MachineZone, Clock: d.Clock,
+			Interval: cmp.Or(c.NetworkInterval, netrec.DefaultInterval), Fleet: leaderInv, Log: d.Log,
+			Wake: func(ctx context.Context) <-chan struct{} { return machinesetcd.WatchRouting(ctx, m.Client(), d.Log) },
+		})
+		reconcilers, gate = append(reconcilers, push), push
+	}
 	if machineHosts != nil {
 		reconcilers = append(reconcilers, machines.NewReconciler(machines.ReconcilerConfig{
 			Store: machinesetcd.New(leaderKV), Hosts: machineHosts, Clock: d.Clock, Interval: c.MachineInterval, Reserve: c.HostReserve,
-			Wake: func(ctx context.Context) <-chan struct{} { return machinesetcd.Watch(ctx, m.Client(), d.Log) },
-			// No proxy routes a Machine yet: a move deletes its source without waiting for routes
-			// until #387 replaces NoRoutes with the routes' delivery (orch.md §Moves).
-			Fleet: leaderInv, Routes: machines.NoRoutes, Log: d.Log,
+			Wake:  func(ctx context.Context) <-chan struct{} { return machinesetcd.Watch(ctx, m.Client(), d.Log) },
+			Fleet: leaderInv, Log: d.Log,
+			MeshPool: func(ctx context.Context) (netip.Prefix, error) { return inventory.MeshPool(ctx, invStore) },
+			Routes:   gate,
 		}))
 	}
 	limits := c.Limits.WithDefaults()

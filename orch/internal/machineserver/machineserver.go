@@ -86,13 +86,11 @@ func (h *handler) routes() []route {
 		{"GET " + p + "machines/{name}/files", h.serve(h.readFile)},
 		{"PUT " + p + "machines/{name}/files", h.serve(h.writeFile)},
 		{"GET " + p + "events", h.serve(h.events)},
+		{"PUT " + p + "aliases/{hostname}", h.serve(h.putAlias)},
+		{"GET " + p + "aliases/{hostname}", h.serve(h.alias)},
+		{"DELETE " + p + "aliases/{hostname}", h.serve(h.deleteAlias)},
 		{anonymous, h.register},
 		{"POST " + p + "renew", h.serve(h.renew)},
-	}
-	for _, pattern := range []string{
-		"PUT " + p + "aliases/{hostname}", "GET " + p + "aliases/{hostname}", "DELETE " + p + "aliases/{hostname}",
-	} {
-		rs = append(rs, route{pattern, h.serve(unimplemented)})
 	}
 	return append(rs, route{"/", h.serve(func(r *http.Request, _ string) (int, any, error) { return 0, nil, errNoRoute })})
 }
@@ -162,11 +160,6 @@ var errCaller = errors.New("the Machine API serves the role caller only")
 
 // errNoRoute is a path the API does not serve.
 var errNoRoute = errors.New("no such operation")
-
-// errUnimplemented is an operation a later change of orch serves.
-var errUnimplemented = errors.New("orch does not serve this operation yet")
-
-func unimplemented(*http.Request, string) (int, any, error) { return 0, nil, errUnimplemented }
 
 // serve authenticates the certificate, refuses every role but caller, and answers fn's result.
 func (h *handler) serve(fn caller) http.HandlerFunc {
@@ -258,8 +251,6 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		logger(r).Error("no revocation list", "err", err.Error())
 	case errors.Is(err, errNoRoute):
 		status, code, msg = http.StatusNotFound, machineapi.CodeNotFound, err.Error()
-	case errors.Is(err, errUnimplemented):
-		status, code, msg = http.StatusNotImplemented, machineapi.CodeUnimplemented, err.Error()
 	case errors.Is(err, errTooLarge), errors.Is(err, machines.ErrTooLarge):
 		status, code, msg = http.StatusRequestEntityTooLarge, machineapi.CodeInvalid, err.Error()
 	case errors.Is(err, errBody), errors.Is(err, machines.ErrBadCursor):
@@ -285,6 +276,10 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, msg = http.StatusUnprocessableEntity, machineapi.CodeMachineNotFound, err.Error()
 	case errors.Is(err, machines.ErrSnapshotNotFound):
 		status, code, msg = http.StatusUnprocessableEntity, machineapi.CodeSnapshotNotFound, err.Error()
+	case errors.Is(err, machines.ErrAliasTaken):
+		status, code, msg = http.StatusConflict, machineapi.CodeAliasTaken, err.Error()
+	case errors.Is(err, machines.ErrDomainNotGranted):
+		status, code, msg = http.StatusForbidden, machineapi.CodeAliasDomainNotGranted, err.Error()
 	case errors.Is(err, machines.ErrSnapshotMismatch):
 		status, code, msg = http.StatusUnprocessableEntity, machineapi.CodeSnapshotMismatch, err.Error()
 	case errors.Is(err, rpctypes.ErrNoSpace) || rpctypes.Error(err) == rpctypes.ErrNoSpace:

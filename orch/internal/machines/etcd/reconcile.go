@@ -187,6 +187,31 @@ func (s *Store) guarded(ctx context.Context, cmps []clientv3.Cmp, ops ...clientv
 // backoff from one second to thirty, with a log line, and a send follows: what was written while
 // it was closed is covered by that pass. The channel closes when ctx ends.
 func Watch(ctx context.Context, w clientv3.Watcher, log *slog.Logger) <-chan struct{} {
+	return watch(ctx, w, log, "the Machine watch",
+		watched{MachinePrefix, []clientv3.OpOption{clientv3.WithPrefix(), clientv3.WithPrevKV()}, apiWrote},
+		watched{SnapshotPrefix, []clientv3.OpOption{clientv3.WithPrefix()}, func(e *clientv3.Event) bool { return e.IsCreate() || e.Type == mvccpb.DELETE }})
+}
+
+// WatchRouting sends on the channel it returns whenever a Machine or an alias is written, which may
+// change the routing table, as Watch does for the reconciler.
+func WatchRouting(ctx context.Context, w clientv3.Watcher, log *slog.Logger) <-chan struct{} {
+	every := func(*clientv3.Event) bool { return true }
+	return watch(ctx, w, log, "the routing watch",
+		watched{MachinePrefix, []clientv3.OpOption{clientv3.WithPrefix()}, every},
+		watched{AliasPrefix, []clientv3.OpOption{clientv3.WithPrefix()}, every})
+}
+
+// watched is a prefix a watch reads, and the events of it that wake.
+type watched struct {
+	prefix string
+	opts   []clientv3.OpOption
+	wakes  func(*clientv3.Event) bool
+}
+
+// watch sends on the channel it returns for each event of a or b that wakes. A send that finds the
+// last one unread is dropped. A watch that closes is opened again after a backoff from one second
+// to thirty, with a log line, and a send follows. The channel closes when ctx ends.
+func watch(ctx context.Context, w clientv3.Watcher, log *slog.Logger, what string, a, b watched) <-chan struct{} {
 	out := make(chan struct{}, 1)
 	wake := func() {
 		select {
@@ -199,7 +224,7 @@ func Watch(ctx context.Context, w clientv3.Watcher, log *slog.Logger) <-chan str
 		backoff := time.Second
 		for first := true; ; first = false {
 			if !first {
-				log.Warn("the Machine watch closed; until it is open again the reconciler runs on its interval alone", "retry", backoff.String())
+				log.Warn(what+" closed; until it is open again the reconciler runs on its interval alone", "retry", backoff.String())
 				select {
 				case <-ctx.Done():
 					return
@@ -208,13 +233,13 @@ func Watch(ctx context.Context, w clientv3.Watcher, log *slog.Logger) <-chan str
 				backoff = min(2*backoff, 30*time.Second)
 			}
 			wctx, cancel := context.WithCancel(clientv3.WithRequireLeader(ctx))
-			machines := w.Watch(wctx, MachinePrefix, clientv3.WithPrefix(), clientv3.WithPrevKV())
-			snapshots := w.Watch(wctx, SnapshotPrefix, clientv3.WithPrefix())
+			wa := w.Watch(wctx, a.prefix, a.opts...)
+			wb := w.Watch(wctx, b.prefix, b.opts...)
 			if !first {
-				log.Info("the Machine watch is open again")
+				log.Info(what + " is open again")
 				wake()
 			}
-			watchUntilClosed(machines, snapshots, wake, func() { backoff = time.Second })
+			watchUntilClosed(wa, wb, a.wakes, b.wakes, wake, func() { backoff = time.Second })
 			cancel()
 			if ctx.Err() != nil {
 				return
@@ -224,27 +249,24 @@ func Watch(ctx context.Context, w clientv3.Watcher, log *slog.Logger) <-chan str
 	return out
 }
 
-// watchUntilClosed reads both watches until either closes or fails, waking for each write the API
-// makes, and calls ok on each response that carries events.
-func watchUntilClosed(machines, snapshots clientv3.WatchChan, wake, ok func()) {
+// watchUntilClosed reads both watches until either closes or fails, waking for each event that
+// wakes, and calls ok on each response that carries events.
+func watchUntilClosed(a, b clientv3.WatchChan, wakesA, wakesB func(*clientv3.Event) bool, wake, ok func()) {
 	for {
+		var resp clientv3.WatchResponse
+		var open bool
+		wakes := wakesA
 		select {
-		case resp, open := <-machines:
-			if !open || resp.Err() != nil {
-				return
-			}
-			ok()
-			if slices.ContainsFunc(resp.Events, apiWrote) {
-				wake()
-			}
-		case resp, open := <-snapshots:
-			if !open || resp.Err() != nil {
-				return
-			}
-			ok()
-			if slices.ContainsFunc(resp.Events, func(e *clientv3.Event) bool { return e.IsCreate() || e.Type == mvccpb.DELETE }) {
-				wake()
-			}
+		case resp, open = <-a:
+		case resp, open = <-b:
+			wakes = wakesB
+		}
+		if !open || resp.Err() != nil {
+			return
+		}
+		ok()
+		if slices.ContainsFunc(resp.Events, wakes) {
+			wake()
 		}
 	}
 }

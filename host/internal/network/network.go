@@ -32,13 +32,15 @@ type Member struct {
 
 // Peer is another host the tunnel reaches: its public key, where it listens, the prefixes it
 // holds and its mesh address, which are the only addresses the tunnel accepts from it and sends to
-// it. Mesh is the zero value for a peer that has none.
+// it. Mesh is the zero value for a peer that has none. Proxy is whether the peer runs naru-proxy,
+// whose mesh address alone of the hosts' reaches this host's microVMs.
 type Peer struct {
 	Name      string         `json:"name"`
 	PublicKey string         `json:"publicKey"`
 	Endpoint  netip.AddrPort `json:"endpoint"`
 	Prefixes  []netip.Prefix `json:"prefixes"`
 	Mesh      netip.Addr     `json:"meshAddress,omitzero"`
+	Proxy     bool           `json:"proxy,omitempty"`
 }
 
 // allowed is what the tunnel accepts from p and routes to p: its prefixes and its mesh address.
@@ -57,6 +59,9 @@ type Config struct {
 	Peers    []Peer
 	// Mesh is the host's own address on the tunnel (ADR 0113 item 1); the zero value means none.
 	Mesh netip.Addr
+	// MeshPool is the prefix the hosts' mesh addresses come from (ADR 0119): of its sources, only a
+	// proxy peer's reaches a microVM. The zero value drops the peers' own mesh addresses instead.
+	MeshPool netip.Prefix
 	// Management is the prefix of the management plane: nothing from a network reaches it, and it
 	// reaches only a network's API endpoint.
 	Management netip.Prefix

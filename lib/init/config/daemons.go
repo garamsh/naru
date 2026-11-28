@@ -462,8 +462,8 @@ func (v *validation) proxy(spec Spec) {
 		v.fail("spec.proxy.certificate", "must be the PEM of the zone's certificate, then its chain")
 	}
 	if p.RouteMaxAge != "" {
-		if d, err := time.ParseDuration(p.RouteMaxAge); err != nil || d <= 0 {
-			v.fail("spec.proxy.routeMaxAge", "must be a positive duration such as 1h, got %q", p.RouteMaxAge)
+		if d, err := time.ParseDuration(p.RouteMaxAge); err != nil || d <= 0 || d > wire.ProxyMaxRouteMaxAge {
+			v.fail("spec.proxy.routeMaxAge", "must be a positive duration such as 1h, %s at most, got %q", wire.ProxyMaxRouteMaxAge, p.RouteMaxAge)
 		}
 	}
 	if !slices.ContainsFunc(spec.Services, func(s Service) bool { return s.Name == HostdService }) {
@@ -589,7 +589,7 @@ func (v *validation) hostNetwork(spec Spec) {
 // hostdOwned are the flags of naru-hostd that init writes, from spec.host.network and
 // spec.metrics. A stored configuration holds them in the service's args, so Parse removes them
 // and writes the ones the sections give: the flags follow the sections.
-var hostdOwned = []string{"management-prefix", "egress-interface", "tunnel-port", "metrics-addr", "orch-url", "orch-ca-sha256", "enroll-key-file", "revocation-public-key", "revocation-max-age", "revocation-signer-socket", "revocation-seed", "proxy-health-addr", "proxy-tls-port"}
+var hostdOwned = []string{"management-prefix", "egress-interface", "tunnel-port", "metrics-addr", "orch-url", "orch-ca-sha256", "enroll-key-file", "revocation-public-key", "revocation-max-age", "revocation-signer-socket", "revocation-seed", "proxy-health-addr", "proxy-tls-port", "proxy-route-max-age"}
 
 func (v *validation) hostdArgs(services []Service) {
 	for i, s := range services {
@@ -646,6 +646,9 @@ func derive(cfg NodeConfig) NodeConfig {
 			}
 			if p := spec.Proxy; p != nil {
 				s.Args = append(s.Args, "--proxy-health-addr="+wire.ProxyHealthAddr, "--proxy-tls-port="+strconv.Itoa(int(p.tlsPort())))
+				if p.RouteMaxAge != "" {
+					s.Args = append(s.Args, "--proxy-route-max-age="+p.RouteMaxAge)
+				}
 			}
 		}
 		services = append(services, s)

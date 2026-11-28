@@ -41,8 +41,9 @@ type fakeOrch struct {
 	// removed are the hosts DELETE /v1/hosts/{id} was called for, and profile the last host profile put.
 	removed []string
 	profile []byte
-	// drains are the calls "drain <id>" and "undrain <id>", in order.
-	drains []string
+	// drains are the calls "drain <id>" and "undrain <id>", in order, and grants "grant <id>" and
+	// "revoke <id>".
+	drains, grants []string
 	// machines are what the Machine reads answer, and moves each move sent: "move <caller>/<name>"
 	// with its request, or "cancel <caller>/<name>".
 	machines []orchapi.Machine
@@ -337,6 +338,14 @@ func newFakeOrch(t *testing.T, pending ...orchapi.Pending) *fakeOrch {
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	for method, verb := range map[string]string{"POST": "grant", "DELETE": "revoke"} {
+		mux.HandleFunc(method+" /v1/hosts/{id}/proxy", func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			f.grants = append(f.grants, verb+" "+r.PathValue("id"))
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(orchapi.Host{ID: r.PathValue("id"), Proxy: verb == "grant"})
+		})
+	}
 	mux.HandleFunc("GET /v1/machines", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()

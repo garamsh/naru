@@ -66,35 +66,41 @@ func withProxy(t *testing.T) func(c node.Config, file string) error {
 		if err := withLANInterface(c, file); err != nil || c.Index == lanClient {
 			return err
 		}
-		b, err := os.ReadFile(file)
-		if err != nil {
-			return err
-		}
-		var doc yaml.Node
-		if err := yaml.Unmarshal(b, &doc); err != nil {
-			return err
-		}
-		spec := mappingValue(doc.Content[0], "spec")
-		var proxy, entry yaml.Node
-		if err := proxy.Encode(map[string]any{"certificate": cert, "listen": []string{"0.0.0.0:" + proxyTLS}}); err != nil {
-			return err
-		}
-		if err := entry.Encode(map[string]any{"path": "/run/naru-proxy/zone.key", "mode": "0600", "content": key, "owner": map[string]int{"uid": 6003, "gid": 6003}}); err != nil {
-			return err
-		}
-		spec.Content = append(spec.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "proxy"}, &proxy)
-		files := mappingValue(spec, "files")
-		if files == nil {
-			files = &yaml.Node{Kind: yaml.SequenceNode}
-			spec.Content = append(spec.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "files"}, files)
-		}
-		files.Content = append(files.Content, &entry)
-		out, err := yaml.Marshal(&doc)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(file, out, 0o600)
+		return addProxy(file, cert, key)
 	}
+}
+
+// addProxy adds to the user-data in file a spec.proxy section with the pair, its TLS listener on
+// proxyTLS, and the key as the proxy's file.
+func addProxy(file, cert, key string) error {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return err
+	}
+	spec := mappingValue(doc.Content[0], "spec")
+	var proxy, entry yaml.Node
+	if err := proxy.Encode(map[string]any{"certificate": cert, "listen": []string{"0.0.0.0:" + proxyTLS}}); err != nil {
+		return err
+	}
+	if err := entry.Encode(map[string]any{"path": "/run/naru-proxy/zone.key", "mode": "0600", "content": key, "owner": map[string]int{"uid": 6003, "gid": 6003}}); err != nil {
+		return err
+	}
+	spec.Content = append(spec.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "proxy"}, &proxy)
+	files := mappingValue(spec, "files")
+	if files == nil {
+		files = &yaml.Node{Kind: yaml.SequenceNode}
+		spec.Content = append(spec.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "files"}, files)
+	}
+	files.Content = append(files.Content, &entry)
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(file, out, 0o600)
 }
 
 // mappingValue is the value of key in the mapping m, or nil.

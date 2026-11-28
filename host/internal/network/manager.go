@@ -73,6 +73,8 @@ type state struct {
 	Peers    []Peer    `json:"peers"`
 	// Mesh is the host's mesh address, the zero value when orch declared none.
 	Mesh netip.Addr `json:"meshAddress,omitzero"`
+	// MeshPool is the prefix of the hosts' mesh addresses, the zero value when orch declared none.
+	MeshPool netip.Prefix `json:"meshPool,omitzero"`
 	// Boot and Exposures are the leases with the time they end, counted from the start of the boot
 	// Boot names: a restart in the same boot restores a lease that has not run out, and a reboot,
 	// which took the addresses and the rules with it, restores none.
@@ -100,7 +102,7 @@ func (m *Manager) Load(ctx context.Context) error {
 			if err := json.Unmarshal(raw, &s); err != nil {
 				return fmt.Errorf("%s: %w", m.State, err)
 			}
-			next.Networks, next.Members, next.Peers, next.Mesh = s.Networks, s.Members, s.Peers, s.Mesh
+			next.Networks, next.Members, next.Peers, next.Mesh, next.MeshPool = s.Networks, s.Members, s.Peers, s.Mesh, s.MeshPool
 			next.Exposures = m.restoreLeases(s, next)
 		case !errors.Is(err, os.ErrNotExist):
 			return err
@@ -313,12 +315,19 @@ func (m *Manager) Reconcile(ctx context.Context, live func(context.Context) ([]n
 }
 
 // SetPeers replaces the tunnel's peers and the host's mesh address, and applies.
-func (m *Manager) SetPeers(ctx context.Context, mesh netip.Addr, peers []Peer) error {
+func (m *Manager) SetPeers(ctx context.Context, mesh netip.Addr, pool netip.Prefix, peers []Peer) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	next := m.c
-	next.Peers, next.Mesh = append([]Peer(nil), peers...), mesh
+	next.Peers, next.Mesh, next.MeshPool = append([]Peer(nil), peers...), mesh, pool
 	return m.apply(ctx, next)
+}
+
+// MeshPool returns the mesh pool orch declared, the zero value when it declared none.
+func (m *Manager) MeshPool() netip.Prefix {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.c.MeshPool
 }
 
 // Mesh returns the host's mesh address, the zero value when it has none.
@@ -427,7 +436,7 @@ func (m *Manager) save() error {
 		return nil
 	}
 	boot, up, berr := m.boot()
-	st := state{Networks: sortedNetworks(m.c.Networks), Members: m.c.Members, Peers: sortedPeers(m.c.Peers), Mesh: m.c.Mesh, Boot: boot}
+	st := state{Networks: sortedNetworks(m.c.Networks), Members: m.c.Members, Peers: sortedPeers(m.c.Peers), Mesh: m.c.Mesh, MeshPool: m.c.MeshPool, Boot: boot}
 	for _, e := range sortedExposures(m.c.Exposures) {
 		st.Exposures = append(st.Exposures, leaseState{Exposure: e, Until: up + e.Deadline.Sub(m.now())})
 	}
@@ -482,6 +491,6 @@ func stateOf(c Config) string {
 	raw, _ := json.Marshal(struct {
 		state
 		Exposures []Exposure
-	}{state{Networks: nets, Members: members, Peers: peers, Mesh: c.Mesh}, exposures})
+	}{state{Networks: nets, Members: members, Peers: peers, Mesh: c.Mesh, MeshPool: c.MeshPool}, exposures})
 	return string(raw)
 }

@@ -70,6 +70,7 @@ func main() {
 		tunnelPort = flag.Int("tunnel-port", 51820, "UDP port the tunnel listens on")
 
 		proxyHealth = flag.String("proxy-health-addr", "", "the health endpoint of the host's naru-proxy, which makes the host a candidate for a proxy exposure (ADR 0112); empty means the host runs none")
+		proxyAge    = flag.Duration("proxy-route-max-age", wire.ProxyRouteMaxAge, "the proxy's --route-max-age, which GET /v1/host reports so orch waits it out before it reuses an address a table named")
 		proxyTLS    = flag.Int("proxy-tls-port", 0, "the port of the proxy's TLS listener, which a proxy exposure's 443 is redirected to; needs --proxy-health-addr")
 	)
 	flag.Parse()
@@ -93,16 +94,18 @@ func main() {
 		return
 	}
 
-	proxyPorts, err := proxyFlags(*proxyHealth, *proxyTLS)
+	proxyPorts, err := proxyFlags(*proxyHealth, *proxyTLS, *proxyAge)
 	if err != nil {
 		log.Error(err.Error())
 		os.Exit(1)
 	}
 	var proxyState *proxyCheck
 	var proxyHealthy func(context.Context) bool
+	var routes *api.Routes
 	if proxyPorts.Runs() {
 		proxyState = &proxyCheck{}
 		proxyHealthy = proxyState.Healthy
+		routes = &api.Routes{File: wire.ProxyRoutesFile, GID: int(wire.ProxyUID), RevisionFile: wire.ProxyRevisionFile, MaxAge: *proxyAge}
 	}
 	if *lan != "" && *management == "" {
 		log.Error("--lan-interface needs --management-prefix: the exposed addresses are forwarded to a network's members")
@@ -223,7 +226,7 @@ func main() {
 		}
 	}
 	// A reset of the data disk deletes serving.pem, so the pair that serves after it is the configuration's.
-	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, ProxyHealthy: proxyHealthy, Virtualization: virt, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
+	srv := api.New(api.Deps{Runtime: rt, HostFile: *hostFile, InitFile: *initFile, MachineGateway: gw, Networks: nets, Exposures: exposures, LANInterface: *lan, ProxyHealthy: proxyHealthy, Routes: routes, Virtualization: virt, Log: log, Metrics: reg, Revocations: revocations, LeaderTokenFile: *tokenFile, Identity: hostPair, Serving: serving,
 		HostID: resetID, ResetMarker: *resetMarker, Reboot: rebootInit, CheckPair: pairAfterReset(revocations, *cert), Importer: importer})
 	if *metricsAddr != "" {
 		go func() {
