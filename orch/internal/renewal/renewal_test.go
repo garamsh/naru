@@ -430,3 +430,22 @@ func TestAMemberStoresOnlyAReSigningOfAnAuthorityItTrusts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, b, b2, "a re-signing already stored is not stored again")
 }
+
+func TestARetireThatKeepsFailingDoesNotStopTheNextRenewal(t *testing.T) {
+	r := newRig(t)
+	require.NoError(t, renewal.Prepare(t.Context(), r.cfg))
+	w := renewal.New(r.cfg)
+	r.due()
+	r.signer.retire = errors.New("the signer is down")
+	require.Error(t, w.Check(t.Context()))
+	first, _ := r.presented()
+
+	r.now = first.NotAfter.Add(-identity.OrchRenewWindow).Add(time.Hour)
+	require.Error(t, w.Check(t.Context()), "the retire fails again")
+	second, _ := r.presented()
+	assert.Len(t, r.signer.renewed, 2, "and the renewed certificate renews in its own window all the same")
+	assert.True(t, second.NotAfter.After(first.NotAfter))
+	b, err := os.ReadFile(retirePath(r))
+	require.NoError(t, err)
+	assert.Equal(t, identity.SerialOf(second)+"\n", string(b), "the retire kept is the latest certificate's")
+}
