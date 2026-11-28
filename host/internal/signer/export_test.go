@@ -9,3 +9,10 @@ func SetStageHook(hook func(step string) error) (restore func()) {
 
 // StatusOf is statusOf, for the tests of the package's answers.
 func StatusOf(err error) int { return statusOf(err) }
+
+// SetRenewHook makes RenewHost call hook between its verification and its lock, and returns the
+// function that puts the hook back.
+func SetRenewHook(hook func()) (restore func()) {
+	renewHook = hook
+	return func() { renewHook = nil }
+}

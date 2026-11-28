@@ -143,3 +143,52 @@ func TestARenewedHostRetiresEveryOtherCertificateByTheOneItKeeps(t *testing.T) {
 	status, _ := r.renew(person{key: r.key, cert: old}, r.key)
 	assert.Equal(t, http.StatusForbidden, status, "a retired certificate renews nothing")
 }
+
+func TestARenewalRacingARevocationOfItsHostIssuesNothing(t *testing.T) {
+	r := newRenewalEnv(t)
+	r.at(r.host.cert.NotAfter.Add(-identity.HostRenewWindow).Add(time.Hour))
+	before := r.serials()
+	revoked := false
+	restore := signer.SetRenewHook(func() {
+		if revoked {
+			return
+		}
+		revoked = true
+		// An operator revokes the host after its renewal was verified and before it is issued.
+		status, body := r.do(http.MethodPost, "/v1/revoke-host", r.signedAt(r.operator, identity.ActionRevokeHost, identity.HostSerialsRequest{HostID: "host-1"}))
+		require.Equal(t, http.StatusOK, status, string(body))
+	})
+	defer restore()
+	status, body := r.renew(r.host, r.key)
+	assert.Equal(t, http.StatusForbidden, status, "the revocation that landed first ends the renewal: %s", body)
+	require.True(t, revoked, "setup: the revocation ran between the verification and the issue")
+	held := r.serials()
+	assert.Equal(t, before, held, "no certificate was issued past the revocation")
+	for _, serial := range held {
+		assert.True(t, r.revoked(serial), "every serial the host holds is revoked")
+	}
+}
+
+func TestAHostRenewsWhenNothingRevokesItWhileTheHookRuns(t *testing.T) {
+	r := newRenewalEnv(t)
+	r.at(r.host.cert.NotAfter.Add(-identity.HostRenewWindow).Add(time.Hour))
+	ran := false
+	defer signer.SetRenewHook(func() { ran = true })()
+	status, body := r.renew(r.host, r.key)
+	assert.Equal(t, http.StatusOK, status, "control: the same renewal, with no revocation in between: %s", body)
+	assert.True(t, ran)
+}
+
+// serials are the serials the signer holds for host-1.
+func (r *renewalEnv) serials() []string {
+	r.t.Helper()
+	status, body := r.do(http.MethodPost, "/v1/lookup-host", r.signedAt(r.operator, identity.ActionLookupHost, identity.HostSerialsRequest{HostID: "host-1"}))
+	require.Equal(r.t, http.StatusOK, status, string(body))
+	var got identity.HostSerials
+	require.NoError(r.t, json.Unmarshal(body, &got))
+	var out []string
+	for _, h := range got.Serials {
+		out = append(out, h.Serial)
+	}
+	return out
+}

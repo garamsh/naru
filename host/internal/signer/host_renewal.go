@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/x509"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/garamsh/naru/lib/identity"
@@ -50,22 +51,38 @@ func (s *Signer) RenewHost(signed []byte) (identity.Issued, error) {
 		return identity.Issued{}, fmt.Errorf("%w: a host renews under the key of its current certificate", ErrBadRequest)
 	}
 
+	if renewHook != nil {
+		renewHook()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.auth
+	// The request was verified against the list as it stood before the lock: a revocation of the
+	// host committed since then ends the renewal here, under the lock every revocation takes.
+	held := cur.hosts[who.Subject]
+	if cur.crl.Revokes(who.Serial) {
+		return identity.Issued{}, fmt.Errorf("%w: the certificate %s was revoked while it renewed", identity.ErrRevoked, who.Serial)
+	}
+	if !slices.Contains(held, who.Serial) {
+		return identity.Issued{}, fmt.Errorf("%w: serial %s is not one of %s's", ErrUnknownHost, who.Serial, who.Subject)
+	}
 	issued, err := issueLeaf(cur.host, now, who.Subject, identity.RoleHost, csr.PublicKey, serverAndClient,
 		&x509.CertificateRequest{DNSNames: []string{who.Subject}, IPAddresses: who.IPAddresses})
 	if err != nil {
 		return identity.Issued{}, err
 	}
 	next := cur.withHost(who.Subject, issued.Serial)
-	if err := commitFiles(s.dir, []stagedFile{{issuedFile, next.marshalIssued()}, {hostsFile, next.marshalHosts()}}); err != nil {
+	files := []stagedFile{{issuedFile, next.marshalIssued()}, {hostsFile, next.marshalHosts()}}
+	if err := commitFiles(s.dir, files); err != nil {
 		return identity.Issued{}, err
 	}
 	s.auth = next
 	s.log.Info("renewed a host's certificate", "host_id", who.Subject, "serial", issued.Serial, "previous_serial", who.Serial)
 	return issued, nil
 }
+
+// renewHook, when set by a test, runs in RenewHost between the request's verification and the lock.
+var renewHook func()
 
 // RetireOwnHost revokes every serial the signer holds for a host but the one of the certificate
 // that signed the request: the host's renewed certificate, which it signs with once it serves and
