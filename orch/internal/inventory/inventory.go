@@ -56,9 +56,9 @@ const (
 	// EventKeyRefused is a stored enrollment key refused to a host: expired, revoked, spent or
 	// bound to another host or key. Its subject is the key's ID and its detail the host and why;
 	// the host is answered only that the key is refused.
-	EventKeyRefused = "enrollment.refused"
-	EventCodeRefused  = "host.admission-refused"
-	EventRemoved      = "host.removed"
+	EventKeyRefused  = "enrollment.refused"
+	EventCodeRefused = "host.admission-refused"
+	EventRemoved     = "host.removed"
 	// EventAbandoned is an operator's abandonment of a fenced host, EventRevoked the signer's
 	// revocation of its certificates, and EventRevocationFailed a revocation that failed, which a
 	// repeat of the abandonment retries.
