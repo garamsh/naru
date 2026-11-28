@@ -1,6 +1,6 @@
 # ADR 0040: naru-signer alone holds the authority keys in a private directory and issues certificates over a unix socket against signed requests, and the recovery key opens the bundle that restores them
 
-> Status: accepted
+> Status: accepted; items 3 and 8 and the accepted risk of a host certificate with no renewal superseded in part (the authorities' end and their custody, and who renews a certificate) by [ADR 0121](./0121-the-signer-makes-and-holds-its-authorities-signs-each-again-under-its-key-two-years-before-it-ends-and-an-enrollment-key-enrolls-one-host-within-a-day-superseding-adr-0040-in-part.md)
 > Date: 2026-11-14
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

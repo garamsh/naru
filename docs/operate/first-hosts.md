@@ -106,14 +106,14 @@ The lines to look for: `naructl: wrote <dir>/host-profile.json (mode 0644); load
 
 ### 7. The seed
 
-One enrollment key and one seed serve every host of a batch:
+Each host takes its own enrollment key and its own seed, made the day it boots. A key lives at most 24 hours, enrolls only the first host that presents it, and is spent when that host is admitted (`docs/architecture/orch.md` §Enrollment). For each host `<name>`:
 
 ```
 naructl enroll-key create --ttl 24h
-naructl host install-seed --orch-url https://<address>:7500 --orch-ca-sha256 <hex> --enroll-key <file holding the secret> --out <dir>/seed.iso
+naructl host install-seed --orch-url https://<address>:7500 --orch-ca-sha256 <hex> --enroll-key <file holding the secret> --out <dir>/seed-<name>.iso
 ```
 
-`enroll-key create` prints `id`, `expires` and `secret` lines, and `The secret is shown once; orch keeps only its hash.`; save the secret to a file with mode 0600. `install-seed` is offline and prints `naructl: wrote <dir>/seed.iso; attach it to the host as a CD or a disk and boot the installer from the naru-host image`. The seed carries the key, so keep it as private as the key. `naructl enroll-key revoke <id>` prints `naructl: revoked enrollment key <id>` and ends the key: a host that boots from the seed afterwards is refused (`orch refused the enrollment` on its console) and does not appear in `host pending`.
+`enroll-key create` prints `id`, `expires` and `secret` lines, and `The secret is shown once; orch keeps only its hash.`; save the secret to a file with mode 0600. `install-seed` is offline and prints `naructl: wrote <dir>/seed.iso; attach it to the host as a CD or a disk and boot the installer from the naru-host image`. The seed carries the key, so keep it as private as the key. `naructl enroll-key revoke <id>` prints `naructl: revoked enrollment key <id>` and ends the key: a host that boots from the seed afterwards is refused (`orch refused the enrollment` on its console) and does not appear in `host pending`. A second host booted from the same seed is refused the same way, and so is a host whose key has passed its 24 hours: make a new key and seed for it.
 
 ## Joining and admitting a host
 
@@ -122,12 +122,12 @@ naructl host install-seed --orch-url https://<address>:7500 --orch-ca-sha256 <he
 On Proxmox, for each host:
 
 1. Import the release's `naru-host-<version>.qcow2` as the host's boot disk.
-2. Attach `seed.iso` as a CD-ROM drive.
+2. Attach the host's own `seed-<name>.iso` as a CD-ROM drive.
 3. Add a second, blank disk: it becomes the host's data disk. The host does not need a disk with files on it.
 4. Give the host a DHCP reservation for its network interface's MAC address, the management address you want it to have, with a router, a DNS server and an NTP server. The host takes its address, router, DNS and time source from DHCP, so a real fleet needs a reservation per host. The fleet test serves one from the test process (`internal/dhcpserver`) that answers only the MACs it holds a reservation for, in the place of your DHCP server.
 5. Start it.
 
-The host enrolls and prints, on its console, `naru-hostd: host h-<16 hex digits> waits for admission, pairing code <code>`. The same seed boots every host of the batch; each makes its own key, so each shows its own ID and code.
+The host enrolls and prints, on its console, `naru-hostd: host h-<16 hex digits> waits for admission, pairing code <code>`. Each host makes its own key, so each shows its own ID and code.
 
 `naructl host pending` lists them:
 
@@ -148,7 +148,7 @@ naructl host admit h-<id> --code <code from the console> --region <region> --lab
 
 It prints `naructl: admitted host h-<id> in region <region>`. Orch has the signer issue the host's certificate, builds the host's configuration from the host profile and delivers it to the host, which applies it and reboots: its console shows `join configuration applied revision=1`, and `naructl host pending` no longer lists it. The host then reports to orch: `naructl host list` shows its region, labels, the Machine prefix orch allocated to it and a non-zero `LAST SEEN` (`GET /v1/hosts` carries the same, with `machinePrefix`), and a group whose `requiredLabels` match places a microVM on it.
 
-Admit each host of the batch the same way, and revoke the enrollment key once the batch has joined.
+Admit each host the same way. The admission spends the host's enrollment key, so a later boot from its seed enrolls nothing.
 
 ### 10. Read the host with an operator certificate
 
@@ -156,8 +156,8 @@ A joined host accepts the certificate `naructl operator add` issued, with the ro
 
 ### The seed may be detached
 
-Once a host is admitted and shows `join configuration applied`, it no longer needs the seed. From v0.1.0-dev.12 init, with no seed attached, finds the data disk by its default label `NARUDATA`, runs the configuration orch delivered and brings the network up as the last boot with the seed did. Detach the seed CD-ROM and restart the host to do it, and destroy the seed file and the key's secret. The enrollment key may be revoked while the seed is attached or after.
+Once a host is admitted and shows `join configuration applied`, it no longer needs the seed. From v0.1.0-dev.12 init, with no seed attached, finds the data disk by its default label `NARUDATA`, runs the configuration orch delivered and brings the network up as the last boot with the seed did. Detach the seed CD-ROM and restart the host to do it, and destroy the seed file and the key's secret. The admission spent the key, so neither enrolls a host again.
 
-- A host on v0.1.0-dev.11 cannot boot without its seed. Its key may be revoked while the seed stays attached; only from dev.12 may the seed also be detached.
+- A host on v0.1.0-dev.11 cannot boot without its seed. Its spent key stays in the seed; only from dev.12 may the seed also be detached.
 - A host that was admitted on dev.11 must boot once on dev.12 with its seed attached before the seed is detached: init stores the seed's `network-config` at that boot. Detached before, it refuses with `no stored network-config; attach the seed for one boot`.
 - With no seed and no stored configuration, or with a data disk labelled other than `NARUDATA`, init refuses and says so on the console. Attach the seed again, which wins as before.

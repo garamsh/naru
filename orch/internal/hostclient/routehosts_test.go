@@ -16,6 +16,7 @@ import (
 	"github.com/garamsh/naru/lib/orchapi"
 	"github.com/garamsh/naru/orch/internal/hostclient"
 	"github.com/garamsh/naru/orch/internal/routes"
+	"github.com/garamsh/naru/orch/internal/trust"
 )
 
 // hostServer answers GET /v1/host with the proxy given, or with none when it is empty, and PUT
@@ -64,4 +65,22 @@ func TestRouteHosts_PushesToTheHostsThatReportAProxyAndAnswersWhatTheyLoaded(t *
 	assert.True(t, gotP1.SentAt.Equal(sent))
 	_, err = h.Push(t.Context(), "gone", hostapi.RoutesRequest{})
 	assert.Error(t, err, "a host that is not admitted")
+}
+
+func TestRouteHosts_TrustIsWhenEachAnsweringHostsPoolEnds(t *testing.T) {
+	var got hostapi.RoutesRequest
+	a, ca := hostServer(t, `,"trustExpiresAt":"2036-11-28T00:00:00Z","trustExpiresAuthority":"naru-host-ca"`, 0, &got)
+	b, cb := hostServer(t, "", 0, &got)
+	clients := map[string]hostclient.RouteAPI{a: ca, b: cb}
+	inv := &invFake{hosts: []orchapi.Host{{ID: "a", Address: a}, {ID: "b", Address: b}, {ID: "away", Address: "127.0.0.1:1"}}}
+	h := hostclient.NewRouteHosts(inv, func(_, addr string) hostclient.RouteAPI {
+		if c, ok := clients[addr]; ok {
+			return c
+		}
+		return hostapi.NewClient("https://"+addr, http.DefaultClient)
+	})
+	hosts, err := h.Trust(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []trust.Host{{ID: "a", ExpiresAt: time.Date(2036, 11, 28, 0, 0, 0, 0, time.UTC), Authority: "naru-host-ca"}}, hosts,
+		"a host that reports no expiry, or does not answer, is left out")
 }

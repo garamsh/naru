@@ -274,7 +274,7 @@ func issueLeafUntil(ca authority, now, notAfter time.Time, cn string, role ident
 	if names != nil {
 		tmpl.DNSNames, tmpl.IPAddresses = names.DNSNames, names.IPAddresses
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, pub, ca.key)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, pub, ca.signer())
 	if err != nil {
 		return identity.Issued{}, fmt.Errorf("issue %s certificate: %w", role, err)
 	}

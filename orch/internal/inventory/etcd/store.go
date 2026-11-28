@@ -2,6 +2,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -206,7 +207,15 @@ func (s *Store) PutPending(ctx context.Context, p inventory.Pending, ev *orchapi
 	if ev != nil {
 		ops = append(ops, s.eventOps(*ev)...)
 	}
-	resp, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(hostPrefix+p.HostID), "=", 0), pend).Then(ops...).Commit()
+	cmps := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(hostPrefix+p.HostID), "=", 0), pend}
+	bind, err := s.bindKey(ctx, p)
+	if err != nil {
+		return err
+	}
+	if bind != nil {
+		cmps, ops = append(cmps, bind.cmp), append(ops, bind.op)
+	}
+	resp, err := s.kv.Txn(ctx).If(cmps...).Then(ops...).Commit()
 	if err != nil {
 		return err
 	}
@@ -219,6 +228,80 @@ func (s *Store) PutPending(ctx context.Context, p inventory.Pending, ev *orchapi
 		return err
 	}
 	return inventory.ErrConflict
+}
+
+// keyChange is a write of an enrollment key and the compare that holds it to the key as read at
+// revision rev.
+type keyChange struct {
+	cmp clientv3.Cmp
+	op  clientv3.Op
+	rev int64
+}
+
+// held reports whether the key is still at the revision it was read at.
+func (c keyChange) held(rev int64) bool { return rev == c.rev }
+
+// bindKey is the write that binds p's key to p's host and public key when the key is unbound,
+// nil when it is bound to them already or is not stored, and ErrKeyRefused when it enrolls another
+// host or is spent.
+func (s *Store) bindKey(ctx context.Context, p inventory.Pending) (*keyChange, error) {
+	return s.changeKey(ctx, p.KeyID, func(k *inventory.Key) (bool, error) {
+		switch {
+		case k.Spent || k.Host != "" && (k.Host != p.HostID || !bytes.Equal(k.HostKey, p.PublicKey)):
+			return false, inventory.ErrKeyRefused
+		case k.Host != "":
+			return false, nil
+		}
+		k.Host, k.HostKey = p.HostID, p.PublicKey
+		return true, nil
+	})
+}
+
+// SpendKey is inventory.Store's SpendKey.
+func (s *Store) SpendKey(ctx context.Context, id, hostID string, publicKey []byte) error {
+	spend, err := s.changeKey(ctx, id, func(k *inventory.Key) (bool, error) {
+		switch {
+		case k.Host != "" && (k.Host != hostID || !bytes.Equal(k.HostKey, publicKey)):
+			return false, inventory.ErrKeyRefused
+		case k.Spent:
+			return false, nil
+		}
+		k.Host, k.HostKey, k.Spent = hostID, publicKey, true
+		return true, nil
+	})
+	if err != nil || spend == nil {
+		return err
+	}
+	resp, err := s.kv.Txn(ctx).If(spend.cmp).Then(spend.op).Commit()
+	if err != nil {
+		return err
+	}
+	if !resp.Succeeded {
+		return inventory.ErrConflict
+	}
+	return nil
+}
+
+// changeKey reads the key id and returns the write of what f makes of it, held to the key as read;
+// nil when f changes nothing or no key id is stored.
+func (s *Store) changeKey(ctx context.Context, id string, f func(*inventory.Key) (bool, error)) (*keyChange, error) {
+	if id == "" {
+		return nil, nil
+	}
+	path := keyPrefix + id
+	resp, err := s.kv.Get(ctx, path)
+	if err != nil || len(resp.Kvs) == 0 {
+		return nil, err
+	}
+	var k inventory.Key
+	if err := json.Unmarshal(resp.Kvs[0].Value, &k); err != nil {
+		return nil, fmt.Errorf("record %s: %w", path, err)
+	}
+	if changed, err := f(&k); err != nil || !changed {
+		return nil, err
+	}
+	rev := resp.Kvs[0].ModRevision
+	return &keyChange{clientv3.Compare(clientv3.ModRevision(path), "=", rev), clientv3.OpPut(path, encode(k)), rev}, nil
 }
 
 func (s *Store) GetPending(ctx context.Context, hostID string) (inventory.Pending, error) {
@@ -350,6 +433,16 @@ func (s *Store) Admit(ctx context.Context, p inventory.Pending, h inventory.Host
 		clientv3.Compare(clientv3.CreateRevision(hostPrefix+h.ID), "=", 0),
 	}
 	ops := append([]clientv3.Op{clientv3.OpDelete(key), clientv3.OpPut(hostPrefix+h.ID, encode(h))}, s.eventOps(ev)...)
+	spend, err := s.changeKey(ctx, p.KeyID, func(k *inventory.Key) (bool, error) {
+		k.Spent = true
+		return true, nil
+	})
+	if err != nil {
+		return err
+	}
+	if spend != nil {
+		cmps, ops = append(cmps, spend.cmp), append(ops, spend.op)
+	}
 	for _, a := range allocs {
 		key := spaceKey(a.Space) + a.Prefix
 		confirmed := a
@@ -369,6 +462,13 @@ func (s *Store) Admit(ctx context.Context, p inventory.Pending, h inventory.Host
 	}
 	if _, err := s.GetHost(ctx, h.ID); err == nil {
 		return inventory.ErrAlreadyAdmitted
+	}
+	if spend != nil {
+		if now, err := s.kv.Get(ctx, keyPrefix+p.KeyID); err != nil {
+			return err
+		} else if len(now.Kvs) == 0 || !spend.held(now.Kvs[0].ModRevision) {
+			return inventory.ErrConflict
+		}
 	}
 	return inventory.ErrAllocationTaken
 }

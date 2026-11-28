@@ -44,13 +44,13 @@ func TestAJoinedHostIsNeverGivenAPrefixAHostEnrolledWithItsOwnConfigurationHolds
 	// A control host chose its Machine prefix itself (naructl gen node --machine-prefix), and orch
 	// recorded nothing when it admitted it.
 	control := newHost(t, "node-1")
-	_, err := o.anon.Enroll(t.Context(), control.request(o.secret))
+	_, err := o.anon.Enroll(t.Context(), control.request(o.keyOf(t, control.id)))
 	require.NoError(t, err)
 	o.admit(t, control)
 	require.Empty(t, o.allocations(t), "orch recorded no prefix at the admission of a host that was not given one")
 
 	joined := newHost(t, "h-0123456789abcdef")
-	_, err = o.anon.Enroll(t.Context(), joined.seeded(o.secret))
+	_, err = o.anon.Enroll(t.Context(), joined.seeded(o.keyOf(t, joined.id)))
 	require.NoError(t, err)
 
 	// The control host has not reported yet, so the pool could give out its prefix: the admission waits.
@@ -80,7 +80,7 @@ func TestAPrefixTwoHostsReportIsAnEventAndStaysWithTheFirst(t *testing.T) {
 	o := startOne(t, orchtest.Options{NewPrefixHosts: func(inventory.Service) inventory.PrefixHosts { return reported }})
 	for _, id := range []string{"node-1", "node-2"} {
 		h := newHost(t, id)
-		_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+		_, err := o.anon.Enroll(t.Context(), h.request(o.keyOf(t, h.id)))
 		require.NoError(t, err)
 		o.admit(t, h)
 	}

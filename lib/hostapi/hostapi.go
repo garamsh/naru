@@ -122,6 +122,13 @@ type Host struct {
 	LANInterface string `json:"lanInterface,omitempty"`
 	// Proxy is absent on a host that runs no naru-proxy.
 	Proxy *ProxyStatus `json:"proxy,omitempty"`
+	// TrustExpiresAt is when the pool hostd trusts its callers through stops trusting an authority
+	// it holds: of each authority's certificates in it, the latest end, and of those the earliest
+	// (identity.TrustExpiry). Orch warns within a year of it (ADR 0121). Absent when hostd cannot
+	// read the pool.
+	TrustExpiresAt *time.Time `json:"trustExpiresAt,omitempty"`
+	// TrustExpiresAuthority is the subject of the authority TrustExpiresAt is the end of.
+	TrustExpiresAuthority string `json:"trustExpiresAuthority,omitempty"`
 }
 
 // ProxyStatus is the host's naru-proxy as hostd last asked its health endpoint: Healthy when it

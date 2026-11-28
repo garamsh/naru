@@ -3,6 +3,7 @@
 package inventory
 
 import (
+	"bytes"
 	"errors"
 	"time"
 
@@ -52,8 +53,12 @@ const (
 	EventProxyRevoked = "host.proxy-revoked"
 	EventKeyCreated   = "enrollment-key.created"
 	EventKeyRevoked   = "enrollment-key.revoked"
-	EventCodeRefused  = "host.admission-refused"
-	EventRemoved      = "host.removed"
+	// EventKeyRefused is a stored enrollment key refused to a host: expired, revoked, spent or
+	// bound to another host or key. Its subject is the key's ID and its detail the host and why;
+	// the host is answered only that the key is refused.
+	EventKeyRefused  = "enrollment.refused"
+	EventCodeRefused = "host.admission-refused"
+	EventRemoved     = "host.removed"
 	// EventAbandoned is an operator's abandonment of a fenced host, EventRevoked the signer's
 	// revocation of its certificates, and EventRevocationFailed a revocation that failed, which a
 	// repeat of the abandonment retries.
@@ -79,6 +84,27 @@ type Key struct {
 	CreatedAt time.Time `json:"createdAt"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	Revoked   bool      `json:"revoked"`
+	// Host and HostKey are the host and its public key the key enrolled, bound by the first
+	// enrollment that presented it: the key enrolls no other (ADR 0121). Spent is set when that host
+	// is admitted, after which the key enrolls nothing.
+	Host    string `json:"host,omitempty"`
+	HostKey []byte `json:"hostKey,omitempty"`
+	Spent   bool   `json:"spent,omitempty"`
+}
+
+// lapses is when k stops enrolling: its expiry, and never more than MaxKeyLife and KeyClockSkew
+// after it was made, which bounds a key made before the life was a day.
+func (k Key) lapses() time.Time {
+	if limit := k.CreatedAt.Add(MaxKeyLife + KeyClockSkew); k.ExpiresAt.After(limit) {
+		return limit
+	}
+	return k.ExpiresAt
+}
+
+// enrolls reports whether k may enroll hostID with publicKey: it is unbound, or bound to them,
+// and not spent.
+func (k Key) enrolls(hostID string, publicKey []byte) bool {
+	return !k.Spent && (k.Host == "" || k.Host == hostID && bytes.Equal(k.HostKey, publicKey))
 }
 
 // Pending is an enrollment waiting for admission.

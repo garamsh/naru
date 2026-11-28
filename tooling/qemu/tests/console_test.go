@@ -60,9 +60,8 @@ func TestFleet_ConsoleListsHostsMicroVMsGroupsAndEventsAndAdmitsAPendingHost(t *
 	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 512})
 	f.startOrch()
 	first, second := f.hosts()[0], f.hosts()[1]
-	key := f.enrollmentKey()
-	firstID := f.admit(f.enroll(first, key), "eu-1", "disk=ssd")
-	code := f.enroll(second, key)
+	firstID := f.admit(f.enroll(first, f.enrollmentKey()), "eu-1", "disk=ssd")
+	code := f.enroll(second, f.enrollmentKey())
 	secondID := f.hostID(code)
 	f.must(f.orch("group", "apply", "-f", f.groupFile("shown", 1, 256, "")), "apply shown")
 	eventually(t, "the group's member runs", func() bool { g, ok := f.group(1, "shown"); return ok && g.count("running") == 1 })

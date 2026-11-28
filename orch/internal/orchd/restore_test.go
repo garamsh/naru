@@ -41,7 +41,7 @@ func takeSource(t *testing.T) source {
 	root := o.c.CA.Issue(t, "root", identity.RoleRoot)
 
 	h := newHost(t, "host-a")
-	_, err = o.anon.Enroll(t.Context(), h.request(o.secret))
+	_, err = o.anon.Enroll(t.Context(), h.request(o.keyOf(t, h.id)))
 	require.NoError(t, err)
 	_, err = o.op.Admit(t.Context(), orchapi.AdmitRequest{HostID: h.id, Code: identity.PairingCode(h.pub), Statement: orchtest.Statement(t, o.operator, h.id, h.pub), Region: "kr-seoul"})
 	require.NoError(t, err)

@@ -60,7 +60,7 @@ func TestAdmissionGivesEveryHostItsOwnMeshAddressAndRemovalFreesIt(t *testing.T)
 
 	joined := o.admitSeeded(t, newHost(t, "h-0123456789abcdef"))
 	own := newHost(t, "node-1")
-	_, err := o.anon.Enroll(t.Context(), own.request(o.secret))
+	_, err := o.anon.Enroll(t.Context(), own.request(o.keyOf(t, own.id)))
 	require.NoError(t, err)
 	plain := o.admit(t, own)
 
@@ -87,7 +87,7 @@ func TestASignerFailureDropsTheMeshReservationAndAFullMeshPoolIssuesNothing(t *t
 	require.NoError(t, o.op.SetProfile(t.Context(), meshProfileYAML(t, "10.200.0.0/16", "10.99.0.0/31")))
 	a, b, c := newHost(t, "h-a"), newHost(t, "h-b"), newHost(t, "h-c")
 	for _, h := range []host{a, b, c} {
-		_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+		_, err := o.anon.Enroll(t.Context(), h.request(o.keyOf(t, h.id)))
 		require.NoError(t, err)
 	}
 
@@ -112,7 +112,7 @@ func TestTheRecorderGivesAHostAdmittedBeforeTheMeshPoolItsMeshAddress(t *testing
 	reported := &reportedPrefixes{by: map[string][]string{}}
 	o := startOne(t, orchtest.Options{NewPrefixHosts: func(inventory.Service) inventory.PrefixHosts { return reported }})
 	h := newHost(t, "node-1")
-	_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+	_, err := o.anon.Enroll(t.Context(), h.request(o.keyOf(t, h.id)))
 	require.NoError(t, err)
 	before := o.admit(t, h)
 	require.Empty(t, before.MeshAddress, "no profile, so no mesh pool, at its admission")
@@ -133,7 +133,7 @@ func TestAHostAFullMeshPoolHasNoAddressForIsAnEventAndHoldsUpNoPrefix(t *testing
 	o := startOne(t, orchtest.Options{NewPrefixHosts: func(inventory.Service) inventory.PrefixHosts { return reported }})
 	for _, id := range []string{"node-1", "node-2"} {
 		h := newHost(t, id)
-		_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+		_, err := o.anon.Enroll(t.Context(), h.request(o.keyOf(t, h.id)))
 		require.NoError(t, err)
 		o.admit(t, h)
 	}
@@ -199,7 +199,7 @@ func TestAMeshPoolChangeThatLeavesAHeldAddressOutIsRefused(t *testing.T) {
 	require.NoError(t, o.op.SetProfile(t.Context(), meshProfileYAML(t, "10.200.0.0/16", "10.99.0.0/24")))
 	require.NoError(t, o.op.SetProfile(t.Context(), meshProfileYAML(t, "10.200.0.0/16", "10.98.0.0/24")), "the control: no host holds one yet, so it may move")
 	h := newHost(t, "node-1")
-	_, err := o.anon.Enroll(t.Context(), h.request(o.secret))
+	_, err := o.anon.Enroll(t.Context(), h.request(o.keyOf(t, h.id)))
 	require.NoError(t, err)
 	require.Equal(t, "10.98.0.1", o.admit(t, h).MeshAddress)
 

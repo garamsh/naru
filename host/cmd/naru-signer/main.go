@@ -183,6 +183,9 @@ func runServe(log *slog.Logger, args []string) error {
 	count := func(listener string, h http.Handler) http.Handler {
 		return promhttp.InstrumentHandlerCounter(requests.MustCurryWith(prometheus.Labels{"listener": listener}), h)
 	}
+	if !blank {
+		go s.KeepAuthorities(ctx)
+	}
 	if *metricsAddr != "" {
 		go func() {
 			if err := metrics.Serve(ctx, *metricsAddr, reg); err != nil {

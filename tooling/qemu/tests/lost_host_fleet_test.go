@@ -14,10 +14,9 @@ import (
 func TestFleet_AStatelessMemberOfAHostThatStopsAnsweringIsMadeOnTheOtherHostWithNoDrain(t *testing.T) {
 	f := newFleet(t, fleetOpts{controls: 1, hosts: 2, vmMiB: 1536, vmCPUs: 4})
 	f.startOrch()
-	key := f.enrollmentKey()
 	ids := map[int]string{}
 	for _, i := range f.hosts() {
-		ids[i] = f.admit(f.enroll(i, key), "eu-1", "tier=a")
+		ids[i] = f.admit(f.enroll(i, f.enrollmentKey()), "eu-1", "tier=a")
 	}
 	h1, h2 := f.hosts()[0], f.hosts()[1]
 

@@ -504,7 +504,8 @@ func (f *fleet) enroll(i int, key string) string {
 	return all[len(all)-1][1]
 }
 
-// enrollmentKey has root make an enrollment key and returns its secret.
+// enrollmentKey has root make an enrollment key and returns its secret: one host enrolls with it
+// (ADR 0121).
 func (f *fleet) enrollmentKey() string {
 	out := f.must(f.orch("enroll-key", "create"), "enroll-key create")
 	m := secretLine.FindStringSubmatch(out)
@@ -542,10 +543,9 @@ func (f *fleet) admit(code, region string, labels ...string) string {
 // enrollAndAdmit takes every host Node through the enrollment and the admission, in the region with
 // the labels, and returns the host IDs by Node number once each host says it was admitted.
 func (f *fleet) enrollAndAdmit(region string, labels ...string) map[int]string {
-	key := f.enrollmentKey()
 	ids := map[int]string{}
 	for _, i := range f.hosts() {
-		ids[i] = f.admit(f.enroll(i, key), region, labels...)
+		ids[i] = f.admit(f.enroll(i, f.enrollmentKey()), region, labels...)
 	}
 	for _, i := range f.hosts() {
 		nd := f.node(i)
