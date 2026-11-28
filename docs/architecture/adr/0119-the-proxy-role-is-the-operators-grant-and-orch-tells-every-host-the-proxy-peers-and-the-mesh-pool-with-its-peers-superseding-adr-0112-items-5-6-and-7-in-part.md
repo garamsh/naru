@@ -87,3 +87,7 @@ It keeps the outcomes those items state. Only a proxy host takes the table, an a
 - Operators grant the role to every host they admit, so the grant guards nothing. Then admission itself should carry it.
 - A proxy host's grant must be checked faster than a pass, for example to cut off a compromised host within seconds. Then revocation needs a push of its own, and the alias keys a rotation.
 - A site needs a max age above 24 h to ride out an orch outage. Then the cap, and the release bound with it, should be revisited.
+
+## Errata
+
+- 2026-11-28 (garamsh/naru#446): **a proxy exposure's candidate holds the grant too.** Item 2 says only a proxy host is sent the table and marked on the peers, and leaves ADR 0112 item 8's candidates for a proxy exposure as they were: hosts with a LAN interface whose `GET /v1/host` reports `proxy.healthy`. A host whose proxy is healthy but that holds no grant is sent no table, so a lease on it would send the LAN's traffic to a proxy that routes no name. A proxy exposure's candidate is a proxy host, holding the grant and reporting a healthy proxy, so the role has one rule.
